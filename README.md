@@ -16,7 +16,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 ## Install (Windows)
 
-Download `MilanPro-v0.1.0-win64.zip` from [Releases](../../releases), extract it, and either run `MilanPro.exe` directly or run `install.bat` as Administrator to install with Start Menu and Desktop shortcuts.
+Download `MilanPro-<version>-Setup.exe` from [Releases](../../releases) and run it. It installs per-user by default (no admin needed), adds a Start Menu shortcut, and can be removed from Settings > Apps.
 
 [FFmpeg](https://ffmpeg.org/) must be on `PATH` for media import (`winget install Gyan.FFmpeg`).
 
