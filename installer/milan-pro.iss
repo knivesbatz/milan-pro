@@ -40,6 +40,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "MilanPro.exe"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+; FFmpeg sits beside MilanPro.exe because Rust's Command searches the app's own folder before PATH.
+Source: "ffmpeg\*"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Milan Pro"; Filename: "{app}\MilanPro.exe"

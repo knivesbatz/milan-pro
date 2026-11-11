@@ -16,6 +16,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
       - run: choco install innosetup -y --no-progress
+      - run: ./installer/fetch-ffmpeg.ps1
+        shell: pwsh
       - name: Build installer
         shell: pwsh
         run: |

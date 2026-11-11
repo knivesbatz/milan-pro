@@ -1,3 +1,4 @@
 /target
 /release
+/installer/ffmpeg
 *.mnle.bak
