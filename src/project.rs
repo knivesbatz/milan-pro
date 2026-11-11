@@ -13,7 +13,7 @@ pub struct Project {
     pub modified: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSettings {
     pub width: u32,
     pub height: u32,
@@ -114,6 +114,10 @@ impl Project {
     }
 
     pub fn save(&mut self, path: &PathBuf) -> anyhow::Result<()> {
+        // The project is named after its file, so titles and autosave backups are per-project.
+        if let Some(stem) = file_stem(path) {
+            self.name = stem;
+        }
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         self.path = Some(path.clone());
@@ -124,6 +128,9 @@ impl Project {
     pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         let json = std::fs::read_to_string(path)?;
         let mut project: Self = serde_json::from_str(&json)?;
+        if let Some(stem) = file_stem(path) {
+            project.name = stem;
+        }
         project.path = Some(path.clone());
         project.timeline.zoom = 1.0;
         Ok(project)
@@ -168,6 +175,20 @@ impl Timeline {
             }
         }
         max
+    }
+
+    /// Video tracks that show in preview and render: visible, not muted, and soloed if any track is.
+    pub fn shown_video_tracks(&self) -> impl DoubleEndedIterator<Item = &Track> {
+        let any_solo = self.video_tracks.iter().any(|t| t.solo);
+        self.video_tracks.iter().filter(move |t| t.visible && !t.muted && (!any_solo || t.solo))
+    }
+
+    pub fn tracks(&self, video: bool) -> &Vec<Track> {
+        if video { &self.video_tracks } else { &self.audio_tracks }
+    }
+
+    pub fn tracks_mut(&mut self, video: bool) -> &mut Vec<Track> {
+        if video { &mut self.video_tracks } else { &mut self.audio_tracks }
     }
 
     pub fn add_video_track(&mut self) {
@@ -231,6 +252,10 @@ impl Clip {
             },
         }
     }
+}
+
+fn file_stem(path: &std::path::Path) -> Option<String> {
+    path.file_stem().map(|s| s.to_string_lossy().into_owned())
 }
 
 fn hue_to_rgb(h: u8) -> [u8; 3] {

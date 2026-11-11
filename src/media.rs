@@ -1,5 +1,7 @@
-use std::path::Path;
+use eframe::egui;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver, Sender};
 use crate::project::{MediaItem, MediaType};
 
 pub fn probe_media(path: &Path) -> anyhow::Result<MediaItem> {
@@ -30,21 +32,64 @@ pub fn probe_media(path: &Path) -> anyhow::Result<MediaItem> {
         codec: None,
     };
 
-    if let Ok(output) = Command::new("ffprobe")
-        .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(path)
-        .output()
+    let mut cmd = Command::new("ffprobe");
+    cmd.args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
+        .arg(path);
+    #[cfg(windows)]
     {
-        if let Ok(json) = String::from_utf8(output.stdout) {
-            parse_ffprobe(&json, &mut item);
-        }
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+    let output = cmd.output().map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => anyhow::anyhow!("ffprobe not found on PATH"),
+        _ => anyhow::anyhow!("ffprobe failed: {e}"),
+    })?;
+    if !output.status.success() && item.media_type != MediaType::Image {
+        anyhow::bail!("unreadable media");
+    }
+    parse_ffprobe(&String::from_utf8_lossy(&output.stdout), &mut item);
 
     if item.media_type == MediaType::Image && item.duration == 0.0 {
         item.duration = 5.0;
     }
+    // A zero-length clip would be invisible on the timeline.
+    if item.duration <= 0.0 {
+        anyhow::bail!("could not read duration");
+    }
 
     Ok(item)
+}
+
+type ProbeBatch = Vec<Result<MediaItem, String>>;
+
+/// Probes imported files on a worker thread so ffprobe never blocks the UI.
+pub struct Importer {
+    tx: Sender<ProbeBatch>,
+    rx: Receiver<ProbeBatch>,
+}
+
+impl Importer {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::channel();
+        Self { tx, rx }
+    }
+
+    pub fn import(&self, ctx: &egui::Context, paths: Vec<PathBuf>) {
+        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let batch = paths
+                .iter()
+                .map(|p| probe_media(p).map_err(|e| format!("{}: {e}", p.file_name().unwrap_or_default().to_string_lossy())))
+                .collect();
+            let _ = tx.send(batch);
+            ctx.request_repaint();
+        });
+    }
+
+    /// A finished batch of probe results, one per picked file.
+    pub fn poll(&self) -> Option<ProbeBatch> {
+        self.rx.try_recv().ok()
+    }
 }
 
 fn classify_extension(ext: &str) -> MediaType {
@@ -98,5 +143,14 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unreadable_media_is_an_error() {
+        // Err whether ffprobe is missing or fails on the file, never a 0-length Ok item.
+        assert!(super::probe_media(std::path::Path::new("no-such-file.mp4")).is_err());
     }
 }

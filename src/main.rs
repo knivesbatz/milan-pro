@@ -1,6 +1,15 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
+mod audio;
+mod autosave;
+mod decode;
+mod edit;
+mod history;
 mod media;
 mod project;
+mod render;
+mod settings;
 mod ui;
 
 use eframe::egui;
