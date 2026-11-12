@@ -26,6 +26,12 @@ pub struct Timeline {
     pub video_tracks: Vec<Track>,
     pub audio_tracks: Vec<Track>,
     pub markers: Vec<Marker>,
+    /// Loop region / time selection (start, end), shown in the loop bar.
+    #[serde(default)]
+    pub loop_region: Option<(f64, f64)>,
+    /// Named time ranges (Insert Region, R), drawn as numbered tag pairs in the marker bar.
+    #[serde(default)]
+    pub regions: Vec<Region>,
     #[serde(skip)]
     pub cursor_position: f64,
     #[serde(default = "default_zoom")]
@@ -49,6 +55,7 @@ pub struct Track {
     pub solo: bool,
     pub locked: bool,
     pub visible: bool,
+    /// Pixels; 0 = the look's default for this track type.
     pub height: f32,
     pub volume: f32,
     pub pan: f32,
@@ -70,6 +77,14 @@ pub struct Clip {
     pub out_point: f64,
     pub name: String,
     pub color: [u8; 3],
+    /// Fade lengths in seconds (smooth S-curve), applied in preview audio and render.
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
+    /// Locked events cannot be moved, trimmed, split or deleted (transport Lock button).
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +114,13 @@ pub struct Marker {
     pub position: f64,
     pub name: String,
     pub color: [u8; 3],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Region {
+    pub start: f64,
+    pub end: f64,
+    pub name: String,
 }
 
 impl Project {
@@ -158,6 +180,8 @@ impl Timeline {
             video_tracks: vec![Track::new("Video 1", TrackKind::Video)],
             audio_tracks: vec![Track::new("Audio 1", TrackKind::Audio)],
             markers: Vec::new(),
+            loop_region: None,
+            regions: Vec::new(),
             cursor_position: 0.0,
             zoom: 1.0,
             scroll_x: 0.0,
@@ -213,7 +237,7 @@ impl Track {
             solo: false,
             locked: false,
             visible: true,
-            height: 64.0,
+            height: 0.0, // 0 = the look's default height (VP16 64 / 68 px, VP23 52 px)
             volume: 1.0,
             pan: 0.0,
         }
@@ -232,6 +256,9 @@ impl Clip {
             out_point: duration,
             name: name.to_string(),
             color: hue_to_rgb(hue),
+            fade_in: 0.0,
+            fade_out: 0.0,
+            locked: false,
         }
     }
 
@@ -250,8 +277,29 @@ impl Clip {
                 MediaType::Image => [180, 140, 70],
                 MediaType::Unknown => [140, 140, 140],
             },
+            fade_in: 0.0,
+            fade_out: 0.0,
+            locked: false,
         }
     }
+
+    /// Keep both fades inside the clip after a trim or fade drag.
+    pub fn clamp_fades(&mut self) {
+        let d = self.duration.max(0.0);
+        self.fade_in = self.fade_in.clamp(0.0, d);
+        self.fade_out = self.fade_out.clamp(0.0, d - self.fade_in);
+    }
+}
+
+/// Fade gain (0..=1) at `t` seconds into a `dur` long event: the product of the fade-in and fade-out curves.
+pub fn fade_gain(t: f64, dur: f64, fade_in: f64, fade_out: f64) -> f32 {
+    let ramp = |x: f64, len: f64| if len > 0.0 { smooth_fade((x / len).clamp(0.0, 1.0)) } else { 1.0 };
+    (ramp(t, fade_in) * ramp(dur - t, fade_out)) as f32
+}
+
+/// VEGAS's default "Smooth" fade curve, an S-curve from 0 to 1 (ffmpeg afade curve=hsin).
+pub fn smooth_fade(x: f64) -> f64 {
+    (1.0 - (std::f64::consts::PI * x).cos()) * 0.5
 }
 
 fn file_stem(path: &std::path::Path) -> Option<String> {
@@ -278,16 +326,76 @@ fn hue_to_rgb(h: u8) -> [u8; 3] {
     ]
 }
 
+/// VEGAS "Time & Frames": hh:mm:ss:ff, or SMPTE drop-frame hh:mm:ss;ff at 29.97/59.94 fps.
 pub fn format_timecode(seconds: f64, fps: f64) -> String {
-    let total_frames = (seconds * fps).round() as u64;
-    let fps_int = fps.round() as u64;
-    if fps_int == 0 {
+    let nominal = fps.round() as u64;
+    if nominal == 0 {
         return "00:00:00:00".to_string();
     }
-    let frames = total_frames % fps_int;
-    let total_secs = total_frames / fps_int;
-    let secs = total_secs % 60;
-    let mins = (total_secs / 60) % 60;
-    let hours = total_secs / 3600;
-    format!("{hours:02}:{mins:02}:{secs:02}:{frames:02}")
+    let mut frames = (seconds.max(0.0) * fps).round() as u64;
+    let drop = fps.fract() != 0.0 && (nominal == 30 || nominal == 60);
+    if drop {
+        // Skip frame numbers 0..k at each minute except every tenth (SMPTE 12M).
+        let k = nominal / 15; // 2 at 30, 4 at 60
+        let per_10min = nominal * 600 - 9 * k;
+        let per_min = nominal * 60 - k;
+        let (d, m) = (frames / per_10min, frames % per_10min);
+        frames += 9 * k * d + if m > k { k * ((m - k) / per_min) } else { 0 };
+    }
+    let ff = frames % nominal;
+    let total_secs = frames / nominal;
+    let (secs, mins, hours) = (total_secs % 60, (total_secs / 60) % 60, total_secs / 3600);
+    let sep = if drop { ';' } else { ':' };
+    format!("{hours:02}:{mins:02}:{secs:02}{sep}{ff:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timecode_drop_frame_and_ndf() {
+        assert_eq!(format_timecode(10.0, 25.0), "00:00:10:00");
+        assert_eq!(format_timecode(1.5, 30.0), "00:00:01:15");
+        assert_eq!(format_timecode(5.0, 29.97), "00:00:05;00");
+        // Frame 1800 at 29.97 is the first frame of minute 1: numbers ;00 and ;01 are skipped.
+        assert_eq!(format_timecode(1800.0 * 1001.0 / 30000.0, 29.97), "00:01:00;02");
+        assert_eq!(format_timecode(17982.0 * 1001.0 / 30000.0, 29.97), "00:10:00;00");
+        assert_eq!(format_timecode(3600.0, 29.97), "01:00:00;00");
+    }
+
+    fn gain(c: &Clip, t: f64) -> f32 {
+        fade_gain(t, c.duration, c.fade_in, c.fade_out)
+    }
+
+    #[test]
+    fn fade_gain_curve_and_clamp() {
+        let mut c = Clip::new("c", 0.0, 10.0);
+        assert_eq!(gain(&c, 0.0), 1.0); // no fades
+        (c.fade_in, c.fade_out) = (2.0, 4.0);
+        assert_eq!(gain(&c, 0.0), 0.0);
+        assert!((gain(&c, 1.0) - 0.5).abs() < 1e-6); // S-curve midpoint
+        assert!(gain(&c, 0.5) < 0.25); // slow start
+        assert_eq!(gain(&c, 4.0), 1.0);
+        assert!((gain(&c, 8.0) - 0.5).abs() < 1e-6);
+        assert_eq!(gain(&c, 10.0), 0.0);
+        c.duration = 5.0;
+        c.clamp_fades();
+        assert_eq!((c.fade_in, c.fade_out), (2.0, 3.0));
+        c.duration = 1.0;
+        c.clamp_fades();
+        assert_eq!((c.fade_in, c.fade_out), (1.0, 0.0));
+    }
+
+    #[test]
+    fn old_projects_load_without_fades_or_loop() {
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.push(Clip::new("c", 0.0, 1.0));
+        let mut v: serde_json::Value = serde_json::to_value(&p).unwrap();
+        v["timeline"].as_object_mut().unwrap().remove("loop_region");
+        v["timeline"]["video_tracks"][0]["clips"][0].as_object_mut().unwrap().remove("fade_in");
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert_eq!(back.timeline.loop_region, None);
+        assert_eq!(back.timeline.video_tracks[0].clips[0].fade_in, 0.0);
+    }
 }

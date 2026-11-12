@@ -40,6 +40,11 @@ impl History {
         !self.redo.is_empty()
     }
 
+    /// Steps available to undo / redo (for the toolbar's ▾ history lists).
+    pub fn lens(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();

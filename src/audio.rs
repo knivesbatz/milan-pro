@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,6 +45,8 @@ pub struct Seg {
     pub dur: f64,
     pub src: f64,
     pub gain: [f32; 2],
+    pub fade_in: f64,
+    pub fade_out: f64,
 }
 
 /// L/R gain for a track, or None if it is muted or another track is soloed.
@@ -66,7 +68,8 @@ pub fn plan(project: &Project) -> Vec<Seg> {
         for c in &t.clips {
             let media = c.media_id.as_deref().and_then(|id| project.media_pool.iter().find(|m| m.id == id));
             if let Some(m) = media.filter(|m| m.sample_rate.is_some()) {
-                segs.push(Seg { path: m.path.clone(), pos: c.position, dur: c.duration, src: c.in_point, gain });
+                let (fade_in, fade_out) = (c.fade_in, c.fade_out);
+                segs.push(Seg { path: m.path.clone(), pos: c.position, dur: c.duration, src: c.in_point, gain, fade_in, fade_out });
             }
         }
     }
@@ -86,8 +89,11 @@ pub fn render(segs: &[Seg], t0: f64, frames: usize, mut decode: impl FnMut(&Seg,
         let off = (((a - t0) * RATE as f64).round() as usize * 2).min(out.len());
         let n = ((b - a) * RATE as f64).round() as usize * 2;
         let pcm = decode(s, s.src + (a - s.pos), b - a);
+        let faded = s.fade_in > 0.0 || s.fade_out > 0.0;
         for (i, (o, x)) in out[off..].iter_mut().zip(&pcm).take(n).enumerate() {
-            *o += x * s.gain[i % 2];
+            let t = a - s.pos + (i / 2) as f64 / RATE as f64;
+            let fade = if faded { crate::project::fade_gain(t, s.dur, s.fade_in, s.fade_out) } else { 1.0 };
+            *o += x * s.gain[i % 2] * fade;
         }
     }
     out
@@ -109,6 +115,41 @@ fn decode_pcm(path: &Path, start: f64, dur: f64) -> Result<Vec<f32>, String> {
 
 // ---- Output ----
 
+/// Master bus shared with the output thread: L/R fader gain in, peak levels out (f32 bits in atomics).
+#[derive(Default)]
+pub struct Master {
+    gain: [AtomicU32; 2],
+    peak: [AtomicU32; 2],
+}
+
+impl Master {
+    fn new() -> Self {
+        let m = Self::default();
+        m.set_gain([1.0, 1.0]);
+        m
+    }
+
+    pub fn set_gain(&self, g: [f32; 2]) {
+        for (a, v) in self.gain.iter().zip(g) {
+            a.store(v.max(0.0).to_bits(), Relaxed);
+        }
+    }
+
+    fn gain(&self, ch: usize) -> f32 {
+        f32::from_bits(self.gain[ch].load(Relaxed))
+    }
+
+    /// Highest |sample| per channel sent to the device since the last call (after the master gain).
+    pub fn take_peaks(&self) -> [f32; 2] {
+        [0, 1].map(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
+    }
+
+    fn tap(&self, ch: usize, v: f32) {
+        // Non-negative f32 bit patterns order like the floats, so an integer max works.
+        self.peak[ch].fetch_max(v.abs().to_bits(), Relaxed);
+    }
+}
+
 /// rodio source fed with mixed chunks; counts samples handed to the device (the master clock).
 struct Feed {
     rx: Receiver<Vec<f32>>,
@@ -118,6 +159,7 @@ struct Feed {
     odd: bool,
     played: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
+    master: Arc<Master>,
 }
 
 impl Iterator for Feed {
@@ -134,9 +176,12 @@ impl Iterator for Feed {
             }
         }
         if let Some(&s) = self.buf.get(self.pos) {
+            let ch = self.pos % 2;
             self.pos += 1;
             self.played.fetch_add(1, Relaxed);
-            return Some(s);
+            let v = s * self.master.gain(ch);
+            self.master.tap(ch, v);
+            return Some(v);
         }
         // Underrun: play silence without advancing the clock, so the playhead waits for audio.
         self.odd = !self.odd;
@@ -170,6 +215,8 @@ pub struct Player {
     device: Option<Result<OutputStreamHandle, String>>,
     session: Option<Session>,
     error: Arc<Mutex<Option<String>>>,
+    /// Master fader and meter tap (§5.12).
+    pub master: Arc<Master>,
 }
 
 impl Player {
@@ -188,7 +235,7 @@ impl Player {
                 let _ = tx.send(Err(format!("No audio device ({e}): playback is silent")));
             }
         });
-        Self { device_rx, device: None, session: None, error: Arc::new(Mutex::new(None)) }
+        Self { device_rx, device: None, session: None, error: Arc::new(Mutex::new(None)), master: Arc::new(Master::new()) }
     }
 
     fn poll_device(&mut self) {
@@ -212,7 +259,8 @@ impl Player {
         let (tx, rx): (SyncSender<Vec<f32>>, _) = mpsc::sync_channel(2);
         let played = Arc::new(AtomicU64::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let feed = Feed { rx, buf: Vec::new(), pos: 0, odd: false, played: played.clone(), stop: stop.clone() };
+        let master = self.master.clone();
+        let feed = Feed { rx, buf: Vec::new(), pos: 0, odd: false, played: played.clone(), stop: stop.clone(), master };
         if let Err(e) = handle.play_raw(feed) {
             *self.error.lock().unwrap() = Some(format!("Audio output failed: {e}"));
             return;
@@ -274,31 +322,55 @@ impl Player {
 
 // ---- Waveforms ----
 
-/// Peak per 1/PEAKS_PER_SEC s of the source, mono, 0..=1.
-fn peaks(path: &Path) -> Vec<f32> {
+/// Audio channels of the first audio stream (1 when unknown).
+fn channel_count(path: &Path) -> usize {
+    let mut cmd = Command::new("ffprobe");
+    cmd.args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd.output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(1)
+}
+
+/// Peaks per 1/PEAKS_PER_SEC s of the source, 0..=1, one list per channel: stereo (or more, folded to 2) gives
+/// L and R, as VEGAS draws two stacked waveforms; mono gives one.
+fn peaks(path: &Path) -> Vec<Vec<f32>> {
+    let ch = channel_count(path).clamp(1, 2);
     let child = ffmpeg()
         .arg("-i")
         .arg(path)
-        .args(["-vn", "-ac", "1", "-ar", &PEAK_RATE.to_string(), "-f", "f32le", "-"])
+        .args(["-vn", "-ac", &ch.to_string(), "-ar", &PEAK_RATE.to_string(), "-f", "f32le", "-"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn();
     let Ok(mut child) = child else { return Vec::new() };
     let per = (PEAK_RATE as f64 / PEAKS_PER_SEC) as usize;
-    let (mut out, mut peak, mut n) = (Vec::new(), 0.0_f32, 0);
-    // Streamed so long files never sit in memory as raw PCM.
+    let (mut out, mut peak, mut n) = (vec![Vec::new(); ch], vec![0.0_f32; ch], 0);
+    // Streamed so long files never sit in memory as raw PCM. Samples are interleaved by channel.
     let mut r = BufReader::new(child.stdout.take().expect("piped stdout"));
     let mut b = [0u8; 4];
+    let mut c = 0;
     while r.read_exact(&mut b).is_ok() {
-        peak = peak.max(f32::from_le_bytes(b).abs().min(1.0));
-        n += 1;
-        if n == per {
-            out.push(peak);
-            (peak, n) = (0.0, 0);
+        peak[c] = peak[c].max(f32::from_le_bytes(b).abs().min(1.0));
+        c += 1;
+        if c == ch {
+            c = 0;
+            n += 1;
+            if n == per {
+                for k in 0..ch {
+                    out[k].push(peak[k]);
+                }
+                peak.fill(0.0);
+                n = 0;
+            }
         }
     }
     if n > 0 {
-        out.push(peak);
+        for k in 0..ch {
+            out[k].push(peak[k]);
+        }
     }
     let _ = child.wait();
     out
@@ -306,9 +378,9 @@ fn peaks(path: &Path) -> Vec<f32> {
 
 /// Per-media peak cache filled by a background thread. Failures cache as empty.
 pub struct Waveforms {
-    cache: HashMap<String, Option<Vec<f32>>>,
+    cache: HashMap<String, Option<Vec<Vec<f32>>>>,
     tx: Sender<(String, PathBuf)>,
-    rx: Receiver<(String, Vec<f32>)>,
+    rx: Receiver<(String, Vec<Vec<f32>>)>,
 }
 
 impl Waveforms {
@@ -327,8 +399,16 @@ impl Waveforms {
         Self { cache: HashMap::new(), tx, rx }
     }
 
-    /// Peaks for `m`, requesting them on first use.
-    pub fn get(&mut self, m: &MediaItem) -> Option<&[f32]> {
+    /// Some requested peaks have not arrived yet.
+    pub fn pending(&mut self) -> bool {
+        for (id, p) in self.rx.try_iter() {
+            self.cache.insert(id, Some(p));
+        }
+        self.cache.values().any(|v| v.is_none())
+    }
+
+    /// Peaks for `m`, one list per channel (1 or 2), requesting them on first use.
+    pub fn get(&mut self, m: &MediaItem) -> Option<&[Vec<f32>]> {
         for (id, p) in self.rx.try_iter() {
             self.cache.insert(id, Some(p));
         }
@@ -336,7 +416,7 @@ impl Waveforms {
             self.cache.insert(m.id.clone(), None);
             let _ = self.tx.send((m.id.clone(), m.path.clone()));
         }
-        self.cache[&m.id].as_deref().filter(|p| !p.is_empty())
+        self.cache[&m.id].as_deref().filter(|p| p.first().is_some_and(|c| !c.is_empty()))
     }
 }
 
@@ -422,5 +502,31 @@ mod tests {
             ones(s, a, d)
         });
         assert!((asked[0] - (3.0 + 1.0 / RATE as f64)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn master_gain_and_peak_tap() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let master = Arc::new(Master::new());
+        master.set_gain([0.5, 0.0]);
+        let (played, stop) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
+        let mut feed = Feed { rx, buf: Vec::new(), pos: 0, odd: false, played, stop, master: master.clone() };
+        tx.send(vec![0.8, 0.8, -1.0, 0.2]).unwrap();
+        let out: Vec<f32> = (0..4).map(|_| feed.next().unwrap()).collect();
+        assert_eq!(out, [0.4, 0.0, -0.5, 0.0]);
+        assert_eq!(master.take_peaks(), [0.5, 0.0]);
+        assert_eq!(master.take_peaks(), [0.0, 0.0]); // reading resets
+    }
+
+    #[test]
+    fn mix_applies_clip_fades() {
+        let mut p = project();
+        p.timeline.audio_tracks[1].muted = true;
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        (c.duration, c.fade_in, c.fade_out) = (8.0 / RATE as f64, 2.0 / RATE as f64, 2.0 / RATE as f64);
+        let out = render(&plan(&p), 0.0, 8, ones);
+        let left: Vec<f32> = out.iter().step_by(2).map(|v| (v * 1000.0).round() / 1000.0).collect();
+        // Gain 0.5 times the S-curve: 0 and 0.5 at the fade-in, full in the middle, 0.5 again at the fade-out start.
+        assert_eq!(left, [0.0, 0.25, 0.5, 0.5, 0.5, 0.5, 0.5, 0.25]);
     }
 }

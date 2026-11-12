@@ -1,14 +1,22 @@
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+mod commands;
+
+use eframe::egui;
 use crate::audio::{Player, Waveforms};
 use crate::autosave::Autosave;
-use crate::decode::Preview;
-use crate::edit;
+use crate::decode::{Preview, Thumbs};
+use crate::demo::{Launch, Shot};
+
 use crate::history::History;
 use crate::media::Importer;
 use crate::project::Project;
-use crate::render::{self, RenderDialog};
-use crate::settings::SettingsDialog;
-use crate::ui::{self, ClipRef, DragState, MenuAction};
+use crate::render;
+use crate::settings::{Prefs, SettingsDialog};
+use crate::ui::chrome;
+use crate::ui::dock::{Dock, Panel};
+use crate::ui::theme::{self, LookChoice, UiLook};
+use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
+use crate::ui::keymap::{Command, Keymap};
+use crate::ui::{self, ChooserKind, ClipRef, DragState, MenuAction, Playback, TransportAction, TransportState, WinAction};
 
 pub struct MeridianApp {
     pub project: Project,
@@ -16,12 +24,17 @@ pub struct MeridianApp {
     pub selected_clip: Option<ClipRef>,
     pub selected_media: Option<usize>,
     pub playing: bool,
+    /// Loop Playback (Q): playback repeats the time selection.
+    pub looping: bool,
     pub snapping: bool,
+    /// Automatic Crossfades toggle (stored only; overlaps do not crossfade yet).
+    auto_crossfade: bool,
     pub drag_state: Option<DragState>,
     pub timeline_scroll_y: f32,
     pub preview: Preview,
     pub audio: Player,
     pub waves: Waveforms,
+    pub thumbs: Thumbs,
     render: RenderDialog,
     settings: SettingsDialog,
     autosave: Autosave,
@@ -39,23 +52,87 @@ pub struct MeridianApp {
     /// New/Open/Exit waiting on the "Save changes?" prompt.
     confirm: Option<MenuAction>,
     about: bool,
+    look: LookChoice,
+    dock: Dock,
+    /// Native window decorations are on (VP16) or off (VP23 custom title bar).
+    decorated: bool,
+    /// MILAN_DEMO: nothing is written to the user's autosave or prefs.
+    demo: bool,
+    shot: Option<Shot>,
+    // Dock window state.
+    media_view: ui::MediaView,
+    explorer: ui::Explorer,
+    choosers: [ui::Chooser; 3],
+    trimmer: ui::Trimmer,
+    preview_view: ui::PreviewView,
+    master_view: ui::MasterView,
+    // Commands, preferences and dialogs (app/commands.rs).
+    prefs: Prefs,
+    keymap: Keymap,
+    prefs_dlg: PrefsDialog,
+    welcome: Option<Welcome>,
+    shortcuts_open: bool,
+    /// J/L shuttle rate (0 = off; 1 = normal playback).
+    shuttle: f64,
+    /// Recent project picked from a menu, opened once the save prompt is answered.
+    pending_open: Option<std::path::PathBuf>,
+    /// File › New opens Project Properties for the new project.
+    props_after_new: bool,
+    /// Settings for the next new project (Welcome › Create Project).
+    new_settings: Option<crate::project::ProjectSettings>,
+    /// Dock area last frame: plain keys over it go to the dock window.
+    dock_rect: egui::Rect,
+    /// Copied or cut event and whether it came from a video track (Edit › Cut/Copy/Paste).
+    clipboard: Option<(bool, crate::project::Clip)>,
 }
 
 impl MeridianApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        ui::apply_theme(&cc.egui_ctx);
-        Self {
-            project: Project::new("Untitled"),
+    pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
+        ui::fonts::install(&cc.egui_ctx);
+        ui::keymap::install(&cc.egui_ctx);
+        // The demo harness never reads or writes the user's preferences.
+        let prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
+        let look = launch.look.unwrap_or(prefs.look);
+        theme::set_palette(&cc.egui_ctx, prefs.palette());
+        theme::set(&cc.egui_ctx, look);
+        let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        let (mut project, mut selected_clip, mut message) = (Project::new("Untitled"), None, None);
+        if launch.demo {
+            match crate::demo::project(&theme::get()) {
+                Ok((p, sel)) => (project, selected_clip) = (p, Some(sel)),
+                Err(e) => message = Some(format!("Demo media failed: {e}")),
+            }
+        }
+        let mut dock = Dock::new(&theme::get());
+        let mut trimmer = ui::Trimmer::new(&cc.egui_ctx);
+        let mut explorer = ui::Explorer::default();
+        if launch.demo {
+            explorer = ui::Explorer::at(crate::demo::media_dir());
+            if let Some(m) = project.media_pool.first() {
+                trimmer.open(m.path.clone());
+                trimmer.set_marks(1.0, 3.8);
+            }
+        }
+        for name in &launch.panels {
+            if let Some(&p) = Panel::ALL.iter().find(|p| p.title(look.look).replace(' ', "").eq_ignore_ascii_case(name)) {
+                dock.open(p);
+            }
+        }
+        let mut app = Self {
+            project,
             history: History::default(),
-            selected_clip: None,
+            selected_clip,
             selected_media: None,
             playing: false,
+            looping: false,
             snapping: true,
+            auto_crossfade: true,
             drag_state: None,
             timeline_scroll_y: 0.0,
             preview: Preview::new(&cc.egui_ctx),
             audio: Player::new(),
             waves: Waveforms::new(&cc.egui_ctx),
+            thumbs: Thumbs::new(&cc.egui_ctx),
             render: RenderDialog::default(),
             settings: SettingsDialog::default(),
             autosave: Autosave::default(),
@@ -63,87 +140,51 @@ impl MeridianApp {
             was_playing: false,
             clock_pos: 0.0,
             importer: Importer::new(),
-            message: None,
+            message,
             play_start: 0.0,
             play_end: 0.0,
             confirm: None,
             about: false,
-        }
-    }
-
-    /// New/Open/Exit, asking to save first if there are unsaved changes.
-    fn request(&mut self, ctx: &egui::Context, action: MenuAction) {
-        if self.project.modified {
-            self.confirm = Some(action);
-        } else {
-            self.run(ctx, action);
-        }
-    }
-
-    fn run(&mut self, ctx: &egui::Context, action: MenuAction) {
-        let project = match action {
-            MenuAction::New => Project::new("Untitled"),
-            MenuAction::Open => {
-                let Some(path) = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).pick_file() else { return };
-                match Project::load(&path) {
-                    Ok(p) => p,
-                    Err(e) => return self.message = Some(format!("Could not open {}: {e}", path.display())),
-                }
-            }
-            _ => {
-                // Close (not process::exit) so the app is dropped and a running render's ffmpeg is killed.
-                self.project.modified = false; // changes were saved or discarded; don't prompt again
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
-            }
+            look,
+            dock,
+            decorated: look.look == UiLook::Vegas16,
+            demo: launch.demo,
+            shot: launch.screenshot.map(Shot::new),
+            media_view: ui::MediaView::default(),
+            explorer,
+            choosers: [ChooserKind::Transitions, ChooserKind::VideoFx, ChooserKind::Generators].map(ui::Chooser::new),
+            trimmer,
+            preview_view: ui::PreviewView::default(),
+            master_view: ui::MasterView::default(),
+            prefs,
+            keymap: Keymap::default(),
+            prefs_dlg: PrefsDialog::default(),
+            welcome,
+            shortcuts_open: false,
+            shuttle: 0.0,
+            pending_open: None,
+            props_after_new: false,
+            new_settings: None,
+            dock_rect: egui::Rect::NOTHING,
+            clipboard: None,
         };
-        self.project = project;
-        self.history.clear();
-        self.selected_clip = None;
-        self.selected_media = None;
-        self.drag_state = None;
-        self.playing = false;
-        self.message = None;
+        app.open_from_env(&cc.egui_ctx);
+        app
     }
 
-    fn show_dialogs(&mut self, ctx: &egui::Context) {
-        if let Some(action) = self.confirm {
-            let (mut save, mut discard) = (false, false);
-            let resp = egui::Modal::new(egui::Id::new("save_changes")).show(ctx, |ui| {
-                ui.label(format!("Save changes to {}?", self.project.name));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    save = ui.button("Save").clicked();
-                    discard = ui.button("Don't Save").clicked();
-                    ui.button("Cancel").clicked()
-                })
-                .inner
-            });
-            if save || discard || resp.inner || resp.should_close() {
-                self.confirm = None;
-            }
-            if save {
-                ui::save(&mut self.project);
-            }
-            // A cancelled or failed save leaves the project modified, so nothing is discarded.
-            if discard || (save && !self.project.modified) {
-                self.run(ctx, action);
-            }
+    /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
+    fn import_new(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>) {
+        let new: Vec<_> = paths.into_iter().filter(|p| !self.project.media_pool.iter().any(|m| m.path == *p)).collect();
+        if !new.is_empty() {
+            self.importer.import(ctx, new);
         }
-        egui::Window::new("About Milan Pro")
-            .open(&mut self.about)
-            .collapsible(false)
-            .resizable(false)
-            .show(ctx, |ui| {
-                ui.label(format!("Milan Pro v{}", env!("CARGO_PKG_VERSION")));
-                ui.label("Open-source nonlinear video editor.");
-            });
     }
 }
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Playback clock: audio is master while it plays, frame dt otherwise
+        let mut wrapped = false;
         if self.playing {
             let now = ctx.input(|i| i.time);
             let end = render::content_end(&self.project);
@@ -153,8 +194,13 @@ impl eframe::App for MeridianApp {
             } else if self.last_frame_time > 0.0 {
                 tl.cursor_position += now - self.last_frame_time;
             }
-            // Playback ends at the last event and stays there.
-            if tl.cursor_position >= end {
+            let lp = tl.loop_region.filter(|(a, b)| self.looping && b > a);
+            if let Some((a, _)) = lp.filter(|&(_, b)| tl.cursor_position >= b) {
+                // Loop Playback: jump back to the selection start (the audio restarts below).
+                tl.cursor_position = a;
+                wrapped = true;
+            } else if lp.is_none() && tl.cursor_position >= end {
+                // Playback ends at the last event and stays there.
                 tl.cursor_position = end.max(self.play_start);
                 self.playing = false;
             }
@@ -165,110 +211,189 @@ impl eframe::App for MeridianApp {
         }
         self.clock_pos = self.project.timeline.cursor_position;
 
-        // Keyboard shortcuts (collected first; acted on outside the input lock since Save opens a dialog)
-        let typing = ctx.wants_keyboard_input();
-        let (mut undo, mut redo, mut save, mut split, mut delete, mut step) = (false, false, false, false, false, 0.0);
+        // Keyboard shortcuts, through the keymap (§7); menus and context menus queue theirs for after the UI.
+        self.tick_shuttle(ctx);
+        self.handle_keys(ctx);
         let mut menu_action = None;
-        let modal = self.confirm.is_some();
-        ctx.input_mut(|i| {
-            if modal {
-                return;
-            }
-            let sc = |m, k| KeyboardShortcut::new(m, k);
-            // Ctrl+Shift+Z must be consumed before Ctrl+Z, which matches it logically.
-            redo = i.consume_shortcut(&sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z))
-                | i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Y));
-            undo = i.consume_shortcut(&sc(Modifiers::COMMAND, Key::Z));
-            save = i.consume_shortcut(&sc(Modifiers::COMMAND, Key::S));
-            if i.consume_shortcut(&sc(Modifiers::COMMAND, Key::M)) {
-                menu_action = Some(MenuAction::RenderAs);
-            }
-            if i.consume_shortcut(&sc(Modifiers::ALT, Key::Enter)) {
-                menu_action = Some(MenuAction::Properties);
-            }
-            if typing {
-                return;
-            }
-            let plain = i.modifiers.is_none();
-            // Space: play / stop back at the start position. Enter: play / pause in place.
-            if i.key_pressed(Key::Space) {
-                if self.playing {
-                    self.project.timeline.cursor_position = self.play_start;
+
+        // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
+        let title = format!("{}{} - Milan Pro", self.project.name, if self.project.modified { " *" } else { "" });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        let t = theme::get();
+        let v16 = t.look() == UiLook::Vegas16;
+        if self.decorated != v16 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(v16));
+            self.decorated = v16;
+        }
+
+        let look = self.look;
+        let mut transport_action = None;
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
+            let full = ui.max_rect();
+            let dock_h = self.dock.height.unwrap_or(t.m.dock_h.min(full.height() * t.m.dock_frac));
+            let a = chrome::areas(&t, full, dock_h, self.dock.track_list_w);
+            chrome::paint_bands(ui.painter(), &t, &a, full);
+
+            // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
+            self.dock_rect = a.dock;
+            ui::menus::publish_state(ctx, self.cmd_state());
+            chrome::with_menu_style(ctx, &t, || {
+                if v16 { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
+            });
+
+            let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            let a_tb = ui::draw_main_toolbar(&mut row, &mut self.project, &mut self.history, &mut self.selected_clip);
+            menu_action = menu_action.or(a_tb);
+
+            // Dock windows.
+            let mut dock_action = None;
+            let mut actions: Vec<WinAction> = Vec::new();
+            let mut preview_msg = None;
+            self.dock.show(ui, a.dock, |panel, bar, body| match panel {
+                Panel::ProjectMedia => {
+                    ui::draw_media_toolbar(
+                        bar,
+                        &mut self.project,
+                        &mut self.history,
+                        &mut self.media_view,
+                        &mut self.selected_media,
+                        &mut self.selected_clip,
+                        &self.importer,
+                        &mut actions,
+                    );
+                    ui::draw_media_browser(
+                        body,
+                        &mut self.project,
+                        &mut self.media_view,
+                        &mut self.selected_media,
+                        &mut self.selected_clip,
+                        &mut self.history,
+                        &mut self.thumbs,
+                        &mut actions,
+                    );
                 }
-                self.playing = !self.playing;
+                Panel::Explorer => {
+                    ui::draw_explorer_toolbar(bar, &mut self.explorer);
+                    ui::draw_explorer(body, &mut self.explorer, &mut actions);
+                }
+                Panel::Transitions | Panel::VideoFx | Panel::MediaGenerators => {
+                    let k = match panel {
+                        Panel::Transitions => 0,
+                        Panel::VideoFx => 1,
+                        _ => 2,
+                    };
+                    ui::draw_chooser_toolbar(bar, &mut self.choosers[k]);
+                    ui::draw_chooser(body, &mut self.choosers[k]);
+                }
+                Panel::VideoPreview => {
+                    preview_msg = ui::draw_preview_toolbar(bar, &mut self.preview, &mut self.preview_view, &mut dock_action);
+                    let mut pb = Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start };
+                    ui::draw_preview(body, &mut self.project, &mut self.preview, &mut self.preview_view, &mut pb);
+                }
+                Panel::Trimmer => {
+                    ui::draw_trimmer_toolbar(bar, &mut self.trimmer);
+                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs);
+                }
+                Panel::Properties => {
+                    egui::Frame::NONE.inner_margin(6).show(body, |ui| {
+                        ui::draw_properties(ui, &self.project, &self.selected_clip, &self.selected_media);
+                    });
+                }
+                Panel::MasterBus => {
+                    ui::master_bus_toolbar(bar);
+                    ui::master_bus(body, &mut self.master_view, &self.audio.master);
+                }
+                p => ui::placeholder(body, p),
+            });
+            if preview_msg.is_some() {
+                self.message = preview_msg;
             }
-            if plain && i.key_pressed(Key::Enter) {
-                self.playing = !self.playing;
+            for act in actions {
+                match act {
+                    WinAction::OpenTrimmer(path) => {
+                        self.trimmer.open(path);
+                        self.dock.open(Panel::Trimmer);
+                    }
+                    WinAction::Show(p) => self.dock.open(p),
+                    WinAction::Import(paths) => self.import_new(ctx, paths),
+                }
             }
-            if i.key_pressed(Key::Home) {
-                self.project.timeline.cursor_position = 0.0;
+            menu_action = menu_action.or(dock_action);
+
+            // Dock / timeline splitter.
+            let split = ui.interact(a.split, ui.id().with("main_split"), egui::Sense::drag());
+            if split.hovered() || split.dragged() {
+                ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
             }
-            if i.key_pressed(Key::F8) {
-                self.snapping = !self.snapping;
+            if split.dragged() {
+                self.dock.height = Some(a.dock.height() + split.drag_delta().y);
             }
-            split = plain && i.key_pressed(Key::S);
-            delete = i.key_pressed(Key::Delete);
-            if i.key_pressed(Key::ArrowLeft) {
-                step -= 1.0;
-            }
-            if i.key_pressed(Key::ArrowRight) {
-                step += 1.0;
+
+            let mut tl = ui.new_child(egui::UiBuilder::new().max_rect(a.timeline));
+            tl.set_clip_rect(a.timeline);
+            ui::draw_timeline(
+                &mut tl,
+                &mut self.project,
+                &mut self.selected_clip,
+                &mut self.drag_state,
+                &mut self.timeline_scroll_y,
+                &mut self.history,
+                self.snapping,
+                &mut self.waves,
+                &mut self.thumbs,
+                self.playing,
+                &mut self.dock.track_list_w,
+            );
+            // The Rate area spans the horizontal scrollbar row and the transport row (§5.9.3).
+            let rate = a.rate.with_min_y(a.timeline.max.y - t.m.hscroll_h);
+            ui::draw_rate(ui, rate, self.playing, &mut self.project);
+            transport_action = ui::draw_transport(
+                ui,
+                a.transport,
+                TransportState {
+                    project: &mut self.project,
+                    history: &mut self.history,
+                    selected_clip: &mut self.selected_clip,
+                    playback: Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start },
+                    snapping: &mut self.snapping,
+                    auto_crossfade: &mut self.auto_crossfade,
+                },
+            );
+            // Last, so hovered-command hints from every bar this frame are shown.
+            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.autosave.error());
+            ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref());
+            if !v16 {
+                chrome::resize_edges(ui, full);
             }
         });
+        if let Some(TransportAction::ToggleColorGrading) = transport_action {
+            self.dock.toggle(Panel::ColorGrading);
+        }
 
-        if undo || redo {
-            let done = if undo { self.history.undo(&mut self.project) } else { self.history.redo(&mut self.project) };
-            if done {
-                self.selected_clip = None;
-                self.drag_state = None;
+        if self.look != look {
+            theme::set(ctx, self.look);
+            self.dock = Dock::new(&theme::get());
+            if !self.demo {
+                self.prefs.look = self.look;
+                if let Err(e) = self.prefs.save() {
+                    self.message = Some(format!("Could not save preferences: {e}"));
+                }
             }
         }
-        if save {
-            ui::save(&mut self.project);
-        }
-        if step != 0.0 {
-            let frame = 1.0 / self.project.settings.frame_rate.max(1.0);
-            let tl = &mut self.project.timeline;
-            tl.cursor_position = (tl.cursor_position + step * frame).max(0.0);
-        }
-        // Not mid-drag: the drag holds a ClipRef and snapshot that the edit would invalidate.
-        if let Some(cr) = self.selected_clip.clone().filter(|_| (split || delete) && self.drag_state.is_none()) {
-            let before = self.project.clone();
-            let cursor = self.project.timeline.cursor_position;
-            if split && edit::split_at(&mut self.project, &cr, cursor) {
-                self.history.push(before);
-            } else if delete && edit::delete_clip(&mut self.project, &cr) {
-                self.history.push(before);
-                self.selected_clip = None;
-            }
-        }
-
-        // Title
-        let title = if self.project.modified {
-            format!("Milan Pro - {}*", self.project.name)
-        } else {
-            format!("Milan Pro - {}", self.project.name)
-        };
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
-
-        // Panels
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            let a = ui::draw_menu_bar(ui, &mut self.project, &mut self.history, &mut self.selected_clip);
-            menu_action = menu_action.or(a);
-        });
         if ctx.input(|i| i.viewport().close_requested()) && self.project.modified {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(MenuAction::Exit);
         }
-        match menu_action {
-            Some(MenuAction::RenderAs) => self.render.open = true,
-            Some(MenuAction::Properties) => self.settings.open(&self.project),
-            Some(MenuAction::Import) => ui::import_media(ctx, &self.importer),
-            Some(MenuAction::About) => self.about = true,
-            Some(a) => self.request(ctx, a),
-            None => {}
+        if let Some(a) = menu_action {
+            self.exec(ctx, Command::from(a));
         }
+        self.run_bus(ctx);
         self.show_dialogs(ctx);
+        // Files dropped from the OS are imported (§5.4).
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).filter(|p| ui::is_media(p)).collect());
+        if !dropped.is_empty() && !self.modal_open() {
+            self.import_new(ctx, dropped);
+        }
         while let Some(batch) = self.importer.poll() {
             let before = self.project.clone();
             let mut errors = Vec::new();
@@ -286,60 +411,10 @@ impl eframe::App for MeridianApp {
         }
         self.render.show(ctx, &self.project);
         self.settings.show(ctx, &mut self.project, &mut self.history);
-        self.autosave.tick(ctx, &self.project);
+        if !self.demo {
+            self.autosave.tick(ctx, &self.project);
+        }
 
-        egui::TopBottomPanel::top("toolbar").exact_height(36.0).show(ctx, |ui| {
-            ui::draw_toolbar(ui, &mut self.playing, &mut self.snapping, &mut self.project, self.play_start);
-        });
-
-        egui::TopBottomPanel::bottom("status_bar").exact_height(24.0).show(ctx, |ui| {
-            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.autosave.error());
-            ui::draw_status_bar(ui, &self.project, msg.as_deref());
-        });
-
-        egui::SidePanel::left("media_browser")
-            .default_width(220.0)
-            .min_width(160.0)
-            .show(ctx, |ui| {
-                ui::draw_media_browser(
-                    ui,
-                    &mut self.project,
-                    &mut self.selected_media,
-                    &mut self.selected_clip,
-                    &mut self.history,
-                    &self.importer,
-                );
-            });
-
-        egui::SidePanel::right("properties")
-            .default_width(240.0)
-            .min_width(180.0)
-            .show(ctx, |ui| {
-                ui::draw_properties(ui, &self.project, &self.selected_clip, &self.selected_media);
-            });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let h = ui.available_height();
-            let preview_h = (h * 0.38).max(180.0).min(h - 120.0);
-
-            ui.allocate_ui(egui::vec2(ui.available_width(), preview_h), |ui| {
-                ui::draw_preview(ui, &self.project, &mut self.preview);
-            });
-
-            ui.add_space(2.0);
-
-            ui::draw_timeline(
-                ui,
-                &mut self.project,
-                &mut self.selected_clip,
-                &mut self.drag_state,
-                &mut self.timeline_scroll_y,
-                &mut self.history,
-                self.snapping,
-                &mut self.waves,
-                self.playing,
-            );
-        });
         // A clip selection replaces a media selection in Properties.
         if self.selected_clip.is_some() {
             self.selected_media = None;
@@ -347,17 +422,29 @@ impl eframe::App for MeridianApp {
 
         // After the timeline so this frame's cursor/clip edits are what gets requested.
         self.preview.update(ctx, &self.project);
+        if let Some(shot) = &mut self.shot {
+            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
+            shot.tick(ctx, busy);
+        }
 
         // Start/stop audio on play state changes. While playing, restart it on seeks, when the
         // content end changes (the session only decodes up to the end it started with), and
         // while the output device is still opening (otherwise this whole run stays silent).
+        if self.playing && !self.was_playing && self.looping {
+            // Loop Playback starts inside the selection.
+            let tl = &mut self.project.timeline;
+            if let Some((a, _)) = tl.loop_region.filter(|&(a, b)| b > a && (tl.cursor_position < a || tl.cursor_position >= b)) {
+                tl.cursor_position = a;
+            }
+        }
         let cursor = self.project.timeline.cursor_position;
         let end = render::content_end(&self.project);
         if self.playing && !self.was_playing {
             self.play_start = cursor;
         }
         let restart = self.playing
-            && (cursor != self.clock_pos
+            && (wrapped
+                || cursor != self.clock_pos
                 || end != self.play_end
                 || (self.audio.position().is_none() && self.audio.device_pending()));
         if self.playing != self.was_playing || restart {

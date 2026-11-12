@@ -1,8 +1,10 @@
 //! Preview frame server: single RGBA frames decoded by ffmpeg on a worker thread.
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Condvar, Mutex};
 use crate::project::{MediaItem, MediaType, Project};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -16,14 +18,41 @@ pub enum Quality {
 impl Quality {
     pub const ALL: [Quality; 4] = [Quality::Draft, Quality::Preview, Quality::Good, Quality::Best];
 
-    pub fn max_width(self) -> u32 {
+    /// ffmpeg scaler per quality; Draft also decodes at half the size's resolution.
+    fn scaler(self) -> &'static str {
         match self {
-            Quality::Draft => 320,
-            Quality::Preview => 640,
-            Quality::Good => 960,
-            Quality::Best => 1920,
+            Quality::Draft | Quality::Preview => "fast_bilinear",
+            Quality::Good => "bilinear",
+            Quality::Best => "lanczos",
         }
     }
+}
+
+/// Preview size, the second half of "Quality (Size)" (§5.8).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Size {
+    Auto,
+    Full,
+    Half,
+    Quarter,
+}
+
+impl Size {
+    pub const ALL: [Size; 4] = [Size::Auto, Size::Full, Size::Half, Size::Quarter];
+}
+
+/// Preview frame width for a project `full_w` wide shown in a `display_w` wide frame.
+/// Auto picks the largest of Full / Half / Quarter that fits the display, as VEGAS reports it.
+pub fn preview_width(q: Quality, size: Size, full_w: u32, display_w: u32) -> u32 {
+    let full = full_w.max(2);
+    let w = match size {
+        Size::Full => full,
+        Size::Half => full / 2,
+        Size::Quarter => full / 4,
+        Size::Auto => [full, full / 2].into_iter().find(|&w| w <= display_w).unwrap_or(full / 4),
+    };
+    let w = if q == Quality::Draft { w / 2 } else { w };
+    (w / 2 * 2).max(16)
 }
 
 struct FrameRequest {
@@ -32,6 +61,7 @@ struct FrameRequest {
     time: f64,
     width: u32,
     height: u32,
+    scaler: &'static str,
 }
 
 struct FrameResult {
@@ -74,7 +104,7 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-v", "error", "-ss", &format!("{:.3}", req.time.max(0.0)), "-i"])
         .arg(&req.path)
-        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-sws_flags", req.scaler, "-s"])
         .arg(format!("{}x{}", req.width, req.height))
         .arg("-");
     #[cfg(windows)]
@@ -102,11 +132,18 @@ pub struct Preview {
     tx: Sender<FrameRequest>,
     rx: Receiver<FrameResult>,
     pub quality: Quality,
-    key: Option<(PathBuf, i64, u32)>,
+    pub size: Size,
+    /// Width of the frame on screen, for Size::Auto; set by the panel each frame.
+    pub display_w: u32,
+    key: Option<(PathBuf, i64, u32, Quality)>,
     next_id: u64,
     /// Results older than this were requested before the preview went black.
     min_id: u64,
+    /// One past the newest request whose result arrived.
+    done_id: u64,
     pub texture: Option<TextureHandle>,
+    /// The frame behind `texture`, for snapshots.
+    pub image: Option<Arc<ColorImage>>,
     pub error: Option<String>,
 }
 
@@ -131,35 +168,57 @@ impl Preview {
         Self {
             tx,
             rx,
-            quality: Quality::Good,
+            // Factory default "Preview (Auto)" (§5.8).
+            quality: Quality::Preview,
+            size: Size::Auto,
+            display_w: 960,
             key: None,
             next_id: 0,
             min_id: 0,
+            done_id: 0,
             texture: None,
+            image: None,
             error: None,
         }
     }
 
+    /// Decode width for a project `full_w` wide at the current quality and size.
+    pub fn width(&self, full_w: u32) -> u32 {
+        preview_width(self.quality, self.size, full_w, self.display_w)
+    }
+
+    /// A requested frame has not arrived yet.
+    pub fn busy(&self) -> bool {
+        self.done_id.max(self.min_id) < self.next_id
+    }
+
     /// Request a frame if the visible (media, source frame) changed, and take finished frames.
     pub fn update(&mut self, ctx: &egui::Context, project: &Project) {
-        let max_w = self.quality.max_width();
         let src = frame_source(project, project.timeline.cursor_position);
+        self.show(ctx, src, project.settings.frame_rate, project.settings.width);
+    }
+
+    /// Like `update`, for an explicit source (the Trimmer's media at its own cursor).
+    /// `fps` is the fallback frame rate; `full_w` the width that Size::Full means.
+    pub fn show(&mut self, ctx: &egui::Context, src: Option<(&MediaItem, f64)>, fps: f64, full_w: u32) {
+        let max_w = self.width(full_w);
         let key = src.map(|(m, t)| {
-            let fps = m.frame_rate.filter(|f| *f > 0.0).unwrap_or(project.settings.frame_rate.max(1.0));
-            (m.path.clone(), (t * fps).floor() as i64, max_w)
+            let fps = m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps.max(1.0));
+            (m.path.clone(), (t * fps).floor() as i64, max_w, self.quality)
         });
         if key != self.key {
             self.key = key;
             match src {
                 Some((m, time)) => {
                     let (width, height) = decode_size(m, max_w);
-                    let req = FrameRequest { id: self.next_id, path: m.path.clone(), time, width, height };
+                    let req = FrameRequest { id: self.next_id, path: m.path.clone(), time, width, height, scaler: self.quality.scaler() };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
                 }
                 None => {
                     self.min_id = self.next_id;
                     self.texture = None;
+                    self.image = None;
                     self.error = None;
                 }
             }
@@ -171,23 +230,119 @@ impl Preview {
                 continue;
             }
             got = true;
+            self.done_id = self.done_id.max(r.id + 1);
             match r.image {
                 Ok(img) => {
                     self.error = None;
+                    let img = Arc::new(img);
+                    let data = egui::ImageData::Color(img.clone());
                     match &mut self.texture {
-                        Some(t) => t.set(img, TextureOptions::LINEAR),
-                        None => self.texture = Some(ctx.load_texture("preview_frame", img, TextureOptions::LINEAR)),
+                        Some(t) => t.set(data, TextureOptions::LINEAR),
+                        None => self.texture = Some(ctx.load_texture("preview_frame", data, TextureOptions::LINEAR)),
                     }
+                    self.image = Some(img);
                 }
                 Err(e) => {
                     self.error = Some(e);
                     self.texture = None;
+                    self.image = None;
                 }
             }
         }
         if got {
             // Polled after drawing, so show the new frame next pass.
             ctx.request_repaint();
+        }
+    }
+}
+
+/// (media path, source time in ms)
+type ThumbKey = (PathBuf, i64);
+
+enum Thumb {
+    Pending,
+    Ready(TextureHandle),
+    Failed,
+}
+
+/// Timeline event thumbnails: small frames decoded by ffmpeg on two worker threads, newest request first,
+/// so the visible events fill in before anything scrolled away.
+pub struct Thumbs {
+    queue: Arc<(Mutex<Vec<(ThumbKey, FrameRequest)>>, Condvar)>,
+    rx: Receiver<(ThumbKey, Result<ColorImage, String>)>,
+    cache: HashMap<ThumbKey, Thumb>,
+    ctx: egui::Context,
+}
+
+/// Queued requests kept; older ones are dropped (and re-requested if they come back into view).
+const THUMB_QUEUE: usize = 96;
+/// Decoded thumbnails kept before the cache is cleared (≈160×90 RGBA each).
+const THUMB_CACHE: usize = 400;
+pub const THUMB_WIDTH: u32 = 160;
+
+impl Thumbs {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let queue = Arc::new((Mutex::new(Vec::<(ThumbKey, FrameRequest)>::new()), Condvar::new()));
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..2 {
+            let (queue, tx, ctx) = (queue.clone(), tx.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                loop {
+                    let (key, req) = {
+                        let (lock, cv) = &*queue;
+                        let mut q = cv.wait_while(lock.lock().unwrap(), |q| q.is_empty()).unwrap();
+                        q.pop().expect("non-empty queue")
+                    };
+                    if tx.send((key, decode_frame(&req))).is_err() {
+                        break;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+        }
+        Self { queue, rx, cache: HashMap::new(), ctx: ctx.clone() }
+    }
+
+    fn receive(&mut self) {
+        for (key, img) in self.rx.try_iter() {
+            let v = match img {
+                Ok(img) => Thumb::Ready(self.ctx.load_texture("event_thumb", img, TextureOptions::LINEAR)),
+                Err(_) => Thumb::Failed,
+            };
+            self.cache.insert(key, v);
+        }
+    }
+
+    /// Requested thumbnails have not all arrived yet.
+    pub fn pending(&mut self) -> bool {
+        self.receive();
+        self.cache.values().any(|v| matches!(v, Thumb::Pending))
+    }
+
+    /// Thumbnail of `m` at source time `time` (callers quantise it), requesting it on first use.
+    pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
+        self.receive();
+        let time = if m.media_type == MediaType::Image { 0.0 } else { time.max(0.0) };
+        let key = (m.path.clone(), (time * 1000.0).round() as i64);
+        if !self.cache.contains_key(&key) {
+            if self.cache.len() >= THUMB_CACHE {
+                self.cache.retain(|_, v| matches!(v, Thumb::Pending));
+            }
+            let (width, height) = decode_size(m, THUMB_WIDTH);
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear" };
+            let (lock, cv) = &*self.queue;
+            let mut q = lock.lock().unwrap();
+            q.push((key.clone(), req));
+            if q.len() > THUMB_QUEUE {
+                let (old, _) = q.remove(0);
+                self.cache.remove(&old);
+            }
+            cv.notify_one();
+            self.cache.insert(key.clone(), Thumb::Pending);
+        }
+        match &self.cache[&key] {
+            Thumb::Ready(t) => Some(t),
+            _ => None,
         }
     }
 }
@@ -245,6 +400,18 @@ mod tests {
         p.timeline.video_tracks[0].visible = false;
         assert_eq!(frame_source(&p, 32.0).map(|(m, t)| (m.id.as_str(), t)), Some(("i", 0.0)));
         assert!(frame_source(&p, 25.0).is_none()); // gap: black
+    }
+
+    #[test]
+    fn preview_width_quality_and_size() {
+        use Quality::*;
+        assert_eq!(preview_width(Best, Size::Full, 1920, 500), 1920);
+        assert_eq!(preview_width(Good, Size::Half, 1920, 500), 960);
+        assert_eq!(preview_width(Draft, Size::Quarter, 1920, 500), 240);
+        // Auto: the largest of full / half / quarter that fits the display (748 px shows 480, as in VEGAS).
+        assert_eq!(preview_width(Preview, Size::Auto, 1920, 748), 480);
+        assert_eq!(preview_width(Preview, Size::Auto, 1920, 1000), 960);
+        assert_eq!(preview_width(Preview, Size::Auto, 1920, 2000), 1920);
     }
 
     #[test]

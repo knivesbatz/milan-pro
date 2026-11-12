@@ -1,0 +1,442 @@
+//! Track list (§5.9.3): colour strip with ≡ / ⋯, number and type badge; per-look Mute/Solo (and VP23 compositing
+//! and fx buttons); Level / Vol / Pan sliders with the "II" thumb; audio meter; selection, rename, height drag.
+use eframe::egui::*;
+use crate::history::History;
+use crate::project::*;
+use crate::ui::icons::{Icon, paint_icon};
+use crate::ui::theme::{self, Theme, UiLook};
+use super::{Geo, MIN_TRACK_H, Rename, Row, TlState};
+
+/// Audio fader law: −inf at the bottom, 0 dB at 70 % of travel, +12 dB at the top (cubic below 0 dB).
+pub fn fader_gain(pos: f32) -> f32 {
+    let p = pos.clamp(0.0, 1.0);
+    if p < 0.7 { (p / 0.7).powi(3) } else { 10f32.powf((p - 0.7) / 0.3 * 12.0 / 20.0) }
+}
+
+pub fn fader_pos(gain: f32) -> f32 {
+    if gain <= 1.0 { 0.7 * gain.max(0.0).cbrt() } else { (0.7 + 20.0 * gain.log10() / 12.0 * 0.3).min(1.0) }
+}
+
+fn db_text(gain: f32) -> String {
+    // + 0.0 turns -0.0 into 0.0.
+    if gain <= 1e-5 { "-Inf. dB".into() } else { format!("{:.1} dB", 20.0 * gain.log10() + 0.0) }
+}
+
+fn pan_text(pan: f32) -> String {
+    let p = (pan * 100.0).round();
+    if p == 0.0 { "Center".into() } else if p < 0.0 { format!("L {:.0}%", -p) } else { format!("R {p:.0}%") }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Btn {
+    Comp,
+    Fx,
+    Mute,
+    Solo,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Slider {
+    Level,
+    Vol,
+    Pan,
+}
+
+impl Slider {
+    fn pos(self, tr: &Track) -> f32 {
+        match self {
+            Slider::Level => tr.volume.clamp(0.0, 1.0),
+            Slider::Vol => fader_pos(tr.volume),
+            Slider::Pan => (tr.pan.clamp(-1.0, 1.0) + 1.0) * 0.5,
+        }
+    }
+    fn set(self, tr: &mut Track, pos: f32) {
+        let pos = pos.clamp(0.0, 1.0);
+        match self {
+            Slider::Level => tr.volume = pos,
+            Slider::Vol => tr.volume = fader_gain(pos),
+            Slider::Pan => tr.pan = pos * 2.0 - 1.0,
+        }
+    }
+    fn reset(self, tr: &mut Track) {
+        match self {
+            Slider::Level | Slider::Vol => tr.volume = 1.0,
+            Slider::Pan => tr.pan = 0.0,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Slider::Level => "Level:",
+            Slider::Vol => "Vol:",
+            Slider::Pan => "Pan:",
+        }
+    }
+    fn value(self, tr: &Track) -> String {
+        match self {
+            Slider::Level => format!("{:.1} %", tr.volume * 100.0),
+            Slider::Vol => db_text(tr.volume),
+            Slider::Pan => pan_text(tr.pan),
+        }
+    }
+}
+
+/// Where everything sits in one header.
+struct Layout {
+    /// Header without the 2 px separator.
+    rect: Rect,
+    strip: Rect,
+    body: Rect,
+    more: Rect,
+    buttons: Vec<(Btn, Rect)>,
+    /// (slider, row rect, groove x range)
+    sliders: Vec<(Slider, Rect, Rangef)>,
+    meter: Option<Rect>,
+}
+
+fn layout(t: &Theme, g: &Geo, row: &Row) -> Layout {
+    let v16 = t.look() == UiLook::Vegas16;
+    let rect = Rect::from_min_size(pos2(g.rect.min.x, row.top), vec2(g.header_w, (row.h - 2.0).max(1.0)));
+    let strip = rect.with_max_x((rect.min.x + t.m.color_strip_w).min(rect.max.x));
+    let body = rect.with_min_x(strip.max.x + 1.0);
+    let more = Rect::from_min_size(rect.min + vec2(5.0, 4.0), vec2(14.0, 14.0));
+    let meter_w = match (row.is_video, v16) {
+        (true, _) => 0.0,
+        (false, true) => 21.0,
+        (false, false) => 18.0,
+    };
+    let right = body.max.x - meter_w;
+    let meter = (meter_w > 0.0 && body.width() > 120.0)
+        // VP16 keeps 16 px above the meter for the peak readout on tall tracks only (68 px: labels fill it).
+        .then(|| Rect::from_min_max(pos2(right, body.min.y + if v16 && rect.height() > 80.0 { 16.0 } else { 4.0 }), pos2(body.max.x - 2.0, body.max.y - 3.0)))
+        .filter(|m| m.height() > 8.0);
+    let kinds: &[Btn] = match (v16, row.is_video) {
+        (true, _) => &[Btn::Mute, Btn::Solo],
+        (false, true) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
+        (false, false) => &[Btn::Mute, Btn::Solo],
+    };
+    // Row 1: right-aligned on a 24 px pitch with a 6 px right padding; buttons that don't fit are left out.
+    let mut buttons = Vec::new();
+    for (k, b) in kinds.iter().rev().enumerate() {
+        let x = right - 6.0 - 16.0 - 24.0 * k as f32;
+        if x >= body.min.x + 4.0 {
+            buttons.push((*b, Rect::from_min_size(pos2(x, rect.min.y + 3.0), vec2(16.0, 16.0))));
+        }
+    }
+    let groove = Rangef::new(body.min.x + 100.0, right - 8.0);
+    let mut sliders = Vec::new();
+    let rows: &[Slider] = if row.is_video { &[Slider::Level] } else { &[Slider::Vol, Slider::Pan] };
+    // VP23 squeezes the rows to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (c_ui_tl).
+    let (y0, pitch) = if !v16 && rect.height() < 64.0 { (19.0, 16.0) } else { (27.0, 22.0) };
+    for (k, s) in rows.iter().enumerate() {
+        let y = rect.min.y + y0 + pitch * k as f32;
+        let r = Rect::from_min_max(pos2(body.min.x, y), pos2(right, y + 14.0));
+        if r.max.y <= rect.max.y - 1.0 {
+            sliders.push((*s, r, groove));
+        }
+    }
+    Layout { rect, strip, body, more, buttons, sliders, meter }
+}
+
+/// Clicks, slider drags, renames and height drags in the visible headers.
+pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, st: &mut TlState) {
+    let t = theme::get();
+    let visible = |r: Rect| r.min.y >= g.list.min.y && r.max.y <= g.list.max.y;
+    for row in rows {
+        if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
+            continue;
+        }
+        let l = layout(&t, g, row);
+        let id = ui.id().with(("track_hdr", row.is_video, row.idx));
+
+        // Body: select (Ctrl toggles, Shift extends); double-click on the name area renames.
+        let body_r = l.rect.intersect(g.list);
+        let br = ui.interact(body_r, id.with("body"), Sense::click());
+        if br.clicked() {
+            let m = ui.input(|i| i.modifiers);
+            if m.shift {
+                let a = st.anchor.unwrap_or(row.num);
+                st.sel_tracks = (a.min(row.num)..=a.max(row.num)).collect();
+            } else if m.command {
+                if let Some(k) = st.sel_tracks.iter().position(|n| *n == row.num) {
+                    st.sel_tracks.remove(k);
+                } else {
+                    st.sel_tracks.push(row.num);
+                }
+                st.anchor = Some(row.num);
+            } else {
+                st.sel_tracks = vec![row.num];
+                st.anchor = Some(row.num);
+            }
+        }
+        if br.double_clicked() && br.interact_pointer_pos().is_some_and(|p| p.y < l.rect.min.y + 24.0 && p.x > l.body.min.x) {
+            st.rename = Some((Rename::Track(row.is_video, row.idx), project.timeline.tracks(row.is_video)[row.idx].name.clone()));
+        }
+        // Right-click: the timeline's context-menu handler (ctx.rs) covers headers too.
+
+        // ≡ / ⋯ menu: the buttons that are not shown plus the button-set entry.
+        if visible(l.more) && l.strip.width() >= 19.0 {
+            let mr = ui.interact(l.more, id.with("more"), Sense::click()).on_hover_text("More");
+            let pid = id.with("more_popup");
+            if mr.clicked() {
+                ui.memory_mut(|m| m.toggle_popup(pid));
+            }
+            let t = theme::get();
+            super::super::chrome::with_menu_style(&ui.ctx().clone(), &t, || {
+                #[allow(deprecated)]
+                popup::popup_below_widget(ui, pid, &mr, PopupCloseBehavior::CloseOnClick, |ui| {
+                    ui.set_min_width(180.0);
+                    super::ctx::more_menu(ui, project, history, row.is_video, row.idx);
+                });
+            });
+        }
+
+        for (b, r) in &l.buttons {
+            if !visible(*r) {
+                continue;
+            }
+            let tip = match b {
+                Btn::Comp => "Compositing Mode",
+                Btn::Fx => "Track FX",
+                Btn::Mute => "Mute",
+                Btn::Solo => "Solo",
+            };
+            let resp = ui.interact(*r, id.with(tip), Sense::click()).on_hover_text(tip);
+            if resp.clicked() && matches!(b, Btn::Mute | Btn::Solo) {
+                history.push(project.clone());
+                let tr = &mut project.timeline.tracks_mut(row.is_video)[row.idx];
+                if *b == Btn::Mute {
+                    tr.muted = !tr.muted;
+                } else {
+                    tr.solo = !tr.solo;
+                }
+                project.mark_modified();
+            }
+        }
+
+        // Sliders: drag (Ctrl = fine), click jumps, double-click resets, wheel nudges.
+        for (s, r, groove) in &l.sliders {
+            if !visible(*r) || groove.span() < 20.0 {
+                continue;
+            }
+            let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 9.0, groove.max + 9.0), r.y_range());
+            let resp = ui.interact(hit, id.with(s.label()), Sense::click_and_drag());
+            let tr = &project.timeline.tracks(row.is_video)[row.idx];
+            let pos = s.pos(tr);
+            let value = s.value(tr);
+            if resp.double_clicked() {
+                history.push(project.clone());
+                s.reset(&mut project.timeline.tracks_mut(row.is_video)[row.idx]);
+                project.mark_modified();
+            } else if resp.drag_started() || resp.clicked() {
+                history.push(project.clone());
+                project.mark_modified();
+                // Pressing off the thumb jumps there first.
+                if let Some(p) = resp.interact_pointer_pos() {
+                    let thumb_x = groove.min + pos * groove.span();
+                    if (p.x - thumb_x).abs() > 8.0 {
+                        s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], (p.x - groove.min) / groove.span());
+                    }
+                }
+            } else if resp.dragged() {
+                let fine = if ui.input(|i| i.modifiers.command) { 0.1 } else { 1.0 };
+                let np = pos + resp.drag_delta().x / groove.span() * fine;
+                s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], np);
+            }
+            if resp.hovered() {
+                let d = ui.input(|i| i.raw_scroll_delta.y);
+                if d != 0.0 {
+                    history.push(project.clone());
+                    s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], pos + d.signum() * 0.01);
+                    project.mark_modified();
+                    ui.input_mut(|i| {
+                        i.raw_scroll_delta = Vec2::ZERO;
+                        i.smooth_scroll_delta = Vec2::ZERO;
+                    });
+                }
+            }
+            resp.on_hover_text(value);
+        }
+    }
+
+    // Bottom-edge height drag (±3 px); registered last so it wins over the bodies.
+    for row in rows {
+        let bottom = row.top + row.h;
+        if bottom < g.list.min.y + 3.0 || bottom > g.list.max.y {
+            continue;
+        }
+        let zone = Rect::from_x_y_ranges(Rangef::new(g.rect.min.x, g.rect.min.x + g.header_w), Rangef::new(bottom - 3.0, bottom + 3.0));
+        let r = ui.interact(zone, ui.id().with(("track_h", row.is_video, row.idx)), Sense::drag());
+        if r.hovered() || r.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+        }
+        if r.drag_started() {
+            st.height_drag = Some(row.h);
+        }
+        if let (Some(h0), true) = (st.height_drag, r.dragged()) {
+            let total = r.interact_pointer_pos().zip(ui.input(|i| i.pointer.press_origin())).map_or(0.0, |(p, o)| p.y - o.y);
+            let max = (g.lanes.height()).max(MIN_TRACK_H);
+            project.timeline.tracks_mut(row.is_video)[row.idx].height = (h0 + total).round().clamp(MIN_TRACK_H, max);
+            project.mark_modified();
+        }
+        if r.drag_stopped() {
+            st.height_drag = None;
+        }
+    }
+}
+
+/// Paint every visible header, the empty area below them and the separators.
+pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, st: &TlState) {
+    let t = theme::get();
+    let v16 = t.look() == UiLook::Vegas16;
+    let p = p.with_clip_rect(g.list.intersect(p.clip_rect()));
+    for row in rows {
+        if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
+            continue;
+        }
+        let tr = &project.timeline.tracks(row.is_video)[row.idx];
+        let l = layout(&t, g, row);
+        let color = t.track_color(row.num);
+        let selected = st.sel_tracks.contains(&row.num);
+
+        // Colour strip: ≡ / ⋯, number, type badge.
+        p.rect_filled(l.strip, 0.0, color);
+        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(l.strip.max.x, l.strip.max.x + 1.0), l.rect.y_range()), 0.0, t.strip_divider);
+        if l.strip.width() >= 19.0 {
+            paint_icon(&p, l.more, Icon::More, t.look(), (!v16).then_some(t.text_bright));
+            let num = (row.num + 1).to_string();
+            let font = if t.font.track_number_bold { t.bold(t.font.track_number) } else { t.font(t.font.track_number) };
+            let galley = p.layout_no_wrap(num, font, t.text_bright);
+            let size = galley.size();
+            let top = if v16 { l.rect.min.y + 20.0 } else { l.rect.center().y - size.y * 0.5 };
+            if top + size.y <= l.rect.max.y + 2.0 {
+                let pos = pos2(l.rect.min.x + 4.0, top);
+                p.galley(pos, galley, t.text_bright);
+                // Subscript: below-right of the number, its top at the digit's lower third.
+                let badge = Rect::from_min_size(pos2(pos.x + size.x, pos.y + size.y * 0.55), Vec2::splat(if v16 { 12.0 } else { 10.0 }));
+                let icon = if row.is_video { Icon::TrackVideo } else { Icon::TrackAudio };
+                paint_icon(&p, badge, icon, t.look(), Some(t.text_bright));
+            }
+        }
+        if l.body.width() <= 1.0 {
+            continue;
+        }
+
+        // Body.
+        p.rect_filled(l.body, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
+        if selected && v16 {
+            let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
+            line(l.body.min.y, t.track_header_sel_top);
+            line(l.body.max.y - 1.0, t.track_header_sel_bottom);
+        }
+        // No track name: the scribble strip is off by default in both looks.
+        let font = t.font(t.font.ui);
+        for (b, r) in &l.buttons {
+            paint_button(&p, &t, *b, *r, tr);
+        }
+        for (s, r, groove) in &l.sliders {
+            let cy = r.center().y.round();
+            let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(), font.clone(), t.text_label);
+            // VP16 puts values in a column at x=48; VP23 sets them right after the label.
+            let vx = if v16 { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
+            p.text(pos2(vx, cy), Align2::LEFT_CENTER, s.value(tr), font.clone(), t.text_value);
+            if groove.span() < 20.0 {
+                continue;
+            }
+            if v16 {
+                // Recessed groove: dark line over a lighter one.
+                p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy - 1.0, cy)), 0.0, t.frame);
+                p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy, cy + 1.0)), 0.0, t.fader_track);
+            } else {
+                // ~3 px bar with a dark border.
+                let bar = Rect::from_x_y_ranges(*groove, Rangef::new(cy - 1.0, cy + 2.0));
+                p.rect_filled(bar, 0.0, t.fader_track);
+                p.rect_stroke(bar.expand(1.0), 0.0, Stroke::new(1.0_f32, t.frame), StrokeKind::Inside);
+            }
+            let x = (groove.min + s.pos(tr) * groove.span()).round();
+            if *s == Slider::Pan {
+                let (w, h) = if v16 { (20.0, 12.0) } else { (10.0, 8.0) };
+                p.rect_filled(Rect::from_min_size(pos2(groove.center().round(), cy - 3.0), vec2(1.0, 7.0)), 0.0, t.fader_track);
+                let pts = vec![pos2(x - w * 0.5, cy - h * 0.5), pos2(x + w * 0.5, cy - h * 0.5), pos2(x, cy + h * 0.5)];
+                p.add(Shape::convex_polygon(pts, t.fader_thumb, Stroke::new(1.0_f32, t.fader_thumb_bar)));
+            } else {
+                paint_icon(&p, Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0)), Icon::FaderThumb, t.look(), None);
+            }
+        }
+        if let Some(m) = l.meter {
+            paint_meter(&p, &t, m, l.body.min.y + 2.0);
+        }
+    }
+    // Separators (2 px under each track) and the empty area below the last track.
+    let last = rows.last().map_or(g.list.min.y, |r| r.top + r.h);
+    for row in rows {
+        let y = row.top + row.h - 2.0;
+        let r = Rect::from_x_y_ranges(Rangef::new(g.rect.min.x, g.rect.min.x + g.header_w), Rangef::new(y, y + 1.0));
+        p.rect_filled(r, 0.0, t.track_separator);
+        p.rect_filled(r.translate(vec2(0.0, 1.0)), 0.0, t.track_separator_2);
+    }
+    let empty = Rect::from_min_max(pos2(g.rect.min.x, last.max(g.list.min.y)), pos2(g.rect.min.x + g.header_w, g.list.max.y));
+    p.rect_filled(empty, 0.0, if v16 { t.frame } else { t.empty_lane_bg });
+}
+
+fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track) {
+    let v16 = t.look() == UiLook::Vegas16;
+    let (icon, on) = match b {
+        Btn::Comp => (Icon::CompositingMode, false),
+        Btn::Fx => (Icon::TrackFx, false),
+        Btn::Mute => (Icon::Mute, tr.muted),
+        Btn::Solo => (Icon::Solo, tr.solo),
+    };
+    if v16 {
+        paint_icon(p, r, icon, t.look(), None);
+        if on {
+            p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));
+        }
+    } else if on {
+        p.rect_filled(r, CornerRadius::same(2), t.accent.gamma_multiply(0.3));
+        paint_icon(p, r, icon, t.look(), Some(t.accent));
+    } else {
+        paint_icon(p, r, icon, t.look(), None);
+    }
+}
+
+/// Empty level meter with dB labels (no live metering yet); VP16 shows the peak readout above it.
+fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32) {
+    let v16 = t.look() == UiLook::Vegas16;
+    if t.meter_unlit > 0.0 {
+        let to_y = |d: f32| m.min.y + m.height() * (-d / 60.0).clamp(0.0, 1.0);
+        crate::ui::master_bus::paint_bar(p, m, m.min.y, &to_y, false, t.meter_unlit);
+    } else {
+        p.rect_filled(m, 0.0, t.meter_bg);
+    }
+    let font = t.font(t.font.meter);
+    let labels: &[i32] = if v16 { &[12, 24, 36, 48] } else { &[9, 18, 27, 36, 45, 54] };
+    // Every other label when they would crowd (short tracks).
+    let every = if m.height() * (labels[1] - labels[0]) as f32 / 60.0 < 10.0 { 2 } else { 1 };
+    for db in labels.iter().skip(every - 1).step_by(every) {
+        let y = m.min.y + m.height() * (*db as f32 / 60.0);
+        if y < m.max.y - 4.0 {
+            p.text(pos2(m.center().x, y), Align2::CENTER_CENTER, db.to_string(), font.clone(), t.meter_label);
+        }
+    }
+    if v16 && m.min.y - top >= 10.0 {
+        p.text(pos2(m.max.x, top), Align2::RIGHT_TOP, "-Inf.", font, t.text_secondary);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fader_law_round_trips() {
+        assert_eq!(fader_gain(0.0), 0.0);
+        assert!((fader_gain(0.7) - 1.0).abs() < 1e-6);
+        assert!((20.0 * fader_gain(1.0).log10() - 12.0).abs() < 1e-4);
+        for g in [0.0, 0.05, 0.5, 1.0, 2.0, 3.98] {
+            assert!((fader_gain(fader_pos(g)) - g).abs() < 1e-3, "gain {g}");
+        }
+        assert_eq!(db_text(1.0), "0.0 dB");
+        assert_eq!(db_text(0.0), "-Inf. dB");
+        assert_eq!((pan_text(0.0), pan_text(-0.35), pan_text(0.35)), ("Center".into(), "L 35%".into(), "R 35%".into()));
+    }
+}

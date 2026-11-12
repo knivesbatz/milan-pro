@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use crate::audio::track_gain;
-use crate::project::{format_timecode, MediaItem, MediaType, Project};
+use crate::project::{MediaItem, MediaType, Project};
 
 pub struct Preset {
     pub name: &'static str,
@@ -83,7 +83,8 @@ pub fn build_args(project: &Project, preset: &Preset, out: &Path) -> Result<Vec<
         graph.push(format!("color=c=black:s={w}x{h}:r={fps}:d={end:.3}[base]"));
         let mut last = "base".to_string();
         // Bottom track first so video_tracks[0] is composited last, on top.
-        for (k, c) in project.timeline.shown_video_tracks().rev().flat_map(|t| &t.clips).enumerate() {
+        let clips = project.timeline.shown_video_tracks().rev().flat_map(|t| t.clips.iter().map(move |c| (t.volume, c)));
+        for (k, (level, c)) in clips.enumerate() {
             let Some(m) = media(&c.media_id) else { continue };
             let (pos, dur) = (c.position, c.duration);
             let pre = match m.media_type {
@@ -92,8 +93,23 @@ pub fn build_args(project: &Project, preset: &Preset, out: &Path) -> Result<Vec<
                 _ => continue,
             };
             let i = input(&mut args, pre, &m.path);
+            // Fades and track Level go through alpha, so the event dissolves into the tracks below (as in VEGAS).
+            // shortcut: video fades are linear (ffmpeg fade); audio uses the smooth curve. Upgrade with geq if it matters.
+            let mut alpha = String::new();
+            if c.fade_in > 0.0 {
+                alpha += &format!(",fade=t=in:st={pos:.3}:d={:.3}:alpha=1", c.fade_in);
+            }
+            if c.fade_out > 0.0 {
+                alpha += &format!(",fade=t=out:st={:.3}:d={:.3}:alpha=1", pos + dur - c.fade_out, c.fade_out);
+            }
+            if level < 1.0 {
+                alpha += &format!(",colorchannelmixer=aa={:.3}", level.max(0.0));
+            }
+            if !alpha.is_empty() {
+                alpha.insert_str(0, ",format=yuva420p");
+            }
             graph.push(format!(
-                "[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},setpts=PTS-STARTPTS+{pos:.3}/TB[v{k}]"
+                "[{i}:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},setpts=PTS-STARTPTS+{pos:.3}/TB{alpha}[v{k}]"
             ));
             graph.push(format!(
                 "[{last}][v{k}]overlay=eof_action=pass:enable='between(t,{pos:.3},{:.3})'[o{k}]",
@@ -114,8 +130,15 @@ pub fn build_args(project: &Project, preset: &Preset, out: &Path) -> Result<Vec<
             let pre = vec!["-ss".into(), format!("{:.3}", c.in_point), "-t".into(), format!("{:.3}", c.duration)];
             let i = input(&mut args, pre, &m.path);
             let (k, ms) = (mix.len(), (c.position * 1000.0).round() as u64);
+            let mut fades = String::new();
+            if c.fade_in > 0.0 {
+                fades += &format!("afade=t=in:st=0:d={:.3}:curve=hsin,", c.fade_in);
+            }
+            if c.fade_out > 0.0 {
+                fades += &format!("afade=t=out:st={:.3}:d={:.3}:curve=hsin,", c.duration - c.fade_out, c.fade_out);
+            }
             graph.push(format!(
-                "[{i}:a]aformat=sample_rates={sr}:channel_layouts=stereo,pan=stereo|c0={gl}*c0|c1={gr}*c1,adelay={ms}:all=1[a{k}]"
+                "[{i}:a]aformat=sample_rates={sr}:channel_layouts=stereo,pan=stereo|c0={gl}*c0|c1={gr}*c1,{fades}adelay={ms}:all=1[a{k}]"
             ));
             mix.push(format!("[a{k}]"));
         }
@@ -256,114 +279,6 @@ fn run(
     }
 }
 
-// ---- Dialog ----
-
-#[derive(Default)]
-pub struct RenderDialog {
-    pub open: bool,
-    preset: usize,
-    job: Option<Job>,
-    error: Option<String>,
-}
-
-impl RenderDialog {
-    pub fn show(&mut self, ctx: &egui::Context, project: &Project) {
-        if !self.open {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Render As").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| {
-            let running = self.job.as_ref().is_some_and(|j| j.status() == Status::Running);
-            ui.add_enabled_ui(!running, |ui| {
-                egui::ComboBox::from_label("Format")
-                    .selected_text(PRESETS[self.preset].name)
-                    .show_ui(ui, |ui| {
-                        for (i, p) in PRESETS.iter().enumerate() {
-                            ui.selectable_value(&mut self.preset, i, p.name);
-                        }
-                    });
-            });
-            let s = &project.settings;
-            let end = content_end(project);
-            ui.label(format!("Region: whole timeline, {}", format_timecode(end, s.frame_rate)));
-            if PRESETS[self.preset].video.is_some() {
-                ui.label(format!("Video: {}x{} @ {:.3} fps", s.width, s.height, s.frame_rate));
-            }
-            ui.label(format!("Audio: {} Hz stereo", s.sample_rate));
-            ui.separator();
-
-            match self.job.as_ref().map(|j| (j, j.status())) {
-                Some((j, Status::Running)) => {
-                    ui.add(egui::ProgressBar::new(j.fraction()).show_percentage());
-                    let eta = j.eta().map_or("estimating...".to_string(), |e| format!("{:.0}s remaining", e));
-                    ui.label(eta);
-                    if ui.button("Cancel").clicked() {
-                        j.cancel();
-                    }
-                }
-                Some((j, Status::Done)) => {
-                    ui.colored_label(egui::Color32::LIGHT_GREEN, format!("Rendered {}", j.out.display()));
-                    if ui.button("Open folder").clicked() {
-                        open_folder(&j.out);
-                    }
-                }
-                Some((_, Status::Failed(e))) => {
-                    ui.colored_label(egui::Color32::LIGHT_RED, "Render failed:");
-                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| ui.monospace(e));
-                }
-                Some((_, Status::Cancelled)) => {
-                    ui.label("Render cancelled.");
-                }
-                None => {}
-            }
-            if let Some(e) = &self.error {
-                ui.colored_label(egui::Color32::LIGHT_RED, e);
-            }
-            if !running && ui.button("Render...").clicked() {
-                self.start(ctx, project);
-            }
-        });
-        if !open {
-            // Closing the window abandons the render rather than leaving an invisible ffmpeg running.
-            if let Some(j) = &self.job {
-                j.cancel();
-            }
-            self.job = None;
-            self.error = None;
-        }
-        self.open = open;
-    }
-
-    fn start(&mut self, ctx: &egui::Context, project: &Project) {
-        let preset = &PRESETS[self.preset];
-        self.error = None;
-        let Some(out) = rfd::FileDialog::new()
-            .add_filter(preset.name, &[preset.ext])
-            .set_file_name(&format!("{}.{}", project.name, preset.ext))
-            .save_file()
-        else {
-            return;
-        };
-        match build_args(project, preset, &out) {
-            Ok(args) => self.job = Some(Job::start(args, content_end(project), out, ctx.clone())),
-            Err(e) => self.error = Some(e),
-        }
-    }
-}
-
-fn open_folder(path: &Path) {
-    let mut cmd = Command::new("explorer");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // explorer parses its own command line; /select needs the path quoted after the comma.
-        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
-    }
-    #[cfg(not(windows))]
-    cmd.arg(path.parent().unwrap_or(path));
-    let _ = cmd.spawn();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,6 +365,23 @@ mod tests {
         assert!(!joined.contains("[vout]") && !joined.contains("top.bin") && !joined.contains("snd.bin"));
         assert!(joined.contains("muted.bin") && joined.contains("adelay=0:all=1"));
         assert!(build_args(&Project::new("e"), &PRESETS[0], Path::new("o.mp4")).is_err());
+    }
+
+    #[test]
+    fn fades_and_level_in_graph() {
+        let mut p = project();
+        let c = &mut p.timeline.video_tracks[0].clips[0]; // pos 1, dur 3
+        (c.fade_in, c.fade_out) = (0.5, 1.0);
+        p.timeline.video_tracks[0].volume = 0.75;
+        let c = &mut p.timeline.audio_tracks[0].clips[0]; // dur 2
+        (c.fade_in, c.fade_out) = (0.25, 0.5);
+        let args = build_args(&p, &PRESETS[0], Path::new("o.mp4")).unwrap();
+        let graph = &args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1];
+        assert!(graph.contains(
+            "setpts=PTS-STARTPTS+1.000/TB,format=yuva420p,fade=t=in:st=1.000:d=0.500:alpha=1,fade=t=out:st=3.000:d=1.000:alpha=1,colorchannelmixer=aa=0.750[v1]"
+        ));
+        assert!(graph.contains("setpts=PTS-STARTPTS+0.000/TB[v0]")); // untouched bottom track
+        assert!(graph.contains("afade=t=in:st=0:d=0.250:curve=hsin,afade=t=out:st=1.500:d=0.500:curve=hsin,adelay=1500:all=1[a0]"));
     }
 
     #[test]

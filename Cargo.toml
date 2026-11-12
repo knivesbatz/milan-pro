@@ -14,6 +14,7 @@ rfd = "0.15"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
 rodio = { version = "0.20.1", default-features = false }
+png = "0.18"  # screenshot harness (already in the tree via eframe)
 
 [profile.release]
 opt-level = 3
