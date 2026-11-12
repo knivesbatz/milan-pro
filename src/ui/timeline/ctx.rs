@@ -445,7 +445,7 @@ const EVENT_SHARED: &[M] = &[
 const EVENT_TAIL: &[M] = &[
     S,
     Sub("Switc&hes", &[
-        K("&Mute", false),
+        C("&Mute", EventMute),
         C("&Lock", EventLock),
         K("L&oop", true),
         S,
@@ -480,7 +480,7 @@ const VIDEO_EVENT: &[M] = &[
     X("Red E&ye Reduction..."),
     Inline(EVENT_SHARED),
     X("Create Su&bclip"),
-    X("Rever&se"),
+    C("Rever&se", EventReverse),
     S,
     X("Select Events to E&nd"),
     Sub("Insert/Remove &Envelope", &[X("Velocity"), X("Freeze Frame at Cursor"), X("Transition Progress")]),
@@ -499,7 +499,7 @@ const AUDIO_EVENT: &[M] = &[
     X("Apply Non-Real-Time Event FX..."),
     Inline(EVENT_SHARED),
     X("Create Su&bclip"),
-    X("&Reverse"),
+    C("&Reverse", EventReverse),
     S,
     X("Select Events to E&nd"),
     Sub("Insert/Remove &Envelope", &[X("Volume"), X("Pan"), X("Mute")]),

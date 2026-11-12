@@ -51,6 +51,8 @@ pub struct CmdState {
     /// An event is selected (and whether the focus event is locked); `n_sel` events are.
     pub clip: bool,
     pub clip_locked: bool,
+    /// The focus event's Switches › Mute.
+    pub clip_muted: bool,
     pub n_sel: usize,
     /// Tracks exist / are selected; the track list had the last click.
     pub any_tracks: bool,
@@ -91,7 +93,7 @@ impl CmdState {
             Redo => self.can_redo,
             ClearHistory => self.can_undo || self.can_redo,
             TrimStart | TrimEnd | EventLock | SelEventStart | SelEventEnd | EventOpenInTrimmer | EventSelectInMedia
-            | EventProperties => self.clip,
+            | EventProperties | EventReverse | EventMute => self.clip,
             // With nothing selected, Split splits every event under the cursor.
             Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
             // With Auto Ripple, Delete with only a time selection deletes that time.
@@ -100,9 +102,7 @@ impl CmdState {
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
             Paste | PasteInsert => self.clipboard,
-            NextTool | PrevTool | AutoRipple | RippleMode(_) | IgnoreGrouping => true,
-            // Slip, Slide and Time Stretch come with their drags.
-            Tool(t) => matches!(t, EditTool::Normal | EditTool::Envelope | EditTool::Selection),
+            NextTool | PrevTool | AutoRipple | RippleMode(_) | IgnoreGrouping | Tool(_) => true,
             Group => self.n_sel >= 2,
             RemoveFromGroup | ClearGroup | SelectGroup => self.in_group,
             RippleAffected | RippleBus | RippleAll => self.last_edit,
@@ -135,6 +135,7 @@ impl CmdState {
             RippleMode(m) => self.ripple_mode == m,
             IgnoreGrouping => self.ignore_group,
             EventLock => self.clip_locked,
+            EventMute => self.clip_muted,
             SpacePlayPause => self.space_pauses,
             Quantize => self.quantize,
             // Always-on behaviour Milan Pro has no switch for.
@@ -460,7 +461,7 @@ const TOOLS_SUB: &[M] = &[
 ];
 
 const SWITCHES: &[M] = &[
-    K("&Mute", false),
+    C("&Mute", EventMute),
     C("&Lock", EventLock),
     K("L&oop", true),
     S,
@@ -1049,7 +1050,18 @@ mod tests {
         assert_eq!(st.checked(NormalTool), Some(true));
         st.tool = EditTool::Selection;
         assert_eq!((st.checked(NormalTool), st.checked(Tool(EditTool::Selection))), (Some(false), Some(true)));
-        assert!(st.enabled(Tool(EditTool::Envelope)) && !st.enabled(Tool(EditTool::Slip)));
+        assert!(st.enabled(Tool(EditTool::Envelope)) && st.enabled(Tool(EditTool::Slip)) && st.enabled(Tool(EditTool::Stretch)));
+    }
+
+    #[test]
+    fn event_switches_follow_the_focus_event() {
+        let mut st = CmdState::default();
+        assert!(!st.enabled(EventReverse) && !st.enabled(EventMute));
+        st.clip = true;
+        assert!(st.enabled(EventReverse) && st.enabled(EventMute));
+        assert_eq!(st.checked(EventMute), Some(false));
+        st.clip_muted = true;
+        assert_eq!((st.checked(EventMute), st.checked(EventReverse)), (Some(true), None));
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the

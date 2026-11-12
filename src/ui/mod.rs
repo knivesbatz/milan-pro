@@ -86,7 +86,7 @@ pub struct Selection {
     pub list_focus: bool,
 }
 
-/// Edit › Editing Tool (not saved). Slip, Slide and Stretch are reserved for their drags (batch 7).
+/// Edit › Editing Tool (not saved). Slip, Slide and Stretch make event drags slip, slide or stretch without modifiers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EditTool {
     #[default]
@@ -121,7 +121,7 @@ pub struct EditOpts {
     pub tool: EditTool,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum DragMode {
     Move,
     TrimLeft,
@@ -129,6 +129,47 @@ pub enum DragMode {
     /// Dragging a top corner sets the fade length.
     FadeIn,
     FadeOut,
+    /// The media moves under the event (Alt+drag inside, or the Slip tool).
+    Slip,
+    /// An edge trims and its frame moves with it (Alt+drag an edge, or the Slip tool).
+    SlipTrimLeft,
+    SlipTrimRight,
+    /// The event moves over its media (Ctrl+Alt+drag inside, or the Slide tool).
+    Slide,
+    /// The edit point with the adjacent event moves (Ctrl+Alt+drag an edge, or the Slide tool).
+    RollLeft,
+    RollRight,
+    /// An edge changes the playback rate (Ctrl+drag an edge, or the Time Stretch tool).
+    StretchLeft,
+    StretchRight,
+    /// The top edge sets the event's gain (audio) or opacity (video).
+    Level,
+}
+
+impl DragMode {
+    /// The drag a hit zone (`self`: Move, TrimLeft or TrimRight) makes with the tool and the held modifiers.
+    pub fn with_tool(self, tool: EditTool, ctrl: bool, alt: bool) -> Self {
+        use DragMode::*;
+        let slip = tool == EditTool::Slip || (alt && !ctrl);
+        let slide = tool == EditTool::Slide || (alt && ctrl);
+        let stretch = tool == EditTool::Stretch || (ctrl && !alt);
+        match self {
+            Move if slip => Slip,
+            Move if slide => Slide,
+            TrimLeft if slip => SlipTrimLeft,
+            TrimLeft if slide => RollLeft,
+            TrimLeft if stretch => StretchLeft,
+            TrimRight if slip => SlipTrimRight,
+            TrimRight if slide => RollRight,
+            TrimRight if stretch => StretchRight,
+            m => m,
+        }
+    }
+
+    /// The drag moves the event's right edge.
+    pub fn right_edge(self) -> bool {
+        matches!(self, DragMode::TrimRight | DragMode::SlipTrimRight | DragMode::RollRight | DragMode::StretchRight)
+    }
 }
 
 pub struct DragState {
@@ -162,5 +203,18 @@ mod tests {
     fn d_cycles_normal_envelope_selection() {
         assert_eq!([Normal, Envelope, Selection, Slip].map(|t| t.cycle(true)), [Envelope, Selection, Normal, Envelope]);
         assert_eq!([Normal, Envelope, Selection].map(|t| t.cycle(false)), [Selection, Normal, Envelope]);
+    }
+
+    #[test]
+    fn drag_modes_follow_modifiers_and_tools() {
+        use super::DragMode as D;
+        let m = |hit: D, tool, ctrl, alt| hit.with_tool(tool, ctrl, alt);
+        let zones = [D::Move, D::TrimLeft, D::TrimRight];
+        assert_eq!(zones.map(|h| m(h, Normal, false, true)), [D::Slip, D::SlipTrimLeft, D::SlipTrimRight]);
+        assert_eq!(zones.map(|h| m(h, Normal, true, true)), [D::Slide, D::RollLeft, D::RollRight]);
+        assert_eq!(zones.map(|h| m(h, Normal, true, false)), [D::Move, D::StretchLeft, D::StretchRight]);
+        assert_eq!([D::Move, D::TrimRight, D::FadeIn, D::Level].map(|h| m(h, Normal, false, false)), [D::Move, D::TrimRight, D::FadeIn, D::Level]);
+        assert_eq!([m(D::Move, Slip, false, false), m(D::TrimRight, Slide, false, false), m(D::TrimLeft, Stretch, false, false)], [D::Slip, D::RollRight, D::StretchLeft]);
+        assert_eq!(m(D::Move, Stretch, false, false), D::Move);
     }
 }

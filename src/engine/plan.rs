@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
+use crate::edit::src_time;
 use crate::engine::composite::Affine;
 use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
 
@@ -174,12 +175,6 @@ pub fn compile(p: &Project) -> VideoPlan {
         tracks,
         end: crate::render::content_end(p),
     }
-}
-
-/// Source time shown at timeline time `t`. Forward: in + (t - pos) x rate; reverse: in + (pos + dur - t) x rate.
-pub fn src_time(c: &Clip, t: f64) -> f64 {
-    let local = if c.reverse { c.position + c.duration - t } else { t - c.position };
-    c.in_point + local * c.rate
 }
 
 /// Frame shown at time `t` (the cursor's frame).

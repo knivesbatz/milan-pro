@@ -12,28 +12,163 @@ pub fn media_limit(project: &Project, clip: &Clip) -> Option<f64> {
         .filter(|d| *d > 0.0)
 }
 
-/// Move the clip's left edge to `new_start`, keeping its right edge fixed.
-pub fn trim_left(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limit: Option<f64>) {
-    let end = orig.position + orig.duration;
-    // Limited media can't reveal frames before in_point 0; images may extend freely.
-    let min_start = if limit.is_some() { (orig.position - orig.in_point).max(0.0) } else { 0.0 };
-    let start = new_start.min(end - frame).max(min_start);
-    clip.position = start;
-    clip.in_point = (orig.in_point + start - orig.position).max(0.0);
-    clip.duration = end - start;
-    clip.out_point = orig.out_point;
-    (clip.fade_in, clip.fade_out) = (orig.fade_in, orig.fade_out);
-    clip.clamp_fades();
+/// Source time shown at timeline time `t` (shared with the engine plan). Forward: in + (t - pos) x rate; reversed:
+/// in + (pos + dur - t) x rate. Either way the event covers the source span [in, in + dur x rate].
+pub fn src_time(c: &Clip, t: f64) -> f64 {
+    let local = if c.reverse { c.position + c.duration - t } else { t - c.position };
+    c.in_point + local * c.rate
 }
 
-/// Move the clip's right edge to `new_end`.
-pub fn trim_right(clip: &mut Clip, orig: &Clip, new_end: f64, frame: f64, limit: Option<f64>) {
-    let max_dur = limit.map_or(f64::INFINITY, |l| l - orig.in_point);
-    let dur = (new_end - orig.position).min(max_dur).max(frame);
-    clip.duration = dur;
-    clip.out_point = orig.in_point + dur;
+/// `out_point` is the end of the source span the event covers.
+fn sync_out(c: &mut Clip) {
+    c.out_point = c.in_point + c.duration * c.rate;
+}
+
+fn keep_fades(clip: &mut Clip, orig: &Clip) {
     (clip.fade_in, clip.fade_out) = (orig.fade_in, orig.fade_out);
     clip.clamp_fades();
+    sync_out(clip);
+}
+
+/// Move the clip's left edge to `new_start`, keeping its right edge fixed (and the frame shown there).
+pub fn trim_left(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limit: Option<f64>) {
+    trim_left_edge(clip, orig, new_start, frame, limit, false);
+}
+
+/// Alt+drag of the left edge (slip-trim): the right edge stays put and the frame at the dragged edge moves with it.
+pub fn slip_trim_left(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limit: Option<f64>) {
+    trim_left_edge(clip, orig, new_start, frame, limit, true);
+}
+
+fn trim_left_edge(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limit: Option<f64>, slip: bool) {
+    let end = orig.position + orig.duration;
+    // in_point follows the edge when the left edge shows it moving: a forward trim or a reversed slip-trim.
+    let shift = orig.reverse == slip;
+    // Limited media can't reveal frames outside [0, limit]; images may extend freely.
+    let room = limit.map(|l| if shift { orig.in_point } else { l - orig.in_point - orig.duration * orig.rate } / orig.rate);
+    let min_start = room.map_or(0.0, |r| (orig.position - r.max(0.0)).max(0.0));
+    let start = new_start.min(end - frame).max(min_start);
+    clip.position = start;
+    clip.duration = end - start;
+    clip.in_point = if shift { (orig.in_point + (start - orig.position) * orig.rate).max(0.0) } else { orig.in_point };
+    keep_fades(clip, orig);
+}
+
+/// Move the clip's right edge to `new_end`, keeping the frame at its left edge.
+pub fn trim_right(clip: &mut Clip, orig: &Clip, new_end: f64, frame: f64, limit: Option<f64>) {
+    trim_right_edge(clip, orig, new_end, frame, limit, false);
+}
+
+/// Alt+drag of the right edge (slip-trim): the left edge stays put and the frame at the dragged edge moves with it.
+pub fn slip_trim_right(clip: &mut Clip, orig: &Clip, new_end: f64, frame: f64, limit: Option<f64>) {
+    trim_right_edge(clip, orig, new_end, frame, limit, true);
+}
+
+fn trim_right_edge(clip: &mut Clip, orig: &Clip, new_end: f64, frame: f64, limit: Option<f64>, slip: bool) {
+    // in_point follows the edge when the right edge shows it: a reversed trim or a forward slip-trim.
+    let shift = orig.reverse != slip;
+    let max_dur = limit.map_or(f64::INFINITY, |l| if shift { orig.duration + orig.in_point / orig.rate } else { (l - orig.in_point) / orig.rate });
+    let dur = (new_end - orig.position).min(max_dur).max(frame);
+    clip.duration = dur;
+    clip.in_point = if shift { (orig.in_point + (orig.duration - dur) * orig.rate).max(0.0) } else { orig.in_point };
+    keep_fades(clip, orig);
+}
+
+/// Highest in_point that keeps the event inside its media.
+fn max_in(orig: &Clip, limit: Option<f64>) -> f64 {
+    limit.map_or(f64::INFINITY, |l| (l - orig.duration * orig.rate).max(0.0))
+}
+
+/// Alt+drag inside an event (slip): the media moves `d` seconds under the event, which stays put.
+pub fn slip(clip: &mut Clip, orig: &Clip, d: f64, limit: Option<f64>) {
+    let dir = if orig.reverse { 1.0 } else { -1.0 };
+    clip.in_point = (orig.in_point + dir * d * orig.rate).min(max_in(orig, limit)).max(0.0);
+    keep_fades(clip, orig);
+}
+
+/// Ctrl+Alt+drag inside an event (slide): the event moves `d` seconds while its media stays where it was on the
+/// timeline, within the media and not before 0.
+pub fn slide(clip: &mut Clip, orig: &Clip, d: f64, limit: Option<f64>) {
+    let dir = if orig.reverse { -1.0 } else { 1.0 };
+    // Range of dir x d that keeps in_point in [0, max_in]; images are not limited.
+    let (lo, hi) = match limit {
+        Some(_) => (-orig.in_point / orig.rate, (max_in(orig, limit) - orig.in_point) / orig.rate),
+        None => (f64::NEG_INFINITY, f64::INFINITY),
+    };
+    let d = (dir * (dir * d).min(hi).max(lo)).max(-orig.position);
+    clip.position = orig.position + d;
+    clip.in_point = (orig.in_point + dir * d * orig.rate).max(0.0);
+    keep_fades(clip, orig);
+}
+
+/// Playback rate limits of a time stretch (VEGAS's 0.25x to 4x).
+pub const MIN_RATE: f64 = 0.25;
+pub const MAX_RATE: f64 = 4.0;
+
+/// Ctrl+drag of an edge (time stretch): the other edge stays put and the same source span plays at a new rate, so
+/// rate x duration is constant.
+pub fn stretch(clip: &mut Clip, orig: &Clip, new_edge: f64, left: bool, frame: f64) {
+    let end = orig.position + orig.duration;
+    let want = if left { (end - new_edge).min(end) } else { new_edge - orig.position }.max(frame);
+    let span = orig.duration * orig.rate;
+    clip.rate = (span / want).clamp(MIN_RATE, MAX_RATE);
+    clip.duration = span / clip.rate;
+    clip.position = if left { end - clip.duration } else { orig.position };
+    clip.in_point = orig.in_point;
+    keep_fades(clip, orig);
+}
+
+/// Ctrl+Alt+drag of the edit point between `a` and `b`, rolled so b starts at `start`: a's end and b's start move
+/// together, each within its own media. An edit point within a frame closes up; a crossfade (b starting more than a
+/// frame before a ends) keeps its length, so the crossfade slides.
+#[allow(clippy::too_many_arguments)]
+pub fn roll(a: &mut Clip, oa: &Clip, la: Option<f64>, b: &mut Clip, ob: &Clip, lb: Option<f64>, start: f64, frame: f64) {
+    let ov = Some(oa.position + oa.duration - ob.position).filter(|o| *o > frame + 1e-9).unwrap_or(0.0);
+    trim_left(b, ob, start, frame, lb);
+    trim_right(a, oa, b.position + ov, frame, la);
+    let e = a.position + a.duration - ov;
+    if b.position != e {
+        trim_left(b, ob, e, frame, lb);
+        trim_right(a, oa, b.position + ov, frame, la);
+    }
+}
+
+/// The other side of a roll at `id`'s right (or left) edge, on its track: the event whose opposite edge meets it
+/// within `tol`, or else, at the left edge, the earlier event that crossfades into it (ends inside it).
+pub fn adjacent(project: &Project, id: &str, right: bool, tol: f64) -> Option<String> {
+    let r = project.find_clip(id)?;
+    let clips = &project.timeline.tracks(r.is_video)[r.track_idx].clips;
+    let c = &clips[r.clip_idx];
+    let e = if right { c.position + c.duration } else { c.position };
+    let other = |k: &Clip| if right { k.position } else { k.position + k.duration };
+    let fades_in = |k: &Clip| !right && k.position < c.position && other(k) > e + tol + 1e-9 && other(k) < c.position + c.duration;
+    let meets = clips.iter().find(|k| k.id != id && (other(k) - e).abs() <= tol + 1e-9);
+    meets.or_else(|| clips.iter().find(|k| k.id != id && fades_in(k))).map(|k| k.id.clone())
+}
+
+/// The event's level handle as gain in dB: `frac` is the handle's height (1 at the top, 0 at the bottom), as an
+/// amplitude; 0 dB at most, -120 dB (silence) at the bottom.
+pub fn level_db(frac: f32) -> f32 {
+    (20.0 * frac.log10()).clamp(-120.0, 0.0)
+}
+
+/// Reverse the unlocked events `ids` (each flips; the source span stays the same).
+pub fn reverse_clips(project: &mut Project, ids: &[String]) -> bool {
+    let mut done = false;
+    for c in tracks_mut(&mut project.timeline).filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(|c| !c.locked && ids.contains(&c.id)) {
+        c.reverse = !c.reverse;
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// Switches › Mute: events `ids` all take the opposite of the focus (last) event's state.
+pub fn mute_clips(project: &mut Project, ids: &[String]) -> bool {
+    let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| !c.muted) else { return false };
+    for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips).filter(|c| ids.contains(&c.id)) {
+        c.muted = on;
+    }
+    changed(project, true)
 }
 
 /// Nearest target within `threshold` of `t`.
@@ -80,16 +215,22 @@ pub fn split_clip(clip: &Clip, at: f64) -> Option<(Clip, Clip)> {
     let first_dur = at - clip.position;
     let mut first = clip.clone();
     first.duration = first_dur;
-    first.out_point = clip.in_point + first_dur;
     first.fade_out = 0.0; // each half keeps only its outer fade
-    first.clamp_fades();
     let mut second = clip.clone();
     second.id = uuid::Uuid::new_v4().to_string();
     second.position = at;
     second.duration -= first_dur;
-    second.in_point += first_dur;
     second.fade_in = 0.0;
-    second.clamp_fades();
+    // The half that plays first in source order starts at in_point; reversed, that is the second half.
+    if clip.reverse {
+        first.in_point += second.duration * clip.rate;
+    } else {
+        second.in_point += first_dur * clip.rate;
+    }
+    for c in [&mut first, &mut second] {
+        c.clamp_fades();
+        sync_out(c);
+    }
     Some((first, second))
 }
 
@@ -569,6 +710,18 @@ pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize)
 pub fn quantize(t: f64, fps: f64) -> f64 {
     let fps = fps.max(1.0);
     (t * fps).round() / fps
+}
+
+/// The frame-grid time nearest `t` on the side of `toward` (`t`'s own when it is on the grid): an edit stopped off
+/// the grid by a limit is pulled back onto it, inside the limit.
+pub fn quantize_toward(t: f64, fps: f64, toward: f64) -> f64 {
+    let q = quantize(t, fps);
+    match (q - t) * (toward - t) {
+        _ if (q - t).abs() < 1e-9 => q,
+        s if s > 0.0 => q,
+        _ if toward == t => t,
+        _ => q + (toward - t).signum() / fps.max(1.0),
+    }
 }
 
 /// Clipboard copy of events `ids`: (is video, track offset from the topmost copied track of that kind, event with
@@ -1398,6 +1551,179 @@ mod tests {
         ripple(&mut p, &RippleOp { from: 4.0, delta: 1.0, tracks: tr, exclude: Vec::new() }, RippleMode::Affected);
         assert!(crossfade_moved(&mut p, &before));
         assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
+    }
+
+    fn near(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn src_time_forward_and_reversed_at_both_edges() {
+        let mut c = clip(10.0, 4.0, 2.0);
+        c.rate = 1.5;
+        assert!(near(src_time(&c, 10.0), 2.0) && near(src_time(&c, 14.0), 8.0));
+        c.reverse = true;
+        assert!(near(src_time(&c, 10.0), 8.0) && near(src_time(&c, 14.0), 2.0));
+    }
+
+    #[test]
+    fn trims_follow_the_rate_and_direction() {
+        // Rate 2: 10 s of media after in_point 2 last 4 s on the timeline.
+        let mut o = clip(10.0, 2.0, 2.0);
+        o.rate = 2.0;
+        let mut c = o.clone();
+        trim_right(&mut c, &o, 100.0, F, Some(10.0));
+        assert!(near(c.duration, 4.0) && near(c.out_point, 10.0) && c.in_point == 2.0);
+        trim_left(&mut c, &o, 0.0, F, Some(10.0)); // 2 s of head at rate 2 is 1 s
+        assert!(near(c.position, 9.0) && near(c.in_point, 0.0) && near(c.duration, 3.0));
+        // Reversed, the left edge shows the source end: a left trim keeps in_point, a right trim moves it.
+        o.reverse = true;
+        let mut c = o.clone();
+        trim_left(&mut c, &o, 0.0, F, Some(10.0)); // source end 6 may grow to 10: 2 s more
+        assert!(near(c.position, 8.0) && c.in_point == 2.0 && near(c.out_point, 10.0));
+        let mut c = o.clone();
+        trim_right(&mut c, &o, 100.0, F, Some(10.0)); // in_point 2 may drop to 0: 1 s more
+        assert!(near(c.duration, 3.0) && near(c.in_point, 0.0) && near(src_time(&c, 10.0), 6.0), "the left edge frame stays");
+    }
+
+    #[test]
+    fn reversed_split_halves_join_and_play_backwards() {
+        let mut c = clip(10.0, 6.0, 1.0);
+        (c.rate, c.reverse) = (0.5, true);
+        let (a, b) = split_clip(&c, 12.0).unwrap();
+        // Every timeline time shows the same source as before the split.
+        for t in [10.0, 11.0, 11.999] {
+            assert!(near(src_time(&a, t), src_time(&c, t)));
+        }
+        for t in [12.0, 14.0, 16.0] {
+            assert!(near(src_time(&b, t), src_time(&c, t)));
+        }
+        // Source ranges [b.in, b.out] then [a.in, a.out] meet, and the first half plays the later source.
+        assert!(near(b.out_point, a.in_point) && near(b.in_point, 1.0) && near(a.out_point, 4.0));
+        assert!(src_time(&a, 10.0) > src_time(&b, 12.0));
+    }
+
+    #[test]
+    fn reverse_twice_is_the_identity_and_mute_follows_the_focus() {
+        let (mut p, ids) = three_events();
+        let before = p.timeline.video_tracks[0].clips[0].clone();
+        assert!(reverse_clips(&mut p, &ids[..1]) && p.clip(&ids[0]).unwrap().reverse);
+        assert!(reverse_clips(&mut p, &ids[..1]));
+        assert_eq!(p.timeline.video_tracks[0].clips[0], before);
+        p.timeline.video_tracks[0].clips[0].locked = true;
+        assert!(!reverse_clips(&mut p, &ids[..1]), "a locked event stays");
+        p.timeline.video_tracks[1].clips[0].muted = true;
+        assert!(mute_clips(&mut p, &ids)); // the focus (audio) was not muted: all mute
+        assert!(ids.iter().all(|id| p.clip(id).unwrap().muted));
+        assert!(mute_clips(&mut p, &ids[..1]) && !p.clip(&ids[0]).unwrap().muted);
+        assert!(!mute_clips(&mut p, &[]));
+    }
+
+    #[test]
+    fn slip_keeps_the_event_and_clamps_the_media() {
+        let o = clip(10.0, 4.0, 3.0);
+        let mut c = o.clone();
+        slip(&mut c, &o, 1.0, Some(10.0)); // the media moves right: an earlier frame shows
+        assert!((c.position, c.duration) == (10.0, 4.0) && near(c.in_point, 2.0) && near(c.out_point, 6.0));
+        slip(&mut c, &o, 5.0, Some(10.0));
+        assert_eq!(c.in_point, 0.0);
+        slip(&mut c, &o, -50.0, Some(10.0));
+        assert!(near(c.in_point, 6.0)); // 10 - 4
+        let mut r = o.clone();
+        (r.reverse, r.rate) = (true, 2.0);
+        let mut c = r.clone();
+        slip(&mut c, &r, 0.5, Some(20.0)); // reversed, the source runs the other way
+        assert!(near(src_time(&c, 11.0), src_time(&r, 10.5)));
+    }
+
+    #[test]
+    fn slip_trim_keeps_the_frame_at_the_dragged_edge() {
+        let o = clip(10.0, 4.0, 3.0);
+        let mut c = o.clone();
+        slip_trim_right(&mut c, &o, 13.0, F, Some(10.0));
+        assert!(c.position == 10.0 && near(c.duration, 3.0) && near(src_time(&c, 13.0), src_time(&o, 14.0)));
+        slip_trim_right(&mut c, &o, 30.0, F, Some(10.0)); // in_point 3 runs out after 3 s more
+        assert!(near(c.duration, 7.0) && c.in_point == 0.0);
+        slip_trim_left(&mut c, &o, 12.0, F, Some(10.0));
+        assert!(near(c.position, 12.0) && c.in_point == 3.0 && near(c.position + c.duration, 14.0));
+        slip_trim_left(&mut c, &o, 0.0, F, Some(10.0)); // the source end 7 may grow to 10
+        assert!(near(c.position, 7.0) && near(c.out_point, 10.0));
+    }
+
+    #[test]
+    fn slide_keeps_the_timeline_to_source_mapping() {
+        let o = clip(4.0, 2.0, 3.0);
+        let mut c = o.clone();
+        slide(&mut c, &o, 0.5, Some(10.0));
+        assert!(near(c.position, 4.5) && near(src_time(&c, 5.0), src_time(&o, 5.0)));
+        slide(&mut c, &o, -10.0, Some(10.0)); // in_point 3 allows 3 s left
+        assert!(near(c.position, 1.0) && c.in_point == 0.0);
+        slide(&mut c, &o, 10.0, Some(10.0)); // the media end allows 5 s right
+        assert!(near(c.position, 9.0) && near(c.out_point, 10.0));
+        let mut r = o.clone();
+        (r.reverse, r.rate) = (true, 2.0);
+        let mut c = r.clone();
+        slide(&mut c, &r, 0.25, Some(20.0));
+        assert!(near(src_time(&c, 5.0), src_time(&r, 5.0)));
+        let mut c = o.clone();
+        slide(&mut c, &o, -10.0, None); // images slide freely, but not before 0
+        assert_eq!(c.position, 0.0);
+    }
+
+    #[test]
+    fn roll_moves_the_edit_point_within_both_media() {
+        let (a, mut b) = (clip(0.0, 4.0, 1.0), clip(4.0, 3.0, 2.0));
+        b.id = "b".into();
+        let (mut x, mut y) = (a.clone(), b.clone());
+        roll(&mut x, &a, Some(10.0), &mut y, &b, Some(6.0), 5.0, F);
+        assert!(near(x.position + x.duration, 5.0) && x.position + x.duration == y.position && near(y.in_point, 3.0));
+        roll(&mut x, &a, Some(10.0), &mut y, &b, Some(6.0), 1.0, F); // b's in_point 2 lets it reach back to 2
+        assert!(near(y.position, 2.0) && x.position + x.duration == y.position && y.in_point == 0.0);
+        roll(&mut x, &a, Some(5.0), &mut y, &b, Some(6.0), 6.5, F); // a's media (5 - 1) ends at 4
+        assert!(near(x.duration, 4.0) && x.position + x.duration == y.position);
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.extend([a.clone(), b.clone()]);
+        assert_eq!(adjacent(&p, &a.id, true, F), Some("b".into()));
+        assert_eq!((adjacent(&p, "b", false, F), adjacent(&p, "b", true, F)), (Some(a.id.clone()), None));
+        // A crossfade (b from 3, a to 4) slides: b's start and a's end move together and the 1 s overlap stays.
+        let mut b2 = b.clone();
+        (b2.position, b2.duration, b2.in_point) = (3.0, 4.0, 2.0);
+        p.timeline.video_tracks[0].clips[1] = b2.clone();
+        assert_eq!((adjacent(&p, "b", false, F), adjacent(&p, &a.id, true, F)), (Some(a.id.clone()), None));
+        let (mut x, mut y) = (a.clone(), b2.clone());
+        roll(&mut x, &a, Some(10.0), &mut y, &b2, Some(10.0), 3.5, F);
+        assert!(near(y.position, 3.5) && near(x.position + x.duration, 4.5) && near(y.position + y.duration, 7.0) && near(y.in_point, 2.5));
+        roll(&mut x, &a, Some(10.0), &mut y, &b2, Some(10.0), 0.0, F); // b's in_point 2 stops it at 1
+        assert!(near(y.position, 1.0) && near(x.duration, 2.0));
+    }
+
+    #[test]
+    fn quantize_toward_stays_inside_the_limit() {
+        let fps = 10.0;
+        assert!(near(quantize_toward(1.23, fps, 5.0), 1.3) && near(quantize_toward(1.27, fps, 5.0), 1.3));
+        assert!(near(quantize_toward(1.27, fps, 0.0), 1.2) && near(quantize_toward(1.23, fps, 0.0), 1.2));
+        assert_eq!((quantize_toward(1.2, fps, 0.0), quantize_toward(1.23, fps, 1.23)), (1.2, 1.23));
+    }
+
+    #[test]
+    fn stretch_keeps_the_source_span_and_clamps_the_rate() {
+        let o = clip(10.0, 4.0, 1.0);
+        let mut c = o.clone();
+        stretch(&mut c, &o, 18.0, false, F);
+        assert!(c.position == 10.0 && near(c.duration, 8.0) && near(c.rate, 0.5) && near(c.rate * c.duration, 4.0));
+        stretch(&mut c, &o, 100.0, false, F);
+        assert!(c.rate == MIN_RATE && near(c.duration, 16.0));
+        stretch(&mut c, &o, 13.9, true, F); // the left edge: the right one stays at 14
+        assert!(c.rate == MAX_RATE && near(c.duration, 1.0) && near(c.position, 13.0) && c.in_point == 1.0);
+        stretch(&mut c, &o, 12.0, true, F);
+        assert!(near(c.rate, 2.0) && near(c.position, 12.0) && near(c.out_point, 5.0));
+    }
+
+    #[test]
+    fn level_handle_gain_mapping() {
+        assert_eq!(level_db(1.0), 0.0);
+        assert!((level_db(0.5) + 6.0206).abs() < 1e-3);
+        assert_eq!(level_db(0.0), -120.0);
     }
 
     /// Post-Edit Ripple after a paste ends where Auto Ripple would have: the pasted events stay where they landed.

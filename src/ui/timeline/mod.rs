@@ -140,9 +140,11 @@ pub fn draw_timeline(
         return None;
     }
     let (snapping, quantize, tool) = (opts.snapping, opts.quantize, opts.tool);
-    // The Envelope and Selection tools leave events where they are; Slip clicks ignore grouping (as in VEGAS).
+    // The Envelope and Selection tools leave events where they are; Slip clicks ignore grouping (as in VEGAS), but a
+    // slip-trim still takes the group mates along.
     let moves_events = !matches!(tool, EditTool::Envelope | EditTool::Selection);
-    let grouping = !opts.ignore_grouping && tool != EditTool::Slip;
+    let grouping = !opts.ignore_grouping;
+    let click_groups = grouping && tool != EditTool::Slip;
     let mut released_op = None;
     let sid = ui.id().with("timeline_state");
     let mut st: TlState = ui.data_mut(|d| d.get_temp(sid)).unwrap_or_default();
@@ -260,6 +262,11 @@ pub fn draw_timeline(
             }
             let (fi, fo) = (x0 + (c.fade_in * g.pps) as f32, x1 - (c.fade_out * g.pps) as f32);
             let near_top = p.y - top <= FADE_PX;
+            // The level line: at the top edge at full level, lower as the level drops.
+            let on_level = level_of(c, row.is_video).is_some_and(|f| {
+                let ly = top + (1.0 - f) * (row.h - 3.0);
+                p.y >= ly - 3.0 && p.y <= ly + FADE_PX
+            });
             let mode = if near_top && (p.x - fi).abs() <= FADE_PX && p.x - x0 < x1 - p.x {
                 DragMode::FadeIn
             } else if near_top && (p.x - fo).abs() <= FADE_PX {
@@ -268,6 +275,8 @@ pub fn draw_timeline(
                 DragMode::TrimLeft
             } else if x1 - p.x <= EDGE_PX {
                 DragMode::TrimRight
+            } else if on_level {
+                DragMode::Level
             } else {
                 DragMode::Move
             };
@@ -281,15 +290,20 @@ pub fn draw_timeline(
     let shift = ui.input(|i| i.modifiers.shift);
     let snap_on = snapping && !shift;
 
-    // Trim / fade cursor on event edges and corners, kept for the whole drag.
+    // Trim / fade / level cursor on event edges, corners and the level line, kept for the whole drag.
     let hovered_clip = response.hover_pos().and_then(|p| hit_clip(project, p));
+    let drag_cursor = |mode: DragMode| match mode {
+        DragMode::Move => None,
+        DragMode::Level => Some(CursorIcon::ResizeVertical),
+        _ => Some(CursorIcon::ResizeHorizontal),
+    };
     if let Some(ds) = drag_state.as_ref() {
-        if ds.mode != DragMode::Move {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        if let Some(c) = drag_cursor(ds.mode) {
+            ui.ctx().set_cursor_icon(c);
         }
     } else if let Some((cr, mode)) = &hovered_clip {
-        if *mode != DragMode::Move && moves_events && !is_locked(project, cr) {
-            ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+        if let Some(c) = drag_cursor(*mode).filter(|_| moves_events && !is_locked(project, cr)) {
+            ui.ctx().set_cursor_icon(c);
         }
     }
 
@@ -299,25 +313,61 @@ pub fn draw_timeline(
     if response.drag_started_by(PointerButton::Primary) {
         if let Some(p) = press {
             let hit = hit_clip(project, p);
-            if tool == EditTool::Selection || (hit.is_none() && !v16 && tool == EditTool::Normal) {
+            // Slip, Slide and Time Stretch are Normal-tool variants: only their event drags differ.
+            let normal = matches!(tool, EditTool::Normal | EditTool::Slip | EditTool::Slide | EditTool::Stretch);
+            if tool == EditTool::Selection || (hit.is_none() && !v16 && normal) {
                 st.rubber = Some((p, ui.input(|i| i.modifiers.command || i.modifiers.shift)));
             } else if let Some((cr, mode)) = hit.clone().filter(|(cr, _)| moves_events && !is_locked(project, cr)) {
                 let clip = project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx].clone();
+                let m = ui.input(|i| i.modifiers);
+                let mut mode = mode.with_tool(tool, m.command, m.alt);
+                // The other side of a roll at this edit point, unlocked.
+                let partner = |id: &str, right: bool| {
+                    edit::adjacent(project, id, right, frame).filter(|n| project.find_clip(n).is_some_and(|r| !is_locked(project, &r)))
+                };
+                // A slide inside a crossfade slides the crossfade: a roll of the incoming event's start.
+                let t_press = g.to_time(p.x);
+                let fade_from = partner(&clip.id, false).and_then(|n| project.clip(&n).map(|a| a.position + a.duration));
+                if mode == DragMode::Slide && fade_from.is_some_and(|e| e > clip.position + frame && t_press < e) {
+                    mode = DragMode::RollLeft;
+                }
+                // A roll with nothing to roll against is a plain trim (group mates and ripple included).
+                match mode {
+                    DragMode::RollLeft if partner(&clip.id, false).is_none() => mode = DragMode::TrimLeft,
+                    DragMode::RollRight if partner(&clip.id, true).is_none() => mode = DragMode::TrimRight,
+                    _ => {}
+                }
+                let right = mode.right_edge();
                 let edge = match mode {
-                    DragMode::TrimRight => clip.position + clip.duration,
+                    _ if right => clip.position + clip.duration,
                     DragMode::FadeIn => clip.position + clip.fade_in,
                     DragMode::FadeOut => clip.position + clip.duration - clip.fade_out,
                     _ => clip.position,
                 };
                 // Dragging an unselected event selects it (and its group) alone; a selected one moves the whole selection.
                 if !sel.clips.contains(&clip.id) {
-                    sel.clips = if grouping { edit::expand_groups(project, &[clip.id.clone()]) } else { vec![clip.id.clone()] };
+                    sel.clips = if click_groups { edit::expand_groups(project, &[clip.id.clone()]) } else { vec![clip.id.clone()] };
                 }
                 sel.tracks = vec![project.timeline.tracks(cr.is_video)[cr.track_idx].id.clone()];
                 sel.list_focus = false;
-                // A trim takes the group mates whose edge lines up with it along, each within its own media.
-                let trim = matches!(mode, DragMode::TrimLeft | DragMode::TrimRight);
-                let mates = if grouping && trim { edit::edge_mates(project, &clip.id, mode == DragMode::TrimLeft, frame) } else { Vec::new() };
+                // A trim, slip-trim, stretch or slide takes the group mates whose edge lines up with it along, each
+                // within its own media. A roll takes pairs: the event its edge meets, then each such group mate and
+                // the event that one's edge meets.
+                let mates = match mode {
+                    DragMode::RollLeft | DragMode::RollRight => {
+                        let mut v: Vec<String> = partner(&clip.id, right).into_iter().collect();
+                        // shortcut: a group mate with no unlocked neighbour of its own stays put; trim it if asked.
+                        for mate in edit::edge_mates(project, &clip.id, !right, frame).into_iter().filter(|_| grouping) {
+                            let free = project.find_clip(&mate).is_some_and(|r| !is_locked(project, &r));
+                            if let Some(n) = partner(&mate, right).filter(|_| free) {
+                                v.extend([mate, n]);
+                            }
+                        }
+                        v
+                    }
+                    _ if !grouping || matches!(mode, DragMode::Move | DragMode::Slip | DragMode::Level | DragMode::FadeIn | DragMode::FadeOut) => Vec::new(),
+                    _ => edit::edge_mates(project, &clip.id, !right, frame),
+                };
                 let others: Vec<(Clip, Option<f64>)> = mates
                     .iter()
                     .filter_map(|id| project.find_clip(id).filter(|r| !is_locked(project, r)).and(project.clip(id)))
@@ -370,10 +420,9 @@ pub fn draw_timeline(
             let o = ds.original.clone();
             let tracks = ds.tracks.clone();
             let mut op = Vec::new();
-
-            if ds.mode == DragMode::Move {
-                // The grabbed event snaps, or else quantizes (a snapped edge stays on its target even off the frame
-                // grid); every selected event gets the same delta.
+            // Where a move or slide puts the grabbed event: it snaps, or else quantizes (a snapped edge stays on its
+            // target even off the frame grid).
+            let mut span_start = || {
                 let mut pos = edge.max(0.0);
                 let mut hit = None;
                 if snap_on {
@@ -381,7 +430,12 @@ pub fn draw_timeline(
                     hit = [pos, pos + o.duration].into_iter().find(|v| ds.snap_targets.iter().any(|x| (x - v).abs() < 1e-9));
                     st.snap = hit;
                 }
-                let dt = if hit.is_some() { pos } else { q(pos) } - o.position;
+                if hit.is_some() { pos } else { q(pos) }
+            };
+
+            if ds.mode == DragMode::Move {
+                // Every selected event gets the grabbed one's delta.
+                let dt = span_start() - o.position;
                 let from = ds.before.find_clip(&ds.id);
                 let dtrack = row_at(p.y).zip(from).filter(|(r, f)| r.is_video == f.is_video).map_or(0, |(r, f)| r.idx as isize - f.track_idx as isize);
                 // A hop onto a missing or locked track still moves in time.
@@ -393,28 +447,88 @@ pub fn draw_timeline(
                     op = vec![edit::RippleOp { from: ds.from, delta: moved, tracks, exclude: ds.ids.clone() }];
                 }
             } else {
+                use DragMode::*;
                 let mode = ds.mode;
-                for (orig, limit) in std::iter::once((&ds.original, ds.limit)).chain(ds.others.iter().map(|(c, l)| (c, *l))) {
-                    let Some(cr) = project.find_clip(&orig.id) else { continue };
-                    let clip = &mut project.timeline.tracks_mut(cr.is_video)[cr.track_idx].clips[cr.clip_idx];
-                    match mode {
-                        DragMode::Move => {}
-                        DragMode::TrimLeft => edit::trim_left(clip, orig, trim_edge, frame, limit),
-                        DragMode::TrimRight => edit::trim_right(clip, orig, trim_edge, frame, limit),
-                        DragMode::FadeIn => {
-                            let len = ((snapped_edge - clip.position) / frame).round() * frame;
-                            clip.fade_in = len.clamp(0.0, (clip.duration - clip.fade_out).max(0.0));
-                        }
-                        DragMode::FadeOut => {
-                            let len = ((clip.position + clip.duration - snapped_edge) / frame).round() * frame;
-                            clip.fade_out = len.clamp(0.0, (clip.duration - clip.fade_in).max(0.0));
+                // Slip and slide move by the pointer's travel (whole frames with Quantize to Frames); a slide snaps the
+                // event like a move. Edges snap or quantize as trims do.
+                let d = match mode {
+                    Slide => span_start() - o.position,
+                    _ => q(edge - o.position),
+                };
+                if !matches!(mode, Slip | Slide | Level) {
+                    st.snap = snap;
+                }
+                let press_y = ui.input(|i| i.pointer.press_origin()).map_or(p.y, |s| s.y);
+                let put = |project: &mut Project, c: Clip| {
+                    if let Some(r) = project.find_clip(&c.id) {
+                        project.timeline.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx] = c;
+                    }
+                };
+                if matches!(mode, RollLeft | RollRight) {
+                    // Each edit point (the grabbed one, then its group mates'): the left event and the right one,
+                    // each with its media limit. The incoming event starts at the dragged edge (a right edge only
+                    // meets its neighbour, so there is no crossfade to keep).
+                    let all: Vec<(&Clip, Option<f64>)> = std::iter::once((&ds.original, ds.limit)).chain(ds.others.iter().map(|(c, l)| (c, *l))).collect();
+                    for pair in all.chunks_exact(2) {
+                        let ((oa, la), (ob, lb)) = if mode == RollRight { (pair[0], pair[1]) } else { (pair[1], pair[0]) };
+                        let (mut a, mut b) = (oa.clone(), ob.clone());
+                        edit::roll(&mut a, oa, la, &mut b, ob, lb, trim_edge, frame);
+                        put(project, a);
+                        put(project, b);
+                    }
+                } else {
+                    for (orig, limit) in std::iter::once((&ds.original, ds.limit)).chain(ds.others.iter().map(|(c, l)| (c, *l))) {
+                        let Some(cr) = project.find_clip(&orig.id) else { continue };
+                        let lane_h = rows.iter().find(|r| r.is_video == cr.is_video && r.idx == cr.track_idx).map_or(1.0, |r| (r.h - 3.0).max(1.0));
+                        let clip = &mut project.timeline.tracks_mut(cr.is_video)[cr.track_idx].clips[cr.clip_idx];
+                        match mode {
+                            Move => {}
+                            TrimLeft | RollLeft => edit::trim_left(clip, orig, trim_edge, frame, limit),
+                            TrimRight | RollRight => edit::trim_right(clip, orig, trim_edge, frame, limit),
+                            SlipTrimLeft => edit::slip_trim_left(clip, orig, trim_edge, frame, limit),
+                            SlipTrimRight => edit::slip_trim_right(clip, orig, trim_edge, frame, limit),
+                            // A stretch or slide stopped by a limit is pulled back onto the frame grid, inside the limit.
+                            StretchLeft | StretchRight => {
+                                let left = mode == StretchLeft;
+                                edit::stretch(clip, orig, trim_edge, left, frame);
+                                if quantize && (clip.rate == edit::MIN_RATE || clip.rate == edit::MAX_RATE) {
+                                    let fixed = if left { orig.position + orig.duration } else { orig.position };
+                                    let e = if left { clip.position } else { clip.position + clip.duration };
+                                    // At the top rate the event may only grow; at the bottom one only shrink.
+                                    let toward = if clip.rate == edit::MAX_RATE { 2.0 * e - fixed } else { fixed };
+                                    edit::stretch(clip, orig, edit::quantize_toward(e, fps, toward), left, frame);
+                                }
+                            }
+                            Slip => edit::slip(clip, orig, d, limit),
+                            Slide => {
+                                edit::slide(clip, orig, d, limit);
+                                if quantize && (clip.position - orig.position - d).abs() > 1e-9 {
+                                    let to = edit::quantize_toward(clip.position, fps, orig.position) - orig.position;
+                                    edit::slide(clip, orig, if to * d > 0.0 { to } else { 0.0 }, limit);
+                                }
+                            }
+                            FadeIn => {
+                                let len = ((snapped_edge - clip.position) / frame).round() * frame;
+                                clip.fade_in = len.clamp(0.0, (clip.duration - clip.fade_out).max(0.0));
+                            }
+                            FadeOut => {
+                                let len = ((clip.position + clip.duration - snapped_edge) / frame).round() * frame;
+                                clip.fade_out = len.clamp(0.0, (clip.duration - clip.fade_in).max(0.0));
+                            }
+                            Level => {
+                                let f = (level_of(orig, cr.is_video).unwrap_or(1.0) - (p.y - press_y) / lane_h).clamp(0.0, 1.0);
+                                if cr.is_video {
+                                    clip.set_opacity(f);
+                                } else {
+                                    clip.gain_db = edit::level_db(f);
+                                }
+                            }
                         }
                     }
                 }
-                st.snap = snap;
                 if let Some(c) = project.clip(&ds.id) {
                     ds.changed = *c != o;
-                    if matches!(mode, DragMode::TrimLeft | DragMode::TrimRight) {
+                    if matches!(mode, TrimLeft | TrimRight | SlipTrimLeft | SlipTrimRight | StretchLeft | StretchRight) {
                         op = edit::trim_ripple(&ds.before, &o, c, &ds.ids, &tracks);
                     }
                 }
@@ -422,8 +536,9 @@ pub fn draw_timeline(
             if let Some(mode) = opts.ripple {
                 edit::ripple_all(project, &op, mode);
             }
-            // A fade handle on a crossfade sets that fade by hand: it is not reset to the overlap.
-            if opts.auto_crossfade && !matches!(ds.mode, DragMode::FadeIn | DragMode::FadeOut) {
+            // A fade handle on a crossfade sets that fade by hand: it is not reset to the overlap. A slip or a level
+            // change leaves the events where they are.
+            if opts.auto_crossfade && !matches!(ds.mode, DragMode::FadeIn | DragMode::FadeOut | DragMode::Slip | DragMode::Level) {
                 edit::auto_crossfade(project, &ds.before, &ds.ids);
             }
             ds.op = op;
@@ -458,7 +573,7 @@ pub fn draw_timeline(
         if let (Some((o, add)), Some(p)) = (st.rubber.take(), ui.input(|i| i.pointer.latest_pos())) {
             let r = Rect::from_two_pos(o, p);
             let mut hits = clips_in_rect(project, &rows, &g, r);
-            if grouping {
+            if click_groups {
                 hits = edit::expand_groups(project, &hits);
             }
             if add {
@@ -544,7 +659,7 @@ pub fn draw_timeline(
                             sel.clips = vec![id.clone()];
                         }
                     }
-                    Some(cr) => click_select(project, sel, cr, m.command, m.shift, grouping),
+                    Some(cr) => click_select(project, sel, cr, m.command, m.shift, click_groups),
                     None if !(m.command || m.shift) => sel.clips.clear(),
                     None => {}
                 }
@@ -615,7 +730,8 @@ pub fn draw_timeline(
                 selected: selected.contains(clip.id.as_str()),
                 hovered: hover_ref.as_ref().is_some_and(same),
                 ripple: opts.ripple.is_some(),
-                dim: track.muted,
+                level: level_of(clip, row.is_video),
+                dim: track.muted || clip.muted,
                 pps: g.pps,
                 fps,
             };
@@ -645,16 +761,21 @@ pub fn draw_timeline(
     ruler::paint_band(&painter, &g, project, st.loop_drag.is_some());
     ruler::paint_selection(&painter, &g, project.timeline.loop_region);
     ruler::paint_playhead(&painter, &g, project.timeline.cursor_position, opts.ripple.is_some());
-    // Fade length tag while dragging a fade.
-    if let Some(ds) = drag_state.as_ref().filter(|d| matches!(d.mode, DragMode::FadeIn | DragMode::FadeOut)) {
+    // Length tag while dragging a fade; the level ("-3.2 dB", "48.1%") or the rate while dragging those.
+    if let Some(ds) = drag_state.as_ref() {
         if let Some((cr, c)) = project.find_clip(&ds.id).zip(project.clip(&ds.id)) {
-            let (len, x) = if ds.mode == DragMode::FadeIn {
-                (c.fade_in, g.to_x(c.position + c.fade_in) + 4.0)
-            } else {
-                (c.fade_out, g.to_x(c.position + c.duration - c.fade_out) - 44.0)
+            let mid = g.to_x(c.position + c.duration * 0.5);
+            let tag = match ds.mode {
+                DragMode::FadeIn => Some((ruler::short_tc(c.fade_in, fps), g.to_x(c.position + c.fade_in) + 4.0)),
+                DragMode::FadeOut => Some((ruler::short_tc(c.fade_out, fps), g.to_x(c.position + c.duration - c.fade_out) - 44.0)),
+                DragMode::Level if cr.is_video => Some((format!("{:.1}%", c.opacity() * 100.0), mid)),
+                DragMode::Level if c.gain_db <= -120.0 => Some(("-Inf dB".into(), mid)),
+                DragMode::Level => Some((format!("{:.1} dB", c.gain_db), mid)),
+                DragMode::StretchLeft | DragMode::StretchRight => Some((format!("Rate {:.1}%", c.rate * 100.0), mid)),
+                _ => None,
             };
-            if let Some(row) = rows.iter().find(|r| r.is_video == cr.is_video && r.idx == cr.track_idx) {
-                paint_fade_tag(&pl, &t, pos2(x, row.top + row.h * 0.5 - 7.0), ruler::short_tc(len, fps));
+            if let (Some((text, x)), Some(row)) = (tag, rows.iter().find(|r| r.is_video == cr.is_video && r.idx == cr.track_idx)) {
+                paint_fade_tag(&pl, &t, pos2(x, row.top + row.h * 0.5 - 7.0), text);
             }
         }
     }
@@ -663,6 +784,16 @@ pub fn draw_timeline(
     rename_box(ui, &g, &rows, project, history, &mut st);
     ui.data_mut(|d| d.insert_temp(sid, st));
     released_op
+}
+
+/// The level handle's height (0..=1): gain as an amplitude (audio) or opacity (video). None when an opacity envelope
+/// with several keys hides it.
+fn level_of(c: &Clip, video: bool) -> Option<f32> {
+    if !video {
+        return Some(crate::engine::keyframes::db_to_gain(c.gain_db).min(1.0));
+    }
+    let keys = c.envelopes.iter().find(|e| e.kind == EnvKind::Opacity).map_or(0, |e| e.points.keys.len());
+    (keys <= 1).then(|| c.opacity())
 }
 
 /// Left-click on event `cr`: replace the selection, Ctrl toggles it, Shift selects every event on its track between
@@ -1146,6 +1277,136 @@ mod tests {
         let tr = &r.project.timeline.video_tracks[0];
         assert!((tr.clips[0].fade_out - 1.0).abs() < 1e-6 && (tr.clips[1].fade_in - 1.0).abs() < 1e-6);
         assert_eq!(r.history.lens().0, 1);
+    }
+
+    /// Alt+drag inside slips, Ctrl+Alt+drag of an edit point rolls, Ctrl+drag of an edge stretches (on the frame grid
+    /// with Quantize to Frames), each in one undo step. The event (2..6 s) is at x 415..735 on Video 1 (y 48..112).
+    #[test]
+    fn slip_roll_and_stretch_drags() {
+        let alt = Modifiers { alt: true, ..Default::default() };
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        let mut r = Rig::new();
+        r.project.timeline.video_tracks[0].clips[0].in_point = 3.0;
+        r.drag_mod(pos2(575.0, 90.0), pos2(655.0, 90.0), alt);
+        assert!(r.clip().position == 2.0 && (r.clip().in_point - 2.0).abs() < 1e-6, "slip: in {}", r.clip().in_point);
+
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("d", 6.0, 2.0));
+        r.drag_mod(pos2(735.0, 90.0), pos2(815.0, 90.0), ctrl | alt);
+        let tr = &r.project.timeline.video_tracks[0];
+        let (a, b) = (&tr.clips[0], &tr.clips[1]);
+        assert!((a.duration - 5.0).abs() < 1e-6 && a.position + a.duration == b.position && (b.duration - 1.0).abs() < 1e-6, "roll {a:?} {b:?}");
+
+        r.quantize = true;
+        r.drag_mod(pos2(416.0, 90.0), pos2(335.0, 90.0), ctrl); // the left edge (x 415) out by ~1 s
+        let c = r.clip();
+        assert!((c.position - edit::quantize(c.position, 29.97)).abs() < 1e-9 && (c.position + c.duration - 7.0).abs() < 1e-6, "{c:?}");
+        assert!((c.rate * c.duration - 5.0).abs() < 1e-6 && c.rate < 1.0);
+        assert_eq!(r.history.lens().0, 3);
+    }
+
+    /// With Quantize to Frames, a slip moves the media by whole frames and slip-trim, slide and roll edges land on the
+    /// frame grid; a slide stopped by the media start (in_point off the grid) is pulled back onto it.
+    #[test]
+    fn quantized_drags_land_on_frames() {
+        let fps = 29.97;
+        let on_grid = |t: f64| (t * fps - (t * fps).round()).abs() < 1e-6;
+        let alt = Modifiers { alt: true, ..Default::default() };
+        let ctrl_alt = Modifiers { ctrl: true, command: true, alt: true, ..Default::default() };
+        let mut r = Rig::new();
+        r.quantize = true;
+        r.project.timeline.video_tracks[0].clips[0].in_point = 3.0;
+        r.drag_mod(pos2(575.0, 90.0), pos2(658.0, 90.0), alt);
+        assert!(on_grid(3.0 - r.clip().in_point) && r.clip().in_point < 3.0, "slip: in {}", r.clip().in_point);
+        r.drag_mod(pos2(734.0, 90.0), pos2(693.0, 90.0), alt);
+        let c = r.clip();
+        assert!(on_grid(c.position + c.duration) && c.duration < 4.0, "slip-trim {c:?}");
+        r.drag_mod(pos2(575.0, 90.0), pos2(640.0, 90.0), ctrl_alt);
+        assert!(on_grid(r.clip().position) && r.clip().position > 2.5, "slide {:?}", r.clip());
+
+        let end = r.clip().position + r.clip().duration;
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("d", end, 2.0));
+        let x = 255.0 + end as f32 * 80.0;
+        r.drag_mod(pos2(x - 1.0, 90.0), pos2(x + 36.0, 90.0), ctrl_alt);
+        let tr = &r.project.timeline.video_tracks[0];
+        let (a, b) = (&tr.clips[0], &tr.clips[1]);
+        assert!(a.position + a.duration == b.position && on_grid(b.position) && b.position > end, "roll {a:?} {b:?}");
+
+        r.project.media_pool.push(MediaItem { id: "m".into(), media_type: MediaType::Audio, duration: 10.0, ..Default::default() });
+        let mut au = Clip::new("a", 90.0 / fps, 4.0); // Audio 1, y 112..180
+        (au.media_id, au.in_point) = (Some("m".into()), 1.234);
+        r.project.timeline.audio_tracks[0].clips.push(au);
+        let x = 255.0 + (90.0 / fps as f32 + 1.0) * 80.0;
+        r.drag_mod(pos2(x, 160.0), pos2(x - 240.0, 160.0), ctrl_alt);
+        let au = &r.project.timeline.audio_tracks[0].clips[0];
+        assert!(on_grid(au.position) && au.in_point >= 0.0 && au.in_point < 1.0 / fps, "clamped slide {au:?}");
+        assert_eq!(r.history.lens().0, 5);
+    }
+
+    /// The Slide tool on an edge with no neighbour trims like the Normal tool: the grouped audio comes along and Auto
+    /// Ripple moves what follows.
+    #[test]
+    fn roll_without_a_neighbour_trims_the_group_and_ripples() {
+        let mut r = Rig::new();
+        r.opts.tool = EditTool::Slide;
+        r.opts.ripple = Some(edit::RippleMode::Affected);
+        let mut a = Clip::new("a", 2.0, 4.0);
+        a.group = Some("g".into());
+        r.project.timeline.video_tracks[0].clips[0].group = Some("g".into());
+        r.project.timeline.audio_tracks[0].clips.push(a);
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("d", 8.0, 1.0));
+        r.drag(pos2(734.0, 90.0), pos2(654.0, 90.0));
+        let tl = &r.project.timeline;
+        let d = [tl.video_tracks[0].clips[0].duration, tl.audio_tracks[0].clips[0].duration];
+        assert!(d.iter().all(|d| (d - 3.0).abs() < 1e-6), "{d:?}");
+        assert!((tl.video_tracks[0].clips[1].position - 7.0).abs() < 1e-6, "{:?}", starts(&tl.video_tracks[0]));
+    }
+
+    /// Ctrl+Alt on a grouped A/V edit point rolls both cuts; Ctrl+Alt inside a crossfade slides it, keeping its length.
+    #[test]
+    fn group_roll_and_crossfade_slide() {
+        let ctrl_alt = Modifiers { ctrl: true, command: true, alt: true, ..Default::default() };
+        let grouped = |name: &str, pos, dur, g: &str| {
+            let mut c = Clip::new(name, pos, dur);
+            c.group = Some(g.into());
+            c
+        };
+        let mut r = Rig::new();
+        let tl = &mut r.project.timeline;
+        tl.video_tracks[0].clips[0].group = Some("g1".into());
+        tl.video_tracks[0].clips.push(grouped("e", 6.0, 3.0, "g2"));
+        tl.audio_tracks[0].clips.extend([grouped("a", 2.0, 4.0, "g1"), grouped("b", 6.0, 3.0, "g2")]);
+        r.drag_mod(pos2(735.0, 90.0), pos2(815.0, 90.0), ctrl_alt); // the cut at 6 s to 7 s
+        for t in [&r.project.timeline.video_tracks[0], &r.project.timeline.audio_tracks[0]] {
+            let (a, b) = (&t.clips[0], &t.clips[1]);
+            assert!((a.duration - 5.0).abs() < 1e-6 && a.position + a.duration == b.position && (b.duration - 2.0).abs() < 1e-6, "{a:?} {b:?}");
+        }
+
+        let mut r = Rig::new();
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("e", 5.0, 4.0)); // over 2..6 from 5 s
+        r.drag_mod(pos2(695.0, 90.0), pos2(735.0, 90.0), ctrl_alt); // inside the overlap, right by 0.5 s
+        let tr = &r.project.timeline.video_tracks[0];
+        let (a, b) = (&tr.clips[0], &tr.clips[1]);
+        assert!((b.position - 5.5).abs() < 1e-6 && (b.position + b.duration - 9.0).abs() < 1e-6, "{b:?}");
+        assert!((a.position + a.duration - 6.5).abs() < 1e-6 && (a.fade_out - 1.0).abs() < 1e-6, "{a:?}");
+    }
+
+    /// The level line at an event's top edge: dragging it halfway down gives an audio event -6 dB and a video event
+    /// 50 % opacity.
+    #[test]
+    fn level_handle_sets_gain_and_opacity() {
+        let mut r = Rig::new();
+        r.project.timeline.audio_tracks[0].clips.push(Clip::new("a", 2.0, 4.0)); // Audio 1 y 112..180
+        r.drag(pos2(575.0, 115.0), pos2(575.0, 147.5));
+        let a = &r.project.timeline.audio_tracks[0].clips[0];
+        assert!((a.gain_db + 6.0206).abs() < 0.01 && a.position == 2.0, "gain {}", a.gain_db);
+        r.drag(pos2(575.0, 51.0), pos2(575.0, 81.5));
+        assert!((r.clip().opacity() - 0.5).abs() < 0.01 && r.clip().position == 2.0, "opacity {}", r.clip().opacity());
+        assert_eq!(r.history.lens().0, 2);
+        // With several opacity keys there is no handle: the drag moves the event.
+        let env = &mut r.project.timeline.video_tracks[0].clips[0].envelopes[0];
+        env.points.keys.push(Keyframe { t: 1.0, v: 1.0, curve: Curve::Linear });
+        r.drag(pos2(575.0, 51.0), pos2(655.0, 51.0));
+        assert_eq!(r.clip().position, 3.0);
     }
 
     fn starts(t: &Track) -> Vec<f64> {

@@ -564,6 +564,21 @@ impl Clip {
         }
     }
 
+    /// Event opacity (video), set by the level handle: the first key of its Opacity envelope, 1 without one.
+    pub fn opacity(&self) -> f32 {
+        self.envelopes.iter().find(|e| e.kind == EnvKind::Opacity).and_then(|e| e.points.keys.first()).map_or(1.0, |k| k.v)
+    }
+
+    /// Set the opacity as a single-key Opacity envelope (none at full opacity). Replaces any Opacity keys, so the
+    /// level handle that calls it is hidden when the envelope has more than one.
+    pub fn set_opacity(&mut self, v: f32) {
+        self.envelopes.retain(|e| e.kind != EnvKind::Opacity);
+        if v < 1.0 {
+            let keys = vec![Keyframe { t: 0.0, v: v.max(0.0), curve: Curve::Linear }];
+            self.envelopes.push(Envelope { kind: EnvKind::Opacity, points: Keyframes { keys } });
+        }
+    }
+
     /// Keep both fades inside the clip after a trim or fade drag.
     pub fn clamp_fades(&mut self) {
         let d = self.duration.max(0.0);
@@ -742,6 +757,18 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
+    }
+
+    #[test]
+    fn opacity_round_trips_through_a_single_key() {
+        let mut c = Clip::new("c", 0.0, 1.0);
+        assert_eq!(c.opacity(), 1.0);
+        c.set_opacity(0.481);
+        assert_eq!((c.opacity(), c.envelopes.len(), c.envelopes[0].points.keys.len()), (0.481, 1, 1));
+        c.set_opacity(0.25);
+        assert_eq!((c.opacity(), c.envelopes.len()), (0.25, 1));
+        c.set_opacity(1.0); // full opacity needs no envelope
+        assert!(c.envelopes.is_empty() && c.opacity() == 1.0);
     }
 
     #[test]

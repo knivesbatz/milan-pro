@@ -55,7 +55,7 @@ pub enum Command {
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, CheckForUpdates, About,
     // Context-menu and preference commands without default keys
-    EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause,
+    EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute,
     /// Edit › Editing Tool items and the transport tool radios.
     Tool(super::EditTool),
     /// Options › Ripple modes and the transport Auto Ripple ▾ list.

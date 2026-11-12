@@ -33,6 +33,7 @@ impl MeridianApp {
             can_redo: self.history.can_redo(),
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
+            clip_muted: clip.is_some_and(|c| c.muted),
             n_sel: self.sel.clips.len(),
             any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
             tracks_sel: !self.sel.tracks.is_empty(),
@@ -375,6 +376,10 @@ impl MeridianApp {
             }
             EventLock => {
                 self.edit_selected(edit::toggle_clip_lock);
+            }
+            EventReverse | EventMute => {
+                let ids = self.sel.clips.clone();
+                self.edit(|p| if c == EventReverse { edit::reverse_clips(p, &ids) } else { edit::mute_clips(p, &ids) });
             }
             EventOpenInTrimmer | EventSelectInMedia => {
                 let Some(cr) = &self.selected_clip else { return };

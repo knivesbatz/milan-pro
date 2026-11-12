@@ -2,6 +2,7 @@
 //! filmstrip thumbnails, waveforms, fade curves and handles, selection outline.
 use eframe::egui::*;
 use crate::audio::PEAKS_PER_SEC;
+use crate::edit;
 use crate::project::Clip;
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{Theme, UiLook};
@@ -19,7 +20,9 @@ pub(super) struct Ev<'a> {
     pub hovered: bool,
     /// Auto Ripple is on: the selected outline is red.
     pub ripple: bool,
-    /// Muted track: drawn at 50 % over the lane.
+    /// Level handle height (gain amplitude or opacity, 0..=1); None when hidden.
+    pub level: Option<f32>,
+    /// Muted track or event: drawn at 50 % over the lane.
     pub dim: bool,
     pub pps: f64,
     pub fps: f64,
@@ -94,6 +97,7 @@ pub(super) fn paint_event(
     if ev.hovered {
         paint_handles(p, t, ev, if v16 { body } else { r });
     }
+    paint_level(p, t, ev);
     if ev.selected {
         let c = if ev.ripple { t.event_selected_border_ripple } else { t.event_selected_border };
         p.rect_stroke(r, 0.0, Stroke::new(2.0_f32, c), StrokeKind::Inside);
@@ -128,15 +132,19 @@ fn paint_filmstrip(p: &Painter, ev: &Ev, v16: bool, area: Rect, thumb: &mut dyn 
     };
     let frame = 1.0 / ev.fps.max(1.0);
     let p = p.with_clip_rect(area.intersect(vis));
+    // Dimmed by the event's opacity.
+    let tint = Color32::from_gray((255.0 * ev.clip.opacity().clamp(0.0, 1.0)).round() as u8);
     for k in k0..=k1 {
         let x = area.min.x + step * k as f32;
         let tr = Rect::from_min_size(pos2(x, area.min.y), vec2(w.min(area.max.x - x), h));
-        // Frame-quantised source time at the thumbnail's left edge.
-        let src = ev.clip.in_point + (x - area.min.x) as f64 / ev.pps;
+        // Frame-quantised source time at the thumbnail's left edge (with the event's rate and direction). Reversed, a
+        // frame samples where it ends, as the engine does, so the first tile is not one frame past the source span.
+        let t = ev.clip.position + (x - area.min.x) as f64 / ev.pps;
+        let src = edit::src_time(ev.clip, if ev.clip.reverse { t + frame } else { t }).max(0.0);
         let src = (src / frame).floor() * frame;
         if let Some(tex) = thumb(src) {
             let uv = Rect::from_min_max(Pos2::ZERO, pos2((tr.width() / w).min(1.0), 1.0));
-            p.image(tex, tr, uv, Color32::WHITE);
+            p.image(tex, tr, uv, tint);
         }
     }
 }
@@ -148,14 +156,18 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
     }
     let (mid, half) = (area.center().y, area.height() * 0.5);
     let spp = 1.0 / ev.pps;
+    // Scaled by the event gain.
+    let gain = crate::engine::keyframes::db_to_gain(ev.clip.gain_db);
+    let src = |x: f32| edit::src_time(ev.clip, ev.clip.position + (x - area.min.x) as f64 * spp);
     let mut x = vis.min.x.floor();
     while x < vis.max.x {
-        let t = ev.clip.in_point + (x - area.min.x) as f64 * spp;
-        let a = (t * PEAKS_PER_SEC).max(0.0) as usize;
-        let z = (((t + spp) * PEAKS_PER_SEC) as usize).max(a + 1).min(peaks.len());
-        let pk = peaks.get(a..z).map_or(0.0, |s| s.iter().fold(0.0_f32, |m, v| m.max(*v)));
+        // The source span under this pixel column (read backwards when reversed).
+        let (s0, s1) = (src(x), src(x + 1.0));
+        let a = (s0.min(s1) * PEAKS_PER_SEC).max(0.0) as usize;
+        let z = ((s0.max(s1) * PEAKS_PER_SEC) as usize).max(a + 1).min(peaks.len());
+        let pk = peaks.get(a..z).map_or(0.0, |s| s.iter().fold(0.0_f32, |m, v| m.max(*v))) * gain;
         if pk > 0.0 {
-            let y = (pk * half).max(0.5);
+            let y = (pk.min(1.0) * half).max(0.5);
             p.rect_filled(Rect::from_min_max(pos2(x, mid - y), pos2(x + 1.0, mid + y)), 0.0, ink);
         }
         x += 1.0;
@@ -220,8 +232,17 @@ fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
     }
 }
 
+/// The event's name, with "◄" when reversed and "(rate 150%)" when not at normal speed.
+fn label(c: &Clip) -> String {
+    let mut s = if c.reverse { format!("◄ {}", c.name) } else { c.name.clone() };
+    if (c.rate - 1.0).abs() > 1e-9 {
+        s += &format!(" (rate {:.0}%)", c.rate * 100.0);
+    }
+    s
+}
+
 fn paint_name(p: &Painter, ev: &Ev, left_center: Pos2, w: f32, font: FontId, color: Color32) -> Vec2 {
-    let mut job = text::LayoutJob::simple_singleline(ev.clip.name.clone(), font, color);
+    let mut job = text::LayoutJob::simple_singleline(label(ev.clip), font, color);
     job.wrap = text::TextWrapping::truncate_at_width(w);
     let galley = p.layout_job(job);
     let size = galley.size();
@@ -235,7 +256,7 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     if r.height() >= 20.0 && r.width() >= 16.0 {
         let font = t.font(t.font.event_name);
-        let galley = p.layout_no_wrap(ev.clip.name.clone(), font, t.event_text);
+        let galley = p.layout_no_wrap(label(ev.clip), font, t.event_text);
         let bw = (galley.size().x + 8.0).min(r.width());
         let b = Rect::from_min_size(r.min, vec2(bw, 20.0));
         pr.rect_filled(b, 0.0, t.event_label_bg);
@@ -286,6 +307,19 @@ fn paint_handles(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
                 }
             }
         }
+    }
+}
+
+/// Level line (gain or opacity) across the event while it is hovered or below full level, with the 12×5 pill handle
+/// on it while hovered (§5.9.4).
+fn paint_level(p: &Painter, t: &Theme, ev: &Ev) {
+    let Some(f) = ev.level.filter(|f| ev.hovered || *f < 1.0) else { return };
+    let r = ev.rect;
+    let y = (r.min.y + (1.0 - f) * r.height()).round().min(r.max.y - 1.0);
+    let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
+    pr.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, t.fade_handle);
+    if ev.hovered && r.width() >= 40.0 {
+        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), CornerRadius::same(2), t.fade_handle);
     }
 }
 
