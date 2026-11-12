@@ -1,11 +1,13 @@
 //! Timeline engine: one plan of the project for preview, playback and render (docs/FEATURE_PLAN.md section 1).
 //! Video: `plan` turns the project into frame plans, `worker` composes them on the "milan-video" thread
 //! from persistent `vdecode` streams, and `VideoEngine` is the UI thread's handle to it.
+//! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`).
 pub mod cache;
 pub mod composite;
-// shortcut: the envelope ramp and key editing are used from batch 3 (mixer) and batch 10 (keyframe UI) on.
+// shortcut: key editing is used from batch 10 (keyframe UI) on.
 #[allow(dead_code)]
 pub mod keyframes;
+pub mod mix;
 pub mod plan;
 pub mod vdecode;
 mod worker;

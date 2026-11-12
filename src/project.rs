@@ -527,12 +527,6 @@ impl Clip {
     }
 }
 
-/// Fade gain (0..=1) at `t` seconds into a `dur` long event: the product of the fade-in and fade-out curves.
-pub fn fade_gain(t: f64, dur: f64, fade_in: f64, fade_out: f64) -> f32 {
-    let ramp = |x: f64, len: f64| if len > 0.0 { smooth_fade((x / len).clamp(0.0, 1.0)) } else { 1.0 };
-    (ramp(t, fade_in) * ramp(dur - t, fade_out)) as f32
-}
-
 /// VEGAS's default "Smooth" fade curve, an S-curve from 0 to 1 (ffmpeg afade curve=hsin).
 pub fn smooth_fade(x: f64) -> f64 {
     (1.0 - (std::f64::consts::PI * x).cos()) * 0.5
@@ -611,21 +605,11 @@ mod tests {
         assert_eq!(format_timecode(3600.0, 29.97), "01:00:00;00");
     }
 
-    fn gain(c: &Clip, t: f64) -> f32 {
-        fade_gain(t, c.duration, c.fade_in, c.fade_out)
-    }
-
+    // Fade gain curves are tested with the mixer (engine/mix.rs) and the video plan.
     #[test]
-    fn fade_gain_curve_and_clamp() {
+    fn clamp_fades_keeps_both_inside_the_event() {
         let mut c = Clip::new("c", 0.0, 10.0);
-        assert_eq!(gain(&c, 0.0), 1.0); // no fades
         (c.fade_in, c.fade_out) = (2.0, 4.0);
-        assert_eq!(gain(&c, 0.0), 0.0);
-        assert!((gain(&c, 1.0) - 0.5).abs() < 1e-6); // S-curve midpoint
-        assert!(gain(&c, 0.5) < 0.25); // slow start
-        assert_eq!(gain(&c, 4.0), 1.0);
-        assert!((gain(&c, 8.0) - 0.5).abs() < 1e-6);
-        assert_eq!(gain(&c, 10.0), 0.0);
         c.duration = 5.0;
         c.clamp_fades();
         assert_eq!((c.fade_in, c.fade_out), (2.0, 3.0));

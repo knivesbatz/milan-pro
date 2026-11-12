@@ -1,5 +1,6 @@
-//! Timeline -> video plan (pure). The only code that interprets the timeline for preview and playback:
-//! `compile` once per edit, `frame_plan` once per frame, resolving everything to plain numbers.
+//! Timeline -> video and audio plans (pure). The only code that interprets the timeline for preview and playback:
+//! `compile` once per edit, `frame_plan` once per frame, resolving everything to plain numbers;
+//! `compile_audio` once per edit for the mixer.
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -197,7 +198,7 @@ pub fn effective_end(content_end: f64, loop_: Option<(f64, f64)>) -> f64 {
 }
 
 /// Gain through a fade of `len` seconds, `x` seconds from its silent end.
-fn fade(curve: Curve, x: f64, len: f64) -> f32 {
+pub fn fade(curve: Curve, x: f64, len: f64) -> f32 {
     if len > 0.0 { curve.shape(x / len) as f32 } else { 1.0 }
 }
 
@@ -302,6 +303,92 @@ pub fn warm_frames(p: &VideoPlan, n: i64, ahead: i64, lp: Option<(i64, i64)>) ->
         }
         _ => upcoming(p, n, n + ahead),
     }
+}
+
+// ---- Audio ----
+
+/// What an audio decoder streams: an event's source span and where it sits on the timeline.
+/// A forward stream is reused while it is at the source time the event needs; a reversed one only for an identical span.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ASrc {
+    pub path: PathBuf,
+    pub pos: f64,
+    pub dur: f64,
+    pub in_point: f64,
+    /// Source seconds per timeline second.
+    pub rate: f64,
+    pub reverse: bool,
+}
+
+#[derive(Debug)]
+pub struct AEvent {
+    pub src: ASrc,
+    /// Event gain, linear.
+    pub gain: f32,
+    pub fade_in: f64,
+    pub fade_out: f64,
+    pub fade_in_curve: Curve,
+    pub fade_out_curve: Curve,
+    /// Event volume envelope (dB), event-relative.
+    pub vol_env: Option<Envelope>,
+}
+
+#[derive(Debug)]
+pub struct ATrack {
+    /// Static Volume (linear) and Pan (-1 left .. 1 right). With a pan envelope, Pan is added to it as a trim, as in VEGAS.
+    pub volume: f32,
+    pub pan: f32,
+    pub vol_env: Option<Envelope>,
+    pub pan_env: Option<Envelope>,
+    pub mute_env: Option<Envelope>,
+    pub events: Vec<AEvent>,
+}
+
+#[derive(Debug)]
+pub struct AudioPlan {
+    /// Audible tracks only (muted and un-soloed tracks are left out).
+    pub tracks: Vec<ATrack>,
+}
+
+pub fn compile_audio(p: &Project) -> AudioPlan {
+    let media: HashMap<&str, &MediaItem> = p.media_pool.iter().filter(|m| m.sample_rate.is_some() && m.generator.is_none()).map(|m| (m.id.as_str(), m)).collect();
+    let env = |envs: &[Envelope], kind| envs.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
+    let any_solo = p.timeline.audio_tracks.iter().any(|t| t.solo);
+    let tracks = p
+        .timeline
+        .audio_tracks
+        .iter()
+        .filter_map(|t| {
+            crate::audio::track_gain(t, any_solo)?; // muted or un-soloed: left out
+            let events: Vec<AEvent> = t
+                .clips
+                .iter()
+                .filter(|c| !c.muted && c.duration > 0.0 && c.rate > 0.0)
+                .filter_map(|c| {
+                    let m = media.get(c.media_id.as_deref()?)?;
+                    Some(AEvent {
+                        src: ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: c.in_point, rate: c.rate, reverse: c.reverse },
+                        gain: crate::engine::keyframes::db_to_gain(c.gain_db),
+                        fade_in: c.fade_in,
+                        fade_out: c.fade_out,
+                        fade_in_curve: c.fade_in_curve,
+                        fade_out_curve: c.fade_out_curve,
+                        vol_env: env(&c.envelopes, EnvKind::Volume),
+                    })
+                })
+                .collect();
+            let e = &t.envelopes;
+            (!events.is_empty()).then(|| ATrack {
+                volume: t.volume,
+                pan: t.pan.clamp(-1.0, 1.0),
+                vol_env: env(e, EnvKind::Volume),
+                pan_env: env(e, EnvKind::Pan),
+                mute_env: env(e, EnvKind::Mute),
+                events,
+            })
+        })
+        .collect();
+    AudioPlan { tracks }
 }
 
 #[cfg(test)]

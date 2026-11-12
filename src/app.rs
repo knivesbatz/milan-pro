@@ -47,9 +47,7 @@ pub struct MeridianApp {
     message: Option<String>,
     /// Cursor where playback started; Space and Stop return there, as in VEGAS.
     play_start: f64,
-    /// Content end the audio session was started with; a change while playing restarts it.
-    play_end: f64,
-    /// Loop region the video playback was started with; a change while playing restarts it.
+    /// Loop region playback was started with; a change while playing restarts it.
     play_loop: Option<(f64, f64)>,
     /// New/Open/Exit waiting on the "Save changes?" prompt.
     confirm: Option<MenuAction>,
@@ -154,7 +152,6 @@ impl MeridianApp {
             importer: Importer::new(),
             message,
             play_start: 0.0,
-            play_end: 0.0,
             play_loop: None,
             confirm: None,
             about: false,
@@ -199,8 +196,7 @@ impl MeridianApp {
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Playback clock: audio is master while it plays, frame dt otherwise
-        let mut wrapped = false;
+        // Playback clock: audio is master while it plays (it wraps loops itself), frame dt otherwise
         if self.playing {
             let now = ctx.input(|i| i.time);
             let end = render::content_end(&self.project);
@@ -212,9 +208,8 @@ impl eframe::App for MeridianApp {
             }
             let lp = tl.loop_region.filter(|(a, b)| self.looping && b > a);
             if let Some((a, _)) = lp.filter(|&(_, b)| tl.cursor_position >= b) {
-                // Loop Playback: jump back to the selection start (the audio restarts below).
+                // Loop Playback: jump back to the selection start.
                 tl.cursor_position = a;
-                wrapped = true;
             } else if lp.is_none() && tl.cursor_position >= end {
                 // Playback ends at the last event and stays there.
                 tl.cursor_position = end.max(self.play_start);
@@ -439,9 +434,8 @@ impl eframe::App for MeridianApp {
             self.selected_media = None;
         }
 
-        // Start/stop audio on play state changes. While playing, restart it on seeks, when the
-        // content end changes (the session only decodes up to the end it started with), and
-        // while the output device is still opening (otherwise this whole run stays silent).
+        // Start/stop video and audio on play state changes, seeks and loop changes. Edits while playing
+        // are heard through a live plan swap, not a restart.
         if self.playing && !self.was_playing && self.looping {
             // Loop Playback starts inside the selection.
             let tl = &mut self.project.timeline;
@@ -450,37 +444,36 @@ impl eframe::App for MeridianApp {
             }
         }
         let cursor = self.project.timeline.cursor_position;
-        let end = render::content_end(&self.project);
         if self.playing && !self.was_playing {
             self.play_start = cursor;
         }
-        // Video plays on through loop wraps (the engine wraps too); a seek or a new loop region restarts it.
+        // Video and audio play on through loop wraps (both wrap themselves); a seek or a new loop region restarts them.
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
         if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
+            self.audio.stop();
             if self.playing {
                 self.preview.play(lp);
+                self.audio.start(ctx, &self.project, cursor, lp);
             } else {
                 self.preview.stop();
             }
             self.play_loop = lp;
+            self.was_playing = self.playing;
+        } else if self.playing {
+            if self.audio.stalled() {
+                // The device stopped asking for samples (unplugged): the frame clock moves the playhead until it is back.
+                self.audio.reopen();
+            } else if !self.audio.running() {
+                // The device has (re)opened: carry on from the cursor.
+                self.audio.start(ctx, &self.project, cursor, lp);
+            } else {
+                self.audio.set_plan(&self.project);
+            }
         }
         // Thumbnail and waveform decodes wait while playing.
         self.thumbs.set_paused(self.playing);
         self.waves.set_paused(self.playing);
-        let restart = self.playing
-            && (wrapped
-                || cursor != self.clock_pos
-                || end != self.play_end
-                || (self.audio.position().is_none() && self.audio.device_pending()));
-        if self.playing != self.was_playing || restart {
-            self.audio.stop();
-            if self.playing {
-                self.audio.start(ctx, &self.project, cursor);
-            }
-            self.was_playing = self.playing;
-            self.play_end = end;
-        }
 
         // After the timeline and the play edges, so this frame's cursor/clip edits are what gets requested.
         self.preview.update(ctx, &self.project);
