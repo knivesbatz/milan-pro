@@ -2,17 +2,19 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.1). The interface, timeline and project format work; video preview, audio playback and rendering are in progress.
+> Early development (v0.3). Editing, preview, audio and rendering work; video/audio effects, transitions and titles are in progress.
 
-## Features (v0.1)
+## Features
 
-- VEGAS-style dark interface: media browser, preview monitor, multitrack timeline, properties panel
-- Video tracks above audio tracks, with mute / solo / lock state
-- Media import for any format FFmpeg can read (metadata via `ffprobe`)
-- Clips: add from media, select, split at cursor, delete
-- Timeline markers, ruler, playhead, Ctrl+scroll zoom
-- Project save/load (`.mnle`, JSON)
-- Shortcuts: Space play/pause, Home go to start, Delete remove clip
+- Two interface looks modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
+- Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
+- Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
+- Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
+- Real-time multi-layer preview with persistent decoders, frame caches and video proxies
+- Streaming audio mixer with waveforms and meters
+- Render As through the same engine as the preview (FFmpeg encoders)
+- Autosave, safe saves, undo/redo, and an auto-updater
+- Project files are `.mnle` (JSON)
 
 ## Install (Windows)
 
@@ -38,20 +40,20 @@ Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/mil
 
 ## Project layout
 
-| File | Purpose |
+| Path | Purpose |
 |------|---------|
-| `src/main.rs` | Entry point and window setup |
-| `src/app.rs` | Application state, panel layout, playback clock, shortcuts |
-| `src/project.rs` | Project, timeline, track, clip and media data model |
-| `src/media.rs` | Media probing via `ffprobe` |
-| `src/ui/mod.rs` | Theme and all panels, including the custom-painted timeline |
+| `src/app.rs`, `src/app/` | Application state, commands, drops, playback |
+| `src/project.rs` | Project, timeline, track, event and media data model |
+| `src/edit.rs`, `src/history.rs` | Editing operations and undo |
+| `src/engine/` | Render plan, decoders, compositor, audio mixer, render |
+| `src/ui/` | Looks, menus, dock windows and the custom-painted timeline |
+| `docs/FEATURE_PLAN.md` | Engine design and the feature batches |
 
 ## Roadmap
 
-- Video preview frames and audio playback
-- Clip drag, trim, snapping, undo/redo
-- Render / export via FFmpeg
-- Effects and transitions, OFX plugin hosting
+- Video FX, transitions, media generators, titles and colour grading
+- Audio FX and recording
+- OFX / VST plug-in hosting
 - EDL / OTIO interchange
 
 ## License
