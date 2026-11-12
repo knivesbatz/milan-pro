@@ -374,6 +374,8 @@ pub struct Waveforms {
     cache: HashMap<String, Option<Vec<Vec<f32>>>>,
     tx: Sender<(String, PathBuf)>,
     rx: Receiver<(String, Vec<Vec<f32>>)>,
+    /// Set while the timeline plays, so peak decodes leave the CPU to playback.
+    paused: Arc<AtomicBool>,
 }
 
 impl Waveforms {
@@ -381,15 +383,24 @@ impl Waveforms {
         let (tx, req_rx) = mpsc::channel::<(String, PathBuf)>();
         let (res_tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
+        let paused = Arc::new(AtomicBool::new(false));
+        let p = paused.clone();
         std::thread::spawn(move || {
             for (id, path) in req_rx {
+                while p.load(Relaxed) {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
                 if res_tx.send((id, retry_empty(|| peaks(&path)))).is_err() {
                     break;
                 }
                 ctx.request_repaint();
             }
         });
-        Self { cache: HashMap::new(), tx, rx }
+        Self { cache: HashMap::new(), tx, rx, paused }
+    }
+
+    pub fn set_paused(&self, on: bool) {
+        self.paused.store(on, Relaxed);
     }
 
     /// Some requested peaks have not arrived yet.

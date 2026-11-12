@@ -41,7 +41,7 @@ pub const PRESETS: [Preset; 5] = [
 ];
 
 /// NTSC rates as exact rationals so 29.97 renders as 30000/1001, not 2997/100.
-fn fps_str(fps: f64) -> String {
+pub fn fps_str(fps: f64) -> String {
     let n = (fps * 1.001).round();
     if fps.fract() != 0.0 && (fps - n * 1000.0 / 1001.0).abs() < 0.01 {
         format!("{}/1001", n as u64 * 1000)

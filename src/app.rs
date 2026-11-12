@@ -49,6 +49,8 @@ pub struct MeridianApp {
     play_start: f64,
     /// Content end the audio session was started with; a change while playing restarts it.
     play_end: f64,
+    /// Loop region the video playback was started with; a change while playing restarts it.
+    play_loop: Option<(f64, f64)>,
     /// New/Open/Exit waiting on the "Save changes?" prompt.
     confirm: Option<MenuAction>,
     about: bool,
@@ -139,7 +141,7 @@ impl MeridianApp {
             auto_crossfade: true,
             drag_state: None,
             timeline_scroll_y: 0.0,
-            preview: Preview::new(&cc.egui_ctx),
+            preview: Preview::timeline(&cc.egui_ctx),
             audio: Player::new(),
             waves: Waveforms::new(&cc.egui_ctx),
             thumbs: Thumbs::new(&cc.egui_ctx),
@@ -153,6 +155,7 @@ impl MeridianApp {
             message,
             play_start: 0.0,
             play_end: 0.0,
+            play_loop: None,
             confirm: None,
             about: false,
             look,
@@ -262,6 +265,8 @@ impl eframe::App for MeridianApp {
             let mut dock_action = None;
             let mut actions: Vec<WinAction> = Vec::new();
             let mut preview_msg = None;
+            // The engine makes frames only while the Video Preview window is on screen.
+            self.preview.visible = false;
             self.dock.show(ui, a.dock, |panel, bar, body| match panel {
                 Panel::ProjectMedia => {
                     ui::draw_media_toolbar(
@@ -299,6 +304,7 @@ impl eframe::App for MeridianApp {
                     ui::draw_chooser(body, &mut self.choosers[k]);
                 }
                 Panel::VideoPreview => {
+                    self.preview.visible = true;
                     preview_msg = ui::draw_preview_toolbar(bar, &mut self.preview, &mut self.preview_view, &mut dock_action);
                     let mut pb = Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start };
                     ui::draw_preview(body, &mut self.project, &mut self.preview, &mut self.preview_view, &mut pb);
@@ -373,7 +379,7 @@ impl eframe::App for MeridianApp {
                 },
             );
             // Last, so hovered-command hints from every bar this frame are shown.
-            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.autosave.error());
+            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
             ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref());
             if !v16 {
                 chrome::resize_edges(ui, full);
@@ -433,15 +439,6 @@ impl eframe::App for MeridianApp {
             self.selected_media = None;
         }
 
-        // After the timeline so this frame's cursor/clip edits are what gets requested.
-        self.preview.update(ctx, &self.project);
-        // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
-        let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
-        if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
-            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
-            shot.tick(ctx, busy);
-        }
-
         // Start/stop audio on play state changes. While playing, restart it on seeks, when the
         // content end changes (the session only decodes up to the end it started with), and
         // while the output device is still opening (otherwise this whole run stays silent).
@@ -457,6 +454,20 @@ impl eframe::App for MeridianApp {
         if self.playing && !self.was_playing {
             self.play_start = cursor;
         }
+        // Video plays on through loop wraps (the engine wraps too); a seek or a new loop region restarts it.
+        let tl = &self.project.timeline;
+        let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
+        if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
+            if self.playing {
+                self.preview.play(lp);
+            } else {
+                self.preview.stop();
+            }
+            self.play_loop = lp;
+        }
+        // Thumbnail and waveform decodes wait while playing.
+        self.thumbs.set_paused(self.playing);
+        self.waves.set_paused(self.playing);
         let restart = self.playing
             && (wrapped
                 || cursor != self.clock_pos
@@ -469,6 +480,15 @@ impl eframe::App for MeridianApp {
             }
             self.was_playing = self.playing;
             self.play_end = end;
+        }
+
+        // After the timeline and the play edges, so this frame's cursor/clip edits are what gets requested.
+        self.preview.update(ctx, &self.project);
+        // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
+        let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
+        if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
+            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
+            shot.tick(ctx, busy);
         }
     }
 }

@@ -30,20 +30,27 @@ impl Launch {
 }
 
 /// Lavfi sources for the demo media: (file name, ffmpeg input/output args).
+/// HD video is encoded and tagged BT.709, as cameras do, so it previews in its true colours.
 const MEDIA: [(&str, &[&str]); 5] = [
     ("testsrc2.mp4", &[
         "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30000/1001:duration=10",
         "-f", "lavfi", "-i", "sine=frequency=440:beep_factor=4:duration=10",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2", "-shortest",
+        "-vf", "format=rgb24,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", "-ac", "2", "-shortest",
     ]),
+    // smptehdbars is generated as BT.709 YUV already: tagged only.
     ("smptebars.mp4", &[
         "-f", "lavfi", "-i", "smptehdbars=size=1920x1080:rate=30000/1001:duration=8",
         "-f", "lavfi", "-i", "sine=frequency=1000:duration=8",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2", "-shortest",
     ]),
     ("color.mp4", &[
         "-f", "lavfi", "-i", "color=c=0x2a5d8f:size=1920x1080:rate=30000/1001:duration=6",
-        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-vf", "format=rgb24,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-c:v", "libx264", "-preset", "ultrafast",
     ]),
     // Stereo, with different L/R envelopes, so the two stacked channel waveforms differ.
     ("tone.wav", &["-f", "lavfi", "-i", "aevalsrc=0.8*sin(2*PI*220*t)*abs(sin(PI*t/3))|0.6*sin(2*PI*330*t)*abs(cos(PI*t/4)):s=48000:d=12"]),
@@ -55,10 +62,10 @@ pub fn media_dir() -> PathBuf {
     std::env::temp_dir().join("milan-demo")
 }
 
-/// Generate the demo media once; a `ready2` marker means every file of this media set was written.
+/// Generate the demo media once; a `ready3` marker means every file of this media set was written.
 fn ensure_media() -> anyhow::Result<PathBuf> {
     let dir = media_dir();
-    if dir.join("ready2").exists() {
+    if dir.join("ready3").exists() {
         return Ok(dir);
     }
     std::fs::create_dir_all(&dir)?;
@@ -68,7 +75,7 @@ fn ensure_media() -> anyhow::Result<PathBuf> {
         let out = crate::proc::output(&mut cmd).map_err(|e| anyhow::anyhow!(crate::proc::tool_error(&e, "ffmpeg")))?;
         anyhow::ensure!(out.status.success(), "ffmpeg {name}: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
-    std::fs::write(dir.join("ready2"), "")?;
+    std::fs::write(dir.join("ready3"), "")?;
     Ok(dir)
 }
 

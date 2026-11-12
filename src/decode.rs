@@ -1,12 +1,15 @@
-//! Preview frame server: single RGBA frames decoded by ffmpeg on a worker thread.
+//! Preview: the timeline picture from the video engine, or single RGBA frames of one media (the Trimmer)
+//! decoded by ffmpeg on a worker thread; and event thumbnails.
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
+use crate::engine::VideoEngine;
 use crate::project::{MediaItem, MediaType, Project};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Quality {
     Draft,
     Preview,
@@ -18,7 +21,7 @@ impl Quality {
     pub const ALL: [Quality; 4] = [Quality::Draft, Quality::Preview, Quality::Good, Quality::Best];
 
     /// ffmpeg scaler per quality; Draft also decodes at half the size's resolution.
-    fn scaler(self) -> &'static str {
+    pub fn scaler(self) -> &'static str {
         match self {
             Quality::Draft | Quality::Preview => "fast_bilinear",
             Quality::Good => "bilinear",
@@ -61,31 +64,13 @@ struct FrameRequest {
     width: u32,
     height: u32,
     scaler: &'static str,
+    /// ffmpeg `in_color_matrix` (None = auto), as the engine decodes the same media.
+    matrix: Option<&'static str>,
 }
 
 struct FrameResult {
     id: u64,
     image: Result<ColorImage, String>,
-}
-
-/// The media and source time visible at timeline time `t`: the topmost visible
-/// video track (index 0 is the top) with a picture clip under `t`.
-pub fn frame_source(project: &Project, t: f64) -> Option<(&MediaItem, f64)> {
-    project.timeline.shown_video_tracks().find_map(|tr| {
-        // Later clips are drawn on top in the timeline, so they win here too.
-        tr.clips.iter().rev().find_map(|c| {
-            if t < c.position || t >= c.position + c.duration {
-                return None;
-            }
-            let id = c.media_id.as_deref()?;
-            let m = project.media_pool.iter().find(|m| m.id == id)?;
-            match m.media_type {
-                MediaType::Video => Some((m, c.in_point + (t - c.position))),
-                MediaType::Image => Some((m, 0.0)),
-                _ => None,
-            }
-        })
-    })
 }
 
 /// Even-sized decode dimensions preserving the source aspect (16:9 if unknown).
@@ -103,9 +88,15 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(["-v", "error", "-ss", &format!("{:.3}", req.time.max(0.0)), "-i"])
         .arg(&req.path)
-        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-sws_flags", req.scaler, "-s"])
-        .arg(format!("{}x{}", req.width, req.height))
-        .arg("-");
+        .args(["-frames:v", "1", "-vf"])
+        .arg(format!(
+            "scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
+            req.width,
+            req.height,
+            req.scaler,
+            req.matrix.unwrap_or("auto")
+        ))
+        .args(["-f", "rawvideo", "-"]);
     let out = crate::proc::output(&mut cmd).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
     let need = (req.width * req.height * 4) as usize;
     if out.stdout.len() < need {
@@ -116,6 +107,11 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
         [req.width as usize, req.height as usize],
         &out.stdout[..need],
     ))
+}
+
+/// The first frame of `path` (a still) at `w` x `h`, premultiplied.
+pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -136,6 +132,10 @@ pub struct Preview {
     /// The frame behind `texture`, for snapshots.
     pub image: Option<Arc<ColorImage>>,
     pub error: Option<String>,
+    /// The timeline preview's engine; None for a single-media preview (the Trimmer).
+    engine: Option<VideoEngine>,
+    /// The Video Preview window is on screen this frame (set by the app); frames are only made while it is.
+    pub visible: bool,
 }
 
 impl Preview {
@@ -170,7 +170,14 @@ impl Preview {
             texture: None,
             image: None,
             error: None,
+            engine: None,
+            visible: false,
         }
+    }
+
+    /// The timeline preview: every layer composited by the video engine.
+    pub fn timeline(ctx: &egui::Context) -> Self {
+        Self { engine: Some(VideoEngine::new(ctx)), ..Self::new(ctx) }
     }
 
     /// Decode width for a project `full_w` wide at the current quality and size.
@@ -180,13 +187,46 @@ impl Preview {
 
     /// A requested frame has not arrived yet.
     pub fn busy(&self) -> bool {
-        self.done_id.max(self.min_id) < self.next_id
+        match &self.engine {
+            Some(e) => e.busy(),
+            None => self.done_id.max(self.min_id) < self.next_id,
+        }
     }
 
-    /// Request a frame if the visible (media, source frame) changed, and take finished frames.
+    /// Timeline preview, once per UI frame: the frame at the cursor (paused) or the due frame (playing).
     pub fn update(&mut self, ctx: &egui::Context, project: &Project) {
-        let src = frame_source(project, project.timeline.cursor_position);
-        self.show(ctx, src, project.settings.frame_rate, project.settings.width);
+        let s = &project.settings;
+        let w = self.width(s.width);
+        let h = ((w as f64 * s.height as f64 / s.width.max(1) as f64 / 2.0).round() as u32 * 2).max(2);
+        let (q, visible) = (self.quality, self.visible);
+        let Some(e) = &mut self.engine else { return };
+        if let Some((img, err)) = e.update(project, w, h, q, visible) {
+            // A failed layer still shows the others; the error goes to the status bar.
+            self.error = err;
+            self.set_image(ctx, img);
+        }
+    }
+
+    /// Play the timeline from the cursor (again, after a seek), looping over `loop_` if set.
+    pub fn play(&mut self, loop_: Option<(f64, f64)>) {
+        if let Some(e) = &mut self.engine {
+            e.play(loop_);
+        }
+    }
+
+    pub fn stop(&mut self) {
+        if let Some(e) = &mut self.engine {
+            e.stop();
+        }
+    }
+
+    fn set_image(&mut self, ctx: &egui::Context, img: Arc<ColorImage>) {
+        let data = egui::ImageData::Color(img.clone());
+        match &mut self.texture {
+            Some(t) => t.set(data, TextureOptions::LINEAR),
+            None => self.texture = Some(ctx.load_texture("preview_frame", data, TextureOptions::LINEAR)),
+        }
+        self.image = Some(img);
     }
 
     /// Like `update`, for an explicit source (the Trimmer's media at its own cursor).
@@ -202,7 +242,15 @@ impl Preview {
             match src {
                 Some((m, time)) => {
                     let (width, height) = decode_size(m, max_w);
-                    let req = FrameRequest { id: self.next_id, path: m.path.clone(), time, width, height, scaler: self.quality.scaler() };
+                    let req = FrameRequest {
+                        id: self.next_id,
+                        path: m.path.clone(),
+                        time,
+                        width,
+                        height,
+                        scaler: self.quality.scaler(),
+                        matrix: crate::engine::plan::matrix(m),
+                    };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
                 }
@@ -216,7 +264,8 @@ impl Preview {
         }
 
         let mut got = false;
-        for r in self.rx.try_iter() {
+        let results: Vec<FrameResult> = self.rx.try_iter().collect();
+        for r in results {
             if r.id < self.min_id {
                 continue;
             }
@@ -225,13 +274,7 @@ impl Preview {
             match r.image {
                 Ok(img) => {
                     self.error = None;
-                    let img = Arc::new(img);
-                    let data = egui::ImageData::Color(img.clone());
-                    match &mut self.texture {
-                        Some(t) => t.set(data, TextureOptions::LINEAR),
-                        None => self.texture = Some(ctx.load_texture("preview_frame", data, TextureOptions::LINEAR)),
-                    }
-                    self.image = Some(img);
+                    self.set_image(ctx, Arc::new(img));
                 }
                 Err(e) => {
                     self.error = Some(e);
@@ -263,6 +306,8 @@ pub struct Thumbs {
     rx: Receiver<(ThumbKey, Result<ColorImage, String>)>,
     cache: HashMap<ThumbKey, Thumb>,
     ctx: egui::Context,
+    /// Set while the timeline plays, so thumbnail decodes leave the CPU to playback.
+    paused: Arc<AtomicBool>,
 }
 
 /// Queued requests kept; older ones are dropped (and re-requested if they come back into view).
@@ -275,10 +320,14 @@ impl Thumbs {
     pub fn new(ctx: &egui::Context) -> Self {
         let queue = Arc::new((Mutex::new(Vec::<(ThumbKey, FrameRequest)>::new()), Condvar::new()));
         let (tx, rx) = mpsc::channel();
+        let paused = Arc::new(AtomicBool::new(false));
         for _ in 0..2 {
-            let (queue, tx, ctx) = (queue.clone(), tx.clone(), ctx.clone());
+            let (queue, tx, ctx, paused) = (queue.clone(), tx.clone(), ctx.clone(), paused.clone());
             std::thread::spawn(move || {
                 loop {
+                    while paused.load(Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
                     let (key, req) = {
                         let (lock, cv) = &*queue;
                         let mut q = cv.wait_while(lock.lock().unwrap(), |q| q.is_empty()).unwrap();
@@ -291,7 +340,11 @@ impl Thumbs {
                 }
             });
         }
-        Self { queue, rx, cache: HashMap::new(), ctx: ctx.clone() }
+        Self { queue, rx, cache: HashMap::new(), ctx: ctx.clone(), paused }
+    }
+
+    pub fn set_paused(&self, on: bool) {
+        self.paused.store(on, Relaxed);
     }
 
     fn receive(&mut self) {
@@ -320,7 +373,7 @@ impl Thumbs {
                 self.cache.retain(|_, v| matches!(v, Thumb::Pending));
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear" };
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m) };
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
             q.push((key.clone(), req));
@@ -341,7 +394,6 @@ impl Thumbs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{Clip, Track, TrackKind};
 
     fn media(id: &str, kind: MediaType) -> MediaItem {
         MediaItem {
@@ -355,41 +407,6 @@ mod tests {
             frame_rate: Some(30.0),
             ..Default::default()
         }
-    }
-
-    fn clip(m: &MediaItem, pos: f64, dur: f64, inp: f64) -> Clip {
-        let mut c = Clip::from_media(m, pos);
-        c.duration = dur;
-        c.in_point = inp;
-        c.out_point = inp + dur;
-        c
-    }
-
-    #[test]
-    fn topmost_visible_clip_and_source_time() {
-        let mut p = Project::new("t");
-        let (a, b, img) = (media("a", MediaType::Video), media("b", MediaType::Video), media("i", MediaType::Image));
-        p.timeline.video_tracks[0].clips.push(clip(&a, 10.0, 5.0, 2.0));
-        p.timeline.video_tracks.push(Track::new("Video 2", TrackKind::Video));
-        p.timeline.video_tracks[1].clips.push(clip(&b, 0.0, 20.0, 0.0));
-        p.timeline.video_tracks[1].clips.push(clip(&img, 30.0, 5.0, 0.0));
-        p.media_pool = vec![a, b, img];
-
-        let (m, t) = frame_source(&p, 11.5).unwrap();
-        assert_eq!((m.id.as_str(), t), ("a", 3.5)); // top track wins: 2.0 + (11.5 - 10)
-        assert_eq!(frame_source(&p, 16.0).unwrap().0.id, "b"); // past the top clip
-        p.timeline.video_tracks[0].visible = false;
-        assert_eq!(frame_source(&p, 11.5).unwrap().0.id, "b"); // hidden track ignored
-        p.timeline.video_tracks[0].visible = true;
-        p.timeline.video_tracks[0].muted = true;
-        assert_eq!(frame_source(&p, 11.5).unwrap().0.id, "b"); // muted track ignored
-        p.timeline.video_tracks[0].muted = false;
-        p.timeline.video_tracks[1].solo = true;
-        assert_eq!(frame_source(&p, 11.5).unwrap().0.id, "b"); // solo isolates track 2
-        p.timeline.video_tracks[1].solo = false;
-        p.timeline.video_tracks[0].visible = false;
-        assert_eq!(frame_source(&p, 32.0).map(|(m, t)| (m.id.as_str(), t)), Some(("i", 0.0)));
-        assert!(frame_source(&p, 25.0).is_none()); // gap: black
     }
 
     #[test]
