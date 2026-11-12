@@ -508,7 +508,7 @@ mod tests {
         };
         let mut run = |events: Vec<Event>, look| {
             let mut out = Vec::new();
-            ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
                 out = km.poll(ctx, look, Scope { blocked: false, over_dock: false });
             });
             out

@@ -366,11 +366,32 @@ mod tests {
         p
     }
 
-    /// Needs ffmpeg; CPU heavy. `cargo test --release -- --ignored --nocapture bench_playback`
+    /// Needs ffmpeg; CPU heavy. Plan 1.9 per layer count, gate on each. `cargo test --release -- --ignored --nocapture bench_playback`
     #[test]
     #[ignore]
     fn bench_playback() {
-        let p = bench_project(4, 12);
+        for layers in 1..=4 {
+            let (fps, skipped, dropped) = play_layers(layers);
+            let unpaced = unpaced_fps(layers);
+            println!("bench_playback {layers} layer(s): {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames; {unpaced:.1} fps unpaced");
+            assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{layers} layers: {fps:.2} fps, {skipped} skipped");
+        }
+    }
+
+    /// Frames composed per second when nothing paces the worker: each waits for its decoders, none is skipped.
+    fn unpaced_fps(layers: usize) -> f64 {
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&bench_project(layers, 12))));
+        let start = Instant::now();
+        for n in 0..240 {
+            assert!(wk.frame(n, 960, 540, Quality::Preview, None).1.is_none());
+        }
+        240.0 / start.elapsed().as_secs_f64()
+    }
+
+    /// `layers` blended 1080p layers at Preview (960×540) against a 29.97 fps clock: (fps shown, frames skipped, late layer frames).
+    fn play_layers(layers: usize) -> (f64, i64, u64) {
+        let p = bench_project(layers, 12);
         let mut wk = Worker::new();
         wk.set_plan(Arc::new(plan::compile(&p)));
         let (tx, frames) = mpsc::sync_channel(4);
@@ -401,10 +422,7 @@ mod tests {
         let secs = start.elapsed().as_secs_f64();
         drop(frames);
         let _ = player.join();
-        let fps = shown as f64 / secs;
-        let dropped = stats.dropped.load(Relaxed);
-        println!("bench_playback: {shown} frames shown, {skipped} skipped in {secs:.2} s = {fps:.2} fps; {dropped} late or read-past layer frames");
-        assert!(fps >= 29.5 && (skipped as f64) < 0.01 * total as f64, "{fps:.2} fps, {skipped} skipped");
+        (shown as f64 / secs, skipped, stats.dropped.load(Relaxed))
     }
 
     /// Needs ffmpeg. A jump cut inside one file (1 s removed): the frames after the cut are the new shot, not the old one held.
