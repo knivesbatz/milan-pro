@@ -99,6 +99,12 @@ pub struct CmdState {
     pub focus_envs: Vec<EnvKind>,
     /// Options › Bypass All Audio FX.
     pub bypass_audio_fx: bool,
+    /// The focus audio track is armed for recording; any track is; a recording is running.
+    pub armed: bool,
+    pub any_armed: bool,
+    pub recording: bool,
+    /// Live input peak (linear) shown in armed tracks' meters; None while no input is open.
+    pub input_level: Option<f32>,
     /// Names of the saved user layouts 0-9 of this look (None = <EMPTY>).
     pub layouts: [Option<String>; 10],
     /// The user layout last loaded or saved (Save Layout saves over it); None = the default layout.
@@ -133,6 +139,9 @@ impl CmdState {
             VideoOutputFx | BypassAudioFx => true,
             AudioEventFx => self.audio_clip,
             AudioTrackFx | DefaultTrackFx => self.audio_track_focus,
+            // Ctrl+R starts with armed tracks and stops a running recording; arming waits until it stops.
+            Record => self.recording || self.any_armed,
+            Arm => self.audio_track_focus && !self.recording,
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
@@ -176,6 +185,7 @@ impl CmdState {
             ShowEnvelopes => self.show_env,
             LockEnvelopes => self.lock_env,
             BypassAudioFx => self.bypass_audio_fx,
+            Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             LayoutUser(n) => self.layout_slot == Some(n),
             LayoutDefault => self.layout_slot.is_none(),
@@ -1130,6 +1140,19 @@ mod tests {
         assert_eq!(st.checked(BypassAudioFx), Some(false));
         st.bypass_audio_fx = true;
         assert!(st.enabled(BypassAudioFx) && st.checked(BypassAudioFx) == Some(true));
+    }
+
+    #[test]
+    fn record_and_arm_follow_the_armed_tracks() {
+        let mut st = CmdState::default();
+        assert!(!st.enabled(Record) && !st.enabled(Arm));
+        st.audio_track_focus = true;
+        assert!(st.enabled(Arm) && st.checked(Arm) == Some(false) && !st.enabled(Record));
+        (st.armed, st.any_armed) = (true, true);
+        assert!(st.enabled(Record) && st.checked(Arm) == Some(true));
+        // While recording, Ctrl+R stops it and arming is fixed.
+        (st.recording, st.any_armed) = (true, false);
+        assert!(st.enabled(Record) && !st.enabled(Arm));
     }
 
     #[test]

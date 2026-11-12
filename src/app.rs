@@ -120,6 +120,19 @@ pub struct MeridianApp {
     shuttle: f64,
     /// Options › Bypass All Audio FX (playback only, for this session).
     bypass_audio_fx: bool,
+    /// The recording input: open while a track is armed (the meter), recording into a file from `rec_start`.
+    input: Option<crate::record::Capture>,
+    rec_start: Option<f64>,
+    /// Timeline time of the take's first sample, read off the playback clock once both are running.
+    rec_anchor: Option<f64>,
+    /// Loop Playback as it was before the recording turned it off.
+    rec_looping: bool,
+    /// The input could not be opened for the armed tracks; tried again once nothing is armed.
+    input_failed: bool,
+    /// Input peak shown in armed tracks' meters (falls back between peaks).
+    input_level: f32,
+    /// Recorded Files, after a recording stops.
+    recorded: Option<crate::ui::dialogs::RecordedFiles>,
     /// Recent project picked from a menu, opened once the save prompt is answered.
     pending_open: Option<std::path::PathBuf>,
     /// File › New opens Project Properties for the new project.
@@ -249,6 +262,13 @@ impl MeridianApp {
             shortcuts_open: false,
             shuttle: 0.0,
             bypass_audio_fx: false,
+            input: None,
+            rec_start: None,
+            rec_anchor: None,
+            rec_looping: false,
+            input_failed: false,
+            input_level: 0.0,
+            recorded: None,
             pending_open: None,
             props_after_new: false,
             new_settings: None,
@@ -354,8 +374,8 @@ impl eframe::App for MeridianApp {
             if let Some((a, _)) = lp.filter(|&(_, b)| tl.cursor_position >= b) {
                 // Loop Playback: jump back to the selection start.
                 tl.cursor_position = a;
-            } else if lp.is_none() && tl.cursor_position >= end {
-                // Playback ends at the last event and stays there.
+            } else if lp.is_none() && tl.cursor_position >= end && self.rec_start.is_none() {
+                // Playback ends at the last event and stays there (a recording runs on past it).
                 tl.cursor_position = end.max(self.play_start);
                 self.playing = false;
             }
@@ -369,6 +389,7 @@ impl eframe::App for MeridianApp {
         // Keyboard shortcuts, through the keymap (§7); menus and context menus queue theirs for after the UI.
         self.tick_shuttle(ctx);
         self.handle_keys(ctx);
+        self.tick_input(ctx);
         let mut menu_action = None;
 
         // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
@@ -569,6 +590,11 @@ impl eframe::App for MeridianApp {
             self.prefs.look = self.look;
             self.save_prefs();
         }
+        if ctx.input(|i| i.viewport().close_requested()) && self.rec_start.is_some() {
+            // The take goes on the timeline first, so the save prompt below covers it.
+            self.stop_recording();
+            self.recorded = None;
+        }
         if ctx.input(|i| i.viewport().close_requested()) && self.project.modified {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(MenuAction::Exit);
@@ -654,6 +680,11 @@ impl eframe::App for MeridianApp {
             if let Some((a, _)) = tl.loop_region.filter(|&(a, b)| b > a && (tl.cursor_position < a || tl.cursor_position >= b)) {
                 tl.cursor_position = a;
             }
+        }
+        if self.rec_start.is_some() && self.playing && (self.project.timeline.cursor_position != self.clock_pos || self.looping) {
+            // A seek or Loop Playback would play from elsewhere while the file runs on: the take ends here.
+            self.stop_recording();
+            self.message.get_or_insert_with(|| "Recording stopped: the cursor moved.".into());
         }
         let cursor = self.project.timeline.cursor_position;
         if self.playing && !self.was_playing {

@@ -32,6 +32,7 @@ impl MeridianApp {
             || self.default_track.is_some()
             || self.layout_as.is_some()
             || self.vegas_report.is_some()
+            || self.recorded.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -80,6 +81,150 @@ impl MeridianApp {
             layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(theme::get().look(), n)).map(|l| l.name.clone())),
             layout_slot: self.layout_slot,
             bypass_audio_fx: self.bypass_audio_fx,
+            armed: self.focus_of(false).is_some_and(|i| tl.audio_tracks[i].armed),
+            any_armed: tl.audio_tracks.iter().any(|t| t.armed),
+            recording: self.rec_start.is_some(),
+            input_level: self.input.as_ref().map(|_| self.input_level),
+        }
+    }
+
+    /// Each frame: the armed tracks' input meter opens and closes with arming, and a recording stops with playback.
+    pub(super) fn tick_input(&mut self, ctx: &egui::Context) {
+        use crate::record::Capture;
+        if let Some(start) = self.rec_start {
+            // Playback starts late (decoders warming up) and the input early or late, by a different amount each take:
+            // the first time both run, the clock says where the file is.
+            if self.rec_anchor.is_none() && self.clock_pos > start {
+                self.rec_anchor = self.input.as_ref().and_then(|c| c.recorded_secs()).map(|s| self.clock_pos - s);
+            }
+            // Stop, Pause, Space or the end of a Play From Start: the recording ends with playback, as in VEGAS.
+            if !self.playing {
+                self.stop_recording();
+            }
+        } else if !self.project.timeline.audio_tracks.iter().any(|t| t.armed) {
+            (self.input, self.input_failed) = (None, false);
+        } else if self.input.is_none() && !self.input_failed {
+            self.input = Some(Capture::start(self.prefs.record_input.clone(), None));
+        }
+        let Some(c) = &self.input else {
+            self.input_level = 0.0;
+            return;
+        };
+        if let Some(e) = c.error() {
+            if self.rec_start.is_some() {
+                // The device failed or went away: keep and place what was recorded.
+                self.stop_recording();
+                self.message.get_or_insert(e);
+            } else {
+                self.message = Some(e);
+            }
+            (self.input, self.input_failed) = (None, true);
+            return;
+        }
+        let peak = c.take_peaks().into_iter().fold(0.0, f32::max);
+        self.input_level = peak.max(self.input_level * 0.8);
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+
+    /// Record (Ctrl+R): a new file in the recording folder, then playback from the cursor with looping off.
+    fn start_recording(&mut self) {
+        let p = &self.project;
+        let Some(track) = p.timeline.audio_tracks.iter().find(|t| t.armed) else { return };
+        let Some(dir) = crate::record::folder(p) else {
+            self.message = Some("Save the project or arm the track again to choose a folder for recordings.".into());
+            return;
+        };
+        match crate::record::create_file(&dir, &p.name, &track.name) {
+            Ok(out) => {
+                self.message = Some(format!("Recording to {}", out.0.display()));
+                self.input = None; // the meter lets go of the device first
+                self.input = Some(crate::record::Capture::start(self.prefs.record_input.clone(), Some(out)));
+                (self.rec_start, self.rec_anchor, self.rec_looping) = (Some(p.timeline.cursor_position), None, self.looping);
+                (self.looping, self.shuttle, self.playing) = (false, 0.0, true);
+            }
+            Err(e) => self.message = Some(format!("Could not create a recording file in {}: {e}", dir.display())),
+        }
+    }
+
+    /// End the recording: the file goes on the armed tracks (one undo step) and Recorded Files opens. A file that
+    /// holds no audio is removed; one that could not be placed stays on disk and is named in the status bar.
+    pub(super) fn stop_recording(&mut self) {
+        let Some(start) = self.rec_start.take() else { return };
+        self.playing = false;
+        self.looping |= self.rec_looping;
+        let Some(cap) = self.input.take() else { return };
+        let path = cap.path.clone();
+        let mut failed = None;
+        let take = match cap.finish() {
+            Ok(t) => t,
+            Err(e) => match path.as_deref().map(crate::record::recover) {
+                // The file broke off (a full disk): what reached it is still placed.
+                Some(Ok((frames, rate))) if frames > 0 => {
+                    failed = Some(e);
+                    crate::record::Take { path: path.unwrap_or_default(), frames, rate, dropped: 0 }
+                }
+                _ => {
+                    // Only a header (or nothing) was written: nothing of the user's is lost.
+                    if let Some(p) = path.filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() <= 44)) {
+                        let _ = std::fs::remove_file(p);
+                    }
+                    self.message = Some(format!("Recording failed: {e}"));
+                    return;
+                }
+            },
+        };
+        if take.frames == 0 {
+            let _ = std::fs::remove_file(&take.path);
+            self.message = Some("Nothing was recorded.".into());
+            return;
+        }
+        let at = self.rec_anchor.take().unwrap_or(start) - self.prefs.record_offset_ms / 1000.0;
+        // The take is its own undo step: an event drag in progress is kept as the step before it.
+        self.end_drag();
+        let mut id = None;
+        let placed = self.edit(|p| {
+            let done = edit::place_recording(p, &take.path, take.frames, take.rate, at, start);
+            id = done.then(|| p.media_pool.last().map(|m| m.id.clone())).flatten();
+            done
+        });
+        self.message = if let Some(e) = failed {
+            Some(format!("Recording stopped: {e}. What was saved is kept in {}.", take.path.display()))
+        } else if !placed {
+            Some(format!("Recorded {}, but no armed, unlocked audio track could take it; import it from there.", take.path.display()))
+        } else if take.dropped > 0 {
+            Some(format!("The recording lost {} blocks of audio (the disk was too slow); later audio is early.", take.dropped))
+        } else {
+            None
+        };
+        self.recorded = id.map(|id| dialogs::RecordedFiles::new(vec![id]));
+    }
+
+    /// Release an event or envelope drag as if the mouse let go: its changes become an undo step.
+    fn end_drag(&mut self) {
+        let before = match (self.drag_state.take(), self.env_drag.take()) {
+            (Some(d), _) if d.changed => Some(d.before),
+            (_, Some(e)) if e.changed => Some(e.before),
+            _ => None,
+        };
+        if let Some(b) = before {
+            self.history.push(b);
+            self.project.mark_modified();
+        }
+    }
+
+    /// Recorded Files › Delete: the media and its events leave the project (one undo step), then the file is deleted.
+    fn delete_recording(&mut self, id: &str) {
+        let Some(path) = self.project.media_pool.iter().find(|m| m.id == id).map(|m| m.path.clone()) else { return };
+        let removed = self.edit(|p| {
+            p.media_pool.retain(|m| m.id != id);
+            edit::forget_media(&mut p.timeline, id);
+            p.mark_modified();
+            true
+        });
+        if removed {
+            if let Err(e) = std::fs::remove_file(&path) {
+                self.message = Some(format!("Could not delete {}: {e}", path.display()));
+            }
         }
     }
 
@@ -381,6 +526,9 @@ impl MeridianApp {
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
             // Edit
             Undo | Redo | UndoAll => {
+                // Arming and the recording folder are not edits: they stay as they are through undo and redo.
+                let armed: Vec<String> = self.project.timeline.audio_tracks.iter().filter(|t| t.armed).map(|t| t.id.clone()).collect();
+                let record_dir = self.project.timeline.record_dir.clone();
                 let mut done = false;
                 loop {
                     let step = if c == Redo { self.history.redo(&mut self.project) } else { self.history.undo(&mut self.project) };
@@ -389,6 +537,10 @@ impl MeridianApp {
                         break;
                     }
                 }
+                for t in &mut self.project.timeline.audio_tracks {
+                    t.armed = armed.contains(&t.id);
+                }
+                self.project.timeline.record_dir = record_dir;
                 if done {
                     // Selections keep the ids that still exist (`sync_sel`); a media or point index may point elsewhere now.
                     (self.selected_media, self.sel.env) = (None, None);
@@ -560,6 +712,29 @@ impl MeridianApp {
                 }
             }
             BypassAudioFx => self.bypass_audio_fx = !self.bypass_audio_fx,
+            // Arm for Record: the selected audio tracks follow the focus one. An unsaved project first asks where its
+            // recordings go.
+            Arm => {
+                let Some(i) = self.focus_of(false) else { return };
+                let on = !self.project.timeline.audio_tracks[i].armed;
+                if on && crate::record::folder(&self.project).is_none() {
+                    let Some(dir) = rfd::FileDialog::new().set_title("Folder for recorded files").pick_folder() else { return };
+                    // A project setting, not an edit: no undo step.
+                    self.project.timeline.record_dir = Some(dir);
+                    self.project.mark_modified();
+                }
+                let ids = &self.sel.tracks;
+                for t in self.project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id)) {
+                    t.armed = on;
+                }
+            }
+            Record => {
+                if self.rec_start.is_some() {
+                    self.stop_recording();
+                } else {
+                    self.start_recording();
+                }
+            }
             DefaultTrackFx => {
                 self.default_track = self.focus_of(false).map(|i| dialogs::DefaultTrackProps::new(self.project.timeline.audio_tracks[i].id.clone()));
             }
@@ -838,6 +1013,11 @@ impl MeridianApp {
 
     /// New/Open/Exit, asking to save first if there are unsaved changes.
     pub(super) fn request(&mut self, ctx: &egui::Context, action: MenuAction) {
+        if self.rec_start.is_some() {
+            // A running take goes on the timeline first, so the save prompt covers it.
+            self.stop_recording();
+            self.recorded = None;
+        }
         if self.project.modified {
             self.confirm = Some(action);
         } else {
@@ -906,6 +1086,7 @@ impl MeridianApp {
         self.event_props = None;
         self.take_chooser = None;
         self.default_track = None;
+        self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
         self.playing = false;
         self.message = None;
@@ -996,9 +1177,23 @@ impl MeridianApp {
             if new.track_colors != self.prefs.track_colors {
                 theme::set_palette(ctx, new.palette());
             }
+            if new.record_input != self.prefs.record_input && self.rec_start.is_none() {
+                (self.input, self.input_failed) = (None, false); // the meter reopens on the new input
+            }
             self.look = new.look;
             self.prefs = new;
             self.save_prefs();
+        }
+        if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {
+            match r {
+                dialogs::Recorded::Done => self.recorded = None,
+                dialogs::Recorded::Delete(id) => self.delete_recording(&id),
+                dialogs::Recorded::Rename(id, name) => {
+                    if let Err(e) = crate::record::rename_file(&mut self.project, &id, &name) {
+                        self.message = Some(e);
+                    }
+                }
+            }
         }
         if self.vegas_report.as_ref().is_some_and(|(intro, lines)| dialogs::report(ctx, "Import VEGAS Project", intro, lines)) {
             self.vegas_report = None;
@@ -1159,6 +1354,11 @@ impl MeridianApp {
         match what.as_str() {
             "prefs" => self.prefs_dlg.open(&self.prefs),
             "prefs-display" => self.prefs_dlg.open_display(&self.prefs),
+            "prefs-audio" => self.prefs_dlg.open_audio_device(&self.prefs),
+            "recorded" => {
+                let audio = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Audio);
+                self.recorded = audio.map(|m| dialogs::RecordedFiles::new(vec![m.id.clone()]));
+            }
             "props" => self.settings.open(&self.project),
             "render" => self.render.open = true,
             "save" => self.confirm = Some(MenuAction::Exit),

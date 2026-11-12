@@ -13,6 +13,7 @@ mod media;
 mod proc;
 mod project;
 mod proxy;
+mod record;
 mod render;
 mod settings;
 mod ui;

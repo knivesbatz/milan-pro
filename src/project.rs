@@ -43,6 +43,9 @@ pub struct Timeline {
     pub scroll_x: f64,
     #[serde(default)]
     pub master: MasterBus,
+    /// Folder new recordings go to; None = the project file's folder.
+    #[serde(default)]
+    pub record_dir: Option<PathBuf>,
 }
 
 fn default_zoom() -> f64 {
@@ -75,6 +78,9 @@ pub struct Track {
     /// Track envelopes; `volume` stays the static Level/Volume and multiplies with them.
     #[serde(default)]
     pub envelopes: Vec<Envelope>,
+    /// Armed for recording (audio): this session only.
+    #[serde(skip)]
+    pub armed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -454,6 +460,7 @@ impl Timeline {
             zoom: 1.0,
             scroll_x: 0.0,
             master: MasterBus::default(),
+            record_dir: None,
         }
     }
 
@@ -537,6 +544,7 @@ impl Track {
                 TrackKind::Video => Vec::new(),
             },
             envelopes: Vec::new(),
+            armed: false,
         }
     }
 }
@@ -709,7 +717,7 @@ mod tests {
                 assert!(o.as_object_mut().unwrap().remove(*k).is_some(), "{k} not serialized");
             }
         };
-        strip(&mut v["timeline"], &["loop_region", "master"]);
+        strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes"]);
         strip(&mut v["timeline"]["audio_tracks"][0], &["fx"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes"];
@@ -717,7 +725,7 @@ mod tests {
         strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator"]);
         let back: Project = serde_json::from_value(v).unwrap();
         let tl = &back.timeline;
-        assert_eq!(tl.loop_region, None);
+        assert_eq!((tl.loop_region, tl.record_dir.as_ref()), (None, None));
         assert_eq!(tl.master.gain, [1.0, 1.0]);
         assert!(tl.master.audio_fx.is_empty() && tl.master.video_fx.is_empty());
         let t = &tl.video_tracks[0];
@@ -764,6 +772,7 @@ mod tests {
         t.clips.push(c);
         p.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Pan), env(EnvKind::Mute)];
         p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
+        p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
         p.media_pool.push(MediaItem {
             id: "g".into(),
             media_type: MediaType::Image,
@@ -779,6 +788,18 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
+        assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
+    }
+
+    /// Arming is for this session: it is never written, and a loaded track is not armed.
+    #[test]
+    fn armed_is_not_saved() {
+        let mut p = Project::new("t");
+        p.timeline.audio_tracks[0].armed = true;
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v["timeline"]["audio_tracks"][0].get("armed").is_none());
+        let back: Project = serde_json::from_value(v).unwrap();
+        assert!(!back.timeline.audio_tracks[0].armed);
     }
 
     #[test]

@@ -499,7 +499,7 @@ fn env_line(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut
 }
 
 /// Track ≡ / ⋯ button menu: the switches, default height and the button-set entry.
-pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, i: usize) {
+pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Selection, v: bool, i: usize) {
     if i >= project.timeline.tracks(v).len() {
         return;
     }
@@ -525,10 +525,17 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
             });
         }
         sep(ui);
-    } else if theme::get().look() == UiLook::Vegas16 {
+    } else {
+        // Arm for Record leads the hidden audio buttons. Through the app (it owns the input device): this track
+        // becomes the focus, then Arm toggles it, as the header's Arm button does.
+        let (id, armed) = (project.timeline.audio_tracks[i].id.clone(), project.timeline.audio_tracks[i].armed);
+        let st = menus::state(ui.ctx());
+        if entry(ui, "&Arm for Record", &super::super::keymap::shortcut_text(Arm, st.look), !st.recording, Mark::Check(armed)) {
+            (sel.tracks, sel.list_focus, sel.env) = (vec![id.clone()], true, None);
+            menus::send(ui.ctx(), Arm);
+        }
         // VP16 keeps the audio Track FX button hidden too (VP23 shows it on the header).
-        let id = project.timeline.audio_tracks[i].id.clone();
-        if entry(ui, "Track &FX...", "", true, Mark::None) {
+        if theme::get().look() == UiLook::Vegas16 && entry(ui, "Track &FX...", "", true, Mark::None) {
             crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id)));
         }
         sep(ui);
@@ -716,7 +723,7 @@ const AUDIO_HEADER_MID: &[M] = &[
     X("&Paste"),
     X("&Delete"),
     S,
-    X("&Arm for Record"),
+    C("&Arm for Record", Arm),
     Sub("I&nput", &[X("None")]),
     Sub("&Output", &[R("Master", true)]),
     Sub("Au&tomation", &[X("Show Automation Controls"), S, R("Off", true), R("Read", false), R("Write (Touch)", false), R("Write (Latch)", false)]),

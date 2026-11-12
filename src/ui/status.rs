@@ -54,17 +54,18 @@ pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Opti
     cancel
 }
 
-/// Free space on the record drive (project folder, else temp) as 48 kHz 16-bit stereo time, refreshed every 10 s.
+/// Free space on the record drive (the recording folder, else temp) as recording time: 48 kHz stereo 32-bit float,
+/// what Milan Pro writes. Refreshed every 10 s.
 fn record_time(project: &Project) -> Option<String> {
     static CACHE: Mutex<Option<(Instant, PathBuf, Option<String>)>> = Mutex::new(None);
-    let dir = project.path.as_deref().and_then(Path::parent).map_or_else(std::env::temp_dir, Path::to_path_buf);
+    let dir = crate::record::folder(project).unwrap_or_else(std::env::temp_dir);
     let mut cache = CACHE.lock().ok()?;
     if let Some((at, d, s)) = cache.as_ref() {
         if at.elapsed() < Duration::from_secs(10) && *d == dir {
             return s.clone();
         }
     }
-    let s = free_bytes(&dir).map(|b| format_hms(b / 192_000));
+    let s = free_bytes(&dir).map(|b| format_hms(b / 384_000));
     *cache = Some((Instant::now(), dir, s.clone()));
     s
 }

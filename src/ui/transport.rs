@@ -66,18 +66,28 @@ impl Cmd {
         }
     }
 
-    /// Recording needs capture devices, which Milan Pro does not drive.
-    pub fn enabled(self) -> bool {
-        self != Cmd::Record
+    /// Record needs an armed track (or a recording to stop).
+    pub fn enabled(self, ctx: &Context) -> bool {
+        self != Cmd::Record || menus::state(ctx).enabled(Command::Record)
     }
 
-    /// Active-toggle fill: Play while playing, Loop while loop playback is on.
-    pub fn active(self, p: &Playback) -> bool {
+    /// Active-toggle fill: Play while playing, Loop while loop playback is on, Record while recording.
+    pub fn active(self, ctx: &Context, p: &Playback) -> bool {
         match self {
             Cmd::Play => *p.playing,
             Cmd::Loop => *p.looping,
+            Cmd::Record => menus::state(ctx).recording,
             _ => false,
         }
+    }
+}
+
+/// Run `cmd`; Record goes to the app, which owns the input device.
+fn run_ui(ctx: &Context, cmd: Cmd, project: &mut Project, p: &mut Playback) {
+    if cmd == Cmd::Record {
+        menus::send(ctx, Command::Record);
+    } else {
+        run(cmd, project, p);
     }
 }
 
@@ -94,7 +104,7 @@ pub fn run(cmd: Cmd, project: &mut Project, p: &mut Playback) {
     let end = content_end(project);
     let tl = &mut project.timeline;
     match cmd {
-        Cmd::Record => {}
+        Cmd::Record => {} // `run_ui` sends it to the app
         Cmd::Loop => *p.looping = !*p.looping,
         Cmd::PlayFromStart => {
             tl.cursor_position = 0.0;
@@ -117,25 +127,27 @@ pub fn run(cmd: Cmd, project: &mut Project, p: &mut Playback) {
 
 /// One transport command as a toolbar button; runs it when clicked.
 pub fn cmd_button(ui: &mut Ui, cmd: Cmd, project: &mut Project, p: &mut Playback) {
-    if !cmd.enabled() {
-        // Record: lit as in VEGAS, nothing to record from.
-        inert_button(ui, cmd.icon(), "Record (no capture devices)", false);
-    } else if tool_button(ui, cmd.icon(), cmd.label(), cmd.enabled(), cmd.active(p)).clicked() {
-        run(cmd, project, p);
+    let ctx = ui.ctx().clone();
+    if !cmd.enabled(&ctx) {
+        // Record: lit as in VEGAS, nothing armed to record into.
+        inert_button(ui, cmd.icon(), "Record (Ctrl+R): arm an audio track first (Ctrl+Alt+R)", false);
+    } else if tool_button(ui, cmd.icon(), cmd.label(), true, cmd.active(&ctx, p)).clicked() {
+        run_ui(&ctx, cmd, project, p);
     }
 }
 
 /// The full command list as menu items (the ≡ / ⋯ More menu).
 pub fn cmd_menu(ui: &mut Ui, project: &mut Project, p: &mut Playback) {
+    let ctx = ui.ctx().clone();
     for cmd in Cmd::ALL {
         let text = cmd.label();
-        let resp = if cmd == Cmd::Loop {
-            ui.add(Button::new(text).selected(*p.looping))
+        let resp = if matches!(cmd, Cmd::Loop | Cmd::Record) {
+            ui.add_enabled(cmd.enabled(&ctx), Button::new(text).selected(cmd.active(&ctx, p)))
         } else {
-            ui.add_enabled(cmd.enabled(), Button::new(text))
+            ui.add_enabled(cmd.enabled(&ctx), Button::new(text))
         };
         if resp.clicked() {
-            run(cmd, project, p);
+            run_ui(&ctx, cmd, project, p);
             ui.close_menu();
         }
     }

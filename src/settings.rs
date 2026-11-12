@@ -51,6 +51,10 @@ pub struct Prefs {
     pub cut_overlap: f64,
     /// The FX chain new audio tracks start with (Set Default Track Properties); None = gate, EQ and compressor.
     pub default_track_fx: Option<Vec<crate::project::Fx>>,
+    /// Preferences › Audio Device: the recording input (device name; None = the Windows default) and the recording
+    /// latency offset, how many milliseconds earlier recorded events are placed.
+    pub record_input: Option<String>,
+    pub record_offset_ms: f64,
     /// Window layouts by `layout_key`: each look's last layout ("vp16:last") and user slots 0-9 ("vp16:3").
     /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
     #[serde(deserialize_with = "lenient_layouts")]
@@ -100,6 +104,8 @@ impl Default for Prefs {
             fx_favorites: Vec::new(),
             cut_overlap: 1.0,
             default_track_fx: None,
+            record_input: None,
+            record_offset_ms: 0.0,
             layouts: BTreeMap::new(),
         }
     }
@@ -331,8 +337,17 @@ mod tests {
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none());
+        assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
         let chain = crate::project::default_track_chain(None);
-        let a = Prefs { auto_proxy: true, fx_favorites: vec!["milan.fx.invert".into()], cut_overlap: 0.5, default_track_fx: Some(chain), ..Default::default() };
+        let a = Prefs {
+            auto_proxy: true,
+            fx_favorites: vec!["milan.fx.invert".into()],
+            cut_overlap: 0.5,
+            default_track_fx: Some(chain),
+            record_input: Some("Microphone (USB)".into()),
+            record_offset_ms: 12.5,
+            ..Default::default()
+        };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&a).unwrap()).unwrap(), a);
         let r = Prefs { auto_ripple: true, ripple_mode: crate::edit::RippleMode::All, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);

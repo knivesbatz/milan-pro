@@ -1853,9 +1853,77 @@ pub fn insert_generated(p: &mut Project, track: Option<usize>, at: f64, fx: Fx, 
     changed(p, true).then_some(id)
 }
 
+/// A stopped recording: the WAV at `path` (`frames` at `rate` Hz) goes into Project Media and, as one event, onto every
+/// armed, unlocked audio track. Its first sample belongs at timeline time `at`; what falls before `from` (where
+/// recording started) or 0 is trimmed off the event's start. False, and nothing changed, when no track takes it.
+pub fn place_recording(p: &mut Project, path: &std::path::Path, frames: u64, rate: u32, at: f64, from: f64) -> bool {
+    let tracks: Vec<usize> = p.timeline.audio_tracks.iter().enumerate().filter(|(_, t)| t.armed && !t.locked).map(|(i, _)| i).collect();
+    let len = frames as f64 / rate.max(1) as f64;
+    let cut = (from.max(0.0) - at).max(0.0);
+    if tracks.is_empty() || len <= cut {
+        return false;
+    }
+    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let m = MediaItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        path: path.to_path_buf(),
+        name,
+        media_type: MediaType::Audio,
+        duration: len,
+        sample_rate: Some(rate),
+        codec: Some("pcm_f32le".into()),
+        ..Default::default()
+    };
+    for i in tracks {
+        let mut c = Clip::from_media(&m, at + cut);
+        (c.in_point, c.duration) = (cut, len - cut);
+        let clips = &mut p.timeline.audio_tracks[i].clips;
+        clips.push(c);
+        clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    p.media_pool.push(m);
+    changed(p, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn place_recording_on_armed_unlocked_tracks() {
+        let mut p = Project::new("t");
+        let path = std::path::Path::new(r"C:\Shows\t Audio 1 Rec 001.wav");
+        assert!(!place_recording(&mut p, path, 48_000, 48_000, 2.0, 0.0), "no armed track");
+        p.timeline.add_audio_track();
+        p.timeline.add_audio_track();
+        let tl = &mut p.timeline.audio_tracks;
+        (tl[0].armed, tl[1].armed, tl[1].locked) = (true, true, true);
+        let mut h = crate::history::History::default();
+        let before = p.clone();
+        assert!(place_recording(&mut p, path, 96_000, 48_000, 2.3, 2.0), "capture started 0.3 s after the playhead");
+        h.push(before);
+        let m = &p.media_pool[0];
+        assert_eq!((p.media_pool.len(), m.duration, m.media_type, m.path.as_path()), (1, 2.0, MediaType::Audio, path));
+        let counts: Vec<usize> = p.timeline.audio_tracks.iter().map(|t| t.clips.len()).collect();
+        assert_eq!(counts, [1, 0, 0], "only the armed, unlocked track");
+        let c = &p.timeline.audio_tracks[0].clips[0];
+        assert!((c.position - 2.3).abs() < 1e-9 && c.duration == 2.0 && c.in_point == 0.0);
+        assert_eq!(c.media_id.as_deref(), Some(m.id.as_str()));
+        // One undo step takes it all back.
+        assert!(h.undo(&mut p) && !h.can_undo());
+        assert!(p.media_pool.is_empty() && p.timeline.audio_tracks[0].clips.is_empty());
+        // Audio from before the recording started (capture ahead of playback, or the latency offset) is trimmed off
+        // the head, as is anything before 0.
+        p.timeline.audio_tracks[0].armed = true;
+        assert!(place_recording(&mut p, path, 48_000, 48_000, 1.6, 2.0));
+        let c = &p.timeline.audio_tracks[0].clips[0];
+        assert!(c.position == 2.0 && (c.in_point - 0.4).abs() < 1e-9 && (c.duration - 0.6).abs() < 1e-9);
+        p.timeline.audio_tracks[0].clips.clear();
+        assert!(place_recording(&mut p, path, 48_000, 48_000, -0.2, -0.1));
+        let c = &p.timeline.audio_tracks[0].clips[0];
+        assert!(c.position == 0.0 && (c.in_point - 0.2).abs() < 1e-9 && (c.duration - 0.8).abs() < 1e-9);
+        assert!(!place_recording(&mut p, path, 48_000, 48_000, 0.0, 1.0), "nothing left after the start");
+    }
 
     #[test]
     fn media_limit_is_unlimited_for_generated_media() {

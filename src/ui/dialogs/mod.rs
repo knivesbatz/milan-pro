@@ -3,6 +3,7 @@
 mod default_track;
 mod event_props;
 mod prefs;
+mod recorded;
 mod render;
 mod shortcuts;
 mod take_chooser;
@@ -12,6 +13,7 @@ mod welcome;
 pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
 pub use prefs::PrefsDialog;
+pub use recorded::{Recorded, RecordedFiles};
 pub use render::{RenderDialog, open_folder};
 pub use shortcuts::shortcuts_window;
 pub use take_chooser::TakeChooser;

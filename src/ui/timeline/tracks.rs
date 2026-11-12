@@ -31,6 +31,8 @@ fn pan_text(pan: f32) -> String {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Btn {
+    /// Arm for Record: shown (lit) on armed audio tracks only, so the default button set stays VEGAS's.
+    Arm,
     Comp,
     Fx,
     Mute,
@@ -95,7 +97,7 @@ struct Layout {
     meter: Option<Rect>,
 }
 
-fn layout(t: &Theme, g: &Geo, row: &Row) -> Layout {
+fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool) -> Layout {
     let v16 = t.look() == UiLook::Vegas16;
     let rect = Rect::from_min_size(pos2(g.rect.min.x, row.top), vec2(g.header_w, (row.h - 2.0).max(1.0)));
     let strip = rect.with_max_x((rect.min.x + t.m.color_strip_w).min(rect.max.x));
@@ -111,10 +113,12 @@ fn layout(t: &Theme, g: &Geo, row: &Row) -> Layout {
         // VP16 keeps 16 px above the meter for the peak readout on tall tracks only (68 px: labels fill it).
         .then(|| Rect::from_min_max(pos2(right, body.min.y + if v16 && rect.height() > 80.0 { 16.0 } else { 4.0 }), pos2(body.max.x - 2.0, body.max.y - 3.0)))
         .filter(|m| m.height() > 8.0);
-    let kinds: &[Btn] = match (v16, row.is_video) {
-        (true, _) => &[Btn::Mute, Btn::Solo],
-        (false, true) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
-        (false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
+    let kinds: &[Btn] = match (v16, row.is_video, armed) {
+        (true, false, true) => &[Btn::Arm, Btn::Mute, Btn::Solo],
+        (true, _, _) => &[Btn::Mute, Btn::Solo],
+        (false, true, _) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
+        (false, false, true) => &[Btn::Arm, Btn::Fx, Btn::Mute, Btn::Solo],
+        (false, false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
     };
     // Row 1: right-aligned on a 24 px pitch with a 6 px right padding; buttons that don't fit are left out.
     let mut buttons = Vec::new();
@@ -157,7 +161,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
             continue;
         }
-        let l = layout(&t, g, row);
+        let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed);
         let id = ui.id().with(("track_hdr", row.is_video, row.idx));
         let tid = track_id(project, row);
 
@@ -227,7 +231,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 #[allow(deprecated)]
                 popup::popup_below_widget(ui, pid, &mr, PopupCloseBehavior::CloseOnClick, |ui| {
                     ui.set_min_width(180.0);
-                    super::ctx::more_menu(ui, project, history, row.is_video, row.idx);
+                    super::ctx::more_menu(ui, project, history, sel, row.is_video, row.idx);
                 });
             });
         }
@@ -237,6 +241,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 continue;
             }
             let tip = match b {
+                Btn::Arm => "Arm for Record",
                 Btn::Comp => "Compositing Mode",
                 Btn::Fx => "Track FX",
                 Btn::Mute => "Mute",
@@ -265,6 +270,11 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                         history.push(before);
                     }
                 }
+            }
+            if resp.clicked() && *b == Btn::Arm {
+                // Through the app (it owns the input device): this track becomes the focus, then Arm toggles it.
+                (sel.tracks, sel.list_focus, sel.env) = (vec![tid.clone()], true, None);
+                crate::ui::menus::send(ui.ctx(), crate::ui::keymap::Command::Arm);
             }
             if resp.clicked() && *b == Btn::Fx {
                 crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(tid.clone())));
@@ -398,7 +408,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
             continue;
         }
         let tr = &project.timeline.tracks(row.is_video)[row.idx];
-        let l = layout(&t, g, row);
+        let l = layout(&t, g, row, tr.armed);
         let color = t.track_color(row.num);
         let selected = sel.tracks.contains(&tr.id);
 
@@ -467,7 +477,9 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
             }
         }
         if let Some(m) = l.meter {
-            paint_meter(&p, &t, m, l.body.min.y + 2.0);
+            // An armed track meters the recording input.
+            let input = crate::ui::menus::state(p.ctx()).input_level.filter(|_| tr.armed);
+            paint_meter(&p, &t, m, l.body.min.y + 2.0, input);
         }
     }
     // Separators (2 px under each track) and the empty area below the last track.
@@ -487,6 +499,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
 fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
     let v16 = t.look() == UiLook::Vegas16;
     let (icon, on) = match b {
+        Btn::Arm => (Icon::Record, true),
         Btn::Comp => (Icon::CompositingMode, false),
         Btn::Fx if matches!(tr.kind, TrackKind::Audio) => (Icon::TrackFx, crate::engine::afx::audible(&tr.fx, at)),
         Btn::Fx => (Icon::TrackFx, !tr.fx.is_empty()),
@@ -512,14 +525,18 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
     }
 }
 
-/// Empty level meter with dB labels (no live metering yet); VP16 shows the peak readout above it.
-fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32) {
+/// Level meter with dB labels: empty (playback levels are not metered per track yet), or lit to `input` (a linear
+/// peak) on an armed track. VP16 shows the peak readout above it.
+fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>) {
     let v16 = t.look() == UiLook::Vegas16;
+    let to_y = |d: f32| m.min.y + m.height() * (-d / 60.0).clamp(0.0, 1.0);
     if t.meter_unlit > 0.0 {
-        let to_y = |d: f32| m.min.y + m.height() * (-d / 60.0).clamp(0.0, 1.0);
         crate::ui::master_bus::paint_bar(p, m, m.min.y, &to_y, false, t.meter_unlit);
     } else {
         p.rect_filled(m, 0.0, t.meter_bg);
+    }
+    if let Some(v) = input.filter(|v| *v > 1e-3) {
+        crate::ui::master_bus::paint_bar(p, m, to_y(20.0 * v.log10()), &to_y, v16, 1.0);
     }
     let font = t.font(t.font.meter);
     let labels: &[i32] = if v16 { &[12, 24, 36, 48] } else { &[9, 18, 27, 36, 45, 54] };

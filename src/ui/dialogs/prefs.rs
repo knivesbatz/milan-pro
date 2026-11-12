@@ -1,4 +1,5 @@
-//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Editing and Display are live.
+//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
+//! are live.
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
 use super::super::theme::{self, LookChoice, UiLook, Variant};
@@ -14,6 +15,7 @@ const ROWS23: &[&[&str]] = &[
 ];
 const GENERAL: usize = 0;
 const VIDEO: usize = 1;
+const AUDIO_DEVICE: usize = 4;
 const EDITING: usize = 7;
 const DISPLAY: usize = 8;
 
@@ -22,17 +24,26 @@ pub struct PrefsDialog {
     draft: Option<Prefs>,
     tab: usize,
     track: usize,
+    /// Input device names, listed once per opening of the Audio Device page (listing devices is slow).
+    inputs: Option<Vec<String>>,
 }
 
 impl PrefsDialog {
     pub fn open(&mut self, prefs: &Prefs) {
         self.draft = Some(prefs.clone());
+        self.inputs = None;
     }
 
     /// Open on the Display tab (screenshot harness).
     pub fn open_display(&mut self, prefs: &Prefs) {
         self.open(prefs);
         self.tab = DISPLAY;
+    }
+
+    /// Open on the Audio Device tab (screenshot harness).
+    pub fn open_audio_device(&mut self, prefs: &Prefs) {
+        self.open(prefs);
+        self.tab = AUDIO_DEVICE;
     }
 
     pub fn is_open(&self) -> bool {
@@ -48,13 +59,14 @@ impl PrefsDialog {
         }
         let t = theme::get();
         let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
-        let (tab, track) = (&mut self.tab, &mut self.track);
+        let (tab, track, inputs) = (&mut self.tab, &mut self.track, &mut self.inputs);
         let changed = d != current;
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
                 GENERAL => general(ui, d),
                 VIDEO => video(ui, d),
+                AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices)),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track),
                 _ => {
@@ -114,6 +126,32 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
     ui.checkbox(&mut d.auto_proxy, "Automatically create video proxies for 4K, HEVC and AV1 media on import");
     if default_all(ui) {
         d.auto_proxy = false;
+    }
+}
+
+/// Audio Device: playback goes to the Windows default device; recording takes the chosen input and its latency offset.
+fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String]) {
+    const DEFAULT: &str = "Windows default device";
+    super::row(ui, "Audio device type:", 175.0, false, |ui| super::fixed_combo(ui, "pad_type", "Windows Classic Wave Driver", 200.0));
+    super::row(ui, "Default playback device:", 175.0, false, |ui| super::fixed_combo(ui, "pad_out", DEFAULT, 200.0));
+    super::row(ui, "Default record device:", 175.0, true, |ui| {
+        let shown = d.record_input.clone().unwrap_or_else(|| DEFAULT.into());
+        ComboBox::from_id_salt("pad_rec").width(200.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.record_input, None, DEFAULT);
+            for n in inputs {
+                ui.selectable_value(&mut d.record_input, Some(n.clone()), n.as_str());
+            }
+        });
+    });
+    super::row(ui, "Recording latency offset (ms):", 175.0, true, |ui| {
+        ui.add(DragValue::new(&mut d.record_offset_ms).range(-1000.0..=1000.0).speed(0.5).fixed_decimals(1))
+            .on_hover_text("Recorded events are placed this much earlier, to line up with what was playing")
+    });
+    if inputs.is_empty() {
+        ui.label("No recording devices were found.");
+    }
+    if default_all(ui) {
+        (d.record_input, d.record_offset_ms) = (None, 0.0);
     }
 }
 
