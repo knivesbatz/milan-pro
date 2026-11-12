@@ -3,6 +3,8 @@
 //! - `MILAN_DEMO=1`: demo project on generated media (cached in %TEMP%\milan-demo); no autosave or prefs writes.
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
+//! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
+//!   Windows, so a screenshot shows the timeline's drop ghost.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;
@@ -15,6 +17,7 @@ pub struct Launch {
     pub demo: bool,
     pub screenshot: Option<PathBuf>,
     pub panels: Vec<String>,
+    pub drop_at: Option<egui::Pos2>,
 }
 
 impl Launch {
@@ -25,6 +28,10 @@ impl Launch {
             demo: var("MILAN_DEMO").is_some_and(|v| v != "0"),
             screenshot: var("MILAN_SCREENSHOT").map(PathBuf::from),
             panels: var("MILAN_PANELS").map(|v| v.split(',').map(|s| s.trim().to_lowercase()).collect()).unwrap_or_default(),
+            drop_at: var("MILAN_DROP").and_then(|v| {
+                let (x, y) = v.split_once(',')?;
+                Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
+            }),
         }
     }
 }

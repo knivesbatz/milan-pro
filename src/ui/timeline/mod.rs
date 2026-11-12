@@ -120,6 +120,7 @@ pub fn draw_timeline(
     thumbs: &mut Thumbs,
     playing: bool,
     track_w: &mut f32,
+    drops: &mut super::FileDrag,
 ) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
@@ -390,24 +391,47 @@ pub fn draw_timeline(
         }
     }
 
-    // Drop media from the browser; snapped once so the indicator line shows exactly where the clip will land.
+    // Media dragged from Project Media, the Trimmer, the Explorer window or Windows: the events the drop will add are
+    // planned every frame for the ghost, at the start time snapped (or quantized) once, as the drop itself is.
     let drop_time = |project: &Project, x: f32| {
         let t = g.to_time(x).max(0.0);
-        if snapping { edit::snap(t, &edit::snap_targets(project, None), SNAP_PX / g.pps).unwrap_or(t) } else { t }
+        let s = if snapping { edit::snap(t, &edit::snap_targets(project, None), SNAP_PX / g.pps) } else { None };
+        s.unwrap_or(if quantize { edit::quantize(t, fps) } else { t })
     };
-    let drop_x = response
-        .dnd_hover_payload::<super::MediaDrag>()
-        .and_then(|_| ui.input(|i| i.pointer.latest_pos()))
-        .filter(|p| g.lanes.contains(*p))
-        .map(|p| g.to_x(drop_time(project, p.x)));
-    if let Some(drag) = response.dnd_release_payload::<super::MediaDrag>() {
-        if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| g.lanes.contains(*p)) {
-            // Below the last track a new track of the media's kind is added.
-            let track = row_at(p.y).map(|row| (row.is_video, row.idx));
-            let time = drop_time(project, p.x);
-            let before = project.clone();
-            if super::drop_media_drag(project, &drag, track, time) {
-                history.push(before);
+    let payload = response.dnd_hover_payload::<super::MediaDrag>();
+    let pointer = if payload.is_some() { ui.input(|i| i.pointer.latest_pos()) } else { drops.os_pos };
+    let mut ghost = pointer.filter(|p| g.lanes.contains(*p)).map(|p| {
+        let target = row_at(p.y).map(|row| (row.is_video, row.idx));
+        let time = drop_time(project, p.x);
+        let items: Vec<(&MediaItem, Option<(f64, f64)>)> = match payload.as_deref() {
+            Some(super::MediaDrag::Pool(idxs, range)) => idxs.iter().filter_map(|&i| project.media_pool.get(i)).map(|m| (m, *range)).collect(),
+            // Files show once probed; until then only the indicator line.
+            _ => drops.items.iter().flatten().map(|m| (m, None)).collect(),
+        };
+        (target, time, edit::plan_drop(&project.timeline, &items, target, time, drops.still_len))
+    });
+    if ghost.as_ref().is_some_and(|gh| gh.2.refused) && payload.is_some() {
+        ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
+    }
+    let released = response.dnd_release_payload::<super::MediaDrag>();
+    if released.is_some() || drops.os_dropped {
+        if let Some((target, time, plan)) = ghost.take() {
+            drops.os_dropped = false;
+            match released.as_deref() {
+                Some(super::MediaDrag::Pool(..)) => {
+                    let before = project.clone();
+                    let ids = edit::apply_drop(project, plan);
+                    if !ids.is_empty() {
+                        history.push(before);
+                        (sel.clips, sel.list_focus) = (ids, false);
+                    }
+                }
+                // Files are placed by the app once probed, on the track (by id) and at the time of the drop.
+                _ if !plan.refused => {
+                    let track = target.map(|(v, i)| project.timeline.tracks(v)[i].id.clone());
+                    drops.dropped_at = Some((drops.files.clone(), track, time));
+                }
+                _ => {}
             }
         }
     }
@@ -455,7 +479,12 @@ pub fn draw_timeline(
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
     ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st);
-    let rows = rows_of(project, &g, scroll_y);
+    let mut rows = rows_of(project, &g, scroll_y);
+    // A drop that adds video tracks: the audio rows move down to show where they will go.
+    if let Some((_, _, plan)) = &ghost {
+        let dy = added_tracks(&project.timeline, plan, true) as f32 * t.m.video_track_h;
+        rows.iter_mut().filter(|r| !r.is_video).for_each(|r| r.top += dy);
+    }
 
     // ---- Painting ----
 
@@ -511,8 +540,10 @@ pub fn draw_timeline(
     if let Some(s) = st.snap {
         paint_snap(&painter, &g, &rows, project, s, drag_state.as_ref().map_or(&[], |d| d.ids.as_slice()));
     }
-    if let Some(x) = drop_x {
-        pl.rect_filled(Rect::from_min_max(pos2(x.floor() - 1.0, g.lanes.min.y), pos2(x.floor() + 1.0, g.lanes.max.y)), 0.0, t.accent);
+    if let Some((target, time, plan)) = &ghost {
+        paint_ghost(&pl, &g, &rows, project, *target, plan);
+        let x = g.to_x(*time).floor();
+        pl.rect_filled(Rect::from_min_max(pos2(x - 1.0, g.lanes.min.y), pos2(x + 1.0, g.lanes.max.y)), 0.0, t.accent);
     }
 
     tracks::paint(&painter, &g, &rows, project, sel);
@@ -596,6 +627,53 @@ fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exc
     }
 }
 
+/// How many tracks of kind `v` (video when true) the drop `plan` adds.
+fn added_tracks(tl: &Timeline, plan: &edit::DropPlan, v: bool) -> usize {
+    plan.events.iter().filter(|e| e.0 == v).map(|e| e.1 + 1).max().unwrap_or(0).saturating_sub(tl.tracks(v).len())
+}
+
+/// Red for a drop that a locked track refuses (no theme token: VEGAS itself shows only the "no" cursor).
+const REFUSED: Color32 = Color32::from_rgb(0xD0, 0x40, 0x38);
+
+/// Ghost of a media drop: a translucent event (track colour, name, real length) on each row it lands on and a
+/// dashed row below the last track for each track it adds; red, with the target row tinted, when a locked track
+/// refuses it.
+fn paint_ghost(p: &Painter, g: &Geo, rows: &[Row], project: &Project, target: Option<(bool, usize)>, plan: &edit::DropPlan) {
+    let t = theme::get();
+    let tl = &project.timeline;
+    // New video tracks go after the last video track (the audio rows were moved down for them), new audio tracks
+    // after the last row; `num` is the row number each will have, for its colour.
+    let nv = added_tracks(tl, plan, true);
+    let bottom = |v: bool| rows.iter().rev().find(|r| r.is_video == v).map(|r| r.top + r.h);
+    let video_end = bottom(true).or(rows.first().map(|r| r.top - nv as f32 * t.m.video_track_h)).unwrap_or(g.lanes.min.y);
+    let audio_end = bottom(false).unwrap_or(video_end + nv as f32 * t.m.video_track_h);
+    let mut extra: Vec<Row> = Vec::new();
+    for (v, mut y, num, h) in [(true, video_end, tl.video_tracks.len(), t.m.video_track_h), (false, audio_end, rows.len() + nv, t.m.audio_track_h)] {
+        for k in 0..added_tracks(tl, plan, v) {
+            extra.push(Row { is_video: v, idx: tl.tracks(v).len() + k, num: num + k, top: y, h });
+            y += h;
+        }
+    }
+    let lane = |r: &Row| Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(r.top, r.top + r.h - 2.0));
+    let stroke = Stroke::new(1.0_f32, if plan.refused { REFUSED } else { t.text_dim });
+    for r in &extra {
+        let b = lane(r).shrink(1.0);
+        p.extend(Shape::dashed_line(&[b.left_top(), b.right_top(), b.right_bottom(), b.left_bottom(), b.left_top()], stroke, 6.0, 4.0));
+    }
+    if let Some(r) = target.filter(|_| plan.refused).and_then(|(v, i)| rows.iter().find(|r| r.is_video == v && r.idx == i)) {
+        p.rect_filled(lane(r), 0.0, REFUSED.gamma_multiply(0.25));
+    }
+    for (v, i, c) in &plan.events {
+        let Some(r) = rows.iter().chain(&extra).find(|r| r.is_video == *v && r.idx == *i) else { continue };
+        let color = if plan.refused { REFUSED } else { t.track_color(r.num) };
+        let x0 = g.to_x(c.position);
+        let ev = Rect::from_min_max(pos2(x0, r.top + 1.0), pos2(g.to_x(c.position + c.duration).max(x0 + 1.0), r.top + r.h - 2.0));
+        p.rect_filled(ev, 0.0, color.gamma_multiply(0.5));
+        p.rect_stroke(ev, 0.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
+        p.with_clip_rect(ev.intersect(p.clip_rect())).text(ev.min + vec2(4.0, 3.0), Align2::LEFT_TOP, &c.name, t.font(t.font.ui), t.text_bright);
+    }
+}
+
 /// Inline rename box for a track name (double-click the header's top-left) or a marker (double-click its tag).
 fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, st: &mut TlState) {
     let Some((target, mut buf)) = st.rename.take() else {
@@ -654,6 +732,9 @@ mod tests {
         thumbs: Thumbs,
         track_w: f32,
         quantize: bool,
+        drops: crate::ui::FileDrag,
+        /// Cursor the last frame asked for.
+        cursor: CursorIcon,
     }
 
     impl Rig {
@@ -663,7 +744,8 @@ mod tests {
             let mut project = Project::new("t");
             project.timeline.video_tracks[0].clips.push(Clip::new("c", 2.0, 4.0));
             let (waves, thumbs) = (Waveforms::new(&ctx), Thumbs::new(&ctx));
-            Rig { ctx, project, sel: Selection::default(), drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 251.0, quantize: false }
+            let drops = crate::ui::FileDrag { still_len: 5.0, ..Default::default() };
+            Rig { ctx, project, sel: Selection::default(), drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 251.0, quantize: false, drops, cursor: CursorIcon::Default }
         }
         fn frame(&mut self, events: Vec<Event>) {
             self.frame_mod(events, Modifiers::NONE);
@@ -672,16 +754,28 @@ mod tests {
             let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0)));
             let raw = RawInput { events, screen_rect, modifiers, ..Default::default() };
             let ctx = self.ctx.clone();
-            let _ = ctx.run(raw, |ctx| {
+            let out = ctx.run(raw, |ctx| {
                 CentralPanel::default().frame(Frame::NONE).show(ctx, |ui| {
                     let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0))));
                     let r = &mut *self;
                     draw_timeline(
                         &mut child, &mut r.project, &mut r.sel, &mut r.drag, &mut r.scroll_y, &mut r.history, true, r.quantize,
-                        &mut r.waves, &mut r.thumbs, false, &mut r.track_w,
+                        &mut r.waves, &mut r.thumbs, false, &mut r.track_w, &mut r.drops,
                     );
                 });
             });
+            self.cursor = out.platform_output.cursor_icon;
+        }
+        /// A Project Media drag of pool items `idxs` held over `at`, then released there; returns the cursor while
+        /// it hovered.
+        fn media_drop(&mut self, idxs: Vec<usize>, at: Pos2) -> CursorIcon {
+            self.frame(vec![Event::PointerMoved(at)]);
+            DragAndDrop::set_payload(&self.ctx, crate::ui::MediaDrag::Pool(idxs, None));
+            self.frame(vec![Event::PointerMoved(at)]);
+            let hover = self.cursor;
+            self.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]);
+            self.frame(vec![]);
+            hover
         }
         fn drag(&mut self, from: Pos2, to: Pos2) {
             self.drag_mod(from, to, Modifiers::NONE);
@@ -822,5 +916,59 @@ mod tests {
         r.drag(pos2(575.0, 90.0), pos2(575.0 + 4.0 * 80.0 + 1.0, 90.0));
         let c = r.clip();
         assert!((c.position + c.duration - 10.0213).abs() < 1e-9, "end {}", c.position + c.duration);
+    }
+
+    /// Video with audio (2 s) and a still.
+    fn pool() -> Vec<MediaItem> {
+        let m = |id: &str, media_type, sample_rate| MediaItem { id: id.into(), path: id.into(), name: id.into(), media_type, duration: 2.0, sample_rate, ..Default::default() };
+        vec![m("v.mp4", MediaType::Video, Some(48_000)), m("s.png", MediaType::Image, None)]
+    }
+
+    /// (track index, position, duration) of every event on the tracks of one kind.
+    fn events(p: &Project, video: bool) -> Vec<(usize, f64, f64)> {
+        p.timeline.tracks(video).iter().enumerate().flat_map(|(i, t)| t.clips.iter().map(move |c| (i, c.position, c.duration))).collect()
+    }
+
+    /// Drags from Project Media: onto Video 1 (its audio on the free Audio 1), several items below the last track (new
+    /// tracks, across time), and onto a locked track (the "no" cursor, nothing added). Lanes start at x 255, 80 px/s;
+    /// Video 1 is y 48..112 and Audio 1 112..180.
+    #[test]
+    fn media_drops_onto_a_track_and_below_the_last_track() {
+        let mut r = Rig::new();
+        r.project.media_pool = pool();
+        assert_ne!(r.media_drop(vec![0], pos2(255.0 + 8.0 * 80.0, 80.0)), CursorIcon::NotAllowed);
+        assert_eq!(events(&r.project, true), [(0, 2.0, 4.0), (0, 8.0, 2.0)]);
+        assert_eq!(events(&r.project, false), [(0, 8.0, 2.0)]);
+        assert_eq!((r.history.lens().0, r.sel.clips.len()), (1, 2), "one undo step; the new events are selected");
+
+        r.media_drop(vec![0, 1], pos2(255.0 + 80.0, 300.0));
+        assert_eq!(events(&r.project, true)[2..], [(1, 1.0, 2.0), (1, 3.0, 5.0)]);
+        assert_eq!(events(&r.project, false)[1..], [(1, 1.0, 2.0)]);
+        assert_eq!((r.history.lens().0, r.sel.clips.len()), (2, 3));
+
+        r.project.timeline.video_tracks[0].locked = true;
+        assert_eq!(r.media_drop(vec![1], pos2(255.0 + 10.0 * 80.0, 80.0)), CursorIcon::NotAllowed);
+        assert_eq!((events(&r.project, true).len(), r.history.lens().0), (4, 2));
+    }
+
+    /// Files from Windows: the timeline reports where they were dropped (by track id) for the app to place once probed;
+    /// a drop outside the lanes is left to the app (import only).
+    #[test]
+    fn file_drops_report_track_and_time() {
+        let mut r = Rig::new();
+        r.drops.files = vec!["v.mp4".into()];
+        r.drops.items = Some(pool()[..1].to_vec());
+        r.drops.os_pos = Some(pos2(255.0 + 8.0 * 80.0, 150.0)); // over Audio 1
+        r.frame(vec![]);
+        assert!(r.drops.dropped_at.is_none() && events(&r.project, false).is_empty());
+        r.drops.os_dropped = true;
+        r.frame(vec![]);
+        let a1 = r.project.timeline.audio_tracks[0].id.clone();
+        assert_eq!(r.drops.dropped_at.take(), Some((vec!["v.mp4".into()], Some(a1), 8.0)));
+        assert!(!r.drops.os_dropped);
+        r.drops.os_pos = Some(pos2(100.0, 150.0)); // over the track list
+        r.drops.os_dropped = true;
+        r.frame(vec![]);
+        assert!(r.drops.dropped_at.is_none() && r.drops.os_dropped);
     }
 }

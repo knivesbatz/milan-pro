@@ -40,12 +40,52 @@ pub struct MediaView {
     tree_w: f32,
     /// Some while the search field is shown.
     search: Option<String>,
+    /// Selected media (pool indices, click order); the app's `selected_media` is the focus, the last one.
+    sel: Vec<usize>,
+    /// Where Shift+click ranges start.
+    anchor: Option<usize>,
 }
 
 impl Default for MediaView {
     fn default() -> Self {
-        Self { node: Node::All, by_type_open: false, storyboard_open: false, mode: Mode::Thumbnails, tree_w: 170.0, search: None }
+        Self { node: Node::All, by_type_open: false, storyboard_open: false, mode: Mode::Thumbnails, tree_w: 170.0, search: None, sel: Vec::new(), anchor: None }
     }
+}
+
+/// Keep the multi-selection in step with the focus, which the app changes too (Undo and New clear it, Select in
+/// Project Media sets it).
+fn sync_sel(view: &mut MediaView, focus: Option<usize>, n: usize) {
+    view.sel.retain(|&i| i < n);
+    if focus.is_none_or(|f| view.sel.last() != Some(&f)) {
+        view.sel = focus.filter(|&f| f < n).into_iter().collect();
+    }
+}
+
+/// `i` and the rest of the selection in list order when `i` is selected, else `i` alone (what a drag or an item
+/// command acts on).
+fn targets(view: &MediaView, items: &[usize], i: usize) -> Vec<usize> {
+    if view.sel.contains(&i) { items.iter().copied().filter(|k| view.sel.contains(k)).collect() } else { vec![i] }
+}
+
+/// Click on item `i` (`items` in list order): selects it alone, Ctrl toggles it, Shift selects the run from the
+/// anchor (the last plain or Ctrl click, kept by Shift+clicks as in Windows lists; the focus when it is gone).
+fn click(view: &mut MediaView, items: &[usize], focus: Option<usize>, i: usize, ctrl: bool, shift: bool) {
+    let pos = |k: usize| items.iter().position(|&x| x == k);
+    let anchor = view.anchor.filter(|a| view.sel.contains(a)).or(focus);
+    if ctrl {
+        if let Some(k) = view.sel.iter().position(|&s| s == i) {
+            view.sel.remove(k);
+        } else {
+            view.sel.push(i);
+        }
+    } else if let Some((a, b)) = anchor.and_then(pos).zip(pos(i)).filter(|_| shift) {
+        view.sel = items[a.min(b)..=a.max(b)].iter().copied().filter(|&k| k != i).collect();
+        view.sel.push(i);
+        return;
+    } else {
+        view.sel = vec![i];
+    }
+    view.anchor = Some(i);
 }
 
 fn use_count(project: &Project, m: &MediaItem) -> usize {
@@ -101,6 +141,7 @@ pub fn draw_media_toolbar(
     actions: &mut Vec<WinAction>,
 ) {
     let t = theme::get();
+    sync_sel(view, *selected, project.media_pool.len());
     let unused: Vec<usize> = (0..project.media_pool.len()).filter(|&i| use_count(project, &project.media_pool[i]) == 0).collect();
     if tool_button(ui, Icon::RemoveUnused, "Remove All Unused Media from Project", true, false).clicked() {
         remove_media(project, history, unused);
@@ -124,8 +165,8 @@ pub fn draw_media_toolbar(
     }
     inert_button(ui, Icon::WebMedia, "Get Media from the Web (not available)", false);
     if tool_button(ui, Icon::Delete, "Remove Selected Media from Project", selected.is_some(), false).clicked() {
-        remove_media(project, history, selected.take().into_iter().collect());
-        sel_clips.clear();
+        remove_media(project, history, std::mem::take(&mut view.sel));
+        (*selected, *sel_clips) = (None, Vec::new());
     }
     if tool_button(ui, Icon::Properties, "Media Properties", selected.is_some(), false).clicked() {
         sel_clips.clear();
@@ -172,11 +213,13 @@ pub fn draw_media_browser(
     history: &mut History,
     thumbs: &mut Thumbs,
     actions: &mut Vec<WinAction>,
+    still_len: f64,
 ) {
     let area = ui.max_rect();
     let (left, right) = widgets::pane_split(ui, area, &mut view.tree_w, "media_tree");
     widgets::scroll_pane(ui, left, "media_tree", |ui| tree(ui, view));
 
+    sync_sel(view, *selected, project.media_pool.len());
     let items: Vec<usize> = (0..project.media_pool.len()).filter(|&i| view.shows(project, &project.media_pool[i])).collect();
     let mut cmd: Option<(usize, ItemCmd)> = None;
     widgets::scroll_pane(ui, right, "media_items", |ui| {
@@ -187,35 +230,41 @@ pub fn draw_media_browser(
             return;
         }
         let resps = match view.mode {
-            Mode::Thumbnails => thumbnails(ui, project, &items, *selected, thumbs),
-            Mode::Details => details(ui, project, &items, *selected),
-            Mode::List => list(ui, project, &items, *selected),
+            Mode::Thumbnails => thumbnails(ui, project, &items, &view.sel, thumbs),
+            Mode::Details => details(ui, project, &items, &view.sel),
+            Mode::List => list(ui, project, &items, &view.sel),
         };
         for (i, r) in resps {
-            item_interaction(ui, &r, i, &mut cmd);
+            item_interaction(ui, &r, i, view.sel.contains(&i), &mut cmd);
+            // The payload is every selected item when the grabbed one is selected, so they are added across time.
+            if r.drag_started() {
+                r.dnd_set_drag_payload(MediaDrag::Pool(targets(view, &items, i), None));
+            }
         }
     });
     if ui.rect_contains_pointer(right) && selected.is_some() && ui.input(|i| i.key_pressed(Key::Delete)) && !ui.ctx().wants_keyboard_input() {
         cmd = selected.map(|i| (i, ItemCmd::Remove));
     }
     match cmd {
-        Some((i, ItemCmd::Select)) => {
-            *selected = Some(i);
+        Some((i, ItemCmd::Select(m))) => {
+            click(view, &items, *selected, i, m.command, m.shift);
+            *selected = view.sel.last().copied();
             sel_clips.clear(); // so Properties shows the media
         }
         Some((i, ItemCmd::Trim)) => {
-            *selected = Some(i);
+            (*selected, view.sel) = (Some(i), vec![i]);
             actions.push(WinAction::OpenTrimmer(project.media_pool[i].path.clone()));
         }
         Some((i, ItemCmd::Add(video))) => {
-            // Same lock/type checks and linked audio as dropping on the timeline.
+            // Same lock/type checks, linked audio and across-time layout as dropping on the timeline.
             let (before, at) = (project.clone(), project.timeline.cursor_position);
-            if edit::drop_media(project, i, video, 0, at) {
+            let ids = edit::drop_media(project, &targets(view, &items, i), None, Some((video, 0)), at, still_len);
+            if !ids.is_empty() {
                 history.push(before);
             }
         }
         Some((i, ItemCmd::Remove)) => {
-            remove_media(project, history, vec![i]);
+            remove_media(project, history, targets(view, &items, i));
             (*selected, *sel_clips) = (None, Vec::new());
         }
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
@@ -228,7 +277,8 @@ pub fn draw_media_browser(
 }
 
 enum ItemCmd {
-    Select,
+    /// With the click's modifiers.
+    Select(Modifiers),
     Trim,
     Add(bool),
     Remove,
@@ -236,14 +286,13 @@ enum ItemCmd {
     Properties,
 }
 
-fn item_interaction(ui: &Ui, r: &Response, i: usize, cmd: &mut Option<(usize, ItemCmd)>) {
+/// `selected`: a right-click on a selected item keeps the selection, so its menu acts on all of it.
+fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, cmd: &mut Option<(usize, ItemCmd)>) {
     if r.double_clicked() {
         *cmd = Some((i, ItemCmd::Trim));
-    } else if r.clicked() || r.secondary_clicked() {
-        *cmd = Some((i, ItemCmd::Select));
+    } else if r.clicked() || (r.secondary_clicked() && !selected) {
+        *cmd = Some((i, ItemCmd::Select(if r.clicked() { ui.input(|i| i.modifiers) } else { Modifiers::NONE })));
     }
-    // Payload is the media pool index; the timeline drops it on release.
-    r.dnd_set_drag_payload(MediaDrag::Pool(i, None));
     if r.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
     }
@@ -331,7 +380,7 @@ fn thumb_time(m: &MediaItem) -> f64 {
 }
 
 /// Tiles: ≈100×65 thumbnail, name centred below in up to 2 lines; 28 px / 30 px gaps (§5.4).
-fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<usize>, thumbs: &mut Thumbs) -> Vec<(usize, Response)> {
+fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], thumbs: &mut Thumbs) -> Vec<(usize, Response)> {
     let (tw, th, gx, gy, cap) = (100.0, 65.0, 28.0, 30.0, 32.0);
     let width = ui.available_width().max(tw + gx);
     let cols = (((width - 14.0) / (tw + gx)).floor() as usize).max(1);
@@ -345,7 +394,7 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<
         let thumb = Rect::from_min_size(min, vec2(tw, th));
         let resp = ui.interact(tile, ui.id().with(("media_tile", i)), Sense::click_and_drag());
         let m = &project.media_pool[i];
-        widgets::tile(ui, tile, thumb, &m.name, selected == Some(i), resp.hovered());
+        widgets::tile(ui, tile, thumb, &m.name, sel.contains(&i), resp.hovered());
         let p = ui.painter();
         match m.media_type {
             MediaType::Audio | MediaType::Unknown => widgets::paint_audio_page(p, thumb),
@@ -363,14 +412,14 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<
 const DETAIL_COLS: [(&str, f32); 7] =
     [("Name", 180.0), ("Use Count", 70.0), ("Type", 60.0), ("Length", 90.0), ("Frame Rate", 80.0), ("Frame Size", 90.0), ("Path", 400.0)];
 
-fn details(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<usize>) -> Vec<(usize, Response)> {
+fn details(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(usize, Response)> {
     let t = theme::get();
     widgets::header_row(ui, &DETAIL_COLS);
     let fps = project.settings.frame_rate;
     let mut out = Vec::new();
     for &i in items {
         let m = &project.media_pool[i];
-        let r = widgets::list_row(ui, ROW_H, selected == Some(i));
+        let r = widgets::list_row(ui, ROW_H, sel.contains(&i));
         let size = match (m.width, m.height) {
             (Some(w), Some(h)) => format!("{w}x{h}"),
             _ => String::new(),
@@ -384,23 +433,41 @@ fn details(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<usi
             size,
             m.path.display().to_string(),
         ];
-        widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, if selected == Some(i) { Color32::WHITE } else { t.text });
+        widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, if sel.contains(&i) { Color32::WHITE } else { t.text });
         out.push((i, r));
     }
     out
 }
 
-fn list(ui: &mut Ui, project: &Project, items: &[usize], selected: Option<usize>) -> Vec<(usize, Response)> {
+fn list(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(usize, Response)> {
     let t = theme::get();
     let mut out = Vec::new();
     for &i in items {
         let m = &project.media_pool[i];
-        let r = widgets::list_row(ui, ROW_H, selected == Some(i));
+        let r = widgets::list_row(ui, ROW_H, sel.contains(&i));
         let icon = if m.media_type == MediaType::Audio { Icon::TrackAudio } else { Icon::TrackVideo };
         paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, t.look(), None);
-        let color = if selected == Some(i) { Color32::WHITE } else { t.text };
+        let color = if sel.contains(&i) { Color32::WHITE } else { t.text };
         ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
         out.push((i, r));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_click_keeps_the_anchor() {
+        let (mut v, items) = (MediaView::default(), [0, 1, 2, 3, 4]);
+        click(&mut v, &items, None, 0, false, false); // A
+        click(&mut v, &items, Some(0), 3, false, true); // Shift D: A..D
+        assert_eq!(v.sel, [0, 1, 2, 3]);
+        click(&mut v, &items, Some(3), 1, false, true); // Shift B: A..B, not B..D
+        assert_eq!(v.sel, [0, 1]);
+        click(&mut v, &items, Some(1), 4, true, false); // Ctrl E: E is the new anchor
+        click(&mut v, &items, Some(4), 2, false, true);
+        assert_eq!(v.sel, [3, 4, 2]);
+    }
 }

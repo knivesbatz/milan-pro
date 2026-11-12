@@ -21,9 +21,10 @@ sha2 = "0.10"
 # src/engine/vdecode.rs: decoder pipes read straight into Color32 frames. Already in Cargo.lock (via egui).
 bytemuck = "1"
 
-# src/proc.rs: Job Object that kills ffmpeg children with Milan. Already in Cargo.lock (via other crates).
+# src/proc.rs: Job Object that kills ffmpeg children with Milan; src/app/drop.rs: cursor during a drag from Windows.
+# Already in Cargo.lock (via other crates).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [profile.release]
 opt-level = 3

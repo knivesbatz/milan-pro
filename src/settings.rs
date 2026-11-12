@@ -28,6 +28,8 @@ pub struct Prefs {
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
     pub quantize: bool,
+    /// Preferences › Editing: "New still image length (seconds)" for stills added to the timeline.
+    pub still_len: f64,
 }
 
 impl Default for Prefs {
@@ -42,6 +44,7 @@ impl Default for Prefs {
             auto_update: true,
             skipped_update: None,
             quantize: true,
+            still_len: 5.0,
         }
     }
 }
@@ -252,7 +255,7 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize), (LookChoice::VEGAS16, true, 4, true, true));
+        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
         let mut r = Prefs { recent_max: 2, ..Default::default() };
         for p in ["a", "b", "a", "c"] {
             r.add_recent(std::path::Path::new(p));

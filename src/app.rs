@@ -1,4 +1,5 @@
 mod commands;
+mod drop;
 
 use eframe::egui;
 use crate::audio::{Player, Waveforms};
@@ -46,6 +47,10 @@ pub struct MeridianApp {
     /// Cursor as set by the playback clock this frame; any other change while playing is a seek.
     clock_pos: f64,
     importer: Importer,
+    /// Files dragged to the timeline: probed while they hover, placed when dropped (cancelled by New/Open).
+    file_drop: drop::FileDrop,
+    /// MILAN_DROP (demo): window point where the demo media pretends to be dragged from Windows, for the screenshot.
+    fake_drop: Option<egui::Pos2>,
     /// Last import/open error, shown in the status bar.
     message: Option<String>,
     /// Cursor where playback started; Space and Stop return there, as in VEGAS.
@@ -161,6 +166,8 @@ impl MeridianApp {
             was_playing: false,
             clock_pos: 0.0,
             importer: Importer::new(),
+            file_drop: drop::FileDrop::new(),
+            fake_drop: launch.drop_at.filter(|_| launch.demo),
             message,
             play_start: 0.0,
             play_loop: None,
@@ -210,6 +217,43 @@ impl MeridianApp {
         }
         self.sel.tracks.retain(|id| p.find_track(id).is_some());
         self.selected_clip = self.sel.clips.last().and_then(|id| p.find_clip(id));
+    }
+
+    /// Files headed for the timeline this frame: dragged from Windows (or just dropped), else the Explorer window's
+    /// drag. Their probes start here, so the timeline can show them as soon as they are known.
+    fn file_drag(&mut self, ctx: &egui::Context) -> ui::FileDrag {
+        let modal = self.modal_open();
+        let (hovered, dropped): (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) = ctx.input(|i| {
+            let keep = |p: &Option<std::path::PathBuf>| p.clone().filter(|p| ui::is_media(p));
+            (i.raw.hovered_files.iter().filter_map(|f| keep(&f.path)).collect(), i.raw.dropped_files.iter().filter_map(|f| keep(&f.path)).collect())
+        });
+        let os = !hovered.is_empty() || !dropped.is_empty();
+        if !hovered.is_empty() {
+            ctx.request_repaint(); // egui hears nothing more from Windows until the drop
+        }
+        let mut os_pos = os.then(|| drop::os_pointer(ctx)).flatten();
+        let os_dropped = !dropped.is_empty() && !modal;
+        let mut files = if dropped.is_empty() { hovered } else { dropped };
+        if let Some(p) = self.fake_drop {
+            let pool = &self.project.media_pool;
+            files = [pool.first(), pool.last()].into_iter().flatten().map(|m| m.path.clone()).collect();
+            os_pos = Some(p);
+        }
+        if files.is_empty() {
+            if let Some(ui::MediaDrag::File(p)) = egui::DragAndDrop::payload::<ui::MediaDrag>(ctx).as_deref() {
+                files = vec![p.clone()];
+            }
+        }
+        self.file_drop.hover(ctx, &files, &self.project.media_pool);
+        ui::FileDrag {
+            items: self.file_drop.items(&files, &self.project.media_pool),
+            os_dropped,
+            files,
+            // Not over a window or popup above the timeline (egui hit-tests only its own pointer).
+            os_pos: os_pos.filter(|p| !modal && ctx.layer_id_at(*p).is_none_or(|l| l.order == egui::Order::Background)),
+            still_len: self.prefs.still_len,
+            dropped_at: None,
+        }
     }
 
     /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
@@ -264,6 +308,7 @@ impl eframe::App for MeridianApp {
             self.decorated = v16;
         }
 
+        let mut drag = self.file_drag(ctx);
         let look = self.look;
         let mut transport_action = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
@@ -310,6 +355,7 @@ impl eframe::App for MeridianApp {
                         &mut self.history,
                         &mut self.thumbs,
                         &mut actions,
+                        self.prefs.still_len,
                     );
                 }
                 Panel::Explorer => {
@@ -333,7 +379,7 @@ impl eframe::App for MeridianApp {
                 }
                 Panel::Trimmer => {
                     ui::draw_trimmer_toolbar(bar, &mut self.trimmer);
-                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs);
+                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs, self.prefs.still_len);
                 }
                 Panel::Properties => {
                     egui::Frame::NONE.inner_margin(6).show(body, |ui| {
@@ -389,6 +435,7 @@ impl eframe::App for MeridianApp {
                 &mut self.thumbs,
                 self.playing,
                 &mut self.dock.track_list_w,
+                &mut drag,
             );
             // The Rate area spans the horizontal scrollbar row and the transport row (§5.9.3).
             let rate = a.rate.with_min_y(a.timeline.max.y - t.m.hscroll_h);
@@ -435,14 +482,31 @@ impl eframe::App for MeridianApp {
         }
         self.run_bus(ctx);
         self.show_dialogs(ctx);
-        // Files dropped from the OS are imported (§5.4).
-        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).filter(|p| ui::is_media(p)).collect());
-        if !dropped.is_empty() && !self.modal_open() {
-            self.import_new(ctx, dropped);
+        // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
+        // (§5.4). Both reuse the probes started while the files hovered.
+        if let Some((paths, track, time)) = drag.dropped_at.take() {
+            self.file_drop.drop(paths, Some((track, time)));
+        } else if drag.os_dropped {
+            self.file_drop.drop(drag.files, None);
+        }
+        // Not during an event drag: it restores the tracks from its start every frame and would wipe the drop out.
+        while self.drag_state.is_none() {
+            let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len) else { break };
+            if let Some(before) = placed.before {
+                self.history.push(before);
+            }
+            if !placed.ids.is_empty() {
+                (self.sel.clips, self.sel.list_focus) = (placed.ids, false);
+            }
+            self.message = if !placed.errors.is_empty() {
+                Some(format!("Import failed: {}", placed.errors.join("; ")))
+            } else {
+                placed.refused.then(|| "Drop refused: the track is locked".to_string())
+            };
         }
         while let Some(batch) = self.importer.poll() {
             let before = self.project.clone();
-            let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().partition(Result::is_ok);
+            let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().map(|(_, r)| r).partition(Result::is_ok);
             let errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
             // Files imported twice (two drops or picks before the first probe finished) are added once.
             if crate::media::merge_new(&mut self.project.media_pool, ok.into_iter().filter_map(Result::ok).collect()) {

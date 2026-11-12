@@ -40,7 +40,8 @@ pub fn probe_media(path: &Path) -> anyhow::Result<MediaItem> {
     Ok(item)
 }
 
-type ProbeBatch = Vec<Result<MediaItem, String>>;
+/// Each picked file with its probe result.
+pub type ProbeBatch = Vec<(PathBuf, Result<MediaItem, String>)>;
 
 /// Probes imported files on a worker thread so ffprobe never blocks the UI.
 pub struct Importer {
@@ -58,8 +59,11 @@ impl Importer {
         let (tx, ctx) = (self.tx.clone(), ctx.clone());
         std::thread::spawn(move || {
             let batch = paths
-                .iter()
-                .map(|p| probe_media(p).map_err(|e| format!("{}: {e}", p.file_name().unwrap_or_default().to_string_lossy())))
+                .into_iter()
+                .map(|p| {
+                    let r = probe_media(&p).map_err(|e| format!("{}: {e}", p.file_name().unwrap_or_default().to_string_lossy()));
+                    (p, r)
+                })
                 .collect();
             let _ = tx.send(batch);
             ctx.request_repaint();
@@ -69,6 +73,12 @@ impl Importer {
     /// A finished batch of probe results, one per picked file.
     pub fn poll(&self) -> Option<ProbeBatch> {
         self.rx.try_recv().ok()
+    }
+
+    /// Where finished batches arrive, for tests that fake a probe.
+    #[cfg(test)]
+    pub fn sender(&self) -> Sender<ProbeBatch> {
+        self.tx.clone()
     }
 }
 

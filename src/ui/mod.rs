@@ -24,7 +24,7 @@ mod trimmer;
 mod widgets;
 
 use std::path::PathBuf;
-use crate::project::{Clip, Project};
+use crate::project::Clip;
 
 pub use choosers::{Chooser, Kind as ChooserKind, draw_chooser, draw_chooser_toolbar};
 pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};
@@ -51,36 +51,28 @@ pub enum WinAction {
 /// Drag-and-drop payload for media headed to the timeline.
 #[derive(Clone)]
 pub enum MediaDrag {
-    /// Media pool index, optionally with a source range (the Trimmer's in/out).
-    Pool(usize, Option<(f64, f64)>),
+    /// Media pool indices (added across time, in this order), optionally with a source range (the Trimmer's in/out).
+    Pool(Vec<usize>, Option<(f64, f64)>),
     /// A file from the Explorer, imported on drop.
     File(PathBuf),
 }
 
-/// Drop a dragged item on `track` (is video, index) at `time`; None (below the last track) adds a track of the
-/// media's kind. A file is probed now (shortcut: blocks the UI for one ffprobe run, ~0.1 s; move to the Importer
-/// if drops of big batches are added) and added to the pool first.
-pub fn drop_media_drag(project: &mut Project, drag: &MediaDrag, track: Option<(bool, usize)>, time: f64) -> bool {
-    let (idx, range, added) = match drag {
-        MediaDrag::Pool(i, range) => (*i, *range, false),
-        MediaDrag::File(path) => match project.media_pool.iter().position(|m| m.path == *path) {
-            Some(i) => (i, None, false),
-            None => match crate::media::probe_media(path) {
-                Ok(m) => {
-                    project.media_pool.push(m);
-                    project.mark_modified();
-                    (project.media_pool.len() - 1, None, true)
-                }
-                Err(_) => return false,
-            },
-        },
-    };
-    let (is_video, track_idx) = track.unwrap_or_else(|| {
-        let v = project.media_pool.get(idx).is_some_and(|m| m.media_type != crate::project::MediaType::Audio);
-        (v, project.timeline.tracks(v).len())
-    });
-    // The import alone is still a change worth an undo step.
-    crate::edit::drop_media_range(project, idx, is_video, track_idx, time, range) || added
+/// Files headed for the timeline from Windows or the Explorer window. The app fills it before the timeline is drawn
+/// and finishes a drop the timeline reports in `dropped_at`.
+#[derive(Default)]
+pub struct FileDrag {
+    /// Files being dragged over the window (or just dropped from Windows).
+    pub files: Vec<PathBuf>,
+    /// Their media once every probe is done (unreadable files left out).
+    pub items: Option<Vec<crate::project::MediaItem>>,
+    /// Pointer during a drag from Windows, which egui does not track. Some only for those drags.
+    pub os_pos: Option<eframe::egui::Pos2>,
+    /// The files from Windows were dropped this frame; the timeline clears it when the drop is its own.
+    pub os_dropped: bool,
+    /// Preferences › Editing: new still image length.
+    pub still_len: f64,
+    /// Set by the timeline: (files, target track id or None for new tracks, time).
+    pub dropped_at: Option<(Vec<PathBuf>, Option<String>, f64)>,
 }
 
 pub use crate::project::ClipRef;

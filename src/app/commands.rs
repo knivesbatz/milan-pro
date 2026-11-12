@@ -534,6 +534,8 @@ impl MeridianApp {
         self.clipboard.clear();
         // A probe batch still running for the old project is dropped (its send fails).
         self.importer = crate::media::Importer::new();
+        // Files dropped on the old project's timeline are not placed in this one.
+        self.file_drop.reset();
         self.drag_state = None;
         self.playing = false;
         self.message = None;

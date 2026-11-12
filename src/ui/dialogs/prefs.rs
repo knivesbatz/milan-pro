@@ -1,4 +1,4 @@
-//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General and Display are live.
+//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Editing and Display are live.
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
 use super::super::theme::{self, LookChoice, UiLook, Variant};
@@ -13,6 +13,7 @@ const ROWS23: &[&[&str]] = &[
     &["File I/O", "Deprecated Features"],
 ];
 const GENERAL: usize = 0;
+const EDITING: usize = 7;
 const DISPLAY: usize = 8;
 
 #[derive(Default)]
@@ -48,6 +49,7 @@ impl PrefsDialog {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
                 GENERAL => general(ui, d),
+                EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track),
                 _ => {
                     ui.add_space(8.0);
@@ -97,6 +99,16 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     });
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update) = (false, true, 4, true);
+    }
+}
+
+fn editing(ui: &mut Ui, d: &mut Prefs) {
+    ui.horizontal(|ui| {
+        ui.label("New still image length (seconds):");
+        ui.add(DragValue::new(&mut d.still_len).range(0.1..=3600.0).speed(0.1).fixed_decimals(3));
+    });
+    if default_all(ui) {
+        d.still_len = 5.0;
     }
 }
 

@@ -337,51 +337,96 @@ pub fn toggle_minimize(project: &mut Project, saved: &mut Option<Vec<(String, f3
     project.mark_modified();
 }
 
-/// Drop media `idx` on a track at `time`. Video with audio also lands on the audio
-/// track of the same index (created if missing). Returns false if nothing was added.
-pub fn drop_media(project: &mut Project, idx: usize, is_video: bool, track_idx: usize, time: f64) -> bool {
-    drop_media_range(project, idx, is_video, track_idx, time, None)
+/// Where a media drop lands: each new event with its (is video, track index). An index past the last track of its
+/// kind is a track the drop adds at the end. `refused`: a locked track is in the way, so nothing is added.
+#[derive(Debug, Default)]
+pub struct DropPlan {
+    pub events: Vec<(bool, usize, Clip)>,
+    pub refused: bool,
 }
 
-/// `drop_media` with an optional source range `(in, out)` (the Trimmer's selection).
-pub fn drop_media_range(project: &mut Project, idx: usize, is_video: bool, track_idx: usize, time: f64, range: Option<(f64, f64)>) -> bool {
-    let Some(media) = project.media_pool.get(idx).cloned() else { return false };
-    let clip = |color: Option<[u8; 3]>| {
-        let mut c = Clip::from_media(&media, time);
-        if let Some((a, b)) = range.filter(|(a, b)| b > a) {
-            (c.in_point, c.out_point, c.duration) = (a, b, b - a);
-        }
-        if let Some(col) = color {
-            c.color = col;
-        }
-        c
+/// Lay `items` (media with an optional source range) out one after another from `time`, as VEGAS's default Add
+/// Across Time does. `target` is the row under the pointer; None (below the last track, or no tracks) adds tracks.
+/// Pictures go on the target video track (the first one from an audio row), audio on the target audio track (the
+/// first one from a video row). A video's own audio takes that audio track only where it is free and unlocked,
+/// otherwise a new one, and shares a group id with its video event. Stills last `still_len`.
+pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], target: Option<(bool, usize)>, time: f64, still_len: f64) -> DropPlan {
+    let target = target.filter(|&(v, i)| i < tl.tracks(v).len());
+    let pick = |v: bool| match target {
+        Some((tv, i)) if tv == v => i,
+        Some(_) => 0,
+        None => tl.tracks(v).len(),
     };
-    let fits = match media.media_type {
-        MediaType::Video => true,
-        MediaType::Image => is_video,
-        MediaType::Audio => !is_video,
-        MediaType::Unknown => false,
-    };
+    let (vt, mut at) = (pick(true), pick(false));
+    // (media, source in, source out, position)
+    let mut spans = Vec::new();
+    let mut t = time;
+    for &(m, range) in items {
+        let (a, b) = match m.media_type {
+            MediaType::Unknown => continue,
+            MediaType::Image => (0.0, still_len),
+            _ => range.filter(|(a, b)| b > a).unwrap_or((0.0, m.duration)),
+        };
+        spans.push((m, a, b, t));
+        t += b - a;
+    }
+    let paired = |m: &MediaItem| m.media_type == MediaType::Video && m.sample_rate.is_some();
+    if let Some(tr) = tl.audio_tracks.get(at) {
+        let overlaps = |pos: f64, len: f64| tr.clips.iter().any(|c| c.position < pos + len && pos < c.position + c.duration);
+        if spans.iter().any(|&(m, a, b, pos)| paired(m) && (tr.locked || overlaps(pos, b - a))) {
+            at = tl.audio_tracks.len();
+        }
+    }
+    let mut events = Vec::new();
+    for (m, a, b, pos) in spans {
+        let mut c = Clip::from_media(m, pos);
+        (c.in_point, c.out_point, c.duration) = (a, b, b - a);
+        if m.media_type == MediaType::Audio {
+            events.push((false, at, c));
+            continue;
+        }
+        if paired(m) {
+            c.group = Some(uuid::Uuid::new_v4().to_string());
+            let mut sound = c.clone();
+            sound.id = uuid::Uuid::new_v4().to_string();
+            sound.color = [100, 180, 100];
+            events.push((true, vt, c));
+            events.push((false, at, sound));
+        } else {
+            events.push((true, vt, c));
+        }
+    }
+    let locked = |v: bool, i: usize| tl.tracks(v).get(i).is_some_and(|t| t.locked);
+    let refused = target.is_some_and(|(v, i)| locked(v, i)) || events.iter().any(|(v, i, _)| locked(*v, *i));
+    DropPlan { events, refused }
+}
+
+/// Add the events of a `plan_drop`, creating the tracks it needs. Returns the new event ids (none when refused).
+pub fn apply_drop(project: &mut Project, plan: DropPlan) -> Vec<String> {
+    if plan.refused {
+        return Vec::new();
+    }
     let tl = &mut project.timeline;
-    // Missing tracks are created (also the first one after every track was deleted).
-    while fits && tl.tracks(is_video).len() <= track_idx {
-        tl.add_track(is_video);
-    }
-    match tl.tracks_mut(is_video).get_mut(track_idx) {
-        Some(t) if fits && !t.locked => t.clips.push(clip(None)),
-        _ => return false,
-    }
-    if is_video && media.media_type == MediaType::Video && media.sample_rate.is_some() {
-        while tl.audio_tracks.len() <= track_idx {
-            tl.add_audio_track();
+    let mut ids = Vec::new();
+    for (v, i, c) in plan.events {
+        while tl.tracks(v).len() <= i {
+            tl.add_track(v);
         }
-        let at = &mut tl.audio_tracks[track_idx];
-        if !at.locked {
-            at.clips.push(clip(Some([100, 180, 100])));
-        }
+        ids.push(c.id.clone());
+        let clips = &mut tl.tracks_mut(v)[i].clips;
+        clips.push(c);
+        clips.sort_by(|a, b| a.position.total_cmp(&b.position));
     }
-    project.mark_modified();
-    true
+    let done = !ids.is_empty();
+    changed(project, done);
+    ids
+}
+
+/// Drop pool media `idxs` (each with source range `range`) on `target` at `time`: `plan_drop` + `apply_drop`.
+pub fn drop_media(project: &mut Project, idxs: &[usize], range: Option<(f64, f64)>, target: Option<(bool, usize)>, time: f64, still_len: f64) -> Vec<String> {
+    let items: Vec<_> = idxs.iter().filter_map(|&i| project.media_pool.get(i)).map(|m| (m, range)).collect();
+    let plan = plan_drop(&project.timeline, &items, target, time, still_len);
+    apply_drop(project, plan)
 }
 
 #[cfg(test)]
@@ -582,16 +627,102 @@ mod tests {
         assert!(p.timeline.video_tracks.is_empty() && p.timeline.audio_tracks.is_empty());
     }
 
+    /// Pool: 0 video with audio (10 s), 1 still, 2 audio (4 s).
+    fn media_project() -> Project {
+        let mut p = Project::new("t");
+        let m = |id: &str, media_type, duration, sample_rate| MediaItem { id: id.into(), path: id.into(), name: id.into(), media_type, duration, sample_rate, ..Default::default() };
+        p.media_pool = vec![m("v", MediaType::Video, 10.0, Some(48_000)), m("i", MediaType::Image, 0.04, None), m("a", MediaType::Audio, 4.0, Some(48_000))];
+        p
+    }
+
+    /// (track index, position, duration, media id) of each event on the tracks of one kind.
+    fn laid_out(p: &Project, video: bool) -> Vec<(usize, f64, f64, String)> {
+        let tracks = p.timeline.tracks(video).iter().enumerate();
+        tracks.flat_map(|(i, t)| t.clips.iter().map(move |c| (i, c.position, c.duration, c.media_id.clone().unwrap_or_default()))).collect()
+    }
+
     #[test]
     fn drop_creates_a_video_track_when_there_is_none() {
-        let mut p = Project::new("t");
+        let mut p = media_project();
         p.timeline.video_tracks.clear();
-        p.media_pool.push(MediaItem { id: "m".into(), media_type: MediaType::Image, duration: 5.0, ..Default::default() });
-        assert!(drop_media(&mut p, 0, true, 0, 1.0));
-        assert_eq!(p.timeline.video_tracks.len(), 1);
-        assert_eq!(p.timeline.video_tracks[0].clips.len(), 1);
-        assert!(!drop_media(&mut p, 0, false, 3, 1.0)); // a still never goes on audio, and makes no tracks
-        assert_eq!(p.timeline.audio_tracks.len(), 1);
+        assert_eq!(drop_media(&mut p, &[1], None, Some((true, 0)), 1.0, 5.0).len(), 1);
+        assert_eq!(laid_out(&p, true), [(0, 1.0, 5.0, "i".into())]);
+        assert!(p.modified);
+    }
+
+    #[test]
+    fn wrong_kind_rows_redirect_to_the_first_track_of_the_right_kind() {
+        let mut p = media_project();
+        p.timeline.add_video_track();
+        p.timeline.add_audio_track();
+        // Audio on Video 2 goes to Audio 1; a still on Audio 2 goes to Video 1.
+        drop_media(&mut p, &[2], None, Some((true, 1)), 0.0, 5.0);
+        drop_media(&mut p, &[1], None, Some((false, 1)), 0.0, 5.0);
+        assert_eq!(laid_out(&p, false), [(0, 0.0, 4.0, "a".into())]);
+        assert_eq!(laid_out(&p, true), [(0, 0.0, 5.0, "i".into())]);
+        // No audio track at all: one is created.
+        p.timeline.audio_tracks.clear();
+        drop_media(&mut p, &[2], None, Some((true, 0)), 9.0, 5.0);
+        assert_eq!(laid_out(&p, false), [(0, 9.0, 4.0, "a".into())]);
+    }
+
+    #[test]
+    fn drop_below_the_last_track_creates_tracks() {
+        let mut p = media_project();
+        let ids = drop_media(&mut p, &[0], None, None, 2.0, 5.0);
+        let tl = &p.timeline;
+        assert_eq!((tl.video_tracks.len(), tl.audio_tracks.len()), (2, 2));
+        assert_eq!(laid_out(&p, true), [(1, 2.0, 10.0, "v".into())]);
+        assert_eq!(laid_out(&p, false), [(1, 2.0, 10.0, "v".into())]);
+        // The video and its audio are one group, and both are returned (they become the selection).
+        let (v, a) = (p.clip(&ids[0]).unwrap(), p.clip(&ids[1]).unwrap());
+        assert!(v.group.is_some() && v.group == a.group && ids.len() == 2);
+        // An empty timeline gets a track of each kind it needs.
+        let mut p = media_project();
+        p.timeline.video_tracks.clear();
+        p.timeline.audio_tracks.clear();
+        drop_media(&mut p, &[2], None, None, 0.0, 5.0);
+        assert_eq!((p.timeline.video_tracks.len(), p.timeline.audio_tracks.len()), (0, 1));
+    }
+
+    #[test]
+    fn paired_audio_takes_a_new_track_when_the_first_is_occupied() {
+        let mut p = media_project();
+        p.timeline.audio_tracks[0].clips.push(clip(8.0, 4.0, 0.0));
+        drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0); // 0..10 overlaps 8..12
+        assert_eq!(laid_out(&p, false), [(0, 8.0, 4.0, String::new()), (1, 0.0, 10.0, "v".into())]);
+        // Free over the event's range: the first audio track.
+        drop_media(&mut p, &[0], Some((1.0, 3.0)), Some((true, 0)), 20.0, 5.0);
+        assert_eq!(laid_out(&p, false)[1], (0, 20.0, 2.0, "v".into()));
+        // A locked first audio track is not free either.
+        p.timeline.audio_tracks[0].locked = true;
+        drop_media(&mut p, &[0], None, Some((true, 0)), 40.0, 5.0);
+        assert_eq!(p.timeline.audio_tracks.len(), 3);
+    }
+
+    #[test]
+    fn several_items_go_across_time_and_stills_use_the_still_length() {
+        let mut p = media_project();
+        let ids = drop_media(&mut p, &[0, 1, 2], None, Some((true, 0)), 1.0, 3.0);
+        assert_eq!(ids.len(), 4);
+        assert_eq!(laid_out(&p, true), [(0, 1.0, 10.0, "v".into()), (0, 11.0, 3.0, "i".into())]);
+        assert_eq!(laid_out(&p, false), [(0, 1.0, 10.0, "v".into()), (0, 14.0, 4.0, "a".into())]);
+        let i = p.clip(&ids[2]).unwrap();
+        assert_eq!((i.in_point, i.out_point), (0.0, 3.0));
+    }
+
+    #[test]
+    fn a_locked_track_refuses_the_drop() {
+        let mut p = media_project();
+        p.timeline.video_tracks[0].locked = true;
+        let plan = plan_drop(&p.timeline, &[(&p.media_pool[0], None)], Some((true, 0)), 0.0, 5.0);
+        assert!(plan.refused && plan.events.len() == 2); // still laid out, for the red ghost
+        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0).is_empty());
+        // Pointing at a locked row refuses even when the media would go elsewhere.
+        assert!(drop_media(&mut p, &[2], None, Some((true, 0)), 0.0, 5.0).is_empty());
+        assert!(laid_out(&p, true).is_empty() && laid_out(&p, false).is_empty() && !p.modified);
+        // Below the last track, the new tracks take it.
+        assert_eq!(drop_media(&mut p, &[1], None, None, 0.0, 5.0).len(), 1);
     }
 
     #[test]
@@ -650,12 +781,12 @@ mod tests {
             sample_rate: Some(48_000), ..Default::default()
         };
         p.media_pool.push(m.clone());
-        assert!(drop_media_range(&mut p, 0, true, 0, 5.0, Some((2.0, 3.5))));
+        assert_eq!(drop_media(&mut p, &[0], Some((2.0, 3.5)), Some((true, 0)), 5.0, 5.0).len(), 2);
         let v = &p.timeline.video_tracks[0].clips[0];
         assert_eq!((v.position, v.in_point, v.out_point, v.duration), (5.0, 2.0, 3.5, 1.5));
         assert_eq!(p.timeline.audio_tracks[0].clips[0].in_point, 2.0); // linked audio gets the same range
-        m.media_type = MediaType::Audio;
+        m.media_type = MediaType::Unknown;
         p.media_pool[0] = m;
-        assert!(!drop_media_range(&mut p, 0, true, 0, 0.0, None)); // audio can't go on a video track
+        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0).is_empty()); // unreadable media adds nothing
     }
 }
