@@ -291,6 +291,12 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             }
         }
 
+        // The meter stays dark in playback: say so rather than look live (R0).
+        if let Some(m) = l.meter.filter(|m| visible(*m)) {
+            let tip = crate::ui::menus::Later("R8b").tip("Playback level meter");
+            ui.interact(m, id.with("meter"), Sense::hover()).on_hover_text(format!("{tip}; an armed track's meter shows its recording input"));
+        }
+
         // Sliders: drag (Ctrl = fine), click jumps, double-click resets, wheel nudges.
         for (s, r, groove) in &l.sliders {
             if !visible(*r) || groove.span() < 20.0 {

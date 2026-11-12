@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::*;
 use crate::project::{Project, format_timecode};
 use crate::render::{Job, PRESETS, Status, content_end};
+use super::super::menus::Later;
 use super::super::theme::{self, UiLook};
 
 /// Format group and description per preset (same order as `PRESETS`).
@@ -223,7 +224,7 @@ impl RenderDialog {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(TextEdit::singleline(&mut self.search).hint_text("Search render templates").desired_width(300.0));
-            super::fixed_combo(ui, "render_filter", "Filters", 120.0);
+            super::fixed_combo(ui, "render_filter", "Filters", 120.0, Later("R11"));
         });
         let d = theme::get().dialog();
         let q = self.search.to_lowercase();
@@ -258,17 +259,17 @@ impl RenderDialog {
             self.details(ui, project);
         });
         ui.add_enabled_ui(false, |ui| {
-            let _ = ui.button("Customize Template...");
+            ui.button("Customize Template...").on_disabled_hover_text(Later("R11").text());
         });
         super::group(ui, "Render Options");
         ui.add_enabled_ui(false, |ui| {
-            for o in [
-                "Stretch video to fill output frame size (do not letterbox)",
-                "Use project output rotation setting",
-                "Save project markers in media file",
-                "Enable multichannel mapping",
+            for (o, why) in [
+                ("Stretch video to fill output frame size (do not letterbox)", Later("R11")),
+                ("Use project output rotation setting", Later("R11")),
+                ("Save project markers in media file", Later("R11")),
+                ("Enable multichannel mapping", Later("R10a")),
             ] {
-                ui.checkbox(&mut false, o);
+                ui.checkbox(&mut false, o).on_disabled_hover_text(why.text());
             }
         });
         ui.add_space(4.0);
@@ -282,8 +283,8 @@ impl RenderDialog {
             ui.label(RichText::new("Render:").strong());
             ui.label(&project.name);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                super::fixed_combo(ui, "render_view", "View", 70.0);
-                super::fixed_combo(ui, "render_filt", "Filter", 70.0);
+                super::fixed_combo(ui, "render_view", "View", 70.0, Later("R11"));
+                super::fixed_combo(ui, "render_filt", "Filter", 70.0, Later("R11"));
             });
         });
         let filter = TREE23[self.node].2;
@@ -350,7 +351,7 @@ impl RenderDialog {
                         ui.vertical(|ui| self.details(ui, project));
                     });
                     ui.add_enabled_ui(false, |ui| {
-                        let _ = ui.add(Button::new("Customize...").min_size(vec2(100.0, 30.0)));
+                        ui.add(Button::new("Customize...").min_size(vec2(100.0, 30.0))).on_disabled_hover_text(Later("R11").text());
                     });
                 });
                 Frame::NONE.fill(d.field).inner_margin(6).show(ui, |ui| {

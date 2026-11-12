@@ -8,7 +8,7 @@ use crate::render::content_end;
 use super::EditTool;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{self, add_marker};
+use super::menus::{self, Later, NotPlanned, add_marker};
 use super::theme::{self, UiLook};
 use super::toolbar::{arrow_menu, inert_button, separator, split_button, tool_button};
 
@@ -198,7 +198,7 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
     });
     button(ui, Icon::EnvelopeEdit, "Envelope Edit Tool", Command::Tool(EditTool::Envelope), st.tool == EditTool::Envelope);
     button(ui, Icon::SelectionEdit, "Selection Edit Tool", Command::Tool(EditTool::Selection), st.tool == EditTool::Selection);
-    inert_button(ui, Icon::ZoomEdit, "Zoom Edit Tool (not available yet)", false);
+    inert_button(ui, Icon::ZoomEdit, &NotPlanned("R58").tip("Zoom Edit Tool"), false);
     separator(ui);
 
     let region = s.project.timeline.loop_region.filter(|(a, b)| b > a);
@@ -208,7 +208,7 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
     button(ui, Icon::TrimEnd, "Trim End (Alt+])", Command::TrimEnd, false);
     button(ui, Icon::Split, "Split (S)", Command::Split, false);
     if v23 {
-        tool_button(ui, Icon::SmartSplit, "Smart Split (Alt+S) (not available yet)", false, false);
+        tool_button(ui, Icon::SmartSplit, &Later("R18a").tip("Smart Split (Alt+S)"), false, false);
     }
     button(ui, Icon::Lock, "Lock", Command::EventLock, st.clip_locked);
     separator(ui);
@@ -240,9 +240,9 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
             action = Some(TransportAction::ToggleColorGrading);
         }
         separator(ui);
-        tool_button(ui, Icon::OpenParent, "Open Parent Timeline (Alt+P) (not available yet)", false, false);
-        tool_button(ui, Icon::OpenNested, "Open Nested Timeline (Alt+N) (not available yet)", false, false);
-        tool_button(ui, Icon::CreateNested, "Create Nested Timeline (Alt+C) (not available yet)", false, false);
+        tool_button(ui, Icon::OpenParent, &Later("R6b").tip("Open Parent Timeline (Alt+P)"), false, false);
+        tool_button(ui, Icon::OpenNested, &Later("R6b").tip("Open Nested Timeline (Alt+N)"), false, false);
+        tool_button(ui, Icon::CreateNested, &Later("R6b").tip("Create Nested Timeline (Alt+C)"), false, false);
     }
     length_boxes(&boxes, rect, s.project);
     action

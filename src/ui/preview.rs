@@ -4,7 +4,7 @@ use crate::decode::{Preview, Quality, Size};
 use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
-use super::menus::MenuAction;
+use super::menus::{Later, MenuAction};
 use super::theme::{self, UiLook};
 use super::toolbar::{arrow_menu, inert_button, inert_split, split_button, text_menu, tool_button};
 use super::transport::{Cmd, Playback, cmd_button, cmd_menu};
@@ -33,11 +33,11 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
     if tool_button(ui, Icon::Properties, "Project Video Properties", true, false).clicked() {
         *action = Some(MenuAction::Properties);
     }
-    inert_button(ui, Icon::ExternalMonitor, "Preview on External Monitor (not available yet)", false);
+    inert_button(ui, Icon::ExternalMonitor, &Later("R14").tip("Preview on External Monitor"), false);
     if tool_button(ui, Icon::TrackFx, "Video Output FX", true, false).clicked() {
         super::menus::send(ui.ctx(), super::keymap::Command::VideoOutputFx);
     }
-    inert_split(ui, Icon::SplitScreen, "Split-Screen View (not available yet)");
+    inert_split(ui, Icon::SplitScreen, &Later("R16b").tip("Split-Screen View"));
     ui.add_space(2.0);
     let label = format!("{:?} ({:?})", preview.quality, preview.size);
     // VP16 "Best (Full) ▾" has a gap; VP23 "Preview (Auto)▾" is set tight.
@@ -67,7 +67,7 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         ui.checkbox(&mut view.safe_areas, "Safe Areas");
         ui.separator();
         for item in ["Isolate Red Channel", "Isolate Green Channel", "Isolate Blue Channel", "Isolate Alpha Channel", "Alpha as Grayscale"] {
-            ui.add_enabled(false, Button::new(item));
+            ui.add_enabled(false, Button::new(item)).on_disabled_hover_text(Later("R16b").text());
         }
     });
     let has = preview.image.is_some();
@@ -158,12 +158,12 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     }
     let v16_menu = theme::get().look() == UiLook::Vegas16;
     super::menus::context(&resp, |ui| {
-        ui.add_enabled(false, Button::new("Simulate Device Aspect Ratio"));
+        ui.add_enabled(false, Button::new("Simulate Device Aspect Ratio")).on_disabled_hover_text(Later("R11").text());
         if ui.radio(view.zoom.is_none(), "Scale Video to Fit Preview Window").clicked() {
             view.zoom = None;
             ui.close_menu();
         }
-        ui.add_enabled(false, Button::new("Adjust Size and Quality for Optimal Playback"));
+        ui.add_enabled(false, Button::new("Adjust Size and Quality for Optimal Playback")).on_disabled_hover_text(Later("R19").text());
         if ui.button("Display at Project Size").clicked() {
             (view.zoom, preview.size) = (Some(1.0), Size::Full);
             ui.close_menu();

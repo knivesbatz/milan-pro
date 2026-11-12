@@ -114,7 +114,7 @@ impl CmdState {
         let v23 = self.look == UiLook::Vegas23;
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
-            | About | KeyboardShortcuts | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
+            | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
             Welcome => v23,
@@ -220,6 +220,81 @@ pub fn state(ctx: &Context) -> Arc<CmdState> {
     ctx.data(|d| d.get_temp::<Arc<CmdState>>(Id::new("milan_cmd_state"))).unwrap_or_default()
 }
 
+// ---- Why a control is greyed out (R0: nothing is greyed without saying why) ----
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Why {
+    /// Not built yet; the batch of docs/REMAINING.md that builds it.
+    Later(&'static str),
+    /// VEGAS long tail (R57-R60): no decision to build it.
+    NotPlanned(&'static str),
+    /// Anything else, as a lowercase phrase: a behaviour Milan Pro has without a switch, a choice fixed by the look...
+    Fixed(&'static str),
+}
+
+pub use Why::*;
+
+/// A VEGAS switch for something Milan Pro always does.
+pub const ALWAYS_ON: Why = Fixed("always on in Milan Pro (there is no switch)");
+
+impl Why {
+    /// "not available yet: batch R8b", to go inside a sentence.
+    pub fn phrase(self) -> String {
+        match self {
+            Later(b) => format!("not available yet: batch {b}"),
+            NotPlanned(b) => format!("not planned: VEGAS long tail {b}"),
+            Fixed(s) => s.to_string(),
+        }
+    }
+
+    /// Hover text for a greyed menu row or dialog control.
+    pub fn text(self) -> String {
+        let p = self.phrase(); // starts with an ASCII letter
+        p[..1].to_uppercase() + &p[1..]
+    }
+
+    /// Tooltip for a toolbar button: "Mixing Console (not available yet: batch R8b)".
+    pub fn tip(self, label: &str) -> String {
+        format!("{label} ({})", self.phrase())
+    }
+}
+
+/// Why `c` is greyed out whatever is selected; None for commands that work (they may still need a selection).
+pub fn unfinished(c: Command) -> Option<Why> {
+    Some(match c {
+        SaveVersion => Later("R42"),
+        PasteRepeat | PreviewAtCursor | CursorToPlayhead | JogLeft | JogRight | SelectToNextMarker | SelectLoopRegion
+        | RestoreSelection | SelPrevEvent | SelNextEvent | SelectEventStart | SelectEventEnd | ExpandedEdit | NudgeFrameLeft
+        | NudgeFrameRight | NudgePixelLeft | NudgePixelRight | NudgeTrackUp | NudgeTrackDown | MuteExclusive | SoloExclusive
+        | ToggleListFocus | ZoomFramePerThumb | WaveZoomIn | WaveZoomOut => Later("R2"),
+        GridLeft | GridRight | GoTo | SnapGrid | SnapAllEvents => Later("R1"),
+        PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => Later("R4b"),
+        GroupMute | GroupSolo => Later("R5"),
+        NestedCreate | NestedOpen | NestedParent => Later("R6b"),
+        VideoBusTrack => Later("R7"),
+        DimMaster | BusTracks | MixingConsole => Later("R8b"),
+        NextFxEnvelope | PrevFxEnvelope => Later("R8c"),
+        SurroundPanner => Later("R10b"),
+        RenderToNewTrack => Later("R12"),
+        ToggleDocks | TopDock | BottomDock | RightDock | CollapseTrackList | MaximizeTimeline | LayoutVp14 | LayoutAudio | LayoutColor
+        | LayoutSource | LayoutTimelineTop | NextWindow | PrevWindow | FocusTimeline => Later("R13"),
+        ExternalMonitor => Later("R14"),
+        EditDetails | ProjectNotes => Later("R16a"),
+        VideoScopes => Later("R16b"),
+        LoudnessMeters => Later("R16c"),
+        Multicam => Later("R17b"),
+        SmartSplit | OpenInAudioEditor | InsertCommand | CdTrack | CdIndex | MediaMarkers | RebuildPeaks | ContextMenu => Later("R18a"),
+        InsertAdjustmentTrack => Later("R18b"),
+        Prerender | RamPreview => Later("R23"),
+        PluginManager => Later("R31"),
+        Help | WhatsThis => Later("R53"),
+        DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
+        SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => ALWAYS_ON,
+        EventHeaders => Fixed("set by the look: on in VEGAS 16, off in VEGAS 23"),
+        _ => return None,
+    })
+}
+
 // ---- Rows ----
 
 #[derive(Clone, Copy, PartialEq)]
@@ -273,13 +348,21 @@ fn mnemonic_hit(ui: &Ui, label: &str) -> bool {
 /// One popup row: 28 px gutter (✓ / ●), label with mnemonic, right-aligned shortcut. True when chosen; the menu
 /// then closes.
 pub fn entry(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark) -> bool {
+    row(ui, label, shortcut, enabled, mark, None)
+}
+
+/// `entry` that, greyed out, says `why` on hover.
+fn row(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark, why: Option<Why>) -> bool {
     let (text, short) = row_colors(enabled);
     let mut b = Button::new(label_job(ui, label, text, 26.0)).shortcut_text(RichText::new(shortcut).color(short));
     if !enabled {
         // Same padding as live rows, no hover box.
         b = b.sense(Sense::hover()).fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
     }
-    let r = ui.add(b);
+    let mut r = ui.add(b);
+    if let Some(w) = why.filter(|_| !enabled) {
+        r = r.on_hover_text(w.text());
+    }
     let c = pos2(r.rect.min.x + 14.0, r.rect.center().y);
     match mark {
         Mark::Check(true) => {
@@ -308,14 +391,19 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
         Some(on) => Mark::Check(on),
         None => Mark::None,
     };
-    if entry(ui, label, &keymap::shortcut_text(c, st.look), st.enabled(c), mark) {
+    if row(ui, label, &keymap::shortcut_text(c, st.look), st.enabled(c), mark, unfinished(c)) {
         send(ui.ctx(), c);
     }
 }
 
-/// Greyed-out row for something Milan Pro does not have.
-pub fn off(ui: &mut Ui, label: &str) {
-    entry(ui, label, "", false, Mark::None);
+/// Greyed-out row for something Milan Pro does not have, saying why on hover.
+pub fn off(ui: &mut Ui, label: &str, why: Why) {
+    inert(ui, label, Mark::None, why);
+}
+
+/// Greyed-out row with a fixed check or radio mark.
+pub fn inert(ui: &mut Ui, label: &str, mark: Mark, why: Why) {
+    row(ui, label, "", false, mark, Some(why));
 }
 
 pub fn sep(ui: &mut Ui) {
@@ -339,11 +427,11 @@ pub fn sub(ui: &mut Ui, label: &str, enabled: bool, add: impl FnOnce(&mut Ui)) {
 /// A menu tree entry. `V16` / `V23` limit an entry to one look.
 pub enum M {
     C(&'static str, Command),
-    /// Not available: greyed out.
-    X(&'static str),
+    /// Not available: greyed out, saying why on hover.
+    X(&'static str, Why),
     /// Not available, shown with a fixed check / radio state.
-    K(&'static str, bool),
-    R(&'static str, bool),
+    K(&'static str, bool, Why),
+    R(&'static str, bool, Why),
     S,
     Sub(&'static str, &'static [M]),
     /// Items shown in place (shared blocks).
@@ -367,13 +455,9 @@ pub fn show(ui: &mut Ui, items: &[M]) {
 fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
     match item {
         C(l, c) => cmd(ui, l, *c),
-        X(l) => off(ui, l),
-        K(l, on) => {
-            entry(ui, l, "", false, Mark::Check(*on));
-        }
-        R(l, on) => {
-            entry(ui, l, "", false, Mark::Radio(*on));
-        }
+        X(l, w) => off(ui, l, *w),
+        K(l, on, w) => inert(ui, l, Mark::Check(*on), *w),
+        R(l, on, w) => inert(ui, l, Mark::Radio(*on), *w),
         S => sep(ui),
         Sub(l, items) => sub(ui, l, true, |ui| show(ui, items)),
         Inline(items) => show(ui, items),
@@ -386,7 +470,7 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
                 cmd(ui, &format!("&{} {}", i + 1, p.replace('&', "&&")), OpenRecent(i));
             }
             if st.recent.is_empty() {
-                off(ui, "Recent projects");
+                off(ui, "Recent projects", Fixed("no recent projects yet"));
             }
         }
         UserLayouts => {
@@ -401,22 +485,24 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
 const IMPORT: &[M] = &[
     C("&Media...", ImportMedia),
     C("&VEGAS Project...", ImportVegas),
-    X("Media from &Project..."),
-    V16(&X("&AAF...")),
-    X("P&remiere/After Effects (*.prproj)..."),
-    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)..."),
-    X("Final Cut Pro &X (*.fcpxml)..."),
-    X("&EDL Text File (*.txt)..."),
-    X("&Broadcast Wave Format..."),
-    X("&Closed Captioning..."),
+    X("Media from &Project...", Later("R30")),
+    V16(&X("&AAF...", AAF)),
+    X("P&remiere/After Effects (*.prproj)...", Later("R29")),
+    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
+    X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
+    X("&EDL Text File (*.txt)...", Later("R28")),
+    X("&Broadcast Wave Format...", NotPlanned("R57")),
+    X("&Closed Captioning...", Later("R39")),
 ];
 
+const AAF: Why = Fixed("not feasible: no Rust AAF library (OTIO route in batch R29)");
+
 const EXPORT: &[M] = &[
-    X("&Milan Pro Project Archive..."),
-    X("Premiere/&After Effects (*.prproj)..."),
-    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)..."),
-    X("Final Cut Pro &X (*.fcpxml)..."),
-    X("&EDL Text File (*.txt)..."),
+    X("&Milan Pro Project Archive...", Later("R30")),
+    X("Premiere/&After Effects (*.prproj)...", Later("R29")),
+    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
+    X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
+    X("&EDL Text File (*.txt)...", Later("R28")),
 ];
 
 pub const FILE: &[M] = &[
@@ -431,12 +517,12 @@ pub const FILE: &[M] = &[
     S,
     V16(&C("&Render As...", RenderAs)),
     V23(&C("&Render...", RenderAs)),
-    X("Real-Ti&me Render..."),
+    X("Real-Ti&me Render...", Later("R12")),
     S,
     Sub("&Import", IMPORT),
     Sub("E&xport", EXPORT),
-    V16(&X("Capture &Video...")),
-    X("&Extract Audio from CD..."),
+    V16(&X("Capture &Video...", NotPlanned("R59"))),
+    X("&Extract Audio from CD...", NotPlanned("R59")),
     S,
     V23(&C("Welcome Screen", Welcome)),
     C("&Properties...", Properties),
@@ -475,18 +561,21 @@ const NAVIGATE: &[M] = &[
 const RIPPLE: &[M] = &[
     C("Affected &Tracks", RippleAffected),
     C("Affected Tracks, &Bus Tracks, Markers, and Regions", RippleBus),
-    X("Affected Tracks, &Markers, and Regions"),
+    X("Affected Tracks, &Markers, and Regions", NO_BUS),
     C("&All Tracks, Markers, and Regions", RippleAll),
 ];
 
+/// Without bus tracks this ripple mode is the one above it.
+const NO_BUS: Why = Later("R8b");
+
 const SELECT: &[M] = &[
     C("Select &All", SelectAll),
-    V23(&X("Select All After Cursor")),
+    V23(&X("Select All After Cursor", Later("R2"))),
     C("Select Event Sta&rt", SelectEventStart),
     C("Select Event &End", SelectEventEnd),
     C("Enter Expanded Edit &Mode", ExpandedEdit),
-    V16(&X("Exit E&dit Mode")),
-    V23(&X("Exit Expanded E&dit Mode")),
+    V16(&X("Exit E&dit Mode", Later("R2"))),
+    V23(&X("Exit Expanded E&dit Mode", Later("R2"))),
     S,
     C("&Loop Playback", Loop),
     S,
@@ -504,15 +593,15 @@ const SELECT: &[M] = &[
 
 const TOOLS_SUB: &[M] = &[
     C("&Normal Edit Tool", NormalTool),
-    R("S&huffle Tool", false),
+    R("S&huffle Tool", false, NotPlanned("R58")),
     C("Sl&ip Tool", Tool(EditTool::Slip)),
     C("Sli&de Tool", Tool(EditTool::Slide)),
     C("Time Stretch/&Compress Tool", Tool(EditTool::Stretch)),
-    R("Split &Trim Tool", false),
+    R("Split &Trim Tool", false, NotPlanned("R58")),
     S,
     C("&Envelope", Tool(EditTool::Envelope)),
     C("&Selection", Tool(EditTool::Selection)),
-    R("&Zoom", false),
+    R("&Zoom", false, NotPlanned("R58")),
     S,
     C("Ne&xt Tool", NextTool),
     C("&Previous Tool", PrevTool),
@@ -521,19 +610,19 @@ const TOOLS_SUB: &[M] = &[
 const SWITCHES: &[M] = &[
     C("&Mute", EventMute),
     C("&Lock", EventLock),
-    K("L&oop", true),
+    K("L&oop", true, Later("R3a")),
     S,
-    K("&Invert Phase", false),
-    K("&Normalize", false),
-    V23(&K("Auto Normalize", false)),
+    K("&Invert Phase", false, Later("R3b")),
+    K("&Normalize", false, Later("R3b")),
+    V23(&K("Auto Normalize", false, Later("R3b"))),
     S,
-    K("Maintain &Aspect Ratio", true),
-    K("Reduce Interlace &Flicker", false),
+    K("Maintain &Aspect Ratio", true, Later("R3b")),
+    K("Reduce Interlace &Flicker", false, Later("R3b")),
     S,
-    R("Use P&roject Resample Mode", true),
-    R("Force Re&sample", false),
-    R("&Disable Resample", false),
-    V23(&R("Optical Flow", false)),
+    R("Use P&roject Resample Mode", true, Later("R3b")),
+    R("Force Re&sample", false, Later("R3b")),
+    R("&Disable Resample", false, Later("R3b")),
+    V23(&R("Optical Flow", false, Later("R3b"))),
 ];
 
 /// Edit › Take and the event menu's Take ▸; Choose Active... and Delete... open the Take Chooser.
@@ -555,12 +644,20 @@ const GROUP: &[M] = &[
     C("&Clear", ClearGroup),
     C("&Select All", SelectGroup),
     S,
-    X("Cut &All"),
-    X("Cop&y All"),
-    X("&Delete All"),
+    X("Cut &All", Later("R3a")),
+    X("Cop&y All", Later("R3a")),
+    X("&Delete All", Later("R3a")),
 ];
 
-const CHANNELS: &[M] = &[R("&Both", true), R("&Left Only", false), R("&Right Only", false), R("&Combine", false), R("&Swap", false)];
+pub const CHANNELS: &[M] = &[
+    R("&Both", true, Later("R3b")),
+    R("&Left Only", false, Later("R3b")),
+    R("&Right Only", false, Later("R3b")),
+    R("&Combine", false, Later("R3b")),
+    R("&Swap", false, Later("R3b")),
+];
+
+pub const STREAM: &[M] = &[X("Stream &1", Later("R3b"))];
 
 pub const EDIT: &[M] = &[
     C("&Undo", Undo),
@@ -571,8 +668,8 @@ pub const EDIT: &[M] = &[
     C("&Paste", Paste),
     C("P&aste Repeat...", PasteRepeat),
     C("Pa&ste Insert", PasteInsert),
-    X("Paste E&vent Attributes"),
-    X("Selectively Paste Event Attributes..."),
+    X("Paste E&vent Attributes", Later("R3a")),
+    X("Selectively Paste Event Attributes...", Later("R3a")),
     S,
     C("&Delete", Delete),
     C("Tri&m", Trim),
@@ -589,7 +686,7 @@ pub const EDIT: &[M] = &[
     Sub("S&witches", SWITCHES),
     Sub("Ta&ke", TAKE),
     Sub("&Group", GROUP),
-    Sub("&Stream", &[X("Stream &1")]),
+    Sub("&Stream", STREAM),
     Sub("C&hannels", CHANNELS),
     S,
     C("U&ndo All", UndoAll),
@@ -597,10 +694,10 @@ pub const EDIT: &[M] = &[
 ];
 
 const LAYOUTS: &[M] = &[
-    X("&Organize Layouts..."),
+    X("&Organize Layouts...", Later("R13")),
     C("&Save Layout", SaveLayout),
     C("Save Layout &As...", SaveLayoutAs),
-    X("R&eload Selected Layout"),
+    X("R&eload Selected Layout", Later("R13")),
     S,
     C("&Default Layout", LayoutDefault),
     V16(&C("Classic Default Layout", LayoutVp14)),
@@ -623,7 +720,7 @@ const WINDOWS: &[M] = &[
     C("&Transitions", Window(Panel::Transitions)),
     C("V&ideo FX", Window(Panel::VideoFx)),
     C("Media &Generators", Window(Panel::MediaGenerators)),
-    X("Compositors"),
+    X("Compositors", Later("R7")),
     C("&Plug-In Manager", PluginManager),
     C("Video &Scopes", VideoScopes),
     C("S&urround Panner", SurroundPanner),
@@ -637,44 +734,47 @@ const WINDOWS: &[M] = &[
     C("Pr&operties", Window(Panel::Properties)),
 ];
 
-const AUDIO_ENV_VIEW: &[M] = &[K("Track &Mute", true), K("Track &Volume", true), K("Track &Pan", true)];
+/// The envelope view filters: Milan Pro shows every envelope a track has.
+const SHOWN: Why = Fixed("always shown in Milan Pro (there is no view filter)");
+
+const AUDIO_ENV_VIEW: &[M] = &[K("Track &Mute", true, SHOWN), K("Track &Volume", true, SHOWN), K("Track &Pan", true, SHOWN)];
 
 const VIDEO_ENV_VIEW: &[M] = &[
-    K("Track &Mute", true),
-    K("Track &Composite Level", true),
-    K("Track &Fade to Color", true),
-    K("Track &Keyframes", true),
+    K("Track &Mute", true, Later("R4a")),
+    K("Track &Composite Level", true, SHOWN),
+    K("Track &Fade to Color", true, Later("R4a")),
+    K("Track &Keyframes", true, Later("R4a")),
     S,
-    K("Event &Velocity", true),
-    K("Transition &Progress", true),
+    K("Event &Velocity", true, Later("R4a")),
+    K("Transition &Progress", true, Later("R4a")),
     S,
-    K("Motion &Blur Amount", true),
-    K("Video &Supersampling", true),
+    K("Motion &Blur Amount", true, Later("R7")),
+    K("Video &Supersampling", true, Later("R7")),
 ];
 
 pub const VIEW: &[M] = &[
-    K("&Toolbar", true),
-    K("Status &Bar", true),
+    K("&Toolbar", true, ALWAYS_ON),
+    K("Status &Bar", true, ALWAYS_ON),
     S,
     Sub("Window La&youts", LAYOUTS),
     S,
     C("&Focus to Timeline", FocusTimeline),
     Sub("Window", WINDOWS),
     S,
-    K("Mixer Previe&w Fader", false),
+    K("Mixer Previe&w Fader", false, Later("R8b")),
     S,
     C("Audio Bus Tra&cks", BusTracks),
     C("Vide&o Bus Track", VideoBusTrack),
     S,
-    Sub("Eve&nt Media Markers", &[C("&Show Markers", MediaMarkers), K("Show Marker &Labels", false)]),
+    Sub("Eve&nt Media Markers", &[C("&Show Markers", MediaMarkers), K("Show Marker &Labels", false, Later("R18a"))]),
     C("Active Take &Information", TakeInfo),
     C("Audio Event &Waveforms", Waveforms),
     C("Event &Buttons", EventButtons),
     C("Event Fade &Lengths", FadeLengths),
     C("Video &Event Edge Edit Frames", EdgeFrames),
     C("Event Headers", EventHeaders),
-    V23(&K("Event Length", false)),
-    V23(&K("Show OFX Effect Envelopes (Beta)", false)),
+    V23(&K("Event Length", false, Later("R18a"))),
+    V23(&K("Show OFX Effect Envelopes (Beta)", false, Later("R8c"))),
     S,
     Sub("&Audio Envelopes", AUDIO_ENV_VIEW),
     Sub("Video &Envelopes", VIDEO_ENV_VIEW),
@@ -695,32 +795,32 @@ pub const INSERT: &[M] = &[
     // Insert/Remove: checked while the focus track has it (V and P only insert; Shift+V and Shift+P remove).
     Sub("A&udio Envelopes", &[C("&Mute", ToggleEnvelope(EnvKind::Mute)), C("&Volume", ToggleEnvelope(EnvKind::Volume)), C("&Pan", ToggleEnvelope(EnvKind::Pan))]),
     Sub("V&ideo Envelopes", &[
-        X("Track &Mute"),
+        X("Track &Mute", Later("R4a")),
         C("Track &Composite Level", ToggleEnvelope(EnvKind::CompositeLevel)),
-        X("Track &Fade to Color"),
+        X("Track &Fade to Color", Later("R4a")),
         S,
-        X("Event &Velocity"),
-        X("Transition &Progress"),
+        X("Event &Velocity", Later("R4a")),
+        X("Transition &Progress", Later("R4a")),
     ]),
     S,
     C("&Audio Track", InsertAudioTrack),
     C("&Video Track", InsertVideoTrack),
     V23(&C("Adjustment Track", InsertAdjustmentTrack)),
     S,
-    X("Audio &Bus"),
-    X("Audio In&put Bus"),
-    X("Audio Assignable &FX..."),
+    X("Audio &Bus", Later("R8a")),
+    X("Audio In&put Bus", Later("R8a")),
+    X("Audio Assignable &FX...", Later("R8a")),
     S,
-    X("&Empty Event"),
-    V23(&X("Adjustment Event")),
+    X("&Empty Event", Later("R3a")),
+    V23(&X("Adjustment Event", Later("R18b"))),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
-    V23(&X("&Slideshow...")),
-    V23(&X("Insert Subtitles from Files...")),
-    V23(&X("Insert Subtitles from Regions...")),
+    V23(&X("&Slideshow...", Later("R18b"))),
+    V23(&X("Insert Subtitles from Files...", Later("R39"))),
+    V23(&X("Insert Subtitles from Regions...", Later("R39"))),
     S,
-    X("Audio Tra&nsition..."),
+    X("Audio Tra&nsition...", Later("R18b")),
     S,
-    X("&Time..."),
+    X("&Time...", Later("R18b")),
     S,
     C("&Marker", InsertMarker),
     C("&Region", InsertRegion),
@@ -733,22 +833,22 @@ pub const INSERT: &[M] = &[
 
 pub const TOOLS: &[M] = &[
     C("&Open in Audio Editor", OpenInAudioEditor),
-    X("Open &Copy in Audio Editor"),
-    X("Edit Source Pro&ject"),
+    X("Open &Copy in Audio Editor", Later("R18a")),
+    X("Edit Source Pro&ject", Later("R6b")),
     Sub("&Audio", &[
-        X("&Open in Audio Editor"),
-        X("Open &Copy in Audio Editor"),
-        X("Edit Source Pro&ject"),
+        X("&Open in Audio Editor", Later("R18a")),
+        X("Open &Copy in Audio Editor", Later("R18a")),
+        X("Edit Source Pro&ject", Later("R6b")),
         S,
         C("Audio &Event FX...", AudioEventFx),
-        X("Apply Non-Real-Time Event &FX..."),
+        X("Apply Non-Real-Time Event &FX...", NotPlanned("R58")),
         S,
         C("&Track FX...", AudioTrackFx),
         S,
-        X("&Remove Assignable FX..."),
+        X("&Remove Assignable FX...", Later("R8a")),
     ]),
     Sub("&Video", &[
-        X("&Media FX..."),
+        X("&Media FX...", NotPlanned("R57")),
         S,
         C("Video Event &Pan/Crop...", EventPanCrop),
         C("Video Event &FX...", VideoEventFx),
@@ -763,73 +863,78 @@ pub const TOOLS: &[M] = &[
     C("&Render to New Track...", RenderToNewTrack),
     C("Preview on E&xternal Monitor", ExternalMonitor),
     C("&Selectively Prerender Video...", Prerender),
-    X("Clean &Up Prerendered Video..."),
+    X("Clean &Up Prerendered Video...", Later("R23")),
     C("Build Dynamic RAM Previe&w", RamPreview),
-    V23(&X("Clear Dynamic RAM Preview")),
+    V23(&X("Clear Dynamic RAM Preview", Later("R23"))),
     S,
-    X("&Lay Out Audio CD from Events"),
-    Sub("&Burn Disc", &[X("&Track-at-Once Audio CD..."), X("&Disc-at-Once Audio CD..."), X("&DVD..."), X("&Blu-ray Disc...")]),
-    X("Generate Loudness Log"),
-    V23(&X("Advanced Save...")),
-    V23(&X("Speech to Text...")),
+    X("&Lay Out Audio CD from Events", NotPlanned("R59")),
+    Sub("&Burn Disc", &[
+        X("&Track-at-Once Audio CD...", NotPlanned("R59")),
+        X("&Disc-at-Once Audio CD...", NotPlanned("R59")),
+        X("&DVD...", NotPlanned("R59")),
+        X("&Blu-ray Disc...", Fixed("not feasible: needs AACS licensing (VEGAS long tail R59)")),
+    ]),
+    X("Generate Loudness Log", Later("R16c")),
+    V23(&X("Advanced Save...", Later("R30"))),
+    V23(&X("Speech to Text...", NotPlanned("R59"))),
     V23(&C("Text to Speech...", TextToSpeech)),
     S,
-    Sub("Scrip&ting", &[X("Ru&n Script..."), X("Res&can Script Menu Folder")]),
+    Sub("Scrip&ting", &[X("Ru&n Script...", NotPlanned("R60")), X("Res&can Script Menu Folder", NotPlanned("R60"))]),
     Sub("&Multicamera", &[
-        X("Synchronize Audio to A&lign Events"),
-        X("Synchronize Media &Timecode to Align Events"),
-        X("Synchronize &Date/Time Stamp to Align Events"),
-        X("&Create Multicamera Track"),
-        X("E&xpand to Multiple Tracks..."),
+        X("Synchronize Audio to A&lign Events", Later("R17a")),
+        X("Synchronize Media &Timecode to Align Events", Later("R17a")),
+        X("Synchronize &Date/Time Stamp to Align Events", Later("R17a")),
+        X("&Create Multicamera Track", Later("R17b")),
+        X("E&xpand to Multiple Tracks...", Later("R17b")),
         S,
         C("&Enable Multicamera Editing", Multicam),
-        K("Edit Multicamera &Audio with Video", false),
-        K("Show Full Frame in External &Monitor", false),
+        K("Edit Multicamera &Audio with Video", false, Later("R17b")),
+        K("Show Full Frame in External &Monitor", false, Later("R17b")),
     ]),
     S,
-    X("&Clean Project Media"),
-    X("Rebuild Offline &Nested Audio"),
+    X("&Clean Project Media", Later("R45b")),
+    X("Rebuild Offline &Nested Audio", Later("R6a")),
 ];
 
 pub const GRID_SPACING: &[M] = &[
-    R("&Ruler Marks", true),
+    R("&Ruler Marks", true, Later("R1")),
     S,
-    R("Mi&nutes", false),
-    R("&Seconds", false),
-    R("&Milliseconds", false),
-    R("&Frames", false),
+    R("Mi&nutes", false, Later("R1")),
+    R("&Seconds", false, Later("R1")),
+    R("&Milliseconds", false, Later("R1")),
+    R("&Frames", false, Later("R1")),
     S,
-    R("Me&asures", false),
-    R("&Quarter Notes", false),
-    R("Q&uarter Note Triplets", false),
-    R("&8th Notes", false),
-    R("8th Note &Triplets", false),
-    R("&16th Notes", false),
-    R("16t&h Note Triplets", false),
-    R("&32nd Notes", false),
-    R("32nd Note Tr&iplets", false),
+    R("Me&asures", false, Later("R1")),
+    R("&Quarter Notes", false, Later("R1")),
+    R("Q&uarter Note Triplets", false, Later("R1")),
+    R("&8th Notes", false, Later("R1")),
+    R("8th Note &Triplets", false, Later("R1")),
+    R("&16th Notes", false, Later("R1")),
+    R("16t&h Note Triplets", false, Later("R1")),
+    R("&32nd Notes", false, Later("R1")),
+    R("32nd Note Tr&iplets", false, Later("R1")),
 ];
 
 /// Options › Ruler Format, also the time ruler's and time display's right-click list (§6.6, §6.10).
 pub const RULER_MENU: &[M] = &[
-    R("&Samples", false),
-    R("&Time", false),
-    R("Se&conds", false),
-    R("Time && Fra&mes", true),
-    R("Absol&ute Frames", false),
-    R("Measures && &Beats", false),
-    R("Feet and Frames &16mm (40 fpf)", false),
-    R("Feet and Frames &35mm (16 fpf)", false),
-    R("SMPTE Fi&lm Sync IVTC (23.976 fps, Video)", false),
-    R("SMPTE &Film Sync (24 fps, Film)", false),
-    R("SMPTE &EBU (25 fps, Video)", false),
-    R("SMPTE &Non-Drop (29.97 fps, Video)", false),
-    R("SMPTE &Drop (29.97 fps, Video)", false),
-    R("SM&PTE 30 (30 fps, Audio)", false),
-    R("&Audio CD Time", false),
+    R("&Samples", false, Later("R1")),
+    R("&Time", false, Later("R1")),
+    R("Se&conds", false, Later("R1")),
+    R("Time && Fra&mes", true, Later("R1")),
+    R("Absol&ute Frames", false, Later("R1")),
+    R("Measures && &Beats", false, Later("R1")),
+    R("Feet and Frames &16mm (40 fpf)", false, Later("R1")),
+    R("Feet and Frames &35mm (16 fpf)", false, Later("R1")),
+    R("SMPTE Fi&lm Sync IVTC (23.976 fps, Video)", false, Later("R1")),
+    R("SMPTE &Film Sync (24 fps, Film)", false, Later("R1")),
+    R("SMPTE &EBU (25 fps, Video)", false, Later("R1")),
+    R("SMPTE &Non-Drop (29.97 fps, Video)", false, Later("R1")),
+    R("SMPTE &Drop (29.97 fps, Video)", false, Later("R1")),
+    R("SM&PTE 30 (30 fps, Audio)", false, Later("R1")),
+    R("&Audio CD Time", false, Later("R1")),
     S,
-    X("Set T&ime at Cursor"),
-    V23(&X("Set Project Tempo")),
+    X("Set T&ime at Cursor", Later("R1")),
+    V23(&X("Set Project Tempo", Later("R1"))),
 ];
 
 pub const OPTIONS: &[M] = &[
@@ -844,85 +949,129 @@ pub const OPTIONS: &[M] = &[
     Sub("Ruler &Format", RULER_MENU),
     S,
     C("&Automatic Crossfades", AutoCrossfade),
-    K("Q&uickfade Audio Edits", true),
+    K("Q&uickfade Audio Edits", true, Later("R3b")),
     C("Auto &Ripple", AutoRipple),
     Sub("&Ripple", &[
         C("Auto &Ripple", AutoRipple),
         S,
         C("Affected &Tracks", RippleMode(RippleMode::Affected)),
         C("Affected Tracks, &Bus Tracks, Markers, and Regions", RippleMode(RippleMode::AffectedMarkers)),
-        // Without bus tracks this is the item above.
-        R("Affected Tracks, &Markers, and Regions", false),
+        R("Affected Tracks, &Markers, and Regions", false, NO_BUS),
         C("&All Tracks, Markers, and Regions", RippleMode(RippleMode::All)),
     ]),
     C("Lock En&velopes to Events", LockEnvelopes),
     C("I&gnore Event Grouping", IgnoreGrouping),
-    K("Slip All Ta&kes", false),
+    K("Slip All Ta&kes", false, NotPlanned("R58")),
     S,
     C("&Loop Playback", Loop),
-    K("Metr&onome", false),
+    K("Metr&onome", false, Later("R18a")),
     Sub("&Loudness Meters", &[
-        X("&Reset Clip"),
-        X("Reset Meterin&g Engine"),
+        X("&Reset Clip", Later("R16c")),
+        X("Reset Meterin&g Engine", Later("R16c")),
         S,
-        R("EB&U R 128 Mode", true),
-        R("&ATSC A 85 Mode", false),
+        R("EB&U R 128 Mode", true, Later("R16c")),
+        R("&ATSC A 85 Mode", false, Later("R16c")),
         S,
-        K("True Peak &Blocking Filter", false),
+        K("True Peak &Blocking Filter", false, Later("R16c")),
         Sub("&True Peak Range", &[
-            R("-12 to 0 dB", false),
-            R("-24 to 0 dB", false),
-            R("-42 to 0 dB", false),
-            R("-60 to 0 dB", true),
-            R("-78 to 0 dB", false),
-            R("-90 to 0 dB", false),
-            R("-120 to 0 dB", false),
-            R("-138 to 0 dB", false),
+            R("-12 to 0 dB", false, Later("R16c")),
+            R("-24 to 0 dB", false, Later("R16c")),
+            R("-42 to 0 dB", false, Later("R16c")),
+            R("-60 to 0 dB", true, Later("R16c")),
+            R("-78 to 0 dB", false, Later("R16c")),
+            R("-90 to 0 dB", false, Later("R16c")),
+            R("-120 to 0 dB", false, Later("R16c")),
+            R("-138 to 0 dB", false, Later("R16c")),
         ]),
-        Sub("Loudness S&cale", &[R("&EBU +9", true), R("E&BU +18", false), S, R("&Absolute (-23 LUFS)", false)]),
+        Sub("Loudness S&cale", &[
+            R("&EBU +9", true, Later("R16c")),
+            R("E&BU +18", false, Later("R16c")),
+            S,
+            R("&Absolute (-23 LUFS)", false, Later("R16c")),
+        ]),
         S,
-        K("Show True P&eak Meter", false),
-        K("&Show Labels", true),
-        K("Hold Pea&ks", false),
-        K("Hold &Valleys", false),
+        K("Show True P&eak Meter", false, Later("R16c")),
+        K("&Show Labels", true, Later("R16c")),
+        K("Hold Pea&ks", false, Later("R16c")),
+        K("Hold &Valleys", false, Later("R16c")),
     ]),
     S,
     C("&Bypass All Audio FX", BypassAudioFx),
     S,
-    K("&Mute All Audio", false),
-    K("Mute All Vi&deo", false),
+    K("&Mute All Audio", false, Later("R2")),
+    K("Mute All Vi&deo", false, Later("R2")),
     S,
     Sub("Time&code", &[
         C("&Generate MIDI Timecode", MidiTimecode),
         C("Generate &MIDI Clock", MidiClock),
         C("&Trigger from MIDI Timecode", MidiTrigger),
     ]),
-    K("External Control", false),
+    K("External Control", false, NotPlanned("R59")),
     S,
-    X("Customize &Toolbar..."),
-    X("Customize Timeline Toolbar..."),
-    X("Customize &Keyboard..."),
+    X("Customize &Toolbar...", Later("R15")),
+    X("Customize Timeline Toolbar...", Later("R15")),
+    X("Customize &Keyboard...", Later("R15")),
     C("&Preferences...", Preferences),
-    V23(&X("Export Preferences...")),
-    V23(&X("Import Preferences...")),
+    V23(&X("Export Preferences...", Later("R49"))),
+    V23(&X("Import Preferences...", Later("R49"))),
 ];
 
 pub const HELP: &[M] = &[
     C("&Contents and Index", Help),
     C("What's &This?", WhatsThis),
     C("&Keyboard Shortcuts", KeyboardShortcuts),
-    X("&Show Me How..."),
-    V16(&X("Interactive Tutorial&s...")),
-    V16(&X("&Welcome...")),
+    C("Unfinished &Features", UnfinishedFeatures),
+    X("&Show Me How...", Later("R53")),
+    V16(&X("Interactive Tutorial&s...", Later("R53"))),
+    V16(&X("&Welcome...", Fixed("only in the VEGAS 23 look (File > Welcome Screen)"))),
     S,
     C("Check for &Updates...", CheckForUpdates),
-    V23(&X("Download User Manual")),
+    V23(&X("Download User Manual", Later("R53"))),
     S,
     C("About Milan Pro...", About),
 ];
 
-const MENUS: [(&str, &[M]); 7] =
+/// The menu bar's menus, for the Unfinished Features list and the tests.
+pub const MENUS: [(&str, &[M]); 7] =
     [("&File", FILE), ("&Edit", EDIT), ("&View", VIEW), ("&Insert", INSERT), ("&Tools", TOOLS), ("&Options", OPTIONS), ("&Help", HELP)];
+
+/// The commands of the `C` rows of `items`, submenus and both looks included.
+pub fn commands(items: &[M], out: &mut Vec<Command>) {
+    for item in items {
+        match item {
+            C(_, c) => out.push(*c),
+            Sub(_, items) | Inline(items) => commands(items, out),
+            V16(i) | V23(i) => commands(std::slice::from_ref(*i), out),
+            _ => {}
+        }
+    }
+}
+
+/// Every greyed row of `items` (submenus included, rows of both looks) as (label without '&', why), in menu order;
+/// `C` rows whose command `unfinished` names. A label shown twice with the same reason is listed once.
+pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
+    for item in items {
+        let row = match item {
+            C(l, c) => unfinished(*c).map(|w| (*l, w)),
+            X(l, w) | K(l, _, w) | R(l, _, w) => Some((*l, *w)),
+            Sub(_, items) | Inline(items) => {
+                greyed(items, out);
+                None
+            }
+            V16(i) | V23(i) => {
+                greyed(std::slice::from_ref(*i), out);
+                None
+            }
+            S | Recent | UserLayouts => None,
+        };
+        if let Some((l, w)) = row {
+            let l = keymap::mnemonic(l).0;
+            if !out.iter().any(|(o, ow)| *o == l && *ow == w) {
+                out.push((l, w));
+            }
+        }
+    }
+}
 
 fn bar_id() -> Id {
     Id::new("milan_menu_bar")
@@ -1159,6 +1308,83 @@ mod tests {
         st.layout_slot = Some(3);
         assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3)), st.checked(LayoutUser(4))), (Some(false), Some(true), Some(false)));
         assert!(!st.enabled(Window(Panel::ColorGrading)) && !st.enabled(LayoutTimelineTop));
+    }
+
+    /// R0: a command that stays greyed out with everything selected says why, and a command labelled unfinished is
+    /// never live (the batch that builds it removes the label).
+    #[test]
+    fn every_greyed_command_says_why() {
+        let everything = |look| CmdState {
+            look,
+            can_undo: true,
+            can_redo: true,
+            clip: true,
+            video_clip: true,
+            audio_clip: true,
+            takes: true,
+            n_sel: 2,
+            any_tracks: true,
+            tracks_sel: true,
+            list_focus: true,
+            clipboard: true,
+            selection: true,
+            in_group: true,
+            last_edit: true,
+            auto_ripple: true,
+            audio_track_focus: true,
+            video_track_focus: true,
+            any_armed: true,
+            recent: vec!["p.mnle".into(); 10],
+            layouts: std::array::from_fn(|_| Some("L".into())),
+            ..Default::default()
+        };
+        let mut cmds: Vec<Command> = keymap::TABLE.iter().map(|r| r.0).collect();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            commands(items, &mut cmds);
+        }
+        assert!(cmds.len() > 250);
+        for c in cmds {
+            let live = [UiLook::Vegas16, UiLook::Vegas23].into_iter().any(|look| everything(look).enabled(c));
+            assert_eq!(live, unfinished(c).is_none(), "{c:?}: live {live}, reason {:?}", unfinished(c));
+        }
+        // Every greyed menu row has a reason by construction (`X`, `K`, `R` carry one); the list has them all.
+        let mut rows = Vec::new();
+        greyed(MENUS[5].1, &mut rows);
+        assert!(rows.iter().any(|(l, w)| l == "Snap to Grid" && *w == Later("R1")), "{rows:?}");
+    }
+
+    /// Every `Later` and `NotPlanned` in the source names a batch heading of docs/REMAINING.md (`NotPlanned` only the
+    /// R57-R60 long tail), and `Fixed` texts are lowercase phrases.
+    #[test]
+    fn every_reason_names_a_batch_of_remaining_md() {
+        let doc = include_str!("../../docs/REMAINING.md");
+        let mut files = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        let mut found = 0;
+        while let Some(p) = files.pop() {
+            if p.is_dir() {
+                files.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            if p.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap();
+            for kind in ["Later", "NotPlanned", "Fixed"] {
+                let open = format!("{kind}(\"");
+                for (at, _) in src.match_indices(&open) {
+                    let arg = &src[at + open.len()..];
+                    let arg = &arg[..arg.find('"').unwrap()];
+                    let long_tail = ["R57", "R58", "R59", "R60"].contains(&arg);
+                    match kind {
+                        "Later" => assert!(!long_tail && doc.contains(&format!("\n### {arg}:")), "{}: Later({arg})", p.display()),
+                        "NotPlanned" => assert!(long_tail, "{}: NotPlanned({arg})", p.display()),
+                        _ => assert!(arg.starts_with(|c: char| c.is_ascii_lowercase()), "{}: Fixed({arg})", p.display()),
+                    }
+                    found += 1;
+                }
+            }
+        }
+        assert!(found > 200, "{found}");
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the

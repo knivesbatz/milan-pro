@@ -34,6 +34,7 @@ impl MeridianApp {
             || self.render.open
             || self.welcome.is_some()
             || self.shortcuts_open
+            || self.unfinished_open
             || self.event_props.is_some()
             || self.take_chooser.is_some()
             || self.default_track.is_some()
@@ -529,6 +530,7 @@ impl MeridianApp {
             Exit => self.request(ctx, MenuAction::Exit),
             Preferences => self.prefs_dlg.open(&self.prefs),
             KeyboardShortcuts => self.shortcuts_open = true,
+            UnfinishedFeatures => self.unfinished_open = true,
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
             // Edit
@@ -1217,6 +1219,7 @@ impl MeridianApp {
             self.vegas_report = None;
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
+        dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_layout_as(ctx);
         if let Some(ok) = self.event_props.as_mut().and_then(|ep| ep.show(ctx, &self.project)) {
             // One undo step on OK, none when nothing changed (`apply_props`).
@@ -1382,6 +1385,7 @@ impl MeridianApp {
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,
+            "unfinished" => self.unfinished_open = true,
             "event-props" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
             "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),
             "take-chooser" => self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, false)),

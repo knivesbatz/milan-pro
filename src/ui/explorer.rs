@@ -5,6 +5,7 @@ use eframe::egui::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use super::icons::{Icon, paint_icon};
+use super::menus::NotPlanned;
 use super::toolbar::{arrow_menu, split_button, tool_button};
 use super::widgets::{self, ROW_H};
 use super::{MediaDrag, WinAction, theme};
@@ -165,10 +166,11 @@ pub fn draw_explorer_toolbar(ui: &mut Ui, ex: &mut Explorer) {
         ex.refresh();
     }
     tool_button(ui, Icon::Delete, "Delete (disabled: Milan Pro never deletes your files)", false, false);
-    tool_button(ui, Icon::Favorite, "Add to Favorites (not available yet)", false, false);
-    tool_button(ui, Icon::Play, "Start Preview (not available yet)", false, false);
-    tool_button(ui, Icon::Stop, "Stop Preview (not available yet)", false, false);
-    tool_button(ui, Icon::AutoPreview, "Auto Preview (not available yet)", false, true);
+    let r57 = NotPlanned("R57");
+    tool_button(ui, Icon::Favorite, &r57.tip("Add to Favorites"), false, false);
+    tool_button(ui, Icon::Play, &r57.tip("Start Preview"), false, false);
+    tool_button(ui, Icon::Stop, &r57.tip("Stop Preview"), false, false);
+    tool_button(ui, Icon::AutoPreview, &r57.tip("Auto Preview"), false, true);
     let (m, a) = split_button(ui, Icon::Views, "Views", true, false);
     let mut pick = |ui: &mut Ui| {
         if ui.radio(!ex.details, "List").clicked() {

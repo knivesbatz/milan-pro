@@ -116,6 +116,8 @@ pub struct MeridianApp {
     grading: ui::ColorGrading,
     welcome: Option<Welcome>,
     shortcuts_open: bool,
+    /// Help › Unfinished Features.
+    unfinished_open: bool,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
     shuttle: f64,
     /// Options › Bypass All Audio FX (playback only, for this session).
@@ -262,6 +264,7 @@ impl MeridianApp {
             grading: Default::default(),
             welcome,
             shortcuts_open: false,
+            unfinished_open: false,
             shuttle: 0.0,
             bypass_audio_fx: false,
             input: None,

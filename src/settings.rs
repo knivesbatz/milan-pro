@@ -8,6 +8,7 @@ use crate::history::History;
 use crate::project::{Project, ProjectSettings};
 use crate::ui::dialogs;
 use crate::ui::dock::Layout;
+use crate::ui::menus::{Later, NotPlanned, Why};
 use crate::ui::theme::{self, LookChoice, UiLook};
 
 /// Per-user app preferences. Unknown or missing fields fall back to defaults.
@@ -254,10 +255,10 @@ impl SettingsDialog {
             dialogs::page(ui, 590.0, |ui| match *tab {
                 0 => video_tab(ui, d, project, v23),
                 1 => audio_tab(ui, d),
-                _ => {
-                    ui.add_space(8.0);
-                    ui.label("Milan Pro has no settings on this page yet.");
-                }
+                2 => dialogs::empty_page(ui, Later("R1")),
+                3 => dialogs::empty_page(ui, Later("R16a")),
+                4 => dialogs::empty_page(ui, NotPlanned("R59")),
+                _ => dialogs::empty_page(ui, Later("R49")),
             });
             ui.add_space(8.0);
             dialogs::button_row(ui, &[("OK", true), ("Cancel", true), ("Apply", changed)])
@@ -307,9 +308,9 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             dialogs::row(ui, "Height:", 60.0, true, |ui| ui.add(egui::DragValue::new(&mut d.height).range(16..=8192)));
         });
         ui.vertical(|ui| {
-            dialogs::row(ui, "Field order:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_field", "None (progressive scan)", 150.0));
-            dialogs::row(ui, "Pixel aspect ratio:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_par", "1.0000 (Square)", 150.0));
-            dialogs::row(ui, "Output rotation:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_rot", "0° (original)", 150.0));
+            dialogs::row(ui, "Field order:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_field", "None (progressive scan)", 150.0, Later("R11")));
+            dialogs::row(ui, "Pixel aspect ratio:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_par", "1.0000 (Square)", 150.0, Later("R11")));
+            dialogs::row(ui, "Output rotation:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_rot", "0° (original)", 150.0, Later("R11")));
         });
     });
     dialogs::row(ui, "Frame rate:", 70.0, true, |ui| {
@@ -320,40 +321,42 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             }
         });
     });
-    dialogs::row(ui, "Stereoscopic 3D mode:", 120.0, false, |ui| dialogs::fixed_combo(ui, "pp_s3d", "Off", 240.0));
+    dialogs::row(ui, "Stereoscopic 3D mode:", 120.0, false, |ui| dialogs::fixed_combo(ui, "pp_s3d", "Off", 240.0, NotPlanned("R59")));
     ui.separator();
-    let mut grid: Vec<(&str, &str)> = vec![
-        ("Pixel format:", "8-bit"),
-        ("Compositing gamma:", "2.222 (Video)"),
-        ("ACES version:", "1.0"),
-        ("ACES color space:", "Default (ACES2065-1)"),
-        ("View transform:", "Off"),
-        ("Full-resolution rendering quality:", "Good"),
-        ("Motion blur type:", "Gaussian"),
-        ("Deinterlace method:", "Blend fields"),
-        ("Resample mode:", if v23 { "Disable resampling" } else { "Smart resample" }),
+    let mut grid: Vec<(&str, &str, Why)> = vec![
+        ("Pixel format:", "8-bit", Later("R40b")),
+        ("Compositing gamma:", "2.222 (Video)", Later("R40b")),
+        ("ACES version:", "1.0", Later("R40b")),
+        ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
+        ("View transform:", "Off", Later("R40b")),
+        ("Full-resolution rendering quality:", "Good", Later("R11")),
+        ("Motion blur type:", "Gaussian", Later("R7")),
+        ("Deinterlace method:", "Blend fields", Later("R11")),
+        ("Resample mode:", if v23 { "Disable resampling" } else { "Smart resample" }, Later("R3b")),
     ];
     if v23 {
-        grid.insert(1, ("HDR Mode:", "Off"));
-        grid.insert(6, ("Look modification transform:", "Off"));
+        grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
+        grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
     }
-    for (k, (label, value)) in grid.into_iter().enumerate() {
-        dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0));
+    for (k, (label, value, why)) in grid.into_iter().enumerate() {
+        dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
-    ui.add_enabled(false, egui::Checkbox::new(&mut true, "Adjust source media to better match project or render settings"));
+    ui.add_enabled(false, egui::Checkbox::new(&mut true, "Adjust source media to better match project or render settings"))
+        .on_disabled_hover_text(Later("R11").text());
     ui.add_enabled_ui(false, |ui| {
-        ui.label("Prerendered files folder:");
+        ui.label("Prerendered files folder:").on_disabled_hover_text(Later("R23").text());
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0));
-            let _ = ui.button("Browse...");
+            ui.add(egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0))
+                .on_disabled_hover_text(Later("R23").text());
+            ui.button("Browse...").on_disabled_hover_text(Later("R23").text());
         });
-        ui.add(egui::Checkbox::new(&mut false, "Start all new projects with these settings"));
+        ui.add(egui::Checkbox::new(&mut false, "Start all new projects with these settings")).on_disabled_hover_text(Later("R49").text());
     });
 }
 
 fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings) {
-    dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0));
-    dialogs::row(ui, "Number of stereo busses:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_n", "0", 200.0));
+    dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R8a")));
+    dialogs::row(ui, "Number of stereo busses:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_n", "0", 200.0, Later("R8a")));
     dialogs::row(ui, "Sample rate (Hz):", 150.0, true, |ui| {
         egui::ComboBox::from_id_salt("pa_sr").width(200.0).selected_text(d.sample_rate.to_string()).show_ui(ui, |ui| {
             for r in SAMPLE_RATES {
@@ -361,8 +364,8 @@ fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings) {
             }
         });
     });
-    dialogs::row(ui, "Bit depth:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bits", "16", 200.0));
-    dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0));
+    dialogs::row(ui, "Bit depth:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bits", "16", 200.0, Later("R11")));
+    dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0, Later("R4b")));
 }
 
 #[cfg(test)]

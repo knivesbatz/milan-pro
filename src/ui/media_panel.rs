@@ -8,7 +8,7 @@ use crate::media::Importer;
 use crate::project::*;
 use super::dock::Panel;
 use super::icons::{Icon, paint_icon};
-use super::menus::{self, M::*, import_media};
+use super::menus::{self, Fixed, Later, M::*, NotPlanned, import_media};
 use super::toolbar::{arrow_menu, inert_button, split_button, tool_button};
 use super::widgets::{self, ROW_H};
 use super::{MediaDrag, WinAction, theme};
@@ -158,11 +158,11 @@ pub fn draw_media_toolbar(
     if resp.on_hover_text("Import Media...").clicked() {
         import_media(ui.ctx(), importer);
     }
-    tool_button(ui, Icon::Capture, "Capture Video (not available)", false, false);
+    tool_button(ui, Icon::Capture, &NotPlanned("R59").tip("Capture Video"), false, false);
     if t.look() == super::theme::UiLook::Vegas16 {
-        inert_button(ui, Icon::DeviceMedia, "Import from Device (not available)", false);
+        inert_button(ui, Icon::DeviceMedia, &NotPlanned("R59").tip("Import from Device"), false);
     }
-    inert_button(ui, Icon::WebMedia, "Get Media from the Web (not available)", false);
+    inert_button(ui, Icon::WebMedia, &NotPlanned("R59").tip("Get Media from the Web"), false);
     if tool_button(ui, Icon::Delete, "Remove Selected Media from Project", selected.is_some(), false).clicked() {
         remove_media(project, history, std::mem::take(&mut view.sel));
         (*selected, *sel_clips) = (None, Vec::new());
@@ -171,7 +171,7 @@ pub fn draw_media_toolbar(
         sel_clips.clear();
         properties(ui.ctx(), selected.and_then(|i| project.media_pool.get(i)), actions);
     }
-    tool_button(ui, Icon::TrackFx, "Media FX (not available yet)", false, false);
+    tool_button(ui, Icon::TrackFx, &NotPlanned("R57").tip("Media FX"), false, false);
     // Start Preview opens the selected (else first) media in the Trimmer, where it can be played.
     let target = selected.and_then(|i| project.media_pool.get(i)).or(project.media_pool.first());
     if tool_button(ui, Icon::Play, "Start Preview (opens in the Trimmer)", target.is_some(), false).clicked() {
@@ -179,8 +179,9 @@ pub fn draw_media_toolbar(
             actions.push(WinAction::OpenTrimmer(m.path.clone()));
         }
     }
-    tool_button(ui, Icon::Stop, "Stop Preview", false, false);
-    inert_button(ui, Icon::AutoPreview, "Auto Preview (not available yet)", true);
+    // Previews play in the Trimmer, which has its own Stop.
+    tool_button(ui, Icon::Stop, &NotPlanned("R57").tip("Stop Preview"), false, false);
+    inert_button(ui, Icon::AutoPreview, &NotPlanned("R57").tip("Auto Preview"), true);
     let (m, a) = split_button(ui, Icon::Views, "Views", true, false);
     let mut pick = |ui: &mut Ui| {
         for mode in [Mode::List, Mode::Details, Mode::Thumbnails] {
@@ -333,46 +334,69 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool
             }
         };
         item(ui, "Open in &Trimmer", ItemCmd::Trim, true);
-        menus::off(ui, "Open Parent Media in &Trimmer");
+        menus::show(ui, ITEM_TOP);
         item(ui, "Add to &Video Track", ItemCmd::Add(true), true);
         item(ui, "Add to A&udio Track", ItemCmd::Add(false), true);
-        menus::show(ui, &[X("Add as CD Trac&k"), X("Add at Project &Frame Rate"), X("Se&lect Timeline Events"), X("Match Pr&oject Video Settings"), X("Edit Source Pro&ject")]);
+        menus::show(ui, ITEM_ADD);
         item(ui, "Explore &Containing Folder", ItemCmd::Explore, true);
         item(ui, "Create Video Pro&xy", ItemCmd::Proxy, video);
         menus::sep(ui);
-        menus::off(ui, "Remove from Current &Bin");
+        menus::show(ui, ITEM_BIN);
         item(ui, "&Remove from Project", ItemCmd::Remove, true);
         menus::show(ui, ITEM_REST);
         item(ui, "R&eplace...", ItemCmd::Replace, true);
         menus::show(ui, ITEM_TAIL);
         item(ui, "&Properties...", ItemCmd::Properties, true);
-        menus::show(ui, &[V23(&S), V23(&X("Tempo Detection")), V23(&X("Detect Scenes and Add to Timeline")), V23(&X("Detect Scenes and Add to Timeline from Cursor")), V23(&X("Detect Scenes and Create Subclips"))]);
+        menus::show(ui, ITEM_V23);
     });
 }
 
+const ITEM_TOP: &[menus::M] = &[X("Open Parent Media in &Trimmer", NotPlanned("R57"))];
+
+const ITEM_ADD: &[menus::M] = &[
+    X("Add as CD Trac&k", NotPlanned("R59")),
+    X("Add at Project &Frame Rate", NotPlanned("R57")),
+    X("Se&lect Timeline Events", NotPlanned("R57")),
+    X("Match Pr&oject Video Settings", NotPlanned("R57")),
+    X("Edit Source Pro&ject", Later("R6b")),
+];
+
+const ITEM_BIN: &[menus::M] = &[X("Remove from Current &Bin", Later("R45a"))];
+
 const ITEM_REST: &[menus::M] = &[
-    X("Remove from Project and &Delete File(s)"),
+    X("Remove from Project and &Delete File(s)", Fixed("disabled on purpose: Milan Pro never deletes your files")),
     S,
-    X("&Search Media Bins..."),
+    X("&Search Media Bins...", Later("R45a")),
     S,
-    X("Re&name"),
+    X("Re&name", NotPlanned("R57")),
 ];
 
 const ITEM_TAIL: &[menus::M] = &[
-    X("Refres&h"),
+    X("Refres&h", NotPlanned("R57")),
     S,
-    X("Media &FX..."),
-    X("Rotate 90° Co&unterclockwise"),
-    X("Rotate 90° Clock&wise"),
+    X("Media &FX...", NotPlanned("R57")),
+    X("Rotate 90° Co&unterclockwise", NotPlanned("R57")),
+    X("Rotate 90° Clock&wise", NotPlanned("R57")),
     S,
-    X("Lay Out Tracks Using Media &Timecode"),
-    X("Lay Out Tracks Using Media &Date/Time Stamp"),
+    X("Lay Out Tracks Using Media &Timecode", Later("R17a")),
+    X("Lay Out Tracks Using Media &Date/Time Stamp", Later("R17a")),
     S,
-    Sub("V&iew", &[X("Columns")]),
-    X("&Auto-Size Columns"),
+    Sub("V&iew", &[X("Columns", NotPlanned("R57"))]),
+    X("&Auto-Size Columns", NotPlanned("R57")),
     S,
-    X("File Format Pr&operties..."),
+    X("File Format Pr&operties...", Later("R45b")),
 ];
+
+const ITEM_V23: &[menus::M] = &[
+    V23(&S),
+    V23(&X("Tempo Detection", NotPlanned("R57"))),
+    V23(&X("Detect Scenes and Add to Timeline", NotPlanned("R57"))),
+    V23(&X("Detect Scenes and Add to Timeline from Cursor", NotPlanned("R57"))),
+    V23(&X("Detect Scenes and Create Subclips", NotPlanned("R57"))),
+];
+
+/// The Project Media item menu's tables, for the Unfinished Features list.
+pub const ITEM_MENUS: &[&[menus::M]] = &[ITEM_TOP, ITEM_ADD, ITEM_BIN, ITEM_REST, ITEM_TAIL, ITEM_V23];
 
 fn tree(ui: &mut Ui, view: &mut MediaView) {
     let mut node = |ui: &mut Ui, depth, exp: Option<&mut bool>, icon, label: &str, n: Node| {

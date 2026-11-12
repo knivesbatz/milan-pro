@@ -2,6 +2,7 @@
 //! are live.
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
+use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
 use super::super::theme::{self, LookChoice, UiLook, Variant};
 
 const ROWS16: &[&[&str]] = &[
@@ -69,10 +70,7 @@ impl PrefsDialog {
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices)),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track),
-                _ => {
-                    ui.add_space(8.0);
-                    ui.label("Milan Pro has no settings on this page yet.");
-                }
+                k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
             ui.add_space(8.0);
             super::button_row(ui, &[("OK", true), ("Cancel", true), ("Apply", changed)])
@@ -85,6 +83,17 @@ impl PrefsDialog {
     }
 }
 
+/// Why a Preferences page has no settings yet.
+fn page_why(page: &str) -> Why {
+    match page {
+        "Preview Device" => Later("R14"),
+        "Audio" => Later("R9"),
+        "VST Effects" => Later("R31"),
+        "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
+        _ => Later("R49"), // File I/O, Deprecated Features
+    }
+}
+
 fn general(ui: &mut Ui, d: &mut Prefs) {
     let v16 = theme::get().look() == UiLook::Vegas16;
     ui.label("General preferences:");
@@ -94,25 +103,32 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         ui.set_height(16.0 * 24.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.spacing_mut().interact_size.y = 16.0;
-        ui.add_enabled(false, Checkbox::new(&mut false, "Automatically open last project on startup"));
-        ui.add_enabled(false, Checkbox::new(&mut true, "Show logo splash screen on startup"));
+        let r49 = Later("R49").text();
+        ui.add_enabled(false, Checkbox::new(&mut false, "Automatically open last project on startup")).on_disabled_hover_text(&r49);
+        ui.add_enabled(false, Checkbox::new(&mut true, "Show logo splash screen on startup")).on_disabled_hover_text(&r49);
         let mut pause = d.space_pauses || !v16;
-        if ui.add_enabled(v16, Checkbox::new(&mut pause, "Make spacebar and F12 Play/Pause instead of Play/Stop")).changed() {
+        if ui
+            .add_enabled(v16, Checkbox::new(&mut pause, "Make spacebar and F12 Play/Pause instead of Play/Stop"))
+            .on_disabled_hover_text(Fixed("always on in the VEGAS 23 look").text())
+            .changed()
+        {
             d.space_pauses = pause;
         }
-        ui.add_enabled(!v16, Checkbox::new(&mut d.show_welcome, "Show Welcome Screen on startup"));
+        ui.add_enabled(!v16, Checkbox::new(&mut d.show_welcome, "Show Welcome Screen on startup"))
+            .on_disabled_hover_text(Fixed("the Welcome Screen belongs to the VEGAS 23 look").text());
         ui.checkbox(&mut d.auto_update, "Check for updates automatically");
     });
     ui.horizontal(|ui| {
         let mut on = true;
-        ui.add_enabled(false, Checkbox::new(&mut on, "Recently used project list"));
+        ui.add_enabled(false, Checkbox::new(&mut on, "Recently used project list")).on_disabled_hover_text(ALWAYS_ON.text());
         ui.add(DragValue::new(&mut d.recent_max).range(1..=9));
     });
     ui.add_enabled_ui(false, |ui| {
-        ui.label("Temporary files folder:");
+        let r49 = Later("R49").text();
+        ui.label("Temporary files folder:").on_disabled_hover_text(&r49);
         ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(300.0));
-            let _ = ui.button("Browse...");
+            ui.add(TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(300.0)).on_disabled_hover_text(&r49);
+            ui.button("Browse...").on_disabled_hover_text(&r49);
         });
     });
     if default_all(ui) {
@@ -132,8 +148,8 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
 /// Audio Device: playback goes to the Windows default device; recording takes the chosen input and its latency offset.
 fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String]) {
     const DEFAULT: &str = "Windows default device";
-    super::row(ui, "Audio device type:", 175.0, false, |ui| super::fixed_combo(ui, "pad_type", "Windows Classic Wave Driver", 200.0));
-    super::row(ui, "Default playback device:", 175.0, false, |ui| super::fixed_combo(ui, "pad_out", DEFAULT, 200.0));
+    super::row(ui, "Audio device type:", 175.0, false, |ui| super::fixed_combo(ui, "pad_type", "Windows Classic Wave Driver", 200.0, Later("R9")));
+    super::row(ui, "Default playback device:", 175.0, false, |ui| super::fixed_combo(ui, "pad_out", DEFAULT, 200.0, Later("R9")));
     super::row(ui, "Default record device:", 175.0, true, |ui| {
         let shown = d.record_input.clone().unwrap_or_else(|| DEFAULT.into());
         ComboBox::from_id_salt("pad_rec").width(200.0).selected_text(shown).show_ui(ui, |ui| {
@@ -200,19 +216,20 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
         d.track_colors = Some(palette.map(|c| [c.r(), c.g(), c.b()]));
     }
     super::group(ui, "Envelope Colors");
+    let r49 = Later("R49").text();
     super::row(ui, "      Envelope Type:", 120.0, false, |ui| {
-        super::fixed_combo(ui, "pref_env", "Volume", 200.0);
-        super::swatch(ui, t.envelope_volume, false);
+        super::fixed_combo(ui, "pref_env", "Volume", 200.0, Later("R49"));
+        super::swatch(ui, t.envelope_volume, false).on_disabled_hover_text(&r49);
     });
     super::group(ui, "Snap Colors");
     super::row(ui, "      Snap Type:", 120.0, false, |ui| {
-        super::fixed_combo(ui, "pref_snap", "Cursor", 200.0);
-        super::swatch(ui, t.snap.cursor, false);
+        super::fixed_combo(ui, "pref_snap", "Cursor", 200.0, Later("R49"));
+        super::swatch(ui, t.snap.cursor, false).on_disabled_hover_text(&r49);
     });
     ui.add_space(4.0);
     super::row(ui, "Icon color strength:", 120.0, false, |ui| {
         let mut v = 75.0_f32;
-        ui.add(Slider::new(&mut v, 0.0..=100.0).show_value(false));
+        ui.add(Slider::new(&mut v, 0.0..=100.0).show_value(false)).on_disabled_hover_text(&r49);
         ui.label("75 %");
     });
 
@@ -233,7 +250,8 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
         (Some(Variant::White), "White", d.look.look == UiLook::Vegas23),
     ] {
         let on = variant == Some(d.look.variant);
-        if ui.add_enabled(enabled, RadioButton::new(on, label)).clicked() {
+        let why = if variant.is_some() { Fixed("the VEGAS 16 look has the Dark type only") } else { Later("R49") };
+        if ui.add_enabled(enabled, RadioButton::new(on, label)).on_disabled_hover_text(why.text()).clicked() {
             if let Some(v) = variant {
                 d.look.variant = v;
             }
@@ -241,10 +259,11 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     }
     ui.add_space(4.0);
     ui.add_enabled_ui(false, |ui| {
-        ui.checkbox(&mut false, "Automatically hide docking area");
-        ui.checkbox(&mut true, "Display timeline at bottom of main window");
-        ui.checkbox(&mut false, "Position tabs at top of docked windows");
-        ui.checkbox(&mut !v16, "Allow floating windows to dock (hold Ctrl to override)");
+        let (r13, r14) = (Later("R13").text(), Later("R14").text());
+        ui.checkbox(&mut false, "Automatically hide docking area").on_disabled_hover_text(&r13);
+        ui.checkbox(&mut true, "Display timeline at bottom of main window").on_disabled_hover_text(&r13);
+        ui.checkbox(&mut false, "Position tabs at top of docked windows").on_disabled_hover_text(&r13);
+        ui.checkbox(&mut !v16, "Allow floating windows to dock (hold Ctrl to override)").on_disabled_hover_text(&r14);
     });
     if default_all(ui) {
         d.track_colors = None;

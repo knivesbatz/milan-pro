@@ -4,6 +4,7 @@
 use eframe::egui::*;
 use crate::edit;
 use crate::project::{Clip, Curve, MediaItem, Project, format_timecode};
+use super::super::menus::Later;
 
 pub struct EventProps {
     pub id: String,
@@ -109,17 +110,18 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         ui.add_enabled(on, Checkbox::new(&mut d.reverse, "Reverse"));
         ui.add_enabled(on, Checkbox::new(&mut d.muted, "Mute"));
         ui.checkbox(&mut d.locked, "Lock");
-        ui.add_enabled(false, Checkbox::new(&mut true, "Loop"));
+        ui.add_enabled(false, Checkbox::new(&mut true, "Loop")).on_disabled_hover_text(Later("R3a").text());
     });
     // VEGAS switches Milan Pro does not have.
     ui.add_enabled_ui(false, |ui| {
         ui.horizontal(|ui| {
+            let r3b = Later("R3b").text();
             if is_video {
-                ui.checkbox(&mut true, "Maintain aspect ratio");
-                ui.checkbox(&mut false, "Undersample rate");
+                ui.checkbox(&mut true, "Maintain aspect ratio").on_disabled_hover_text(&r3b);
+                ui.checkbox(&mut false, "Undersample rate").on_disabled_hover_text(&r3b);
             } else {
-                ui.checkbox(&mut false, "Normalize");
-                ui.checkbox(&mut false, "Pitch change");
+                ui.checkbox(&mut false, "Normalize").on_disabled_hover_text(&r3b);
+                ui.checkbox(&mut false, "Pitch change").on_disabled_hover_text(Later("R4b").text());
             }
         });
     });

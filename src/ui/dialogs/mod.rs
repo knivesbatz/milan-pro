@@ -7,6 +7,7 @@ mod recorded;
 mod render;
 mod shortcuts;
 mod take_chooser;
+mod unfinished;
 mod update;
 mod welcome;
 
@@ -17,10 +18,12 @@ pub use recorded::{Recorded, RecordedFiles};
 pub use render::{RenderDialog, open_folder};
 pub use shortcuts::shortcuts_window;
 pub use take_chooser::TakeChooser;
+pub use unfinished::unfinished_window;
 pub use update::{UpdateResult, update_window};
 pub use welcome::{Welcome, WelcomeResult};
 
 use eframe::egui::*;
+use super::menus::Why;
 use super::theme::{self, Theme, UiLook};
 
 pub const BUTTON: Vec2 = vec2(75.0, 23.0);
@@ -295,9 +298,15 @@ pub fn row<R>(ui: &mut Ui, label: &str, label_w: f32, enabled: bool, add: impl F
     .inner
 }
 
-/// Greyed combo box showing a fixed value (settings Milan Pro does not have).
-pub fn fixed_combo(ui: &mut Ui, id: &str, value: &str, width: f32) {
+/// Greyed combo box showing a fixed value (settings Milan Pro does not have), saying `why` on hover.
+pub fn fixed_combo(ui: &mut Ui, id: &str, value: &str, width: f32, why: Why) {
     ui.add_enabled_ui(false, |ui| {
-        ComboBox::from_id_salt(id).width(width).selected_text(value).show_ui(ui, |_| {});
+        ComboBox::from_id_salt(id).width(width).selected_text(value).show_ui(ui, |_| {}).response.on_disabled_hover_text(why.text());
     });
+}
+
+/// The note on a Preferences or Project Properties page Milan Pro has no settings for.
+pub fn empty_page(ui: &mut Ui, why: Why) {
+    ui.add_space(8.0);
+    ui.label(format!("Milan Pro has no settings on this page ({}).", why.phrase()));
 }

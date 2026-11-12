@@ -204,8 +204,8 @@ pub fn draw_main_toolbar(ui: &mut Ui, project: &Project, history: &History) -> O
         }
     }
     if v16 {
-        inert_button(ui, Icon::Tutorials, "Interactive Tutorials (not available)", false);
-        inert_button(ui, Icon::WhatsThis, "What's This? Help (not available)", false);
+        inert_button(ui, Icon::Tutorials, &super::menus::Later("R53").tip("Interactive Tutorials"), false);
+        inert_button(ui, Icon::WhatsThis, &super::menus::Later("R53").tip("What's This? Help"), false);
     }
     action
 }

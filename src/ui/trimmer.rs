@@ -8,6 +8,7 @@ use crate::edit;
 use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
+use super::menus::{Later, NotPlanned, Why};
 use super::toolbar::{arrow_menu, text_menu, tool_button};
 use super::{MediaDrag, theme};
 
@@ -95,7 +96,7 @@ pub fn draw_trimmer_toolbar(ui: &mut Ui, tr: &mut Trimmer) {
     if let Some(p) = pick {
         tr.open(p);
     }
-    tool_button(ui, Icon::ExternalMonitor, "Show Video in Preview (not available yet)", false, true);
+    tool_button(ui, Icon::ExternalMonitor, &NotPlanned("R57").tip("Show Video in Preview"), false, true);
     if tool_button(ui, Icon::RemoveUnused, "Clear History", !tr.history.is_empty(), false).clicked() {
         tr.history.clear();
         tr.current = None;
@@ -271,7 +272,8 @@ fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut
     let more = tool_button(&mut ui, Icon::More, "More", true, false);
     arrow_menu(&ui, &more, |ui| {
         let item = |ui: &mut Ui, text: &str, enabled: bool| ui.add_enabled(enabled, Button::new(text)).clicked();
-        item(ui, "Loop Playback", false);
+        let off = |ui: &mut Ui, text: &str, why: Why| ui.add_enabled(false, Button::new(text)).on_disabled_hover_text(why.text());
+        off(ui, "Loop Playback", NotPlanned("R57"));
         if item(ui, "Play From Start", true) {
             (tr.cursor, tr.playing) = (0.0, true);
         }
@@ -294,8 +296,8 @@ fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut
         if item(ui, "Add to Timeline up to Cursor (Shift+A)", true) {
             add_to_timeline(project, history, idx, tr.range(m), true, still_len, xfade);
         }
-        item(ui, "Fit to Fill", false);
-        item(ui, "Create Subclip", false);
+        off(ui, "Fit to Fill", NotPlanned("R58"));
+        off(ui, "Create Subclip", Later("R3a"));
         ui.separator();
         if item(ui, "Set In (I)", true) {
             tr.mark_in = Some(tr.cursor);

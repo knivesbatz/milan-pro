@@ -3,6 +3,7 @@
 use eframe::egui::*;
 use crate::audio::Master;
 use super::icons::{Icon, paint_icon};
+use super::menus::Later;
 use super::theme::{self, UiLook};
 use super::timeline::{fader_gain, fader_pos};
 use super::toolbar::inert_button;
@@ -66,10 +67,9 @@ impl MasterView {
 
 /// Master Bus toolbar: properties, downmix, dim, mixing console (not built yet: disabled).
 pub fn master_bus_toolbar(ui: &mut Ui) {
-    inert_button(ui, Icon::Properties, "Master Bus Properties (not available yet)", false);
-    inert_button(ui, Icon::Downmix, "Downmix Output (not available yet)", false);
-    inert_button(ui, Icon::Dim, "Dim Output (not available yet)", false);
-    inert_button(ui, Icon::MixingConsole, "Mixing Console (not available yet)", false);
+    for (icon, label) in [(Icon::Properties, "Master Bus Properties"), (Icon::Downmix, "Downmix Output"), (Icon::Dim, "Dim Output"), (Icon::MixingConsole, "Mixing Console")] {
+        inert_button(ui, icon, &Later("R8b").tip(label), false);
+    }
 }
 
 /// `fx`: the Audio Master FX chain has plug-ins (its fx button is lit; a click opens it).

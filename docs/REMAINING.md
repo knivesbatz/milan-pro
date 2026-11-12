@@ -35,8 +35,8 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 179 |
-| PARTIAL | 154 |
+| DONE | 181 |
+| PARTIAL | 152 |
 | MISSING | 87 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
@@ -49,7 +49,7 @@ What matters most:
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps:** no schema version, no `.bak` on save, no crash-recovery prompt, fixed 120 s autosave, no logging (the release exe has no console, so `eprintln!` goes nowhere), no diagnostic report.
 - **Documentation gaps:** no REFERENCE_ANALYSIS, ARCHITECTURE, CONTRIBUTING, issue templates, compatibility matrix, format report or licence review. `docs/FEATURE_PLAN.md` line 3 still says "plan only. Nothing here is built yet", which is stale.
-- **The no-silent-placeholder rule is broken.** About 330 greyed menu rows, toggles, combos and checkboxes carry no "unfinished" label. Only the ~24 toolbar buttons have a "(not available yet)" tooltip. Batch R0 fixes this first.
+- **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
 ---
 
@@ -122,7 +122,7 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs:281-366`: only width, height, frame rate and sample rate are editable. 17 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed with no label. → R0, R1, R8a, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs:281-366`: only width, height, frame rate and sample rate are editable. 17 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R1, R8a, R11, R40b |
 | 4.12 | Render / export controls | PARTIAL | `ui/dialogs/render.rs`: 5 presets. "Customize Template..." and the render options are greyed. → R11 |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
@@ -404,7 +404,7 @@ What matters most:
 | 12.7 | Audio routing | MISSING | → R8a |
 | 12.8 | Master bus | DONE | `ui/master_bus.rs`, master FX |
 | 12.9 | Track buses | MISSING | Insert Audio Bus is greyed (`menus.rs:710`). → R8a |
-| 12.10 | Audio meters | PARTIAL | Master meters and armed-input meters only. Track meters are drawn but unlit during playback (`tracks.rs:528`), with no label. → R0, R8b |
+| 12.10 | Audio meters | PARTIAL | Master meters and armed-input meters only. Track meters stay unlit during playback; since R0 they say so on hover (`tracks.rs`). → R8b |
 | 12.11 | Peak meters | DONE | `master_bus.rs` (peak hold, clip lamps) |
 | 12.12 | VU-style meters | MISSING | → R8b |
 | 12.13 | Multichannel audio | MISSING | → R10a |
@@ -546,8 +546,8 @@ What matters most:
 | 18.11 | Dependency licensing review | MISSING | → R56 |
 | 18.12 | CI builds | DONE | |
 | 18.13 | Code formatting and linting | MISSING | No `rustfmt.toml`; rustfmt is not even installed locally; no clippy or fmt in CI. → R51 |
-| 18.14 | No placeholder implementations disguised as complete | PARTIAL | Toolbar placeholders say so. Track meters look live but are unlit during playback (`tracks.rs:528`). Project Properties combos look settable. → R0 |
-| 18.15 | Never leave non-functional controls without marking them unfinished | PARTIAL | See section 3 (about 330 unlabelled greyed items). → R0 |
+| 18.14 | No placeholder implementations disguised as complete | DONE | R0: the unlit track meters and every greyed Project Properties combo say on hover that they are not available yet and which batch builds them. |
+| 18.15 | Never leave non-functional controls without marking them unfinished | DONE | R0: `menus::Why` on every greyed row, combo, checkbox and inert button; Help > Unfinished Features (`ui/dialogs/unfinished.rs`); tests `every_greyed_command_says_why` and `every_reason_names_a_batch_of_remaining_md` (`ui/menus.rs`). |
 | 19.1 | Test media import | PARTIAL | `media.rs` unit tests; real files only in ignored tests → R37 |
 | 19.2 | Test media decoding | PARTIAL | `vdecode.rs` ignored tests → R37 |
 | 19.3 | Test playback | PARTIAL | `worker.rs` ignored bench → R19 |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items) | R0, R13-R18 |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R13-R18 |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -598,9 +598,9 @@ What matters most:
 
 The brief says: "Never leave nonfunctional buttons or controls without clearly identifying them as unfinished."
 
-**What is compliant.** About 24 toolbar buttons use `inert_button` or a disabled `tool_button` whose tooltip ends in "(not available yet)" or "(not available)". Five Preferences pages say "Milan Pro has no settings on this page yet." (`prefs.rs:74`).
+**Status: DONE (R0).** Every item below now carries a `menus::Why`: `Later("Rn")` (shown as "Not available yet: batch Rn"), `NotPlanned("R57".."R60")` ("Not planned: VEGAS long tail Rn") or `Fixed("...")` (always on, set by the look, not feasible). Menu rows (`X`, `K`, `R`, `off`, `inert`) show it on hover; `cmd` rows show `menus::unfinished(command)`; combos (`fixed_combo`), checkboxes and buttons use `on_disabled_hover_text`; inert toolbar buttons name the batch in their tooltip; empty Preferences and Project Properties pages name theirs. Help > Unfinished Features lists every greyed menu row and keyboard-only command. The tests `every_greyed_command_says_why` and `every_reason_names_a_batch_of_remaining_md` (`ui/menus.rs`) fail if a greyed command has no reason, if a labelled command works, or if a reason names a batch missing from this file. A batch that builds an item removes its `Why` in the same change (rule 5.0).
 
-**What is not compliant.** Everything below is greyed with no hover text or label. `menus::entry` gives disabled rows `Sense::hover()` but no tooltip (`menus.rs:278-281`).
+The inventory as found before R0:
 
 | Kind | Count | Where |
 |---|---|---|
@@ -617,7 +617,7 @@ The brief says: "Never leave nonfunctional buttons or controls without clearly i
 | Group | Commands | Batch |
 |---|---|---|
 | File | SaveVersion | R42 |
-| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2, R18b, R6a/b, R12, R18a, R17b |
+| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2, R18a, R6b, R12, R18a, R17b |
 | Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2, R8b, R23, R23, R14 |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1, R2 |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 |
@@ -630,9 +630,9 @@ The brief says: "Never leave nonfunctional buttons or controls without clearly i
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
 | Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b, R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
-| Always on, shown checked but disabled (fine once labelled "always on") | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | R0 |
+| Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
-**Toolbar buttons already labelled** (they stay until their feature lands):
+**Toolbar buttons already labelled before R0** (R0 added the batch to each tooltip; they stay until their feature lands):
 - `explorer.rs:168-171`: Favorites, Start/Stop Preview, Auto Preview.
 - `media_panel.rs:161-183`: Capture, Import from Device, Get Media from the Web, Media FX, Auto Preview.
 - `master_bus.rs:69-72`: Master Bus Properties, Downmix, Dim, Mixing Console.
@@ -747,6 +747,28 @@ Dependency notes:
 ---
 
 ### R0: Label every unfinished control (S)
+
+**Status: DONE.** Built as designed below, except: the reasons live on the rows (`X(label, Why)`, `off(ui, label, Why)`, `fixed_combo(..., Why)`) instead of a label-keyed `UNFINISHED` table, because the same label means different things in different menus; Help > Unfinished Features builds its list by walking the menu tables (`menus::greyed`) plus keyboard-only commands; rows greyed only for lack of a selection get no hover text (they work).
+
+Items no batch listed, assigned by R0 (each later batch takes these on with its scope):
+- R2: Options > Mute All Audio / Mute All Video.
+- R3b: the resample switches (Use Project Resample Mode, Force Resample, Disable Resample, Optical Flow), Project Properties Resample mode, Event Properties Undersample rate, Options > Quickfade Audio Edits (not implemented today).
+- R4a: video track Mute envelope, View > Video Envelopes filters (Track Mute, Fade to Color, Keyframes, Velocity, Transition Progress).
+- R5: track header Cut/Copy/Paste/Delete.
+- R7: Motion Blur Amount and Video Supersampling envelopes, Project Properties Motion blur type, the compositing modes 3D Source Alpha, Cut and Difference Squared.
+- R8b: the ripple mode "Affected Tracks, Markers, and Regions" (the same as the mode above it until bus tracks exist).
+- R8c: audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
+- R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
+- R12: File > Real-Time Render.
+- R13/R14: the Display page docking options.
+- R16a: region Rename (marker bar), Project Properties Summary page.
+- R16b: preview Split-Screen View and the Isolate channel overlays.
+- R18a: View > Event Length (VP23).
+- R18b: video track Set Default Track Properties.
+- R30: Tools > Advanced Save (VP23).
+- R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
+- R53: Show Me How, Interactive Tutorials, Download User Manual (open the docs).
+- R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
 
 **Scope**
 - Every greyed control says why it is greyed.

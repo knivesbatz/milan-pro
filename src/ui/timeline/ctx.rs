@@ -9,7 +9,7 @@ use crate::history::History;
 use crate::project::*;
 use crate::ui::{EnvSel, Selection};
 use super::super::keymap::Command::*;
-use super::super::menus::{self, M, M::*, Mark, cmd, entry, off, sep, sub};
+use super::super::menus::{self, Fixed, Later, M, M::*, Mark, NotPlanned, cmd, entry, inert, off, sep, sub};
 use super::super::theme::{self, UiLook};
 use super::ruler::band_rows;
 use super::{FADE_PX, Geo, Rename, Row, TlState, envelopes};
@@ -209,7 +209,7 @@ pub(super) fn menu(
             sub(ui, if is_in { "Fade &In" } else { "Fade &Out" }, true, |ui| {
                 let dir = if is_in { "in from" } else { "out to" };
                 for db in ["6.0 dB", "0 dB", "-Inf dB"] {
-                    off(ui, &format!("Fade {dir} {db}"));
+                    off(ui, &format!("Fade {dir} {db}"), NotPlanned("R58"));
                 }
                 sep(ui);
                 let cur = project.clip(id).map(|c| if is_in { c.fade_in_curve } else { c.fade_out_curve });
@@ -222,7 +222,7 @@ pub(super) fn menu(
                     }
                 }
                 sep(ui);
-                off(ui, "Reset ASR");
+                off(ui, "Reset ASR", NotPlanned("R58"));
             });
         }
         Target::EnvPoint(ref track, kind, k) => env_point(ui, project, history, sel, st, track, kind, k),
@@ -241,7 +241,7 @@ pub(super) fn menu(
         }
         Target::Lane(v, i) => lane(ui, project, history, &sel.tracks, st, v, i),
         Target::Selection => {
-            off(ui, "&Insert Empty Event");
+            off(ui, "&Insert Empty Event", Later("R3a"));
             cmd(ui, "&Zoom Selection", ZoomSelection);
         }
         Target::MarkerBar => marker_bar(ui, project, history),
@@ -274,10 +274,10 @@ pub(super) fn menu(
                 project.timeline.loop_region = Some((r.start, r.end));
             }
             if start {
-                off(ui, "&Rename");
+                off(ui, "&Rename", Later("R16a"));
             }
             sep(ui);
-            off(ui, "&Create Subclip");
+            off(ui, "&Create Subclip", Later("R3a"));
             sep(ui);
             if entry(ui, "&Delete", "", true, Mark::None) {
                 history.push(project.clone());
@@ -324,7 +324,7 @@ fn transition_items(ui: &mut Ui, project: &mut Project, history: &mut History, b
     let track = project.timeline.tracks(r.is_video)[r.track_idx].id.clone();
     let cur = project.clip(b).and_then(|c| c.transition.as_ref()).map(|t| t.plugin.clone());
     if !r.is_video {
-        return off(ui, "&Transition");
+        return off(ui, "&Transition", Fixed("audio crossfades have no transitions (use Fade Type)"));
     }
     sub(ui, "&Transition", true, |ui| {
         for info in plugins::catalog(PluginKind::Transition) {
@@ -368,7 +368,7 @@ fn switches(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, 
     toggle(ui, "&Mute", tr.muted, |t| t.muted = !t.muted);
     toggle(ui, "&Solo", tr.solo, |t| t.solo = !t.solo);
     if !v {
-        entry(ui, "&Invert Phase", "", false, Mark::Check(false));
+        inert(ui, "&Invert Phase", Mark::Check(false), Later("R3b"));
     }
     // Milan Pro's own switches.
     toggle(ui, "&Lock", tr.locked, |t| t.locked = !t.locked);
@@ -386,7 +386,7 @@ fn env_toggles(ui: &mut Ui, project: &mut Project, history: &mut History, v: boo
     };
     for (label, kind) in items {
         let (Some(kind), Some(tr)) = (kind, project.timeline.tracks(v).get(i)) else {
-            off(ui, label);
+            off(ui, label, Later("R4a")); // video track Mute and Fade to Color
             continue;
         };
         let (id, has) = (tr.id.clone(), tr.envelopes.iter().any(|e| e.kind == kind));
@@ -468,7 +468,7 @@ fn env_point(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mu
     sep(ui);
     env_curves(ui, project, history, track, kind, k, &keys);
     sep(ui);
-    off(ui, "&Properties");
+    off(ui, "&Properties", Later("R8c"));
 }
 
 /// Envelope line menu (§6.7): `t` is where it was clicked, `seg` the point starting that segment.
@@ -495,7 +495,7 @@ fn env_line(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut
         }
     }
     sep(ui);
-    off(ui, "&Properties");
+    off(ui, "&Properties", Later("R8c"));
 }
 
 /// Track ≡ / ⋯ button menu: the switches, default height and the button-set entry.
@@ -546,7 +546,7 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         project.mark_modified(); // a view change: no undo step
     }
     sep(ui);
-    off(ui, "Edit Visible Button Set...");
+    off(ui, "Edit Visible Button Set...", Later("R15"));
 }
 
 fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usize) {
@@ -594,7 +594,7 @@ fn track_group_and_color(ui: &mut Ui) {
             ui.painter().rect_filled(Rect::from_min_size(r.left_center() + vec2(8.0, -6.0), vec2(16.0, 12.0)), 0.0, t.track_colors[k]);
         }
         sep(ui);
-        off(ui, "Custom...");
+        off(ui, "Custom...", NotPlanned("R58"));
     });
 }
 
@@ -620,17 +620,17 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
         sep(ui);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
-        sub(ui, "Fade &Colors", true, |ui| menus::show(ui, &[X("Top..."), X("Bottom...")]));
-        entry(ui, "E&xpand Track Layers", "", false, Mark::Check(false));
+        sub(ui, "Fade &Colors", true, |ui| menus::show(ui, FADE_COLORS));
+        inert(ui, "E&xpand Track Layers", Mark::Check(false), NotPlanned("R58"));
         sep(ui);
-        off(ui, "Set De&fault Track Properties...");
+        off(ui, "Set De&fault Track Properties...", Later("R18b"));
         sep(ui);
         track_group_and_color(ui);
         if v23 {
-            off(ui, "Select All After Cursor");
+            off(ui, "Select All After Cursor", Later("R2"));
         }
     } else {
-        off(ui, "Hide");
+        off(ui, "Hide", Later("R5"));
         sep(ui);
         rename(ui, project, st);
         sep(ui);
@@ -642,7 +642,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         sep(ui);
         menus::show(ui, AUDIO_HEADER_MID);
         sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
-        menus::show(ui, &[X("F&X Automation Envelopes..."), S]);
+        menus::show(ui, &[X("F&X Automation Envelopes...", Later("R8c")), S]);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
         menus::show(ui, AUDIO_HEADER_END);
         track_group_and_color(ui);
@@ -668,14 +668,16 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
     sub(ui, "Insert/Remove Envelope", true, |ui| env_toggles(ui, project, history, v, i));
     if v {
         sep(ui);
-        sub(ui, "Fade Colors", true, |ui| menus::show(ui, &[X("Top..."), X("Bottom...")]));
-        menus::show(ui, &[V23(&X("Insert Slideshow"))]);
+        sub(ui, "Fade Colors", true, |ui| menus::show(ui, FADE_COLORS));
+        menus::show(ui, &[V23(&X("Insert Slideshow", Later("R18b")))]);
     } else {
-        off(ui, "FX Automation Envelopes");
+        off(ui, "FX Automation Envelopes", Later("R8c"));
         sep(ui);
-        menus::show(ui, &[K("Use Vertical Meters", false), K("Show Output Meters", true)]);
+        menus::show(ui, &[K("Use Vertical Meters", false, Later("R8b")), K("Show Output Meters", true, Later("R8b"))]);
     }
 }
+
+const FADE_COLORS: &[M] = &[X("Top...", Later("R4a")), X("Bottom...", Later("R4a"))];
 
 fn marker_bar(ui: &mut Ui, project: &mut Project, history: &mut History) {
     menus::show(ui, MARKER_BAR_TOP);
@@ -706,34 +708,41 @@ fn marker_bar(ui: &mut Ui, project: &mut Project, history: &mut History) {
 }
 
 const TRACK_GROUP: &[M] = &[
-    X("Rename Track Group"),
+    X("Rename Track Group", Later("R5")),
     S,
-    X("Group Selected Tracks"),
-    X("Ungroup Selected Tracks"),
-    X("Collapse"),
-    X("Expand"),
+    X("Group Selected Tracks", Later("R5")),
+    X("Ungroup Selected Tracks", Later("R5")),
+    X("Collapse", Later("R5")),
+    X("Expand", Later("R5")),
     S,
-    X("Mute Track Group"),
-    X("Solo Track Group"),
+    X("Mute Track Group", Later("R5")),
+    X("Solo Track Group", Later("R5")),
 ];
 
 const AUDIO_HEADER_MID: &[M] = &[
-    X("Cu&t"),
-    X("&Copy"),
-    X("&Paste"),
-    X("&Delete"),
+    X("Cu&t", Later("R5")),
+    X("&Copy", Later("R5")),
+    X("&Paste", Later("R5")),
+    X("&Delete", Later("R5")),
     S,
     C("&Arm for Record", Arm),
-    Sub("I&nput", &[X("None")]),
-    Sub("&Output", &[R("Master", true)]),
-    Sub("Au&tomation", &[X("Show Automation Controls"), S, R("Off", true), R("Read", false), R("Write (Touch)", false), R("Write (Latch)", false)]),
+    Sub("I&nput", &[X("None", Later("R9"))]),
+    Sub("&Output", &[R("Master", true, Later("R8a"))]),
+    Sub("Au&tomation", &[
+        X("Show Automation Controls", Later("R8c")),
+        S,
+        R("Off", true, Later("R8c")),
+        R("Read", false, Later("R8c")),
+        R("Write (Touch)", false, Later("R8c")),
+        R("Write (Latch)", false, Later("R8c")),
+    ]),
     Sub("&Pan Type", &[
-        R("Add Channels (0 dB Center)", false),
-        R("Balance (0 dB Center)", true),
-        R("Balance (-3 dB Center)", false),
-        R("Balance (-6 dB Center)", false),
-        R("Constant Power", false),
-        R("Film", false),
+        R("Add Channels (0 dB Center)", false, Later("R8a")),
+        R("Balance (0 dB Center)", true, Later("R8a")),
+        R("Balance (-3 dB Center)", false, Later("R8a")),
+        R("Balance (-6 dB Center)", false, Later("R8a")),
+        R("Constant Power", false, Later("R8a")),
+        R("Film", false, Later("R8a")),
     ]),
     S,
 ];
@@ -742,18 +751,18 @@ const AUDIO_HEADER_END: &[M] = &[S, C("Set De&fault Track Properties...", Defaul
 
 const AUDIO_HEADER_METERS: &[M] = &[
     S,
-    K("Use &Vertical Meters", false),
-    K("Show Output &Meters", true),
+    K("Use &Vertical Meters", false, Later("R8b")),
+    K("Show Output &Meters", true, Later("R8b")),
     S,
-    Sub("Channel Width", &[R("Narrow", false), R("Default", true), R("Wide", false)]),
+    Sub("Channel Width", &[R("Narrow", false, Later("R8b")), R("Default", true, Later("R8b")), R("Wide", false, Later("R8b"))]),
 ];
 
 const EVENT_SHARED: &[M] = &[
     S,
     C("Cu&t", Cut),
     C("&Copy", Copy),
-    X("Paste E&vent Attributes"),
-    X("Selectively Paste Event Attributes..."),
+    X("Paste E&vent Attributes", Later("R3a")),
+    X("Selectively Paste Event Attributes...", Later("R3a")),
     S,
     C("&Delete", Delete),
     C("Tri&m", Trim),
@@ -768,63 +777,67 @@ const EVENT_TAIL: &[M] = &[
     Sub("Switc&hes", &[
         C("&Mute", EventMute),
         C("&Lock", EventLock),
-        K("L&oop", true),
+        K("L&oop", true, Later("R3a")),
         S,
-        K("Maintain &Aspect Ratio", true),
-        V23(&K("Auto Normalize", false)),
-        V23(&R("Optical Flow", false)),
+        K("Maintain &Aspect Ratio", true, Later("R3b")),
+        V23(&K("Auto Normalize", false, Later("R3b"))),
+        V23(&R("Optical Flow", false, Later("R3b"))),
     ]),
     Sub("T&ake", menus::TAKE),
     Sub("&Group", &[C("Create &New", Group), S, C("&Remove From", RemoveFromGroup), C("&Clear", ClearGroup), C("&Select All", SelectGroup)]),
-    Sub("&Stream", &[X("Stream &1")]),
-    Sub("&Synchronize", &[X("By Moving"), X("By Slipping")]),
-    X("Create Sync &Link with Selected Events"),
-    X("Remove Sync Link from Selected Events"),
+    Sub("&Stream", menus::STREAM),
+    Sub("&Synchronize", &[X("By Moving", NotPlanned("R58")), X("By Slipping", NotPlanned("R58"))]),
+    X("Create Sync &Link with Selected Events", NotPlanned("R58")),
+    X("Remove Sync Link from Selected Events", NotPlanned("R58")),
     S,
     C("&Properties...", EventProperties),
     V23(&S),
     V23(&C("Motion Tracking", MotionTracking)),
-    V23(&X("Add Missing Stream for Selected Event")),
-    V23(&X("Beat Detection")),
+    V23(&X("Add Missing Stream for Selected Event", NotPlanned("R58"))),
+    V23(&X("Beat Detection", NotPlanned("R57"))),
 ];
 
 const VIDEO_EVENT: &[M] = &[
     C("Open in Tri&mmer", EventOpenInTrimmer),
-    X("Open Parent Media in Tri&mmer"),
+    X("Open Parent Media in Tri&mmer", NotPlanned("R57")),
     C("Select &in Project Media List", EventSelectInMedia),
-    X("Edit Source Pro&ject"),
+    X("Edit Source Pro&ject", Later("R6b")),
     S,
-    X("Media &FX..."),
+    X("Media &FX...", NotPlanned("R57")),
     S,
     C("Video Event Pan/C&rop...", EventPanCrop),
     C("Video &Event FX...", VideoEventFx),
-    X("Red E&ye Reduction..."),
+    X("Red E&ye Reduction...", NotPlanned("R58")),
     Inline(EVENT_SHARED),
-    X("Create Su&bclip"),
+    X("Create Su&bclip", Later("R3a")),
     C("Rever&se", EventReverse),
     S,
-    X("Select Events to E&nd"),
-    Sub("Insert/Remove &Envelope", &[X("Velocity"), X("Freeze Frame at Cursor"), X("Transition Progress")]),
+    X("Select Events to E&nd", Later("R2")),
+    Sub("Insert/Remove &Envelope", &[
+        X("Velocity", Later("R4a")),
+        X("Freeze Frame at Cursor", Later("R4a")),
+        X("Transition Progress", Later("R4a")),
+    ]),
     Inline(EVENT_TAIL),
 ];
 
 const AUDIO_EVENT: &[M] = &[
     C("Open in Tri&mmer", EventOpenInTrimmer),
-    X("Open Parent Media in Tri&mmer"),
+    X("Open Parent Media in Tri&mmer", NotPlanned("R57")),
     C("Open in Audio Editor", OpenInAudioEditor),
-    X("Open Copy in Audio Editor"),
-    X("Edit Source Pro&ject"),
+    X("Open Copy in Audio Editor", Later("R18a")),
+    X("Edit Source Pro&ject", Later("R6b")),
     C("Select &in Project Media List", EventSelectInMedia),
     S,
     C("Audio Event &FX...", AudioEventFx),
-    X("Apply Non-Real-Time Event FX..."),
+    X("Apply Non-Real-Time Event FX...", NotPlanned("R58")),
     Inline(EVENT_SHARED),
-    X("Create Su&bclip"),
+    X("Create Su&bclip", Later("R3a")),
     C("&Reverse", EventReverse),
     S,
-    X("Select Events to E&nd"),
-    Sub("Insert/Remove &Envelope", &[X("Volume"), X("Pan"), X("Mute")]),
-    Sub("Channe&ls", &[R("&Both", true), R("&Left Only", false), R("&Right Only", false), R("&Combine", false), R("&Swap", false)]),
+    X("Select Events to E&nd", Later("R2")),
+    Sub("Insert/Remove &Envelope", &[X("Volume", Later("R8c")), X("Pan", Later("R8c")), X("Mute", Later("R8c"))]),
+    Sub("Channe&ls", menus::CHANNELS),
     Inline(EVENT_TAIL),
 ];
 
@@ -850,7 +863,7 @@ const MARKER_BAR_BOTTOM: &[M] = &[
     Sub("Gr&id Spacing", menus::GRID_SPACING),
     S,
     C("Selectively Pre&render Video...", Prerender),
-    X("&Clean Up Prerendered Video..."),
+    X("&Clean Up Prerendered Video...", Later("R23")),
 ];
 
 const LOOP_BAR: &[M] = &[
@@ -868,15 +881,29 @@ const LOOP_BAR: &[M] = &[
 ];
 
 const TIME_DISPLAY: &[M] = &[
-    R("Time at Cursor", true),
-    X("MIDI Timecode In"),
-    X("MIDI Timecode Out"),
-    X("MIDI Clock Out"),
+    R("Time at Cursor", true, Fixed("the only mode until MIDI timecode (VEGAS long tail R59)")),
+    X("MIDI Timecode In", NotPlanned("R59")),
+    X("MIDI Timecode Out", NotPlanned("R59")),
+    X("MIDI Clock Out", NotPlanned("R59")),
     S,
     Sub("Time Format", menus::RULER_MENU),
     S,
-    Sub("Text Color", &[R("Default", true), X("Custom...")]),
-    Sub("Background Color", &[R("Default", true), X("Custom...")]),
+    Sub("Text Color", &[R("Default", true, NotPlanned("R58")), X("Custom...", NotPlanned("R58"))]),
+    Sub("Background Color", &[R("Default", true, NotPlanned("R58")), X("Custom...", NotPlanned("R58"))]),
+];
+
+/// The tables of the timeline's right-click menus, for the Unfinished Features list.
+pub(crate) const MENUS: &[(&str, &[M])] = &[
+    ("Track header", TRACK_GROUP),
+    ("Track header", AUDIO_HEADER_MID),
+    ("Track header", AUDIO_HEADER_METERS),
+    ("Track header", FADE_COLORS),
+    ("Video event", VIDEO_EVENT),
+    ("Audio event", AUDIO_EVENT),
+    ("Marker bar", MARKER_BAR_TOP),
+    ("Marker bar", MARKER_BAR_BOTTOM),
+    ("Time selection", LOOP_BAR),
+    ("Time display", TIME_DISPLAY),
 ];
 
 #[cfg(test)]

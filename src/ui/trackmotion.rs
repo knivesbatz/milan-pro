@@ -40,7 +40,9 @@ pub fn composite_name(mode: Composite) -> &'static str {
 pub fn composite_menu(ui: &mut Ui, cur: Composite, enabled: bool) -> Option<Composite> {
     let mut out = None;
     for (label, mode) in COMPOSITE {
-        if entry(ui, label, "", enabled && mode.is_some(), Mark::Radio(mode == Some(cur))) {
+        if mode.is_none() {
+            menus::inert(ui, label, Mark::Radio(false), menus::Later("R7"));
+        } else if entry(ui, label, "", enabled, Mark::Radio(mode == Some(cur))) {
             out = mode;
         }
     }

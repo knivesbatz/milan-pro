@@ -8,6 +8,7 @@ mod scroll;
 mod tracks;
 
 pub(super) use tracks::{fader_gain, fader_pos};
+pub(super) use ctx::MENUS as CONTEXT_MENUS;
 
 use eframe::egui::*;
 use crate::audio::Waveforms;
