@@ -19,6 +19,10 @@ png = "0.18"  # screenshot harness (already in the tree via eframe)
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
 
+# src/proc.rs: Job Object that kills ffmpeg children with Milan. Already in Cargo.lock (via other crates).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

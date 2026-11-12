@@ -18,21 +18,13 @@ pub const PEAKS_PER_SEC: f64 = 100.0;
 const PEAK_RATE: u32 = 8_000;
 
 fn ffmpeg() -> Command {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-nostdin", "-v", "error"]).stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
+    let mut cmd = crate::proc::ffmpeg();
+    cmd.args(["-v", "error"]);
     cmd
 }
 
 fn ffmpeg_err(e: std::io::Error) -> String {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => "ffmpeg not found on PATH: audio is silent".to_string(),
-        _ => format!("ffmpeg failed: {e}"),
-    }
+    format!("{}: audio is silent", crate::proc::tool_error(&e, "ffmpeg"))
 }
 
 // ---- Mixer ----
@@ -100,12 +92,11 @@ pub fn render(segs: &[Seg], t0: f64, frames: usize, mut decode: impl FnMut(&Seg,
 }
 
 fn decode_pcm(path: &Path, start: f64, dur: f64) -> Result<Vec<f32>, String> {
-    let out = ffmpeg()
-        .args(["-ss", &format!("{:.4}", start.max(0.0)), "-t", &format!("{dur:.4}"), "-i"])
+    let mut cmd = ffmpeg();
+    cmd.args(["-ss", &format!("{:.4}", start.max(0.0)), "-t", &format!("{dur:.4}"), "-i"])
         .arg(path)
-        .args(["-vn", "-f", "f32le", "-ac", "2", "-ar", "48000", "-"])
-        .output()
-        .map_err(ffmpeg_err)?;
+        .args(["-vn", "-f", "f32le", "-ac", "2", "-ar", "48000", "-"]);
+    let out = crate::proc::output(&mut cmd).map_err(ffmpeg_err)?;
     if out.stdout.is_empty() && !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("audio decode failed: {}", err.lines().next().unwrap_or("unknown error")));
@@ -324,27 +315,23 @@ impl Player {
 
 /// Audio channels of the first audio stream (1 when unknown).
 fn channel_count(path: &Path) -> usize {
-    let mut cmd = Command::new("ffprobe");
+    let mut cmd = crate::proc::ffprobe();
     cmd.args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    cmd.output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(1)
+    crate::proc::output(&mut cmd).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(1)
 }
 
 /// Peaks per 1/PEAKS_PER_SEC s of the source, 0..=1, one list per channel: stereo (or more, folded to 2) gives
 /// L and R, as VEGAS draws two stacked waveforms; mono gives one.
 fn peaks(path: &Path) -> Vec<Vec<f32>> {
     let ch = channel_count(path).clamp(1, 2);
-    let child = ffmpeg()
-        .arg("-i")
-        .arg(path)
-        .args(["-vn", "-ac", &ch.to_string(), "-ar", &PEAK_RATE.to_string(), "-f", "f32le", "-"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn();
+    let child = crate::proc::spawn(
+        ffmpeg()
+            .arg("-i")
+            .arg(path)
+            .args(["-vn", "-ac", &ch.to_string(), "-ar", &PEAK_RATE.to_string(), "-f", "f32le", "-"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    );
     let Ok(mut child) = child else { return Vec::new() };
     let per = (PEAK_RATE as f64 / PEAKS_PER_SEC) as usize;
     let (mut out, mut peak, mut n) = (vec![Vec::new(); ch], vec![0.0_f32; ch], 0);
@@ -376,7 +363,13 @@ fn peaks(path: &Path) -> Vec<Vec<f32>> {
     out
 }
 
-/// Per-media peak cache filled by a background thread. Failures cache as empty.
+/// Runs a peaks decode, and once more if it gives nothing (a busy disk or a file still being written).
+fn retry_empty(mut decode: impl FnMut() -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
+    let p = decode();
+    if p.first().is_none_or(|c| c.is_empty()) { decode() } else { p }
+}
+
+/// Per-media peak cache filled by a background thread. Failures (after one retry) cache as empty.
 pub struct Waveforms {
     cache: HashMap<String, Option<Vec<Vec<f32>>>>,
     tx: Sender<(String, PathBuf)>,
@@ -390,7 +383,7 @@ impl Waveforms {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             for (id, path) in req_rx {
-                if res_tx.send((id, peaks(&path))).is_err() {
+                if res_tx.send((id, retry_empty(|| peaks(&path)))).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -437,11 +430,8 @@ mod tests {
             name: "a".into(),
             media_type: MediaType::Audio,
             duration: 10.0,
-            width: None,
-            height: None,
-            frame_rate: None,
             sample_rate: Some(48_000),
-            codec: None,
+            ..Default::default()
         };
         let tl = &mut p.timeline;
         tl.add_audio_track();
@@ -516,6 +506,16 @@ mod tests {
         assert_eq!(out, [0.4, 0.0, -0.5, 0.0]);
         assert_eq!(master.take_peaks(), [0.5, 0.0]);
         assert_eq!(master.take_peaks(), [0.0, 0.0]); // reading resets
+    }
+
+    #[test]
+    fn waveform_decode_retries_once() {
+        let mut calls = 0;
+        assert!(retry_empty(|| { calls += 1; Vec::new() }).is_empty());
+        assert_eq!(calls, 2);
+        let mut calls = 0;
+        assert_eq!(retry_empty(|| { calls += 1; vec![vec![0.5]] }), [vec![0.5]]);
+        assert_eq!(calls, 1);
     }
 
     #[test]

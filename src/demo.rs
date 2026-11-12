@@ -5,7 +5,6 @@
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use crate::media::probe_media;
 use crate::project::{Clip, MediaItem, Project, Track, TrackKind};
 use crate::ui::ClipRef;
@@ -64,14 +63,9 @@ fn ensure_media() -> anyhow::Result<PathBuf> {
     }
     std::fs::create_dir_all(&dir)?;
     for (name, args) in MEDIA {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = crate::proc::ffmpeg();
         cmd.args(["-y", "-hide_banner", "-loglevel", "error"]).args(args).arg(dir.join(name));
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-        }
-        let out = cmd.output().map_err(|e| anyhow::anyhow!("ffmpeg: {e}"))?;
+        let out = crate::proc::output(&mut cmd).map_err(|e| anyhow::anyhow!(crate::proc::tool_error(&e, "ffmpeg")))?;
         anyhow::ensure!(out.status.success(), "ffmpeg {name}: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     std::fs::write(dir.join("ready2"), "")?;

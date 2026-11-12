@@ -2,8 +2,8 @@
 use eframe::egui;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use crate::audio::track_gain;
@@ -49,6 +49,11 @@ fn fps_str(fps: f64) -> String {
         format!("{fps}")
     }
 }
+
+/// Windows' command-line limit, less room for the ffmpeg path.
+const MAX_ARGV: usize = 32_767 - 512;
+/// The arguments after the inputs: graph file, maps, codecs and the output path (at most 260 characters).
+const MAX_ARGV_TAIL: usize = 1024;
 
 /// End of the last clip on any track.
 pub fn content_end(project: &Project) -> f64 {
@@ -147,6 +152,15 @@ pub fn build_args(project: &Project, preset: &Preset, out: &Path) -> Result<Vec<
     graph.push(format!("anullsrc=r={sr}:cl=stereo,atrim=duration={end:.3}[silence]"));
     graph.push(format!("[silence]{}amix=inputs={}:normalize=0:duration=first[aout]", mix.concat(), mix.len() + 1));
 
+    // Windows caps a command line at 32767 characters. The graph goes through a file (graph_to_file) but every
+    // event is still its own -i input, so fail clearly here instead of with os error 206 at spawn.
+    // shortcut: about 280 events with 80-character media paths fit; batch 4's engine render removes the inputs.
+    let cmdline: usize = args.iter().map(|a| a.len() + 3).sum::<usize>() + MAX_ARGV_TAIL;
+    if cmdline > MAX_ARGV {
+        return Err(format!(
+            "This timeline has too many events to render in one pass (the ffmpeg command line would be about {cmdline} characters; Windows allows {MAX_ARGV}). Move the media to a folder with a shorter path, or render fewer events."
+        ));
+    }
     args.push("-filter_complex".into());
     args.push(graph.join(";"));
     if let Some(v) = preset.video {
@@ -186,14 +200,25 @@ impl Job {
         let state = Arc::new(Mutex::new((0.0, Status::Running)));
         let child = Arc::new(Mutex::new(None));
         let cancel = Arc::new(AtomicBool::new(false));
-        let job = Job { out, started: Instant::now(), total, state: state.clone(), child: child.clone(), cancel: cancel.clone() };
+        let job = Job { out: out.clone(), started: Instant::now(), total, state: state.clone(), child: child.clone(), cancel: cancel.clone() };
         std::thread::spawn(move || {
-            let result = run(&args, &state, &child, &cancel, &ctx);
+            let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.len()));
+            let before = stamp(&out);
+            let graph = graph_path();
+            let result = graph_to_file(args, &graph)
+                .map_err(|e| format!("Cannot write the render graph to {}: {e}", graph.display()))
+                .and_then(|args| run(&args, &state, &child, &cancel, &ctx));
+            let _ = std::fs::remove_file(&graph);
             let status = match result {
                 _ if cancel.load(Relaxed) => Status::Cancelled,
                 Ok(()) => Status::Done,
                 Err(e) => Status::Failed(e),
             };
+            // A cancelled or failed render leaves no partial file. The dialog confirmed any overwrite;
+            // a file ffmpeg never touched (it failed before opening the output) is kept.
+            if status != Status::Done && stamp(&out) != before {
+                let _ = std::fs::remove_file(&out);
+            }
             state.lock().unwrap().1 = status;
             ctx.request_repaint();
         });
@@ -224,12 +249,36 @@ impl Job {
 
 /// std never kills a Child on drop and Windows doesn't kill it with the parent, so an
 /// unfinished render must be killed here or it keeps encoding invisibly after exit.
+/// Drop runs as Milan closes, so it waits (briefly: the killed ffmpeg exits at once) for the worker
+/// to delete the partial output and the graph file before the process ends and takes the worker with it.
 impl Drop for Job {
     fn drop(&mut self) {
         if self.status() == Status::Running {
             self.cancel();
+            let until = Instant::now() + std::time::Duration::from_secs(2);
+            while self.status() == Status::Running && Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
     }
+}
+
+/// `%TEMP%\milan-render-<pid>-<n>.txt`, unique per render.
+fn graph_path() -> PathBuf {
+    static N: AtomicU64 = AtomicU64::new(0);
+    std::env::temp_dir().join(format!("milan-render-{}-{}.txt", std::process::id(), N.fetch_add(1, Relaxed)))
+}
+
+/// Move the `-filter_complex` graph into `file` and pass it as `-/filter_complex <file>`, so the command line
+/// does not grow with the graph past Windows' 32767-character limit.
+// shortcut: the -i inputs still grow the command line (~30-80 chars per event); batch 4's engine render removes them.
+fn graph_to_file(mut args: Vec<String>, file: &Path) -> std::io::Result<Vec<String>> {
+    if let Some(i) = args.iter().position(|a| a == "-filter_complex") {
+        std::fs::write(file, &args[i + 1])?;
+        args[i] = "-/filter_complex".into();
+        args[i + 1] = file.to_string_lossy().into_owned();
+    }
+    Ok(args)
 }
 
 fn run(
@@ -239,17 +288,9 @@ fn run(
     cancel: &AtomicBool,
     ctx: &egui::Context,
 ) -> Result<(), String> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let mut child = cmd.spawn().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => "ffmpeg not found on PATH: cannot render".to_string(),
-        _ => format!("ffmpeg failed to start: {e}"),
-    })?;
+    let mut cmd = crate::proc::ffmpeg();
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = crate::proc::spawn(&mut cmd).map_err(|e| format!("{}: cannot render", crate::proc::tool_error(&e, "ffmpeg")))?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     *child_slot.lock().unwrap() = Some(child);
@@ -295,7 +336,7 @@ mod tests {
             height: Some(720),
             frame_rate: Some(30.0),
             sample_rate: audio.then_some(48_000),
-            codec: None,
+            ..Default::default()
         }
     }
 
@@ -384,6 +425,46 @@ mod tests {
         assert!(graph.contains("afade=t=in:st=0:d=0.250:curve=hsin,afade=t=out:st=1.500:d=0.500:curve=hsin,adelay=1500:all=1[a0]"));
     }
 
+    /// A project whose media sit at realistic 80-character paths, with `n` video and `n` audio events.
+    fn long_paths(n: usize) -> Project {
+        let mut p = project();
+        for m in &mut p.media_pool {
+            m.path = format!(r"C:\Users\someone\Videos\Projects\Wedding 2026\Camera A\{:0>21}.MP4", m.id).into();
+            assert_eq!(m.path.as_os_str().len(), 80);
+        }
+        let (v, a) = (p.media_pool[0].clone(), p.media_pool[2].clone());
+        p.timeline.video_tracks[0].clips = (0..n).map(|i| clip(&v, i as f64, 1.0, 0.0)).collect();
+        p.timeline.audio_tracks[0].clips = (0..n).map(|i| clip(&a, i as f64, 1.0, 0.0)).collect();
+        p
+    }
+
+    #[test]
+    fn too_many_inputs_is_a_clear_error() {
+        // 250 + 250 events at 80-character paths need ~58k characters of -i inputs.
+        let e = build_args(&long_paths(250), &PRESETS[0], Path::new("o.mp4")).unwrap_err();
+        assert!(e.contains("too many events"), "{e}");
+    }
+
+    #[test]
+    fn graph_goes_through_a_file() {
+        // 125 video + 125 audio events at 80-character paths: the inline graph alone would be ~45k characters.
+        let p = long_paths(125);
+        let args = build_args(&p, &PRESETS[0], Path::new("o.mp4")).unwrap();
+        let graph = args[args.iter().position(|a| a == "-filter_complex").unwrap() + 1].clone();
+        assert!(graph.len() > 32_767);
+
+        let file = std::env::temp_dir().join(format!("milan-graph-test-{}.txt", std::process::id()));
+        let args = graph_to_file(args, &file).unwrap();
+        let written = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(written, graph);
+        let i = args.iter().position(|a| a == "-/filter_complex").unwrap();
+        assert_eq!(args[i + 1], file.to_string_lossy());
+        assert!(!args.iter().any(|a| a == "-filter_complex" || a.contains("overlay")));
+        let len: usize = args.iter().map(|a| a.len() + 1).sum();
+        assert!(len < 32_767, "command line {len} characters");
+    }
+
     #[test]
     fn fps_strings() {
         assert_eq!(fps_str(29.97), "30000/1001");
@@ -400,7 +481,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("milan-render-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.mp4");
-        let ok = Command::new("ffmpeg")
+        let ok = crate::proc::ffmpeg()
             .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=d=3:s=320x240:r=30", "-f", "lavfi", "-i", "sine=f=440:d=3"])
             .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
             .arg(&src)
@@ -425,7 +506,40 @@ mod tests {
             }
             probes.push((preset.name, job.status(), crate::media::probe_media(&out).unwrap()));
         }
+
+        // Cancel mid-render: no partial output and no graph file are left behind.
+        let mut long = p.clone();
+        let c = &mut long.timeline.video_tracks[0].clips[0];
+        (c.duration, c.out_point) = (600.0, 600.0); // long enough to still be running when cancelled
+        let out = dir.join("cancelled.mp4");
+        let job = Job::start(build_args(&long, &PRESETS[1], &out).unwrap(), content_end(&long), out.clone(), egui::Context::default());
+        while job.fraction() == 0.0 && job.status() == Status::Running {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(out.exists());
+        job.cancel();
+        while job.status() == Status::Running {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let cancelled = (job.status(), out.exists());
+        // Dropping a running job (Milan closing) cleans up before drop returns.
+        let out = dir.join("dropped.mp4");
+        let job = Job::start(build_args(&long, &PRESETS[1], &out).unwrap(), content_end(&long), out.clone(), egui::Context::default());
+        while job.fraction() == 0.0 && job.status() == Status::Running {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        drop(job);
+        let dropped_left = out.exists();
+        let prefix = format!("milan-render-{}-", std::process::id());
+        let graphs = std::fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix) && e.file_name().to_string_lossy().ends_with(".txt"))
+            .count();
         std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(cancelled, (Status::Cancelled, false));
+        assert!(!dropped_left, "a dropped job left its partial output");
+        assert_eq!(graphs, 0);
         for (name, status, probed) in probes {
             assert_eq!(status, Status::Done, "{name}");
             assert!((probed.duration - 3.0).abs() < 0.1, "{name} duration {}", probed.duration);

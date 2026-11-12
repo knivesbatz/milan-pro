@@ -2,7 +2,6 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use crate::project::{MediaItem, MediaType, Project};
@@ -101,21 +100,13 @@ fn decode_size(m: &MediaItem, max_w: u32) -> (u32, u32) {
 }
 
 fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = crate::proc::ffmpeg();
     cmd.args(["-v", "error", "-ss", &format!("{:.3}", req.time.max(0.0)), "-i"])
         .arg(&req.path)
         .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-sws_flags", req.scaler, "-s"])
         .arg(format!("{}x{}", req.width, req.height))
         .arg("-");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let out = cmd.output().map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => "ffmpeg not found on PATH".to_string(),
-        _ => format!("ffmpeg failed: {e}"),
-    })?;
+    let out = crate::proc::output(&mut cmd).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
     let need = (req.width * req.height * 4) as usize;
     if out.stdout.len() < need {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -362,8 +353,7 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
             frame_rate: Some(30.0),
-            sample_rate: None,
-            codec: None,
+            ..Default::default()
         }
     }
 

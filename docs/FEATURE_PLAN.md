@@ -448,9 +448,9 @@ All new fields carry serde defaults. Old `.mnle` files load and behave as today.
 | Type | Definition | Notes |
 |---|---|---|
 | `Curve` | `enum { Linear, Fast, Slow, #[default] Smooth, Sharp, Hold }` | |
-| `Key<T>` | `{ t: f64, v: T, #[serde(default = "Curve::linear")] curve: Curve }` | the curve shapes the segment after the key |
-| `Keyframes<T>` | `#[serde(default)] { keys: Vec<Key<T>> }` | empty = default value |
-| `EnvKind` | `enum { Volume /*dB, floor −120*/, Pan /*−1..1*/, Mute /*1 on, 0 muted, Hold*/, CompositeLevel /*0..1*/, Opacity, Velocity /*reserved*/ }` | |
+| `Keyframe<T>` (not `Key<T>`: that clashes with `egui::Key` in UI files that glob-import both) | `{ t: f64, v: T, #[serde(default = "Curve::linear")] curve: Curve }` | the curve shapes the segment after the key |
+| `Keyframes<T>` | `#[serde(default)] { keys: Vec<Keyframe<T>> }` | empty = default value |
+| `EnvKind` | `enum { Volume /*dB, floor −120*/, Pan /*−1..1*/, Mute /*1 on, 0 muted, Hold*/, CompositeLevel /*0..1*/, Opacity, Velocity /*reserved*/, #[serde(other)] Unknown /*a later version's kind; ignored*/ }` | |
 | `Envelope` | `{ kind: EnvKind, points: Keyframes<f32> }` | |
 | `Fx` | `{ id: String /*uuid; keys DSP state*/, plugin: String, #[serde(default = "yes")] enabled: bool, #[serde(default)] params: BTreeMap<String, Keyframes<f32>>, #[serde(default)] text: BTreeMap<String, String> }` | |
 | `Transition` | `{ plugin: String, #[serde(default)] params: BTreeMap<String, f32> }` | |
@@ -598,7 +598,7 @@ Why this order:
     1. The test re-runs its own exe with `MILAN_JOB_CHILD=1`.
     2. The helper `proc::spawn`s `ffmpeg -f lavfi -i nullsrc -f null -`, prints the PID and sleeps.
     3. The parent kills the helper, then asserts with `OpenProcess`/`WaitForSingleObject(0)` that the ffmpeg PID has exited.
-- **render interim:** an argv test that the graph is a file argument and the argv stays under 1000 characters with 500 events.
+- **render interim:** an argv test that the graph is a file argument. Each event is still its own `-i` input until batch 4, so with realistic 80-character media paths 250 events fit under Windows' 32,767-character limit and 500 events give a clear "too many events" error (the 1000-character gate moves to batch 4).
 - **render e2e (`#[ignore]`):** cancel removes the partial output and the graph file.
 - **probe:** feed `parse_ffprobe` canned JSON for:
   - cover art (attached_pic is skipped)

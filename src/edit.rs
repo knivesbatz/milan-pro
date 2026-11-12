@@ -299,7 +299,7 @@ mod tests {
         let mut p = Project::new("t");
         let mut m = MediaItem {
             id: "m".into(), path: "m.mp4".into(), name: "m".into(), media_type: MediaType::Video, duration: 10.0,
-            width: None, height: None, frame_rate: None, sample_rate: Some(48_000), codec: None,
+            sample_rate: Some(48_000), ..Default::default()
         };
         p.media_pool.push(m.clone());
         assert!(drop_media_range(&mut p, 0, true, 0, 5.0, Some((2.0, 3.5))));
