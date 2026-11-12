@@ -8,6 +8,8 @@ const CAP: usize = 100;
 pub struct History {
     undo: Vec<Project>,
     redo: Vec<Project>,
+    /// Changes with every push, undo, redo and clear.
+    generation: u64,
 }
 
 impl History {
@@ -18,17 +20,20 @@ impl History {
             self.undo.remove(0);
         }
         self.redo.clear();
+        self.generation += 1;
     }
 
     pub fn undo(&mut self, project: &mut Project) -> bool {
         let Some(prev) = self.undo.pop() else { return false };
         self.redo.push(restore(project, prev));
+        self.generation += 1;
         true
     }
 
     pub fn redo(&mut self, project: &mut Project) -> bool {
         let Some(next) = self.redo.pop() else { return false };
         self.undo.push(restore(project, next));
+        self.generation += 1;
         true
     }
 
@@ -45,9 +50,15 @@ impl History {
         (self.undo.len(), self.redo.len())
     }
 
+    /// A number that changes whenever the history does: an edit, undo or redo since it was read is any change.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.generation += 1;
     }
 }
 

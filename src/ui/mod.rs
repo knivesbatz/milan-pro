@@ -86,6 +86,41 @@ pub struct Selection {
     pub list_focus: bool,
 }
 
+/// Edit › Editing Tool (not saved). Slip, Slide and Stretch are reserved for their drags (batch 7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EditTool {
+    #[default]
+    Normal,
+    Envelope,
+    Selection,
+    Slip,
+    Slide,
+    Stretch,
+}
+
+impl EditTool {
+    /// Next Tool (D) / Previous Tool (Shift+D): Normal → Envelope → Selection → Normal (Slip, Slide and Stretch count
+    /// as Normal).
+    pub fn cycle(self, forward: bool) -> Self {
+        const RING: [EditTool; 3] = [EditTool::Normal, EditTool::Envelope, EditTool::Selection];
+        let k = RING.iter().position(|t| *t == self).unwrap_or(0);
+        RING[if forward { (k + 1) % 3 } else { (k + 2) % 3 }]
+    }
+}
+
+/// Editing options the timeline follows (from the app's preferences and toggles).
+#[derive(Clone, Copy, Default)]
+pub struct EditOpts {
+    pub snapping: bool,
+    pub quantize: bool,
+    pub auto_crossfade: bool,
+    /// Some(mode) while Auto Ripple is on.
+    pub ripple: Option<crate::edit::RippleMode>,
+    /// A click selects (and a drag moves) the event's whole group unless this is on.
+    pub ignore_grouping: bool,
+    pub tool: EditTool,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub enum DragMode {
     Move,
@@ -106,8 +141,26 @@ pub struct DragState {
     pub grab_offset: f64,
     pub original: Clip,
     pub limit: Option<f64>,
+    /// A trim's group mates with an edge on the trimmed one (`edit::edge_mates`): originals and media limits.
+    pub others: Vec<(Clip, Option<f64>)>,
+    /// The ripple this drag makes (or would make, for Post-Edit Ripple), as of the last frame.
+    pub op: Vec<crate::edit::RippleOp>,
+    /// The tracks (by id) the dragged events are on, and the earliest start among them, at drag start.
+    pub tracks: Vec<String>,
+    pub from: f64,
     pub snap_targets: Vec<f64>,
     /// Project before the drag; pushed to history on release if anything changed.
     pub before: crate::project::Project,
     pub changed: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditTool::*;
+
+    #[test]
+    fn d_cycles_normal_envelope_selection() {
+        assert_eq!([Normal, Envelope, Selection, Slip].map(|t| t.cycle(true)), [Envelope, Selection, Normal, Envelope]);
+        assert_eq!([Normal, Envelope, Selection].map(|t| t.cycle(false)), [Selection, Normal, Envelope]);
+    }
 }

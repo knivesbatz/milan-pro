@@ -1,14 +1,16 @@
 //! Transport and editing toolbar under the timeline (§5.10), the Rate area left of it, and the transport
 //! commands shared with the Video Preview bar and its More menu.
 use eframe::egui::*;
+use crate::edit::RippleMode;
 use crate::history::History;
 use crate::project::*;
 use crate::render::content_end;
+use super::EditTool;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
 use super::menus::{self, add_marker};
 use super::theme::{self, UiLook};
-use super::toolbar::{inert_button, inert_split, separator, split_button, tool_button};
+use super::toolbar::{arrow_menu, inert_button, separator, split_button, tool_button};
 
 /// What the bar asks the app to do beyond editing the project.
 pub enum TransportAction {
@@ -144,8 +146,6 @@ pub struct TransportState<'a> {
     pub history: &'a mut History,
     pub playback: Playback<'a>,
     pub snapping: &'a mut bool,
-    /// Automatic Crossfades: a stored flag only; overlaps do not crossfade yet.
-    pub auto_crossfade: &'a mut bool,
 }
 
 /// Buttons whose feature does not exist yet are drawn disabled rather than left out, to keep VEGAS's layout.
@@ -162,21 +162,31 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
         cmd_button(ui, cmd, s.project, &mut s.playback);
     }
     separator(ui);
-    // Normal is the only edit tool; the radio group keeps its place.
-    split_button(ui, Icon::NormalEdit, "Normal Edit Tool (Ctrl+D)", true, true);
-    inert_button(ui, Icon::EnvelopeEdit, "Envelope Edit Tool (not available yet)", false);
-    inert_button(ui, Icon::SelectionEdit, "Selection Edit Tool (not available yet)", false);
-    inert_button(ui, Icon::ZoomEdit, "Zoom Edit Tool (not available yet)", false);
-    separator(ui);
-
-    // Edits go through the app's commands, so they act on the whole selection like their keys and menu items.
+    // Edits and toggles go through the app's commands, so they act like their keys and menu items.
     let st = menus::state(ui.ctx());
-    let region = s.project.timeline.loop_region.filter(|(a, b)| b > a);
     let button = |ui: &mut Ui, icon, tip: &str, c: Command, active: bool| {
         if tool_button(ui, icon, tip, st.enabled(c), active).clicked() {
             menus::send(ui.ctx(), c);
         }
     };
+    // Edit tools: a radio group. Normal ▾ also lists the tools that act on its drags.
+    let normal = !matches!(st.tool, EditTool::Envelope | EditTool::Selection);
+    let (m, a) = split_button(ui, Icon::NormalEdit, "Normal Edit Tool (Ctrl+D)", true, normal);
+    if m.clicked() {
+        menus::send(ui.ctx(), Command::NormalTool);
+    }
+    arrow_menu(ui, &a, |ui| {
+        menus::cmd(ui, "&Normal", Command::NormalTool);
+        menus::cmd(ui, "Sl&ip", Command::Tool(EditTool::Slip));
+        menus::cmd(ui, "Sli&de", Command::Tool(EditTool::Slide));
+        menus::cmd(ui, "Time &Stretch/Compress", Command::Tool(EditTool::Stretch));
+    });
+    button(ui, Icon::EnvelopeEdit, "Envelope Edit Tool", Command::Tool(EditTool::Envelope), st.tool == EditTool::Envelope);
+    button(ui, Icon::SelectionEdit, "Selection Edit Tool", Command::Tool(EditTool::Selection), st.tool == EditTool::Selection);
+    inert_button(ui, Icon::ZoomEdit, "Zoom Edit Tool (not available yet)", false);
+    separator(ui);
+
+    let region = s.project.timeline.loop_region.filter(|(a, b)| b > a);
     button(ui, Icon::Delete, "Delete (Delete)", Command::Delete, false);
     button(ui, Icon::Trim, "Trim to Time Selection (Ctrl+T)", Command::Trim, false);
     button(ui, Icon::TrimStart, "Trim Start (Alt+[)", Command::TrimStart, false);
@@ -197,13 +207,19 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
     if tool_button(ui, Icon::Snapping, "Enable Snapping (F8)", true, *s.snapping).clicked() {
         *s.snapping = !*s.snapping;
     }
-    if tool_button(ui, Icon::AutoCrossfade, "Automatic Crossfades (Ctrl+Shift+X)", true, *s.auto_crossfade).clicked() {
-        *s.auto_crossfade = !*s.auto_crossfade;
+    button(ui, Icon::AutoCrossfade, "Automatic Crossfades (Ctrl+Shift+X)", Command::AutoCrossfade, st.auto_crossfade);
+    let (m, a) = split_button(ui, Icon::AutoRipple, "Auto Ripple (Ctrl+L)", true, st.auto_ripple);
+    if m.clicked() {
+        menus::send(ui.ctx(), Command::AutoRipple);
     }
-    inert_split(ui, Icon::AutoRipple, "Auto Ripple (Ctrl+L) (not available yet)");
+    arrow_menu(ui, &a, |ui| {
+        menus::cmd(ui, "Affected &Tracks", Command::RippleMode(RippleMode::Affected));
+        menus::cmd(ui, "Affected Tracks, &Bus Tracks, Markers, and Regions", Command::RippleMode(RippleMode::AffectedMarkers));
+        menus::cmd(ui, "&All Tracks, Markers, and Regions", Command::RippleMode(RippleMode::All));
+    });
     // Default on in VEGAS; shown with its active fill although envelopes do not exist yet.
     inert_button(ui, Icon::LockEnvelopes, "Lock Envelopes to Events (not available yet)", true);
-    inert_button(ui, Icon::IgnoreGrouping, "Ignore Event Grouping (Ctrl+Shift+U) (not available yet)", false);
+    button(ui, Icon::IgnoreGrouping, "Ignore Event Grouping (Ctrl+Shift+U)", Command::IgnoreGrouping, st.ignore_group);
     if v23 {
         separator(ui);
         if tool_button(ui, Icon::ColorGrading, "Color Grading (Alt+G)", true, false).clicked() {

@@ -62,14 +62,14 @@ fn media_index(project: &Project, path: &Path) -> Option<usize> {
 }
 
 /// Add the range at the timeline cursor (A) or ending at it (Shift+A); the cursor moves past an added event.
-fn add_to_timeline(project: &mut Project, history: &mut History, idx: usize, range: (f64, f64), up_to_cursor: bool, still_len: f64) {
+fn add_to_timeline(project: &mut Project, history: &mut History, idx: usize, range: (f64, f64), up_to_cursor: bool, still_len: f64, xfade: bool) {
     let m = &project.media_pool[idx];
     let video = m.media_type != MediaType::Audio;
     let len = if m.media_type == MediaType::Image { still_len } else { range.1 - range.0 };
     let cursor = project.timeline.cursor_position;
     let at = if up_to_cursor { (cursor - len).max(0.0) } else { cursor };
     let before = project.clone();
-    if !edit::drop_media(project, &[idx], Some(range), Some((video, 0)), at, still_len).is_empty() {
+    if !edit::drop_media(project, &[idx], Some(range), Some((video, 0)), at, still_len, xfade).is_empty() {
         history.push(before);
         if !up_to_cursor {
             project.timeline.cursor_position = at + len;
@@ -107,7 +107,7 @@ pub fn draw_trimmer_toolbar(ui: &mut Ui, tr: &mut Trimmer) {
     }
 }
 
-pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, waves: &mut Waveforms, thumbs: &mut Thumbs, still_len: f64) {
+pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, waves: &mut Waveforms, thumbs: &mut Thumbs, still_len: f64, xfade: bool) {
     let t = theme::get();
     let rect = ui.max_rect();
     let p = ui.painter().clone();
@@ -225,11 +225,11 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
             tr.mark_in = tr.mark_in.filter(|&i| i < tr.cursor);
         }
         if add {
-            add_to_timeline(project, history, idx, tr.range(&m), shift, still_len);
+            add_to_timeline(project, history, idx, tr.range(&m), shift, still_len, xfade);
         }
     }
 
-    transport(ui, tr, project, history, idx, &m, Rect::from_min_max(pos2(rect.min.x, film.max.y), pos2(rect.max.x, film.max.y + transport_h)), still_len);
+    transport(ui, tr, project, history, idx, &m, Rect::from_min_max(pos2(rect.min.x, film.max.y), pos2(rect.max.x, film.max.y + transport_h)), still_len, xfade);
 
     // In ◤ · Out ◥ · Length.
     let (a, b) = tr.range(&m);
@@ -245,7 +245,7 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
 }
 
 /// VP16 ▶ ❚❚ ■ · Add to Timeline · ≡ (full set behind More).
-fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, idx: usize, m: &MediaItem, row: Rect, still_len: f64) {
+fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, idx: usize, m: &MediaItem, row: Rect, still_len: f64, xfade: bool) {
     let t = theme::get();
     let r = Rect::from_center_size(row.center(), vec2(5.0 * t.m.button_pitch, t.m.button));
     let mut ui = ui.new_child(UiBuilder::new().max_rect(r).layout(Layout::left_to_right(Align::Center)));
@@ -265,7 +265,7 @@ fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut
         (tr.playing, tr.cursor) = (false, tr.mark_in.unwrap_or(0.0));
     }
     if tool_button(&mut ui, Icon::Render, "Add to Timeline from Cursor (A)", true, false).clicked() {
-        add_to_timeline(project, history, idx, tr.range(m), false, still_len);
+        add_to_timeline(project, history, idx, tr.range(m), false, still_len, xfade);
     }
     let more = tool_button(&mut ui, Icon::More, "More", true, false);
     arrow_menu(&ui, &more, |ui| {
@@ -288,10 +288,10 @@ fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut
         }
         ui.separator();
         if item(ui, "Add to Timeline from Cursor (A)", true) {
-            add_to_timeline(project, history, idx, tr.range(m), false, still_len);
+            add_to_timeline(project, history, idx, tr.range(m), false, still_len, xfade);
         }
         if item(ui, "Add to Timeline up to Cursor (Shift+A)", true) {
-            add_to_timeline(project, history, idx, tr.range(m), true, still_len);
+            add_to_timeline(project, history, idx, tr.range(m), true, still_len, xfade);
         }
         item(ui, "Fit to Fill", false);
         item(ui, "Create Subclip", false);

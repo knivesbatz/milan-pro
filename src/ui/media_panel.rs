@@ -214,6 +214,7 @@ pub fn draw_media_browser(
     thumbs: &mut Thumbs,
     actions: &mut Vec<WinAction>,
     still_len: f64,
+    xfade: bool,
 ) {
     let area = ui.max_rect();
     let (left, right) = widgets::pane_split(ui, area, &mut view.tree_w, "media_tree");
@@ -258,7 +259,7 @@ pub fn draw_media_browser(
         Some((i, ItemCmd::Add(video))) => {
             // Same lock/type checks, linked audio and across-time layout as dropping on the timeline.
             let (before, at) = (project.clone(), project.timeline.cursor_position);
-            let ids = edit::drop_media(project, &targets(view, &items, i), None, Some((video, 0)), at, still_len);
+            let ids = edit::drop_media(project, &targets(view, &items, i), None, Some((video, 0)), at, still_len, xfade);
             if !ids.is_empty() {
                 history.push(before);
             }

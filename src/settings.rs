@@ -30,6 +30,13 @@ pub struct Prefs {
     pub quantize: bool,
     /// Preferences › Editing: "New still image length (seconds)" for stills added to the timeline.
     pub still_len: f64,
+    /// Options › Automatic Crossfades: overlapping events on a track crossfade.
+    pub auto_crossfade: bool,
+    /// Options › Auto Ripple and its mode.
+    pub auto_ripple: bool,
+    pub ripple_mode: crate::edit::RippleMode,
+    /// Options › Ignore Event Grouping.
+    pub ignore_grouping: bool,
 }
 
 impl Default for Prefs {
@@ -45,6 +52,10 @@ impl Default for Prefs {
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
+            auto_crossfade: true,
+            auto_ripple: false,
+            ripple_mode: crate::edit::RippleMode::Affected,
+            ignore_grouping: false,
         }
     }
 }
@@ -256,6 +267,9 @@ mod tests {
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
+        assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
+        let r = Prefs { auto_ripple: true, ripple_mode: crate::edit::RippleMode::All, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
         let mut r = Prefs { recent_max: 2, ..Default::default() };
         for p in ["a", "b", "a", "c"] {
             r.add_recent(std::path::Path::new(p));

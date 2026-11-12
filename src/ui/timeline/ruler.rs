@@ -334,8 +334,10 @@ pub(super) fn paint_selection(p: &Painter, g: &Geo, region: Option<(f64, f64)>) 
 }
 
 /// Cursor line through the ruler and lanes, and the head in the ruler (§5.9.6).
-pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64) {
+/// `ripple`: Auto Ripple is on, and the cursor line turns red (as the selected events' borders do).
+pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64, ripple: bool) {
     let t = theme::get();
+    let line = if ripple { t.event_selected_border_ripple } else { t.playhead_line };
     let (_, _, ruler) = band_rows(&t, g.band);
     let x = g.to_x(time).floor();
     if x < g.lanes.min.x - 5.0 || x > g.lanes.max.x + 5.0 {
@@ -346,7 +348,7 @@ pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64) {
     let rb = ruler.max.y;
     if t.look() == UiLook::Vegas16 {
         // Black line plus a 1 px shadow to its right; white 9×12 flag with two dark ticks, tip on the ruler bottom.
-        col(x, t.playhead_line);
+        col(x, line);
         col(x + 1.0, t.playhead_outline);
         let x0 = x - 4.0;
         p.rect_filled(Rect::from_min_max(pos2(x0, rb - 12.0), pos2(x0 + 9.0, rb - 4.0)), 0.0, t.playhead_head);
@@ -360,7 +362,7 @@ pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64) {
             col(x - 1.0, t.playhead_outline);
         }
         col(x + 1.0, t.playhead_outline);
-        col(x, t.playhead_line);
+        col(x, line);
         let x0 = x - 4.0;
         let pts = vec![pos2(x0, rb - 15.0), pos2(x0 + 9.0, rb - 15.0), pos2(x0 + 9.0, rb - 5.0), pos2(x0 + 4.5, rb), pos2(x0, rb - 5.0)];
         p.add(Shape::convex_polygon(pts, t.playhead_head, Stroke::new(1.0_f32, t.playhead_outline)));

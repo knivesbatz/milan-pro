@@ -31,8 +31,12 @@ pub struct MeridianApp {
     /// Loop Playback (Q): playback repeats the time selection.
     pub looping: bool,
     pub snapping: bool,
-    /// Automatic Crossfades toggle (stored only; overlaps do not crossfade yet).
-    auto_crossfade: bool,
+    /// Edit › Editing Tool.
+    tool: ui::EditTool,
+    /// The last edit that changed lengths or moved events, for Post-Edit Ripple (F, Ctrl+F, Ctrl+Shift+F): the
+    /// history generation right after it, and its ripple (empty when Auto Ripple already rippled it). Any later
+    /// change to the history (any edit, wherever it is made, or Undo, Redo, New, Open) makes it stale.
+    last_edit: (u64, Vec<crate::edit::RippleOp>),
     pub drag_state: Option<DragState>,
     pub timeline_scroll_y: f32,
     pub preview: Preview,
@@ -152,7 +156,8 @@ impl MeridianApp {
             playing: false,
             looping: false,
             snapping: true,
-            auto_crossfade: true,
+            tool: ui::EditTool::Normal,
+            last_edit: Default::default(),
             drag_state: None,
             timeline_scroll_y: 0.0,
             preview: Preview::timeline(&cc.egui_ctx),
@@ -356,6 +361,7 @@ impl eframe::App for MeridianApp {
                         &mut self.thumbs,
                         &mut actions,
                         self.prefs.still_len,
+                        self.prefs.auto_crossfade,
                     );
                 }
                 Panel::Explorer => {
@@ -379,7 +385,7 @@ impl eframe::App for MeridianApp {
                 }
                 Panel::Trimmer => {
                     ui::draw_trimmer_toolbar(bar, &mut self.trimmer);
-                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs, self.prefs.still_len);
+                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs, self.prefs.still_len, self.prefs.auto_crossfade);
                 }
                 Panel::Properties => {
                     egui::Frame::NONE.inner_margin(6).show(body, |ui| {
@@ -422,21 +428,25 @@ impl eframe::App for MeridianApp {
 
             let mut tl = ui.new_child(egui::UiBuilder::new().max_rect(a.timeline));
             tl.set_clip_rect(a.timeline);
-            ui::draw_timeline(
+            let opts = self.edit_opts();
+            let dragged = ui::draw_timeline(
                 &mut tl,
                 &mut self.project,
                 &mut self.sel,
                 &mut self.drag_state,
                 &mut self.timeline_scroll_y,
                 &mut self.history,
-                self.snapping,
-                self.prefs.quantize,
+                opts,
                 &mut self.waves,
                 &mut self.thumbs,
                 self.playing,
                 &mut self.dock.track_list_w,
                 &mut drag,
             );
+            if let Some(op) = dragged {
+                // Auto Ripple already rippled it; otherwise Post-Edit Ripple can.
+                self.last_edit = (self.history.generation(), if opts.ripple.is_some() { Vec::new() } else { op });
+            }
             // The Rate area spans the horizontal scrollbar row and the transport row (§5.9.3).
             let rate = a.rate.with_min_y(a.timeline.max.y - t.m.hscroll_h);
             ui::draw_rate(ui, rate, self.playing, &mut self.project);
@@ -448,7 +458,6 @@ impl eframe::App for MeridianApp {
                     history: &mut self.history,
                     playback: Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start },
                     snapping: &mut self.snapping,
-                    auto_crossfade: &mut self.auto_crossfade,
                 },
             );
             // Last, so hovered-command hints from every bar this frame are shown.
@@ -491,7 +500,7 @@ impl eframe::App for MeridianApp {
         }
         // Not during an event drag: it restores the tracks from its start every frame and would wipe the drop out.
         while self.drag_state.is_none() {
-            let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len) else { break };
+            let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len, self.prefs.auto_crossfade) else { break };
             if let Some(before) = placed.before {
                 self.history.push(before);
             }

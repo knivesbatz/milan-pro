@@ -1,5 +1,6 @@
 //! Timeline editing math: trim, snap, split, delete, move, paste, tracks, media drop.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
 use crate::project::*;
 
 /// Source length a clip may not exceed; None = unlimited (images, unknown or unprobed media).
@@ -159,13 +160,20 @@ pub fn delete_clips(project: &mut Project, ids: &[String]) -> bool {
 /// Split events `ids` at `at`; an empty `ids` splits every (unlocked) event under `at`, as VEGAS does with nothing
 /// selected. The first half keeps the id.
 pub fn split_ids(project: &mut Project, ids: &[String], at: f64) -> bool {
+    split_where(project, at, |_, c| ids.is_empty() || ids.contains(&c.id))
+}
+
+/// Split the unlocked events `pick` chooses at `at`. The right halves of a group form a new group of their own.
+fn split_where(project: &mut Project, at: f64, pick: impl Fn(&Track, &Clip) -> bool) -> bool {
+    let mut groups: HashMap<String, String> = HashMap::new();
     let mut done = false;
     for t in tracks_mut(&mut project.timeline).filter(|t| !t.locked) {
         let mut j = 0;
         while j < t.clips.len() {
             let c = &t.clips[j];
-            if !c.locked && (ids.is_empty() || ids.contains(&c.id)) {
-                if let Some((a, b)) = split_clip(c, at) {
+            if !c.locked && pick(t, c) {
+                if let Some((a, mut b)) = split_clip(c, at) {
+                    b.group = b.group.map(|g| groups.entry(g).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone());
                     t.clips[j] = a;
                     t.clips.insert(j + 1, b);
                     j += 1;
@@ -175,7 +183,341 @@ pub fn split_ids(project: &mut Project, ids: &[String], at: f64) -> bool {
             j += 1;
         }
     }
+    if done {
+        dissolve_lone_groups(&mut project.timeline);
+    }
     changed(project, done)
+}
+
+// ---- Grouping ----
+
+/// A group with one event left in it is no group.
+pub fn dissolve_lone_groups(tl: &mut Timeline) {
+    let mut count: HashMap<String, usize> = HashMap::new();
+    for g in tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).filter_map(|c| c.group.clone()) {
+        *count.entry(g).or_default() += 1;
+    }
+    for c in tracks_mut(tl).flat_map(|t| &mut t.clips) {
+        if c.group.as_ref().is_some_and(|g| count[g] < 2) {
+            c.group = None;
+        }
+    }
+}
+
+fn all_clips(tl: &Timeline) -> impl Iterator<Item = &Clip> {
+    tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips)
+}
+
+/// `ids` with every event grouped with them: the group mates first, then `ids` in their order (the focus stays last).
+pub fn expand_groups(project: &Project, ids: &[String]) -> Vec<String> {
+    let tl = &project.timeline;
+    let groups: Vec<&String> = all_clips(tl).filter(|c| ids.contains(&c.id)).filter_map(|c| c.group.as_ref()).collect();
+    let mut out: Vec<String> = all_clips(tl).filter(|c| !ids.contains(&c.id) && c.group.as_ref().is_some_and(|g| groups.contains(&g))).map(|c| c.id.clone()).collect();
+    out.extend(ids.iter().cloned());
+    out
+}
+
+/// Edit › Group › Create New: events `ids` (two or more) become one new group, leaving their old groups.
+pub fn group(project: &mut Project, ids: &[String]) -> bool {
+    if project.find_clips(ids).len() < 2 {
+        return false;
+    }
+    let g = uuid::Uuid::new_v4().to_string();
+    for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips).filter(|c| ids.contains(&c.id)) {
+        c.group = Some(g.clone());
+    }
+    dissolve_lone_groups(&mut project.timeline);
+    changed(project, true)
+}
+
+/// Group › Remove From: events `ids` leave their groups.
+pub fn ungroup(project: &mut Project, ids: &[String]) -> bool {
+    let mut done = false;
+    for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips).filter(|c| ids.contains(&c.id)) {
+        done |= c.group.take().is_some();
+    }
+    dissolve_lone_groups(&mut project.timeline);
+    changed(project, done)
+}
+
+/// Group › Clear: the groups of events `ids` are dissolved.
+pub fn clear_groups(project: &mut Project, ids: &[String]) -> bool {
+    let all = expand_groups(project, ids);
+    ungroup(project, &all)
+}
+
+/// Group mates of event `id` whose left (or right) edge is within `tol` of its own: they trim along with it.
+pub fn edge_mates(project: &Project, id: &str, left: bool, tol: f64) -> Vec<String> {
+    let Some(c) = project.clip(id) else { return Vec::new() };
+    let edge = |c: &Clip| if left { c.position } else { c.position + c.duration };
+    let (g, e) = (c.group.as_ref(), edge(c));
+    all_clips(&project.timeline)
+        .filter(|m| m.id != id && g.is_some() && m.group.as_ref() == g && (edge(m) - e).abs() <= tol + 1e-9)
+        .map(|m| m.id.clone())
+        .collect()
+}
+
+// ---- Automatic crossfades ----
+
+/// Options › Automatic Crossfades, after an edit of events `ids` (`before`: the project before it). On each track,
+/// two neighbours that overlap get a fade-out and a fade-in as long as the overlap (unless one covers the other).
+/// A crossfade the edit pulls apart loses its fades; fades set by hand, not equal to an old overlap, are kept.
+pub fn auto_crossfade(project: &mut Project, before: &Project, ids: &[String]) -> bool {
+    const EPS: f64 = 1e-9;
+    let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let touched = |c: &Clip| ids.contains(c.id.as_str());
+    let sorted = |t: &Track| {
+        let mut k: Vec<usize> = (0..t.clips.len()).collect();
+        k.sort_by(|&a, &b| t.clips[a].position.total_cmp(&t.clips[b].position));
+        k
+    };
+    let overlap = |a: &Clip, b: &Clip| a.position + a.duration - b.position;
+    let mut done = false;
+    let btl = &before.timeline;
+    for t in btl.video_tracks.iter().chain(&btl.audio_tracks) {
+        for w in sorted(t).windows(2) {
+            let (a, b) = (&t.clips[w[0]], &t.clips[w[1]]);
+            let o = overlap(a, b);
+            if !(touched(a) || touched(b)) || o <= EPS || (a.fade_out - o).abs() > EPS || (b.fade_in - o).abs() > EPS {
+                continue;
+            }
+            let (ra, rb) = (project.find_clip(&a.id), project.find_clip(&b.id));
+            let still = ra.as_ref().zip(rb.as_ref()).is_some_and(|(ra, rb)| {
+                let (na, nb) = (project.clip(&a.id).unwrap(), project.clip(&b.id).unwrap());
+                (ra.is_video, ra.track_idx) == (rb.is_video, rb.track_idx) && na.position < nb.position + nb.duration && nb.position < na.position + na.duration
+            });
+            if still {
+                continue;
+            }
+            let tl = &mut project.timeline;
+            if let Some(r) = ra {
+                tl.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx].fade_out = 0.0;
+            }
+            if let Some(r) = rb {
+                tl.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx].fade_in = 0.0;
+            }
+            done = true;
+        }
+    }
+    for t in tracks_mut(&mut project.timeline).filter(|t| t.clips.iter().any(touched)) {
+        for w in sorted(t).windows(2) {
+            let (a, b) = (&t.clips[w[0]], &t.clips[w[1]]);
+            let o = overlap(a, b);
+            let covered = b.position + b.duration <= a.position + a.duration + EPS || o >= a.duration - EPS;
+            if !(touched(a) || touched(b)) || o <= EPS || covered || (a.fade_out == o && b.fade_in == o) {
+                continue;
+            }
+            for (k, out) in [(w[0], true), (w[1], false)] {
+                let c = &mut t.clips[k];
+                *(if out { &mut c.fade_out } else { &mut c.fade_in }) = o;
+                c.clamp_fades();
+            }
+            done = true;
+        }
+    }
+    changed(project, done)
+}
+
+/// `auto_crossfade` for the events a ripple moved (`before`: the project before the ripple): overlaps it made get
+/// crossfades, and crossfades it pulled apart lose their fades.
+pub fn crossfade_moved(project: &mut Project, before: &Project) -> bool {
+    let was: HashMap<&str, f64> = all_clips(&before.timeline).map(|c| (c.id.as_str(), c.position)).collect();
+    let ids: Vec<String> = all_clips(&project.timeline).filter(|c| was.get(c.id.as_str()).is_some_and(|p| *p != c.position)).map(|c| c.id.clone()).collect();
+    !ids.is_empty() && auto_crossfade(project, before, &ids)
+}
+
+/// Fade Type of the crossfade between `a` (outgoing, curve `out`) and `b` (incoming, curve `inc`).
+pub fn set_crossfade_curve(project: &mut Project, a: &str, b: &str, out: Curve, inc: Curve) -> bool {
+    let mut done = false;
+    for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips) {
+        let (f, curve) = if c.id == a { (&mut c.fade_out_curve, out) } else if c.id == b { (&mut c.fade_in_curve, inc) } else { continue };
+        done |= *f != curve;
+        *f = curve;
+    }
+    changed(project, done)
+}
+
+// ---- Ripple ----
+
+/// What a ripple moves besides the events on the affected tracks (Options › Ripple). Milan Pro has no bus tracks,
+/// so VEGAS's "Affected Tracks, Bus Tracks, Markers, and Regions" is `AffectedMarkers`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RippleMode {
+    #[default]
+    Affected,
+    AffectedMarkers,
+    All,
+}
+
+/// Material at or after `from` on `tracks` (track ids) moves by `delta`; events in `exclude` stay put.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RippleOp {
+    pub from: f64,
+    pub delta: f64,
+    pub tracks: Vec<String>,
+    pub exclude: Vec<String>,
+}
+
+/// Ripple: unlocked events at or after `from` move by `delta` (clamped so none goes before 0), with their tracks'
+/// envelope keys (keys in a gap being closed are deleted). Modes other than Affected also move markers, regions and
+/// the time selection (one that straddles `from` stretches); All moves every track.
+pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
+    const EPS: f64 = 1e-9;
+    let all = mode == RippleMode::All;
+    let exclude: HashSet<&str> = op.exclude.iter().map(String::as_str).collect();
+    let hit = |t: &Track| !t.locked && (all || op.tracks.contains(&t.id));
+    let moves = |c: &Clip| !c.locked && c.position >= op.from - EPS && !exclude.contains(c.id.as_str());
+    let tl = &mut project.timeline;
+    let min = tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| hit(t)).flat_map(|t| &t.clips).filter(|c| moves(c)).map(|c| c.position).fold(f64::INFINITY, f64::min);
+    let d = op.delta.max(-if min.is_finite() { min } else { op.from.max(0.0) });
+    if d == 0.0 {
+        return false;
+    }
+    let (from, at_or_after) = (op.from, |t: f64| t >= op.from - EPS);
+    let mut done = false;
+    for t in tracks_mut(tl).filter(|t| hit(t)) {
+        for c in t.clips.iter_mut().filter(|c| moves(c)) {
+            c.position += d;
+            done = true;
+        }
+        t.clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+        for e in &mut t.envelopes {
+            let keys = &mut e.points.keys;
+            if d < 0.0 {
+                keys.retain(|k| k.t < from + d - EPS || at_or_after(k.t));
+            }
+            for k in keys.iter_mut().filter(|k| at_or_after(k.t)) {
+                k.t = (k.t + d).max(0.0);
+                done = true;
+            }
+        }
+    }
+    if mode != RippleMode::Affected {
+        for m in tl.markers.iter_mut().filter(|m| at_or_after(m.position)) {
+            m.position = (m.position + d).max(0.0);
+            done = true;
+        }
+        let shift = |(a, b): (f64, f64)| -> (f64, f64) {
+            if at_or_after(a) {
+                ((a + d).max(0.0), (b + d).max(0.0))
+            } else if at_or_after(b) {
+                (a, (b + d).max(a))
+            } else {
+                (a, b)
+            }
+        };
+        for r in &mut tl.regions {
+            let new = shift((r.start, r.end));
+            done |= new != (r.start, r.end);
+            (r.start, r.end) = new;
+        }
+        let new = tl.loop_region.map(shift);
+        done |= new != tl.loop_region;
+        tl.loop_region = new;
+    }
+    changed(project, done)
+}
+
+/// `ripple` each op in turn (they come right to left from `gaps`).
+pub fn ripple_all(project: &mut Project, ops: &[RippleOp], mode: RippleMode) -> bool {
+    ops.iter().fold(false, |done, op| ripple(project, op, mode) | done)
+}
+
+/// The gaps deleting events `ids` leaves (locked ones stay), as ripple ops closing them, right to left. Overlapping
+/// spans on one track are one gap, and only their empty time closes: a kept event covering part of a span (the other
+/// half of a crossfade) keeps it. A gap at the same place on several tracks (a video and its audio) is one op.
+pub fn gaps(project: &Project, ids: &[String]) -> Vec<RippleOp> {
+    const EPS: f64 = 1e-9;
+    let tl = &project.timeline;
+    let gone: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let mut spans: Vec<(f64, f64, String)> = Vec::new();
+    for t in tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| !t.locked) {
+        let (del, kept): (Vec<&Clip>, Vec<&Clip>) = t.clips.iter().partition(|c| !c.locked && gone.contains(c.id.as_str()));
+        let mut s: Vec<(f64, f64)> = del.iter().map(|c| (c.position, c.position + c.duration)).collect();
+        s.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in s {
+            match merged.last_mut() {
+                Some(m) if a <= m.1 => m.1 = m.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        for (a, b) in merged {
+            let mut s = a;
+            while s < b - EPS {
+                // Past a kept event that covers `s`, else up to the next one that starts inside the span.
+                if let Some(e) = kept.iter().filter(|k| k.position <= s + EPS && k.position + k.duration > s + EPS).map(|k| k.position + k.duration).reduce(f64::max) {
+                    s = e;
+                    continue;
+                }
+                let e = kept.iter().map(|k| k.position).filter(|&k| k > s + EPS && k < b).fold(b, f64::min);
+                spans.push((s, e, t.id.clone()));
+                s = e;
+            }
+        }
+    }
+    let mut ops: Vec<RippleOp> = Vec::new();
+    for (a, b, track) in spans {
+        match ops.iter_mut().find(|o| o.from == a && o.delta == a - b) {
+            Some(o) => o.tracks.push(track),
+            None => ops.push(RippleOp { from: a, delta: a - b, tracks: vec![track], exclude: Vec::new() }),
+        }
+    }
+    ops.sort_by(|x, y| y.from.total_cmp(&x.from));
+    ops
+}
+
+/// Delete the time range `a..b` on tracks `tracks` (every track in All mode): events are split at both ends, the
+/// pieces inside removed, and everything after closes up by `b - a`.
+pub fn delete_range(project: &mut Project, a: f64, b: f64, tracks: &[String], mode: RippleMode) -> bool {
+    if b <= a {
+        return false;
+    }
+    let on = |t: &Track| mode == RippleMode::All || tracks.contains(&t.id);
+    let mut done = split_where(project, a, |t, _| on(t)) | split_where(project, b, |t, _| on(t));
+    for t in tracks_mut(&mut project.timeline).filter(|t| !t.locked && on(t)) {
+        let n = t.clips.len();
+        t.clips.retain(|c| c.locked || c.position < a - 1e-9 || c.position + c.duration > b + 1e-9);
+        done |= t.clips.len() != n;
+    }
+    dissolve_lone_groups(&mut project.timeline);
+    let ids: Vec<String> = project.timeline.video_tracks.iter().chain(&project.timeline.audio_tracks).filter(|t| on(t)).map(|t| t.id.clone()).collect();
+    done |= ripple(project, &RippleOp { from: b, delta: a - b, tracks: ids, exclude: Vec::new() }, mode);
+    changed(project, done)
+}
+
+/// The ripple a paste of `clips` at `at` makes room with (Paste Insert, or Paste with Auto Ripple): its tracks as
+/// `paste_clips` picks them, from `at` by the pasted length.
+pub fn paste_ripple(project: &Project, clips: &[(bool, usize, Clip)], at: f64, focus: Option<(bool, usize)>) -> RippleOp {
+    let base = |v: bool| focus.filter(|f| f.0 == v).map_or(0, |f| f.1);
+    let mut tracks = Vec::new();
+    for (v, o, _) in clips {
+        if let Some(t) = project.timeline.tracks(*v).get(base(*v) + o).filter(|t| !tracks.contains(&t.id)) {
+            tracks.push(t.id.clone());
+        }
+    }
+    let len = clips.iter().map(|(_, _, c)| c.position + c.duration).fold(0.0, f64::max);
+    RippleOp { from: at, delta: len, tracks, exclude: Vec::new() }
+}
+
+/// The ripple of trimming event `o` to `c` (with its trimmed group mates, all in `ids`) on `tracks`, `before`
+/// being the project before the trim. What starts after `o`'s start (also a crossfaded neighbour) follows the right
+/// edge's change; a changed left edge keeps the event's start (its content shifts) and moves what follows along.
+pub fn trim_ripple(before: &Project, o: &Clip, c: &Clip, ids: &[String], tracks: &[String]) -> Vec<RippleOp> {
+    const EPS: f64 = 1e-9;
+    let mut ops = Vec::new();
+    let end = (c.position + c.duration) - (o.position + o.duration);
+    if end.abs() > EPS {
+        ops.push(RippleOp { from: o.position, delta: end, tracks: tracks.to_vec(), exclude: ids.to_vec() });
+    }
+    let start = o.position - c.position;
+    if start.abs() > EPS {
+        let from = c.position.min(o.position);
+        // An extended left edge leaves alone what starts between its new and its old start.
+        let between = all_clips(&before.timeline).filter(|k| k.position >= from - EPS && k.position < o.position - EPS && !ids.contains(&k.id));
+        ops.push(RippleOp { from, delta: start, tracks: tracks.to_vec(), exclude: between.map(|k| k.id.clone()).collect() });
+    }
+    ops
 }
 
 /// Move events `ids` by `dt` seconds and `dtrack` tracks (the same index offset within each kind). The earliest
@@ -268,7 +610,9 @@ pub fn paste_clips(project: &mut Project, clips: &[(bool, usize, Clip)], at: f64
         c.locked = false;
         c.group = c.group.map(|g| groups.entry(g).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone());
         ids.push(c.id.clone());
-        tl.tracks_mut(*v)[i].clips.push(c);
+        let clips = &mut tl.tracks_mut(*v)[i].clips;
+        clips.push(c);
+        clips.sort_by(|a, b| a.position.total_cmp(&b.position));
     }
     let done = !ids.is_empty();
     changed(project, done);
@@ -401,11 +745,13 @@ pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], targ
     DropPlan { events, refused }
 }
 
-/// Add the events of a `plan_drop`, creating the tracks it needs. Returns the new event ids (none when refused).
-pub fn apply_drop(project: &mut Project, plan: DropPlan) -> Vec<String> {
+/// Add the events of a `plan_drop`, creating the tracks it needs, with `auto_crossfade` when `xfade`. Returns the
+/// new event ids (none when refused).
+pub fn apply_drop(project: &mut Project, plan: DropPlan, xfade: bool) -> Vec<String> {
     if plan.refused {
         return Vec::new();
     }
+    let before = xfade.then(|| project.clone());
     let tl = &mut project.timeline;
     let mut ids = Vec::new();
     for (v, i, c) in plan.events {
@@ -417,16 +763,19 @@ pub fn apply_drop(project: &mut Project, plan: DropPlan) -> Vec<String> {
         clips.push(c);
         clips.sort_by(|a, b| a.position.total_cmp(&b.position));
     }
+    if let Some(b) = before {
+        auto_crossfade(project, &b, &ids);
+    }
     let done = !ids.is_empty();
     changed(project, done);
     ids
 }
 
 /// Drop pool media `idxs` (each with source range `range`) on `target` at `time`: `plan_drop` + `apply_drop`.
-pub fn drop_media(project: &mut Project, idxs: &[usize], range: Option<(f64, f64)>, target: Option<(bool, usize)>, time: f64, still_len: f64) -> Vec<String> {
+pub fn drop_media(project: &mut Project, idxs: &[usize], range: Option<(f64, f64)>, target: Option<(bool, usize)>, time: f64, still_len: f64, xfade: bool) -> Vec<String> {
     let items: Vec<_> = idxs.iter().filter_map(|&i| project.media_pool.get(i)).map(|m| (m, range)).collect();
     let plan = plan_drop(&project.timeline, &items, target, time, still_len);
-    apply_drop(project, plan)
+    apply_drop(project, plan, xfade)
 }
 
 #[cfg(test)]
@@ -645,7 +994,7 @@ mod tests {
     fn drop_creates_a_video_track_when_there_is_none() {
         let mut p = media_project();
         p.timeline.video_tracks.clear();
-        assert_eq!(drop_media(&mut p, &[1], None, Some((true, 0)), 1.0, 5.0).len(), 1);
+        assert_eq!(drop_media(&mut p, &[1], None, Some((true, 0)), 1.0, 5.0, false).len(), 1);
         assert_eq!(laid_out(&p, true), [(0, 1.0, 5.0, "i".into())]);
         assert!(p.modified);
     }
@@ -656,20 +1005,20 @@ mod tests {
         p.timeline.add_video_track();
         p.timeline.add_audio_track();
         // Audio on Video 2 goes to Audio 1; a still on Audio 2 goes to Video 1.
-        drop_media(&mut p, &[2], None, Some((true, 1)), 0.0, 5.0);
-        drop_media(&mut p, &[1], None, Some((false, 1)), 0.0, 5.0);
+        drop_media(&mut p, &[2], None, Some((true, 1)), 0.0, 5.0, false);
+        drop_media(&mut p, &[1], None, Some((false, 1)), 0.0, 5.0, false);
         assert_eq!(laid_out(&p, false), [(0, 0.0, 4.0, "a".into())]);
         assert_eq!(laid_out(&p, true), [(0, 0.0, 5.0, "i".into())]);
         // No audio track at all: one is created.
         p.timeline.audio_tracks.clear();
-        drop_media(&mut p, &[2], None, Some((true, 0)), 9.0, 5.0);
+        drop_media(&mut p, &[2], None, Some((true, 0)), 9.0, 5.0, false);
         assert_eq!(laid_out(&p, false), [(0, 9.0, 4.0, "a".into())]);
     }
 
     #[test]
     fn drop_below_the_last_track_creates_tracks() {
         let mut p = media_project();
-        let ids = drop_media(&mut p, &[0], None, None, 2.0, 5.0);
+        let ids = drop_media(&mut p, &[0], None, None, 2.0, 5.0, false);
         let tl = &p.timeline;
         assert_eq!((tl.video_tracks.len(), tl.audio_tracks.len()), (2, 2));
         assert_eq!(laid_out(&p, true), [(1, 2.0, 10.0, "v".into())]);
@@ -681,7 +1030,7 @@ mod tests {
         let mut p = media_project();
         p.timeline.video_tracks.clear();
         p.timeline.audio_tracks.clear();
-        drop_media(&mut p, &[2], None, None, 0.0, 5.0);
+        drop_media(&mut p, &[2], None, None, 0.0, 5.0, false);
         assert_eq!((p.timeline.video_tracks.len(), p.timeline.audio_tracks.len()), (0, 1));
     }
 
@@ -689,21 +1038,21 @@ mod tests {
     fn paired_audio_takes_a_new_track_when_the_first_is_occupied() {
         let mut p = media_project();
         p.timeline.audio_tracks[0].clips.push(clip(8.0, 4.0, 0.0));
-        drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0); // 0..10 overlaps 8..12
+        drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0, false); // 0..10 overlaps 8..12
         assert_eq!(laid_out(&p, false), [(0, 8.0, 4.0, String::new()), (1, 0.0, 10.0, "v".into())]);
         // Free over the event's range: the first audio track.
-        drop_media(&mut p, &[0], Some((1.0, 3.0)), Some((true, 0)), 20.0, 5.0);
+        drop_media(&mut p, &[0], Some((1.0, 3.0)), Some((true, 0)), 20.0, 5.0, false);
         assert_eq!(laid_out(&p, false)[1], (0, 20.0, 2.0, "v".into()));
         // A locked first audio track is not free either.
         p.timeline.audio_tracks[0].locked = true;
-        drop_media(&mut p, &[0], None, Some((true, 0)), 40.0, 5.0);
+        drop_media(&mut p, &[0], None, Some((true, 0)), 40.0, 5.0, false);
         assert_eq!(p.timeline.audio_tracks.len(), 3);
     }
 
     #[test]
     fn several_items_go_across_time_and_stills_use_the_still_length() {
         let mut p = media_project();
-        let ids = drop_media(&mut p, &[0, 1, 2], None, Some((true, 0)), 1.0, 3.0);
+        let ids = drop_media(&mut p, &[0, 1, 2], None, Some((true, 0)), 1.0, 3.0, false);
         assert_eq!(ids.len(), 4);
         assert_eq!(laid_out(&p, true), [(0, 1.0, 10.0, "v".into()), (0, 11.0, 3.0, "i".into())]);
         assert_eq!(laid_out(&p, false), [(0, 1.0, 10.0, "v".into()), (0, 14.0, 4.0, "a".into())]);
@@ -717,12 +1066,12 @@ mod tests {
         p.timeline.video_tracks[0].locked = true;
         let plan = plan_drop(&p.timeline, &[(&p.media_pool[0], None)], Some((true, 0)), 0.0, 5.0);
         assert!(plan.refused && plan.events.len() == 2); // still laid out, for the red ghost
-        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0).is_empty());
+        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0, false).is_empty());
         // Pointing at a locked row refuses even when the media would go elsewhere.
-        assert!(drop_media(&mut p, &[2], None, Some((true, 0)), 0.0, 5.0).is_empty());
+        assert!(drop_media(&mut p, &[2], None, Some((true, 0)), 0.0, 5.0, false).is_empty());
         assert!(laid_out(&p, true).is_empty() && laid_out(&p, false).is_empty() && !p.modified);
         // Below the last track, the new tracks take it.
-        assert_eq!(drop_media(&mut p, &[1], None, None, 0.0, 5.0).len(), 1);
+        assert_eq!(drop_media(&mut p, &[1], None, None, 0.0, 5.0, false).len(), 1);
     }
 
     #[test]
@@ -781,12 +1130,290 @@ mod tests {
             sample_rate: Some(48_000), ..Default::default()
         };
         p.media_pool.push(m.clone());
-        assert_eq!(drop_media(&mut p, &[0], Some((2.0, 3.5)), Some((true, 0)), 5.0, 5.0).len(), 2);
+        assert_eq!(drop_media(&mut p, &[0], Some((2.0, 3.5)), Some((true, 0)), 5.0, 5.0, false).len(), 2);
         let v = &p.timeline.video_tracks[0].clips[0];
         assert_eq!((v.position, v.in_point, v.out_point, v.duration), (5.0, 2.0, 3.5, 1.5));
         assert_eq!(p.timeline.audio_tracks[0].clips[0].in_point, 2.0); // linked audio gets the same range
         m.media_type = MediaType::Unknown;
         p.media_pool[0] = m;
-        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0).is_empty()); // unreadable media adds nothing
+        assert!(drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0, false).is_empty()); // unreadable media adds nothing
+    }
+
+    /// The video with audio (10 s) dropped at 0: (project, video id, audio id).
+    fn av_pair() -> (Project, String, String) {
+        let mut p = media_project();
+        let ids = drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0, false);
+        (p, ids[0].clone(), ids[1].clone())
+    }
+
+    fn group_of(p: &Project, id: &str) -> Option<String> {
+        p.clip(id).unwrap().group.clone()
+    }
+
+    #[test]
+    fn groups_expand_split_and_dissolve() {
+        let (mut p, v, a) = av_pair();
+        assert!(group_of(&p, &v).is_some() && group_of(&p, &v) == group_of(&p, &a));
+        // The mates come first, so the focus stays last.
+        assert_eq!(expand_groups(&p, &[a.clone()]), [v.clone(), a.clone()]);
+        // A split gives two groups: the left halves and the right halves.
+        assert!(split_ids(&mut p, &[v.clone(), a.clone()], 4.0));
+        let right: Vec<String> = [true, false].map(|vid| p.timeline.tracks(vid)[0].clips[1].id.clone()).to_vec();
+        assert!(group_of(&p, &right[0]).is_some() && group_of(&p, &right[0]) == group_of(&p, &right[1]));
+        assert_ne!(group_of(&p, &right[0]), group_of(&p, &v));
+        // Splitting only one event of a pair leaves its right half in no group.
+        assert!(split_ids(&mut p, &[v.clone()], 2.0));
+        assert_eq!(group_of(&p, &p.timeline.video_tracks[0].clips[1].id), None);
+        // Ungrouping one of a pair leaves no one-member group.
+        assert!(ungroup(&mut p, &[v.clone()]));
+        assert!(group_of(&p, &v).is_none() && group_of(&p, &a).is_none());
+        assert!(group(&mut p, &[v.clone(), a.clone()]) && group_of(&p, &v).is_some());
+        assert!(!group(&mut p, &[v.clone()]), "one event is no group");
+        assert!(clear_groups(&mut p, &[a.clone()]) && group_of(&p, &v).is_none());
+        // Deleting the expanded selection removes the whole pair.
+        let (mut p, _, a) = av_pair();
+        let all = expand_groups(&p, &[a]);
+        assert!(delete_clips(&mut p, &all));
+        assert!(p.timeline.video_tracks[0].clips.is_empty() && p.timeline.audio_tracks[0].clips.is_empty());
+    }
+
+    #[test]
+    fn edge_mates_honour_the_tolerance() {
+        let (mut p, v, a) = av_pair();
+        assert_eq!(edge_mates(&p, &v, false, F), [a.clone()]);
+        p.timeline.audio_tracks[0].clips[0].duration = 10.0 + F * 0.5;
+        assert_eq!(edge_mates(&p, &v, false, F), [a.clone()]);
+        p.timeline.audio_tracks[0].clips[0].duration = 10.0 + F * 2.0;
+        assert!(edge_mates(&p, &v, false, F).is_empty());
+        assert_eq!(edge_mates(&p, &v, true, F), [a]); // left edges still line up
+    }
+
+    /// One track: events "a" 0..5 and "b" 6..10 (ids are their names).
+    fn two_on_a_track() -> Project {
+        let mut p = Project::new("t");
+        for (id, pos, dur) in [("a", 0.0, 5.0), ("b", 6.0, 4.0)] {
+            let mut c = clip(pos, dur, 0.0);
+            c.id = id.into();
+            p.timeline.video_tracks[0].clips.push(c);
+        }
+        p
+    }
+
+    fn xfade_move(p: &mut Project, id: &str, dt: f64) {
+        let (before, ids) = (p.clone(), vec![id.to_string()]);
+        move_clips(p, &ids, dt, 0);
+        auto_crossfade(p, &before, &ids);
+    }
+
+    fn fades(p: &Project) -> Vec<(f64, f64)> {
+        p.timeline.video_tracks[0].clips.iter().map(|c| (c.fade_in, c.fade_out)).collect()
+    }
+
+    #[test]
+    fn auto_crossfade_follows_the_overlap() {
+        let mut p = two_on_a_track();
+        xfade_move(&mut p, "b", -2.0); // b 4..8 over a 0..5
+        assert_eq!(fades(&p), [(0.0, 1.0), (1.0, 0.0)]);
+        xfade_move(&mut p, "b", -1.0);
+        assert_eq!(fades(&p), [(0.0, 2.0), (2.0, 0.0)]);
+        xfade_move(&mut p, "b", 5.0); // pulled apart
+        assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0)]);
+        // A fade set by hand on a pair that does not overlap is kept.
+        p.timeline.video_tracks[0].clips[0].fade_out = 0.5;
+        xfade_move(&mut p, "b", 1.0);
+        assert_eq!(fades(&p)[0], (0.0, 0.5));
+        // A fully covered event gets no crossfade.
+        let mut p = two_on_a_track();
+        p.timeline.video_tracks[0].clips[1].duration = 1.0;
+        xfade_move(&mut p, "b", -5.0); // b 1..2 inside a
+        assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0)]);
+    }
+
+    #[test]
+    fn auto_crossfade_changes_only_pairs_with_the_edited_event() {
+        let mut p = two_on_a_track();
+        p.timeline.video_tracks[0].clips[1].position = 4.0; // a and b overlap, without fades
+        let mut c = clip(12.0, 2.0, 0.0);
+        c.id = "c".into();
+        p.timeline.video_tracks[0].clips.push(c);
+        xfade_move(&mut p, "c", -4.5); // c 7.5..9.5 over b 4..8
+        assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.5), (0.5, 0.0)]);
+        // Trimming a's right edge into b makes a crossfade too.
+        let mut p = two_on_a_track();
+        let before = p.clone();
+        let o = p.timeline.video_tracks[0].clips[0].clone();
+        trim_right(&mut p.timeline.video_tracks[0].clips[0], &o, 7.0, F, None);
+        assert!(auto_crossfade(&mut p, &before, &["a".into()]));
+        assert_eq!(fades(&p), [(0.0, 1.0), (1.0, 0.0)]);
+        assert!(set_crossfade_curve(&mut p, "a", "b", Curve::Fast, Curve::Slow));
+        let tr = &p.timeline.video_tracks[0];
+        assert_eq!((tr.clips[0].fade_out_curve, tr.clips[1].fade_in_curve, tr.clips[0].fade_in_curve), (Curve::Fast, Curve::Slow, Curve::Smooth));
+    }
+
+    /// V1: 0..2, 3..5, 8..9; V2: 4..6; A1: 5..6. Markers at 1 and 4, a region 2..6. Returns the track ids.
+    fn ripple_project() -> (Project, Vec<String>) {
+        let mut p = Project::new("t");
+        p.timeline.add_video_track();
+        for (pos, dur) in [(0.0, 2.0), (3.0, 2.0), (8.0, 1.0)] {
+            p.timeline.video_tracks[0].clips.push(clip(pos, dur, 0.0));
+        }
+        p.timeline.video_tracks[1].clips.push(clip(4.0, 2.0, 0.0));
+        p.timeline.audio_tracks[0].clips.push(clip(5.0, 1.0, 0.0));
+        for pos in [1.0, 4.0] {
+            p.timeline.markers.push(Marker { position: pos, name: String::new(), color: [0; 3] });
+        }
+        p.timeline.regions.push(Region { start: 2.0, end: 6.0, name: String::new() });
+        let ids = [&p.timeline.video_tracks[0], &p.timeline.video_tracks[1], &p.timeline.audio_tracks[0]].map(|t| t.id.clone()).to_vec();
+        (p, ids)
+    }
+
+    fn starts(t: &Track) -> Vec<f64> {
+        t.clips.iter().map(|c| c.position).collect()
+    }
+
+    #[test]
+    fn ripple_modes() {
+        let (mut p, tr) = ripple_project();
+        let op = RippleOp { from: 3.0, delta: 2.0, tracks: vec![tr[0].clone()], exclude: Vec::new() };
+        assert!(ripple(&mut p, &op, RippleMode::Affected));
+        let tl = &p.timeline;
+        assert_eq!((starts(&tl.video_tracks[0]), starts(&tl.video_tracks[1]), starts(&tl.audio_tracks[0])), (vec![0.0, 5.0, 10.0], vec![4.0], vec![5.0]));
+        assert_eq!((tl.markers[1].position, tl.regions[0].end), (4.0, 6.0));
+
+        let (mut p, _) = ripple_project();
+        assert!(ripple(&mut p, &op, RippleMode::AffectedMarkers));
+        let tl = &p.timeline;
+        assert_eq!((tl.markers[0].position, tl.markers[1].position), (1.0, 6.0));
+        assert_eq!((tl.regions[0].start, tl.regions[0].end), (2.0, 8.0)); // straddles 3: stretches
+        assert_eq!(starts(&tl.video_tracks[1]), [4.0]);
+
+        let (mut p, _) = ripple_project();
+        assert!(ripple(&mut p, &op, RippleMode::All));
+        let tl = &p.timeline;
+        assert_eq!((starts(&tl.video_tracks[1]), starts(&tl.audio_tracks[0])), (vec![6.0], vec![7.0]));
+
+        // A negative delta stops where the first moved event reaches 0; excluded events stay.
+        let (mut p, tr) = ripple_project();
+        let id = p.timeline.video_tracks[0].clips[2].id.clone();
+        ripple(&mut p, &RippleOp { from: 3.0, delta: -10.0, tracks: vec![tr[0].clone()], exclude: vec![id] }, RippleMode::Affected);
+        assert_eq!(starts(&p.timeline.video_tracks[0]), [0.0, 0.0, 8.0]);
+    }
+
+    #[test]
+    fn ripple_closes_envelope_gaps() {
+        let (mut p, tr) = ripple_project();
+        let keys = [1.0, 2.0, 2.5, 3.0, 4.0].map(|t| Keyframe { t, v: 0.0_f32, curve: Curve::Linear }).to_vec();
+        p.timeline.video_tracks[0].envelopes.push(Envelope { kind: EnvKind::Volume, points: Keyframes { keys } });
+        ripple(&mut p, &RippleOp { from: 3.0, delta: -1.0, tracks: vec![tr[0].clone()], exclude: Vec::new() }, RippleMode::Affected);
+        let t: Vec<f64> = p.timeline.video_tracks[0].envelopes[0].points.keys.iter().map(|k| k.t).collect();
+        assert_eq!(t, [1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn delete_range_splits_and_closes_up() {
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.push(clip(0.0, 10.0, 0.0));
+        let tr = vec![p.timeline.video_tracks[0].id.clone()];
+        assert!(delete_range(&mut p, 2.0, 5.0, &tr, RippleMode::Affected));
+        let c: Vec<(f64, f64, f64)> = p.timeline.video_tracks[0].clips.iter().map(|c| (c.position, c.duration, c.in_point)).collect();
+        assert_eq!(c, [(0.0, 2.0, 0.0), (2.0, 5.0, 5.0)]);
+        assert!(!delete_range(&mut Project::new("t"), 1.0, 2.0, &[], RippleMode::All), "nothing there: no edit");
+        // Deleting events closes their gaps, a video and its audio in one op.
+        let (mut p, v, a) = av_pair();
+        p.timeline.video_tracks[0].clips.push(clip(12.0, 1.0, 0.0));
+        let ops = gaps(&p, &[v.clone(), a.clone()]);
+        assert_eq!((ops.len(), ops[0].from, ops[0].delta, ops[0].tracks.len()), (1, 0.0, -10.0, 2));
+        delete_clips(&mut p, &[v, a]);
+        ripple_all(&mut p, &ops, RippleMode::Affected);
+        assert_eq!(starts(&p.timeline.video_tracks[0]), [2.0]);
+    }
+
+    /// One track: "a" 0..5 and "b" 4..9 crossfaded by 1 s, then "c" 9..12.
+    fn crossfaded() -> (Project, Vec<String>) {
+        let mut p = Project::new("t");
+        for (id, pos, dur) in [("a", 0.0, 5.0), ("b", 4.0, 5.0), ("c", 9.0, 3.0)] {
+            let mut c = clip(pos, dur, 0.0);
+            c.id = id.into();
+            p.timeline.video_tracks[0].clips.push(c);
+        }
+        let tl = &mut p.timeline.video_tracks[0].clips;
+        (tl[0].fade_out, tl[1].fade_in) = (1.0, 1.0);
+        let tr = vec![p.timeline.video_tracks[0].id.clone()];
+        (p, tr)
+    }
+
+    fn delete_rippled(p: &mut Project, id: &str) {
+        let ids = vec![id.to_string()];
+        let ops = gaps(p, &ids);
+        delete_clips(p, &ids);
+        ripple_all(p, &ops, RippleMode::Affected);
+    }
+
+    /// A ripple delete closes only the empty time: the other half of a crossfade stays, and what follows lands
+    /// against it.
+    #[test]
+    fn ripple_delete_keeps_crossfades_together() {
+        let (mut p, _) = crossfaded();
+        delete_rippled(&mut p, "a");
+        assert_eq!(starts(&p.timeline.video_tracks[0]), [0.0, 5.0]); // b 0..5, c 5..8
+        let (mut p, _) = crossfaded();
+        delete_rippled(&mut p, "b");
+        assert_eq!(starts(&p.timeline.video_tracks[0]), [0.0, 5.0]); // c against a's end
+    }
+
+    /// Ripple trims: a right edge takes its crossfaded neighbour along; an extended left edge keeps the event's start
+    /// and leaves alone what starts before it.
+    #[test]
+    fn ripple_trims_move_what_follows() {
+        let (mut p, tr) = crossfaded();
+        let o = p.timeline.video_tracks[0].clips[0].clone();
+        trim_right(&mut p.timeline.video_tracks[0].clips[0], &o, 3.0, F, None);
+        let c = p.timeline.video_tracks[0].clips[0].clone();
+        let ops = trim_ripple(&p, &o, &c, &["a".into()], &tr);
+        ripple_all(&mut p, &ops, RippleMode::Affected);
+        assert_eq!(starts(&p.timeline.video_tracks[0]), [0.0, 2.0, 7.0]); // still a 1 s overlap
+
+        // x 3..4, then b 4..8 with 2 s of head: dragging b's left edge to 2.5 keeps b at 4 and x where it is.
+        let mut p = Project::new("t");
+        let tr = vec![p.timeline.video_tracks[0].id.clone()];
+        let mut x = clip(3.0, 1.0, 0.0);
+        x.id = "x".into();
+        let mut b = clip(4.0, 4.0, 2.0);
+        b.id = "b".into();
+        p.timeline.video_tracks[0].clips.extend([x, b.clone()]);
+        let before = p.clone();
+        trim_left(&mut p.timeline.video_tracks[0].clips[1], &b, 2.5, F, None);
+        let c = p.timeline.video_tracks[0].clips[1].clone();
+        let ops = trim_ripple(&before, &b, &c, &["b".into()], &tr);
+        ripple_all(&mut p, &ops, RippleMode::Affected);
+        let t = &p.timeline.video_tracks[0];
+        assert_eq!((starts(t), t.clips[1].duration), (vec![3.0, 4.0], 5.5));
+    }
+
+    /// After a ripple, crossfades it pulled apart lose their fades.
+    #[test]
+    fn crossfade_moved_follows_the_ripple() {
+        let (mut p, tr) = crossfaded();
+        let before = p.clone();
+        ripple(&mut p, &RippleOp { from: 4.0, delta: 1.0, tracks: tr, exclude: Vec::new() }, RippleMode::Affected);
+        assert!(crossfade_moved(&mut p, &before));
+        assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
+    }
+
+    /// Post-Edit Ripple after a paste ends where Auto Ripple would have: the pasted events stay where they landed.
+    #[test]
+    fn post_edit_ripple_matches_auto_ripple() {
+        let (p0, _) = ripple_project();
+        let copied = copy_clips(&p0, &[p0.timeline.video_tracks[0].clips[0].id.clone()]);
+        let mut auto = p0.clone();
+        let op = paste_ripple(&auto, &copied, 3.0, Some((true, 0)));
+        assert_eq!((op.delta, op.tracks.len()), (2.0, 1));
+        ripple(&mut auto, &op, RippleMode::Affected);
+        paste_clips(&mut auto, &copied, 3.0, Some((true, 0)));
+        let mut post = p0.clone();
+        let ids = paste_clips(&mut post, &copied, 3.0, Some((true, 0)));
+        ripple(&mut post, &RippleOp { exclude: ids, ..op }, RippleMode::Affected);
+        assert_eq!(starts(&auto.timeline.video_tracks[0]), [0.0, 3.0, 5.0, 10.0]);
+        assert_eq!(starts(&post.timeline.video_tracks[0]), starts(&auto.timeline.video_tracks[0]));
     }
 }

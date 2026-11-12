@@ -13,10 +13,12 @@ use super::super::theme::{self, UiLook};
 use super::ruler::band_rows;
 use super::{Geo, Rename, Row, TlState};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 enum Target {
     TrackHeader(bool, usize),
     ListEmpty,
+    /// The overlap of two events on a track: (outgoing, incoming) ids.
+    Crossfade(String, String),
     Event,
     Lane(bool, usize),
     Selection,
@@ -59,10 +61,20 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2) ->
         return Some(row.map_or(Target::ListEmpty, |r| Target::TrackHeader(r.is_video, r.idx)));
     }
     if g.lanes.contains(p) {
+        let time = g.to_time(p.x);
+        if let Some(r) = row {
+            let clips = &tl.tracks(r.is_video)[r.idx].clips;
+            let xfade = clips.iter().enumerate().find_map(|(i, a)| {
+                let b = clips[i + 1..].iter().find(|b| b.position < a.position + a.duration && b.position >= a.position)?;
+                (time >= b.position && time <= a.position + a.duration).then(|| Target::Crossfade(a.id.clone(), b.id.clone()))
+            });
+            if xfade.is_some() {
+                return xfade;
+            }
+        }
         if !sel.clips.is_empty() {
             return Some(Target::Event);
         }
-        let time = g.to_time(p.x);
         if tl.loop_region.is_some_and(|(a, b)| b > a && time >= a && time <= b) {
             return Some(Target::Selection);
         }
@@ -88,8 +100,8 @@ pub(super) fn menu(
     let open_at = clicked
         .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
         .and_then(|p| target(g, rows, project, sel, p).map(|t| (p, t)));
-    if let Some((_, tg)) = open_at {
-        ui.data_mut(|d| d.insert_temp(tid, tg));
+    if let Some((_, tg)) = &open_at {
+        ui.data_mut(|d| d.insert_temp(tid, tg.clone()));
     }
     let Some(tg) = ui.data(|d| d.get_temp::<Target>(tid)) else { return };
     menus::context_at(response, open_at.map(|o| o.0), |ui| match tg {
@@ -100,6 +112,26 @@ pub(super) fn menu(
             cmd(ui, "Insert &Video Track", InsertVideoTrack);
             sep(ui);
             cmd(ui, "&Preferences...", Preferences);
+        }
+        Target::Crossfade(ref a, ref b) => {
+            off(ui, "&Transition");
+            sub(ui, "&Fade Type", true, |ui| {
+                // A curve pair: the outgoing event's fade-out, then the incoming one's fade-in.
+                const CURVES: [(&str, Curve); 5] = [("Linear", Curve::Linear), ("Fast", Curve::Fast), ("Slow", Curve::Slow), ("Smooth", Curve::Smooth), ("Sharp", Curve::Sharp)];
+                let cur = project.clip(a).map(|c| c.fade_out_curve).zip(project.clip(b).map(|c| c.fade_in_curve));
+                for (out_name, out) in CURVES {
+                    sub(ui, &format!("{out_name} Out"), true, |ui| {
+                        for (in_name, inc) in CURVES {
+                            if entry(ui, &format!("{out_name} Out, {in_name} In"), "", true, Mark::Radio(cur == Some((out, inc)))) {
+                                let before = project.clone();
+                                if edit::set_crossfade_curve(project, a, b, out, inc) {
+                                    history.push(before);
+                                }
+                            }
+                        }
+                    });
+                }
+            });
         }
         Target::Event => {
             let is_video = sel.clips.last().and_then(|id| project.find_clip(id)).is_some_and(|c| c.is_video);
@@ -197,10 +229,14 @@ fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usi
     history.push(project.clone());
     let mut tr = project.timeline.tracks(v)[i].clone();
     tr.id = uuid::Uuid::new_v4().to_string();
+    // The copies form groups of their own, not with the originals' mates.
+    let mut groups = std::collections::HashMap::new();
     for c in &mut tr.clips {
         c.id = uuid::Uuid::new_v4().to_string();
+        c.group = c.group.take().map(|g| groups.entry(g).or_insert_with(|| uuid::Uuid::new_v4().to_string()).clone());
     }
     project.timeline.tracks_mut(v).insert(i + 1, tr);
+    edit::dissolve_lone_groups(&mut project.timeline); // a copy whose mates were on other tracks is alone
     project.mark_modified();
 }
 

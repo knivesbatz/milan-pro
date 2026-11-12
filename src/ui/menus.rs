@@ -10,7 +10,9 @@ use crate::decode::Quality;
 use crate::history::History;
 use crate::media::Importer;
 use crate::project::*;
+use crate::edit::RippleMode;
 use super::chrome;
+use super::EditTool;
 use super::dock::Panel;
 use super::keymap::{self, Command, Command::*};
 use super::theme::{self, UiLook};
@@ -67,6 +69,14 @@ pub struct CmdState {
     pub recent: Vec<String>,
     /// VP16 preference: Space and F12 Play/Pause instead of Play/Stop.
     pub space_pauses: bool,
+    pub tool: super::EditTool,
+    /// A selected event is in a group.
+    pub in_group: bool,
+    /// An edit Post-Edit Ripple can apply is waiting.
+    pub last_edit: bool,
+    pub auto_ripple: bool,
+    pub ripple_mode: RippleMode,
+    pub ignore_group: bool,
 }
 
 impl CmdState {
@@ -84,11 +94,18 @@ impl CmdState {
             | EventProperties => self.clip,
             // With nothing selected, Split splits every event under the cursor.
             Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
-            Delete => self.n_sel > 0 || (self.list_focus && self.tracks_sel),
+            // With Auto Ripple, Delete with only a time selection deletes that time.
+            Delete => self.n_sel > 0 || (self.list_focus && self.tracks_sel) || (self.auto_ripple && self.selection),
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
-            Paste => self.clipboard,
+            Paste | PasteInsert => self.clipboard,
+            NextTool | PrevTool | AutoRipple | RippleMode(_) | IgnoreGrouping => true,
+            // Slip, Slide and Time Stretch come with their drags.
+            Tool(t) => matches!(t, EditTool::Normal | EditTool::Envelope | EditTool::Selection),
+            Group => self.n_sel >= 2,
+            RemoveFromGroup | ClearGroup | SelectGroup => self.in_group,
+            RippleAffected | RippleBus | RippleAll => self.last_edit,
             MuteTrack | SoloTrack => self.tracks_sel,
             FocusPrevTrack | FocusNextTrack => self.any_tracks,
             InsertRegion | ZoomSelection => self.selection,
@@ -112,15 +129,19 @@ impl CmdState {
             AutoCrossfade => self.auto_crossfade,
             Window(p) => self.open_panels.contains(&p),
             PreviewQuality(q) => self.quality == Some(q),
-            NormalTool => true,
+            NormalTool => self.tool == EditTool::Normal,
+            Tool(t) => self.tool == t,
+            AutoRipple => self.auto_ripple,
+            RippleMode(m) => self.ripple_mode == m,
+            IgnoreGrouping => self.ignore_group,
             EventLock => self.clip_locked,
             SpacePlayPause => self.space_pauses,
             Quantize => self.quantize,
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            SnapGrid | SnapAllEvents | AutoRipple | BusTracks | VideoBusTrack | MediaMarkers | ShowEnvelopes
-            | IgnoreGrouping | Multicam | ExternalMonitor => false,
+            SnapGrid | SnapAllEvents | BusTracks | VideoBusTrack | MediaMarkers | ShowEnvelopes | Multicam
+            | ExternalMonitor => false,
             _ => return None,
         })
     }
@@ -231,7 +252,7 @@ pub fn entry(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark
 /// A row for `cmd`: state from the published `CmdState`, shortcut from the keymap; sends it when chosen.
 pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
-    let radio = matches!(c, PreviewQuality(_) | NormalTool);
+    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_));
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
         Some(on) => Mark::Check(on),
@@ -425,13 +446,13 @@ const SELECT: &[M] = &[
 const TOOLS_SUB: &[M] = &[
     C("&Normal Edit Tool", NormalTool),
     R("S&huffle Tool", false),
-    R("Sl&ip Tool", false),
-    R("Sli&de Tool", false),
-    R("Time Stretch/&Compress Tool", false),
+    C("Sl&ip Tool", Tool(EditTool::Slip)),
+    C("Sli&de Tool", Tool(EditTool::Slide)),
+    C("Time Stretch/&Compress Tool", Tool(EditTool::Stretch)),
     R("Split &Trim Tool", false),
     S,
-    R("&Envelope", false),
-    R("&Selection", false),
+    C("&Envelope", Tool(EditTool::Envelope)),
+    C("&Selection", Tool(EditTool::Selection)),
     R("&Zoom", false),
     S,
     C("Ne&xt Tool", NextTool),
@@ -766,12 +787,13 @@ pub const OPTIONS: &[M] = &[
     K("Q&uickfade Audio Edits", true),
     C("Auto &Ripple", AutoRipple),
     Sub("&Ripple", &[
-        K("Auto &Ripple", false),
+        C("Auto &Ripple", AutoRipple),
         S,
-        R("Affected &Tracks", true),
-        R("Affected Tracks, &Bus Tracks, Markers, and Regions", false),
+        C("Affected &Tracks", RippleMode(RippleMode::Affected)),
+        C("Affected Tracks, &Bus Tracks, Markers, and Regions", RippleMode(RippleMode::AffectedMarkers)),
+        // Without bus tracks this is the item above.
         R("Affected Tracks, &Markers, and Regions", false),
-        R("&All Tracks, Markers, and Regions", false),
+        C("&All Tracks, Markers, and Regions", RippleMode(RippleMode::All)),
     ]),
     K("Lock En&velopes to Events", true),
     C("I&gnore Event Grouping", IgnoreGrouping),
@@ -1009,6 +1031,27 @@ pub fn import_media(ctx: &Context, importer: &Importer) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn group_ripple_and_tool_items_follow_the_state() {
+        let mut st = CmdState { n_sel: 2, ..Default::default() };
+        assert!(st.enabled(Group) && !st.enabled(RemoveFromGroup) && !st.enabled(SelectGroup));
+        st.in_group = true;
+        assert!(st.enabled(RemoveFromGroup) && st.enabled(ClearGroup));
+        assert!(!st.enabled(RippleAffected) && !st.enabled(RippleAll));
+        st.last_edit = true;
+        assert!(st.enabled(RippleAffected) && st.enabled(RippleBus));
+        assert_eq!(st.checked(AutoRipple), Some(false));
+        st.auto_ripple = true;
+        assert_eq!(st.checked(AutoRipple), Some(true));
+        assert_eq!(st.checked(RippleMode(RippleMode::Affected)), Some(true));
+        assert_eq!(st.checked(NormalTool), Some(true));
+        st.tool = EditTool::Selection;
+        assert_eq!((st.checked(NormalTool), st.checked(Tool(EditTool::Selection))), (Some(false), Some(true)));
+        assert!(st.enabled(Tool(EditTool::Envelope)) && !st.enabled(Tool(EditTool::Slip)));
+    }
+
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the
     /// project stays modified so the save prompt keeps its New/Open/Exit from discarding it.
     #[test]

@@ -42,12 +42,50 @@ impl MeridianApp {
             selection: self.project.timeline.loop_region.is_some_and(|(a, b)| b > a),
             looping: self.looping,
             snapping: self.snapping,
-            auto_crossfade: self.auto_crossfade,
+            auto_crossfade: self.prefs.auto_crossfade,
             open_panels: Panel::ALL.into_iter().filter(|p| self.dock.is_open(*p)).collect(),
             quality: Some(self.preview.quality),
             recent: self.prefs.recent.clone(),
             space_pauses: self.prefs.space_pauses,
+            tool: self.tool,
+            in_group: self.project.find_clips(&self.sel.clips).iter().any(|r| tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].group.is_some()),
+            last_edit: !self.post_edit_ops().is_empty(),
+            auto_ripple: self.prefs.auto_ripple,
+            ripple_mode: self.prefs.ripple_mode,
+            ignore_group: self.prefs.ignore_grouping,
         }
+    }
+
+    /// The editing options the timeline follows.
+    pub(super) fn edit_opts(&self) -> ui::EditOpts {
+        let p = &self.prefs;
+        ui::EditOpts {
+            snapping: self.snapping,
+            quantize: p.quantize,
+            auto_crossfade: p.auto_crossfade,
+            ripple: p.auto_ripple.then_some(p.ripple_mode),
+            ignore_grouping: p.ignore_grouping,
+            tool: self.tool,
+        }
+    }
+
+    /// One undoable edit that rippled (or, with Auto Ripple off, may be rippled later by Post-Edit Ripple): `f`
+    /// edits and returns the ripple ops that close or open its gaps, which are applied with the ripple mode when
+    /// Auto Ripple is on (or `force`, for Paste Insert).
+    fn ripple_edit(&mut self, force: bool, f: impl FnOnce(&mut Project, Option<edit::RippleMode>) -> Option<Vec<edit::RippleOp>>) {
+        let mode = (force || self.prefs.auto_ripple).then_some(self.prefs.ripple_mode);
+        let mut ops = None;
+        if self.edit(|p| {
+            ops = f(p, mode);
+            ops.is_some()
+        }) {
+            self.last_edit = (self.history.generation(), if mode.is_some() { Vec::new() } else { ops.unwrap_or_default() });
+        }
+    }
+
+    /// The ripple Post-Edit Ripple would apply: the last edit's, unless the history changed since.
+    fn post_edit_ops(&self) -> &[edit::RippleOp] {
+        if self.last_edit.0 == self.history.generation() { &self.last_edit.1 } else { &[] }
     }
 
     /// Keyboard shortcuts for this frame, run before the UI is drawn (as the old hard-wired keys were).
@@ -95,6 +133,24 @@ impl MeridianApp {
             self.history.push(before);
         }
         done
+    }
+
+    /// Delete events `ids`, closing their gaps when Auto Ripple is on.
+    fn delete_rippled(&mut self, ids: &[String]) {
+        let xfade = self.prefs.auto_crossfade;
+        self.ripple_edit(false, |p, mode| {
+            let ops = edit::gaps(p, ids);
+            edit::delete_clips(p, ids).then(|| {
+                if let Some(m) = mode {
+                    let before = p.clone();
+                    // Ripple All also moves tracks the gap is not on, which may overlap there.
+                    if edit::ripple_all(p, &ops, m) && xfade {
+                        edit::crossfade_moved(p, &before);
+                    }
+                }
+                ops
+            })
+        });
     }
 
     fn edit_selected(&mut self, f: impl FnOnce(&mut Project, &ui::ClipRef) -> bool) -> bool {
@@ -234,29 +290,50 @@ impl MeridianApp {
                     .collect();
                 if !ids.is_empty() && self.drag_state.is_none() {
                     self.clipboard = edit::copy_clips(&self.project, &ids);
-                    self.edit(|p| edit::delete_clips(p, &ids));
+                    self.delete_rippled(&ids);
                 }
             }
-            Paste => {
-                // From the focus track at the cursor (quantized); the pasted events become the selection.
+            Paste | PasteInsert => {
+                // From the focus track at the cursor (quantized); the pasted events become the selection. Paste
+                // Insert (or Auto Ripple) first moves what is after the cursor along by the pasted length.
                 let at = self.quantized(self.project.timeline.cursor_position);
-                let (clips, focus) = (self.clipboard.clone(), self.focus_track());
+                let (clips, focus, xfade) = (self.clipboard.clone(), self.focus_track(), self.prefs.auto_crossfade);
                 let mut ids = Vec::new();
-                self.edit(|p| {
+                self.ripple_edit(c == PasteInsert, |p, mode| {
+                    let before = p.clone();
+                    let op = edit::paste_ripple(p, &clips, at, focus);
+                    if let Some(m) = mode {
+                        edit::ripple(p, &op, m);
+                    }
                     ids = edit::paste_clips(p, &clips, at, focus);
-                    !ids.is_empty()
+                    if ids.is_empty() {
+                        *p = before; // a locked track refused it: no ripple either
+                        return None;
+                    }
+                    if xfade {
+                        edit::auto_crossfade(p, &before, &ids);
+                    }
+                    Some(vec![edit::RippleOp { exclude: ids.clone(), ..op }])
                 });
                 if !ids.is_empty() {
                     self.sel.clips = ids;
                 }
             }
             Delete => {
-                // What has the focus: the selected tracks after a click in the track list, else the events.
+                // What has the focus: the selected tracks after a click in the track list, else the events. With Auto
+                // Ripple, a time selection and no events deletes that time from every track (as VEGAS does: a time
+                // selection affects all events in it, which keeps grouped video and audio in sync).
                 let (clips, tracks) = (self.sel.clips.clone(), self.sel.tracks.clone());
+                let range = self.project.timeline.loop_region.filter(|(a, b)| b > a && self.prefs.auto_ripple);
                 if self.sel.list_focus && !tracks.is_empty() {
                     self.edit(|p| edit::delete_tracks(p, &tracks));
-                } else {
-                    self.edit(|p| edit::delete_clips(p, &clips));
+                } else if !clips.is_empty() {
+                    self.delete_rippled(&clips);
+                } else if let Some((a, b)) = range {
+                    let tl = &self.project.timeline;
+                    let tracks: Vec<String> = tl.video_tracks.iter().chain(&tl.audio_tracks).map(|t| t.id.clone()).collect();
+                    let mode = self.prefs.ripple_mode;
+                    self.edit(|p| edit::delete_range(p, a, b, &tracks, mode));
                 }
             }
             Split => {
@@ -276,7 +353,25 @@ impl MeridianApp {
                     _ => (None, Some(tl.cursor_position)),
                 };
                 let (a, b) = (a.map(|t| self.quantized(t)), b.map(|t| self.quantized(t)));
-                self.edit_selected(|p, cr| edit::trim_to(p, cr, a, b));
+                // Ripples (or can be post-edit rippled) and crossfades as a trim drag does.
+                let (Some(cr), xfade) = (self.selected_clip.clone(), self.prefs.auto_crossfade) else { return };
+                self.ripple_edit(false, |p, mode| {
+                    let before = p.clone();
+                    let tr = before.timeline.tracks(cr.is_video).get(cr.track_idx)?;
+                    let o = tr.clips.get(cr.clip_idx)?;
+                    if !edit::trim_to(p, &cr, a, b) {
+                        return None;
+                    }
+                    let ids = vec![o.id.clone()];
+                    let ops = edit::trim_ripple(&before, o, &p.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx], &ids, &[tr.id.clone()]);
+                    if let Some(m) = mode {
+                        edit::ripple_all(p, &ops, m);
+                    }
+                    if xfade {
+                        edit::auto_crossfade(p, &before, &ids);
+                    }
+                    Some(ops)
+                });
             }
             EventLock => {
                 self.edit_selected(edit::toggle_clip_lock);
@@ -455,7 +550,47 @@ impl MeridianApp {
             }
             MinimizeTracks => edit::toggle_minimize(&mut self.project, &mut self.minimized, ui::MIN_TRACK_H),
             Snapping => self.snapping = !self.snapping,
-            AutoCrossfade => self.auto_crossfade = !self.auto_crossfade,
+            AutoCrossfade | AutoRipple | IgnoreGrouping | RippleMode(_) => {
+                let p = &mut self.prefs;
+                match c {
+                    AutoCrossfade => p.auto_crossfade = !p.auto_crossfade,
+                    AutoRipple => p.auto_ripple = !p.auto_ripple,
+                    IgnoreGrouping => p.ignore_grouping = !p.ignore_grouping,
+                    RippleMode(m) => p.ripple_mode = m,
+                    _ => {}
+                }
+                self.save_prefs();
+            }
+            // Tools and groups
+            NormalTool => self.tool = ui::EditTool::Normal,
+            NextTool | PrevTool => self.tool = self.tool.cycle(c == NextTool),
+            Tool(t) => self.tool = t,
+            Group | RemoveFromGroup | ClearGroup => {
+                let ids = self.sel.clips.clone();
+                self.edit(|p| match c {
+                    Group => edit::group(p, &ids),
+                    RemoveFromGroup => edit::ungroup(p, &ids),
+                    _ => edit::clear_groups(p, &ids),
+                });
+            }
+            SelectGroup => self.sel.clips = edit::expand_groups(&self.project, &self.sel.clips),
+            // Post-Edit Ripple: the last edit's ripple, once, in the item's mode.
+            RippleAffected | RippleBus | RippleAll => {
+                let mode = match c {
+                    RippleAffected => edit::RippleMode::Affected,
+                    RippleBus => edit::RippleMode::AffectedMarkers,
+                    _ => edit::RippleMode::All,
+                };
+                let (ops, xfade) = (self.post_edit_ops().to_vec(), self.prefs.auto_crossfade);
+                self.edit(|p| {
+                    let before = p.clone();
+                    let done = edit::ripple_all(p, &ops, mode);
+                    if done && xfade {
+                        edit::crossfade_moved(p, &before);
+                    }
+                    done
+                });
+            }
             // Zoom
             ZoomIn => self.zoom_by(1.25),
             ZoomOut => self.zoom_by(0.8),

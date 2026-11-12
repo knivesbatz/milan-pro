@@ -2,7 +2,7 @@
 //! filmstrip thumbnails, waveforms, fade curves and handles, selection outline.
 use eframe::egui::*;
 use crate::audio::PEAKS_PER_SEC;
-use crate::project::{Clip, smooth_fade};
+use crate::project::Clip;
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{Theme, UiLook};
 
@@ -17,6 +17,8 @@ pub(super) struct Ev<'a> {
     pub aspect: f32,
     pub selected: bool,
     pub hovered: bool,
+    /// Auto Ripple is on: the selected outline is red.
+    pub ripple: bool,
     /// Muted track: drawn at 50 % over the lane.
     pub dim: bool,
     pub pps: f64,
@@ -93,7 +95,8 @@ pub(super) fn paint_event(
         paint_handles(p, t, ev, if v16 { body } else { r });
     }
     if ev.selected {
-        p.rect_stroke(r, 0.0, Stroke::new(2.0_f32, t.event_selected_border), StrokeKind::Inside);
+        let c = if ev.ripple { t.event_selected_border_ripple } else { t.event_selected_border };
+        p.rect_stroke(r, 0.0, Stroke::new(2.0_f32, c), StrokeKind::Inside);
     }
     if ev.dim {
         p.rect_filled(r, 0.0, lane_bg.gamma_multiply(0.5));
@@ -159,14 +162,14 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
     }
 }
 
-/// Fade curves (smooth S) from the bottom corners up to the top at the fade lengths; the area above the curve is
-/// darkened. VP16: 1 px blue (white when selected); VP23: 2 px white.
+/// Fade curves (in their Fade Type shape) from the bottom corners up to the top at the fade lengths; the area above
+/// the curve is darkened. VP16: 1 px blue (white when selected); VP23: 2 px white.
 fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
     let v16 = t.look() == UiLook::Vegas16;
     let curve = if v16 && !ev.selected { t.fade_curve } else if v16 { t.fade_curve_selected } else { t.fade_curve };
     let stroke = Stroke::new(if v16 { 1.0_f32 } else { 2.0_f32 }, curve);
-    let fades = [(ev.clip.fade_in, false), (ev.clip.fade_out, true)];
-    for (len, out) in fades {
+    let fades = [(ev.clip.fade_in, false, ev.clip.fade_in_curve), (ev.clip.fade_out, true, ev.clip.fade_out_curve)];
+    for (len, out, shape) in fades {
         let w = (len * ev.pps) as f32;
         if w < 1.0 {
             continue;
@@ -176,8 +179,8 @@ fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
         let pts: Vec<Pos2> = (0..=n)
             .map(|i| {
                 let f = i as f32 / n as f32;
-                let g = smooth_fade(f as f64) as f32;
-                let g = if out { 1.0 - g } else { g };
+                // The gain the mixer and compositor use (`engine::plan::fade`): a fade-out runs its curve backwards.
+                let g = shape.shape(if out { 1.0 - f as f64 } else { f as f64 }) as f32;
                 pos2(x0 + f * w, area.max.y - g * area.height())
             })
             .collect();

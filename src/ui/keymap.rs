@@ -56,6 +56,10 @@ pub enum Command {
     KeyboardShortcuts, CheckForUpdates, About,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause,
+    /// Edit › Editing Tool items and the transport tool radios.
+    Tool(super::EditTool),
+    /// Options › Ripple modes and the transport Auto Ripple ▾ list.
+    RippleMode(crate::edit::RippleMode),
 }
 
 use Command::*;

@@ -77,8 +77,8 @@ impl FileDrop {
     }
 
     /// Take finished probes, then place the first drop whose files are all known: new files are imported (a file
-    /// already in the pool is reused) and laid out across time, as one undo step.
-    pub fn poll(&mut self, project: &mut Project, still_len: f64) -> Option<Placed> {
+    /// already in the pool is reused) and laid out across time (crossfading when `xfade`), as one undo step.
+    pub fn poll(&mut self, project: &mut Project, still_len: f64, xfade: bool) -> Option<Placed> {
         while let Some(batch) = self.importer.poll() {
             self.probed.extend(batch);
         }
@@ -101,7 +101,7 @@ impl FileDrop {
                 let items: Vec<_> = idxs.iter().map(|&i| (&project.media_pool[i], None)).collect();
                 let plan = edit::plan_drop(&project.timeline, &items, target, *time, still_len);
                 let refused = plan.refused;
-                (edit::apply_drop(project, plan), refused)
+                (edit::apply_drop(project, plan, xfade), refused)
             }
             None => (Vec::new(), false),
         };
@@ -146,12 +146,12 @@ mod tests {
         fd.drop(vec!["a.wav".into(), "b.wav".into(), "bad.mp4".into()], Some((Some(a2.clone()), 3.0)));
         // A track inserted above while probing: the drop follows the track, not its old index.
         crate::edit::insert_track(&mut p, false, Some(0));
-        assert!(fd.poll(&mut p, 5.0).is_none(), "nothing arrived yet");
+        assert!(fd.poll(&mut p, 5.0, false).is_none(), "nothing arrived yet");
         let tx = fd.importer.sender();
         tx.send(vec![probed("a.wav"), probed("b.wav")]).unwrap();
-        assert!(fd.poll(&mut p, 5.0).is_none(), "bad.mp4 is still probing");
+        assert!(fd.poll(&mut p, 5.0, false).is_none(), "bad.mp4 is still probing");
         tx.send(vec![("bad.mp4".into(), Err("bad.mp4: unreadable media".into()))]).unwrap();
-        let placed = fd.poll(&mut p, 5.0).expect("placed");
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed");
         assert!(placed.before.is_some() && placed.ids.len() == 2 && p.modified);
         assert_eq!(placed.errors, ["bad.mp4: unreadable media"]);
         assert_eq!(p.find_track(&a2), Some((false, 2)));
@@ -160,7 +160,7 @@ mod tests {
         assert_eq!(p.media_pool.len(), 2);
         // Dropped again: the pool items are reused, nothing is imported twice.
         fd.drop(vec!["a.wav".into()], Some((None, 0.0)));
-        let placed = fd.poll(&mut p, 5.0).expect("placed at once");
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed at once");
         assert_eq!((placed.ids.len(), p.media_pool.len()), (1, 2));
     }
 
@@ -170,14 +170,14 @@ mod tests {
         let mut fd = FileDrop::new();
         fd.drop(vec!["c.wav".into()], None); // dropped on Project Media
         fd.importer.sender().send(vec![probed("c.wav")]).unwrap();
-        let placed = fd.poll(&mut p, 5.0).expect("imported");
+        let placed = fd.poll(&mut p, 5.0, false).expect("imported");
         assert!(placed.before.is_some() && placed.ids.is_empty() && !placed.refused);
         assert!(p.media_pool.len() == 1 && p.timeline.audio_tracks[0].clips.is_empty());
         // The pointed row is free, but the audio lands on the locked Audio 1.
         p.timeline.audio_tracks[0].locked = true;
         let v1 = p.timeline.video_tracks[0].id.clone();
         fd.drop(vec!["c.wav".into()], Some((Some(v1), 0.0)));
-        let placed = fd.poll(&mut p, 5.0).expect("handled");
+        let placed = fd.poll(&mut p, 5.0, false).expect("handled");
         assert!(placed.refused && placed.before.is_none());
     }
 
@@ -190,7 +190,7 @@ mod tests {
         fd.reset(); // File › New
         assert!(old.send(vec![probed("a.wav")]).is_err(), "the old batch has nowhere to go");
         fd.importer.sender().send(vec![probed("a.wav")]).unwrap(); // even a result that does arrive places nothing
-        assert!(fd.poll(&mut p, 5.0).is_none());
+        assert!(fd.poll(&mut p, 5.0, false).is_none());
         assert!(p.media_pool.is_empty() && p.timeline.audio_tracks[0].clips.is_empty() && !p.modified);
     }
 }
