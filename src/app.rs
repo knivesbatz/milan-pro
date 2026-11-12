@@ -166,6 +166,7 @@ impl MeridianApp {
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
         let look = theme::get().choice;
         let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        std::thread::spawn(|| crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT));
         let mut updater = crate::updater::Updater::from_env();
         if updater.auto || (prefs.auto_update && !launch.demo && launch.screenshot.is_none()) {
             // Off the startup path: the check waits a few seconds on its own thread.

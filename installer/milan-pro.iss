@@ -70,6 +70,24 @@ begin
   DidRelaunch := True;
 end;
 
+// The updater starts Setup just before Milan Pro closes: give it up to 20 s to exit (main.rs holds the
+// "MilanProRunning" mutex until then). Not the AppMutex directive, which aborts a silent Setup instead of
+// waiting. Still running after that, CloseApplications deals with it. An interactive Setup shows its own
+// "close applications" page, so only a silent one waits.
+function InitializeSetup: Boolean;
+var
+  I: Integer;
+begin
+  if WizardSilent then
+    for I := 1 to 40 do
+    begin
+      if not CheckForMutexes('MilanProRunning') then
+        Break;
+      Sleep(500);
+    end;
+  Result := True;
+end;
+
 // A failed or aborted silent update brings back the Milan Pro that started it.
 procedure DeinitializeSetup;
 var

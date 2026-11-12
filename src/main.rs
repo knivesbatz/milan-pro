@@ -22,6 +22,19 @@ mod updater;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    // Never closed, so it lives until Milan exits: installer/milan-pro.iss waits for it to go before updating.
+    // A null DACL (as Inno's AppMutex docs advise) lets Setup see it when it is elevated as another user.
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Security::{InitializeSecurityDescriptor, SetSecurityDescriptorDacl, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR};
+        let mut sd: SECURITY_DESCRIPTOR = std::mem::zeroed();
+        let sdp = &mut sd as *mut SECURITY_DESCRIPTOR as *mut std::ffi::c_void;
+        InitializeSecurityDescriptor(sdp, 1); // SECURITY_DESCRIPTOR_REVISION
+        SetSecurityDescriptorDacl(sdp, 1, std::ptr::null(), 0);
+        let sa = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sdp, bInheritHandle: 0 };
+        let name: Vec<u16> = "MilanProRunning\0".encode_utf16().collect();
+        windows_sys::Win32::System::Threading::CreateMutexW(&sa, 0, name.as_ptr());
+    }
     let mut launch = demo::Launch::from_env();
     let look = launch.look.unwrap_or_else(|| if launch.demo { Default::default() } else { settings::Prefs::load().look });
     launch.look = Some(look);

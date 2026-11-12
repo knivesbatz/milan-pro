@@ -94,15 +94,22 @@ pub fn url_allowed(url: &str, local: bool) -> bool {
     }
 }
 
+/// Whether release `v` is newer than build `current` (None if `current` is not X.Y.Z[-pre][+build]).
+/// A pre-release `current` (0.2.0-rc.1) counts as older than its X.Y.Z.
+fn newer(v: (u64, u64, u64), current: &str) -> Option<bool> {
+    let core = current.split(['-', '+']).next().unwrap_or(current);
+    let pre = current.split('+').next().is_some_and(|c| c.contains('-'));
+    let cur = parse_version(core)?;
+    Some(v > cur || (v == cur && pre))
+}
+
 /// The latest release from the API's JSON if it is newer than `current`: Ok(None) when it is not (or is a
 /// draft, pre-release or non-X.Y.Z tag); Err when the JSON is malformed or the installer asset is missing.
 /// A pre-release `current` (0.2.0-rc.1) counts as older than its X.Y.Z.
 pub fn parse_release(json: &str, current: &str) -> Result<Option<Release>, String> {
     let r: ApiRelease = serde_json::from_str(json).map_err(|e| format!("GitHub sent an unexpected reply ({e})."))?;
-    let core = current.split(['-', '+']).next().unwrap_or(current);
-    let pre = current.split('+').next().is_some_and(|c| c.contains('-'));
-    let (Some(v), Some(cur)) = (parse_version(&r.tag_name), parse_version(core)) else { return Ok(None) };
-    if r.draft || r.prerelease || v < cur || (v == cur && !pre) {
+    let Some(v) = parse_version(&r.tag_name) else { return Ok(None) };
+    if r.draft || r.prerelease || newer(v, current) != Some(true) {
         return Ok(None);
     }
     let version = format!("{}.{}.{}", v.0, v.1, v.2);
@@ -186,18 +193,32 @@ fn check(api: &str, local: bool) -> Result<Option<Release>, String> {
     parse_release(&json, CURRENT)
 }
 
-fn update_dir() -> PathBuf {
+pub fn update_dir() -> PathBuf {
     std::env::temp_dir().join("MilanPro-update")
 }
 
-/// Delete leftovers (installers, .part files) over a day old; newer ones may belong to another Milan Pro window.
-fn clean(dir: &Path) {
-    let old = |m: std::fs::Metadata| m.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() > 86_400);
+/// Delete `.part` files and `MilanPro-<ver>-Setup.exe` installers no newer than `current`; newer installers
+/// stay (a "Later" download is reused) and so does anything else. A `.part` another Milan Pro window is still
+/// writing survives: `create_part` opens it without delete sharing, so its removal fails. One written in the
+/// last minute survives too, as `download` closes it (dropping that lock) just before renaming it.
+pub fn clean_downloads(dir: &Path, current: &str) {
+    let recent = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age < Duration::from_secs(60)));
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        if e.metadata().is_ok_and(old) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let installer = name.strip_prefix("MilanPro-").and_then(|n| n.strip_suffix("-Setup.exe")).and_then(parse_version);
+        if (name.ends_with(".part") && !recent(&e.path())) || installer.is_some_and(|v| newer(v, current) == Some(false)) {
             let _ = std::fs::remove_file(e.path());
         }
     }
+}
+
+/// A new download file, locked against deletion (see `clean_downloads`) until it is closed.
+fn create_part(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create_new(true);
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::share_mode(&mut o, 1); // FILE_SHARE_READ
+    o.open(path)
 }
 
 /// Open `path` read-only so nobody can change or delete it while the handle lives, and hash it.
@@ -224,7 +245,7 @@ fn download(rel: &Release, dir: &Path, local: bool, cancel: &AtomicBool, progres
         (None, None) => return Err("The update has no SHA-256 checksum, so it was not downloaded.".into()),
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    clean(dir);
+    clean_downloads(dir, CURRENT);
     let exe = dir.join(&rel.name);
     // Verified earlier, then "Later" or a cancelled save prompt: no need to download it again.
     if open_hashed(&exe).is_ok_and(|(_, h)| h == expected) {
@@ -234,7 +255,7 @@ fn download(rel: &Release, dir: &Path, local: bool, cancel: &AtomicBool, progres
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
     let part = dir.join(format!("{}.{}-{nonce}.part", rel.name, std::process::id()));
     let mut resp = get(&agent, &rel.url, local, download_failed)?;
-    let file = std::fs::File::create(&part).map_err(|e| format!("Could not create {}: {e}", part.display()))?;
+    let file = create_part(&part).map_err(|e| format!("Could not create {}: {e}", part.display()))?;
     let got = copy_hashed(resp.body_mut().as_reader(), std::io::BufWriter::new(file), cancel, progress);
     match got {
         Ok(h) if h == expected => {
@@ -273,6 +294,7 @@ pub fn launch_installer(exe: &Path, sha256: &str, hidden: bool) -> std::io::Resu
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+    // A plain spawn, never proc::spawn: its Job Object is KILL_ON_JOB_CLOSE and would kill Setup as Milan exits.
     cmd.spawn().map(drop)
 }
 
@@ -332,7 +354,6 @@ impl Updater {
         let (api, local) = (self.api.clone(), self.local);
         self.spawn(ctx, move |tx| {
             std::thread::sleep(delay);
-            clean(&update_dir());
             let _ = tx.send(Msg::Checked(check(&api, local)));
         });
     }
@@ -487,6 +508,51 @@ mod tests {
         assert!(!url_allowed("http://localhost:8080/x", true));
         assert!(!url_allowed("http://github.com/x", true));
         assert!(!url_allowed("http://api.github.com/x", false));
+    }
+
+    #[test]
+    fn clean_downloads_removes_old_installers_and_parts() {
+        let dir = std::env::temp_dir().join(format!("milan-clean-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let removed = ["MilanPro-0.2.9-Setup.exe", "MilanPro-0.3.0-Setup.exe", "MilanPro-0.4.0-Setup.exe.12-34.part", "x.part"];
+        let kept = ["MilanPro-0.3.1-Setup.exe", "MilanPro-1.0.0-Setup.exe", "MilanPro-0.1-Setup.exe", "notes.txt", "MilanPro-0.2.0-Setup.exe.sha256"];
+        for n in removed.iter().chain(&kept) {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        // Left-over parts are old; a part just closed by a finished download (about to be renamed) is not.
+        for n in &removed[2..] {
+            let f = std::fs::File::options().write(true).open(dir.join(n)).unwrap();
+            f.set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
+        }
+        let finished = dir.join("MilanPro-0.4.0-Setup.exe.90-12.part");
+        std::fs::write(&finished, b"x").unwrap();
+        // A download another window is still writing.
+        let busy = dir.join("MilanPro-0.4.0-Setup.exe.56-78.part");
+        let writing = create_part(&busy).unwrap();
+        clean_downloads(&dir, "0.3.0");
+        for n in removed {
+            assert!(!dir.join(n).exists(), "{n} kept");
+        }
+        for n in kept {
+            assert!(dir.join(n).exists(), "{n} removed");
+        }
+        #[cfg(windows)]
+        assert!(busy.exists(), "an open .part was removed");
+        assert!(finished.exists(), "a just-finished .part was removed");
+        // A pre-release build keeps its own release's installer.
+        clean_downloads(&dir, "0.3.1-rc.1");
+        assert!(dir.join("MilanPro-0.3.1-Setup.exe").exists());
+        drop(writing);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn installer_launch_stays_out_of_the_job_object() {
+        // proc::spawn would put Setup in the KILL_ON_JOB_CLOSE job, which kills it as Milan exits.
+        let src = include_str!("updater.rs");
+        let body = src.split("pub fn launch_installer").nth(1).and_then(|s| s.split("\n}\n").next()).unwrap();
+        assert!(body.contains("cmd.spawn()"), "{body}");
+        assert!(!body.contains("proc::spawn(") && !body.contains("crate::proc"), "{body}");
     }
 
     #[cfg(windows)]
