@@ -84,6 +84,34 @@ pub struct Selection {
     pub tracks: Vec<String>,
     /// The track list had the last click: Delete removes the selected tracks when no event is selected.
     pub list_focus: bool,
+    /// Selected envelope points; Delete removes them before any event.
+    pub env: Option<EnvSel>,
+}
+
+/// Selected points of one track envelope: the track's id, the envelope kind and the point indices.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvSel {
+    pub track: String,
+    pub kind: crate::project::EnvKind,
+    pub keys: Vec<usize>,
+}
+
+/// An envelope point (or segment) drag: one undo step on release.
+pub struct EnvDrag {
+    pub track: String,
+    pub kind: crate::project::EnvKind,
+    /// The points it moves, and the one under the pointer (it snaps).
+    pub keys: Vec<usize>,
+    pub grab: usize,
+    /// A segment moves only up and down.
+    pub segment: bool,
+    /// The envelope at the press, and the press point's time and y.
+    pub orig: crate::project::Envelope,
+    pub press_t: f64,
+    pub press_y: f32,
+    /// Project before the drag; pushed to history on release if anything changed.
+    pub before: crate::project::Project,
+    pub changed: bool,
 }
 
 /// Edit › Editing Tool (not saved). Slip, Slide and Stretch make event drags slip, slide or stretch without modifiers.
@@ -119,6 +147,9 @@ pub struct EditOpts {
     /// A click selects (and a drag moves) the event's whole group unless this is on.
     pub ignore_grouping: bool,
     pub tool: EditTool,
+    /// View › Show Envelopes and Options › Lock Envelopes to Events.
+    pub show_envelopes: bool,
+    pub lock_envelopes: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

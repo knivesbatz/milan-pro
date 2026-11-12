@@ -37,6 +37,10 @@ pub struct Prefs {
     pub ripple_mode: crate::edit::RippleMode,
     /// Options › Ignore Event Grouping.
     pub ignore_grouping: bool,
+    /// View › Show Envelopes: track envelopes are drawn and editable.
+    pub show_envelopes: bool,
+    /// Options › Lock Envelopes to Events: envelope points move with the events over them.
+    pub lock_envelopes: bool,
 }
 
 impl Default for Prefs {
@@ -56,6 +60,8 @@ impl Default for Prefs {
             auto_ripple: false,
             ripple_mode: crate::edit::RippleMode::Affected,
             ignore_grouping: false,
+            show_envelopes: true,
+            lock_envelopes: true,
         }
     }
 }
@@ -268,6 +274,7 @@ mod tests {
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
+        assert!(d.show_envelopes && d.lock_envelopes);
         let r = Prefs { auto_ripple: true, ripple_mode: crate::edit::RippleMode::All, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
         let mut r = Prefs { recent_max: 2, ..Default::default() };

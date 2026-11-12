@@ -55,7 +55,9 @@ pub enum Command {
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, CheckForUpdates, About,
     // Context-menu and preference commands without default keys
-    EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute,
+    EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
+    /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
+    ToggleEnvelope(crate::project::EnvKind),
     /// Edit › Editing Tool items and the transport tool radios.
     Tool(super::EditTool),
     /// Options › Ripple modes and the transport Auto Ripple ▾ list.
@@ -306,6 +308,12 @@ pub fn keys(cmd: Command, look: UiLook) -> &'static [&'static str] {
 
 /// Shortcut text shown right-aligned in menus: the first binding, chords as "Alt+D, D".
 pub fn shortcut_text(cmd: Command, look: UiLook) -> String {
+    // Insert › Audio Envelopes › Volume / Pan show the V / P that insert them.
+    let cmd = match cmd {
+        Command::ToggleEnvelope(crate::project::EnvKind::Volume) => Command::VolumeEnvelope,
+        Command::ToggleEnvelope(crate::project::EnvKind::Pan) => Command::PanEnvelope,
+        c => c,
+    };
     keys(cmd, look).first().map(|k| fmt_key(k)).unwrap_or_default()
 }
 
@@ -498,6 +506,7 @@ mod tests {
         assert_eq!(shortcut_text(PlayPause, UiLook::Vegas23), "Space");
         assert_eq!(shortcut_text(SaveAs, UiLook::Vegas16), "");
         assert_eq!(shortcut_text(LayoutDefault, UiLook::Vegas23), "Alt+D, D");
+        assert_eq!(shortcut_text(ToggleEnvelope(crate::project::EnvKind::Pan), UiLook::Vegas23), "P");
         assert_eq!(mnemonic("Time && Fra&mes"), ("Time & Frames".to_string(), Some(10)));
         assert_eq!(mnemonic_key("E&xit"), Some(Key::X));
     }

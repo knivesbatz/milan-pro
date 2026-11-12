@@ -6,12 +6,12 @@ use eframe::egui::*;
 use crate::edit;
 use crate::history::History;
 use crate::project::*;
-use crate::ui::Selection;
+use crate::ui::{EnvSel, Selection};
 use super::super::keymap::Command::*;
 use super::super::menus::{self, M, M::*, Mark, cmd, entry, off, sep, sub};
 use super::super::theme::{self, UiLook};
 use super::ruler::band_rows;
-use super::{Geo, Rename, Row, TlState};
+use super::{FADE_PX, Geo, Rename, Row, TlState, envelopes};
 
 #[derive(Clone, PartialEq, Debug)]
 enum Target {
@@ -19,6 +19,11 @@ enum Target {
     ListEmpty,
     /// The overlap of two events on a track: (outgoing, incoming) ids.
     Crossfade(String, String),
+    /// An event's fade handle: (id, fade in).
+    Fade(String, bool),
+    /// A track envelope's point, or its line at a time (with the point starting that segment): track id, kind.
+    EnvPoint(String, EnvKind, usize),
+    EnvLine(String, EnvKind, f64, usize),
     Event,
     Lane(bool, usize),
     Selection,
@@ -33,7 +38,7 @@ enum Target {
 
 const TAG: Vec2 = vec2(13.0, 14.0);
 
-fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2) -> Option<Target> {
+fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, env_on: bool) -> Option<Target> {
     let t = theme::get();
     let tl = &project.timeline;
     if Rect::from_min_size(g.rect.min, vec2(g.header_w, t.m.band_h)).contains(p) {
@@ -62,6 +67,31 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2) ->
     }
     if g.lanes.contains(p) {
         let time = g.to_time(p.x);
+        // A fade handle: the top corner zone `hit_clip` drags the fade from.
+        let fade = row.filter(|r| p.y >= r.top + 1.0 && p.y - r.top - 1.0 <= FADE_PX).and_then(|r| {
+            tl.tracks(r.is_video)[r.idx].clips.iter().rev().find_map(|c| {
+                let (x0, x1) = (g.to_x(c.position), g.to_x(c.position + c.duration));
+                let (fi, fo) = (x0 + (c.fade_in * g.pps) as f32, x1 - (c.fade_out * g.pps) as f32);
+                if p.x < x0 || p.x > x1 {
+                    None
+                } else if (p.x - fi).abs() <= FADE_PX && p.x - x0 < x1 - p.x {
+                    Some(Target::Fade(c.id.clone(), true))
+                } else {
+                    ((p.x - fo).abs() <= FADE_PX).then(|| Target::Fade(c.id.clone(), false))
+                }
+            })
+        });
+        // An envelope point, else its line unless a fade handle is there.
+        if let Some(h) = envelopes::hit(g, rows, project, p).filter(|h| env_on && (h.point.is_some() || fade.is_none())) {
+            let tr = &tl.tracks(h.is_video)[h.track];
+            let (id, kind) = (tr.id.clone(), tr.envelopes[h.env].kind);
+            if !tr.locked {
+                return Some(match h.point {
+                    Some(k) => Target::EnvPoint(id, kind, k),
+                    None => Target::EnvLine(id, kind, time, h.seg),
+                });
+            }
+        }
         if let Some(r) = row {
             let clips = &tl.tracks(r.is_video)[r.idx].clips;
             let xfade = clips.iter().enumerate().find_map(|(i, a)| {
@@ -70,6 +100,9 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2) ->
             });
             if xfade.is_some() {
                 return xfade;
+            }
+            if fade.is_some() {
+                return fade;
             }
         }
         if !sel.clips.is_empty() {
@@ -92,16 +125,18 @@ pub(super) fn menu(
     rows: &[Row],
     project: &mut Project,
     history: &mut History,
-    sel: &Selection,
+    sel: &mut Selection,
     st: &mut TlState,
+    env_on: bool,
 ) {
     let tid = ui.id().with("ctx_target");
     let clicked = ui.input(|i| i.pointer.button_clicked(PointerButton::Secondary).then(|| i.pointer.interact_pos()).flatten());
     let open_at = clicked
         .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
-        .and_then(|p| target(g, rows, project, sel, p).map(|t| (p, t)));
+        .and_then(|p| target(g, rows, project, sel, p, env_on).map(|t| (p, t)));
     if let Some((_, tg)) = &open_at {
         ui.data_mut(|d| d.insert_temp(tid, tg.clone()));
+        st.env_text = None;
     }
     let Some(tg) = ui.data(|d| d.get_temp::<Target>(tid)) else { return };
     menus::context_at(response, open_at.map(|o| o.0), |ui| match tg {
@@ -133,6 +168,28 @@ pub(super) fn menu(
                 }
             });
         }
+        Target::Fade(ref id, is_in) => {
+            sub(ui, if is_in { "Fade &In" } else { "Fade &Out" }, true, |ui| {
+                let dir = if is_in { "in from" } else { "out to" };
+                for db in ["6.0 dB", "0 dB", "-Inf dB"] {
+                    off(ui, &format!("Fade {dir} {db}"));
+                }
+                sep(ui);
+                let cur = project.clip(id).map(|c| if is_in { c.fade_in_curve } else { c.fade_out_curve });
+                for (name, curve) in [("&Linear", Curve::Linear), ("S&mooth", Curve::Smooth), ("&Fast", Curve::Fast), ("&Slow", Curve::Slow), ("S&harp", Curve::Sharp)] {
+                    if entry(ui, name, "", true, Mark::Radio(cur == Some(curve))) {
+                        let before = project.clone();
+                        if edit::set_fade_curve(project, id, is_in, curve) {
+                            history.push(before);
+                        }
+                    }
+                }
+                sep(ui);
+                off(ui, "Reset ASR");
+            });
+        }
+        Target::EnvPoint(ref track, kind, k) => env_point(ui, project, history, sel, st, track, kind, k),
+        Target::EnvLine(ref track, kind, t, seg) => env_line(ui, project, history, sel, track, kind, t, seg),
         Target::Event => {
             let is_video = sel.clips.last().and_then(|id| project.find_clip(id)).is_some_and(|c| c.is_video);
             menus::show(ui, if is_video { VIDEO_EVENT } else { AUDIO_EVENT });
@@ -209,6 +266,127 @@ fn switches(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, 
     if v {
         toggle(ui, "Show in &Preview", tr.visible, |t| t.visible = !t.visible);
     }
+}
+
+/// Insert/Remove Envelope ▸ for one track: a check per envelope Milan Pro plays on it, the rest greyed out.
+fn env_toggles(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, i: usize) {
+    let items = if v {
+        [("&Mute", None), ("&Composite Level", Some(EnvKind::CompositeLevel)), ("&Fade to Color", None)]
+    } else {
+        [("&Mute", Some(EnvKind::Mute)), ("&Volume", Some(EnvKind::Volume)), ("&Pan", Some(EnvKind::Pan))]
+    };
+    for (label, kind) in items {
+        let (Some(kind), Some(tr)) = (kind, project.timeline.tracks(v).get(i)) else {
+            off(ui, label);
+            continue;
+        };
+        let (id, has) = (tr.id.clone(), tr.envelopes.iter().any(|e| e.kind == kind));
+        if entry(ui, label, "", !tr.locked, Mark::Check(has)) {
+            let before = project.clone();
+            if edit::set_envelope(project, &[id], kind, !has) {
+                history.push(before);
+            }
+        }
+    }
+}
+
+const ENV_CURVES: [(&str, Curve); 6] = [
+    ("&Linear Fade", Curve::Linear),
+    ("&Fast Fade", Curve::Fast),
+    ("&Slow Fade", Curve::Slow),
+    ("S&mooth Fade", Curve::Smooth),
+    ("S&harp Fade", Curve::Sharp),
+    ("H&old", Curve::Hold),
+];
+
+fn env_of<'a>(project: &'a Project, track: &str, kind: EnvKind) -> Option<&'a Envelope> {
+    let (v, i) = project.find_track(track)?;
+    project.timeline.tracks(v)[i].envelopes.iter().find(|e| e.kind == kind)
+}
+
+/// One undo step for an edit of envelope `kind` on track `track`.
+fn env_edit(project: &mut Project, history: &mut History, track: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) {
+    let before = project.clone();
+    if edit::edit_envelope(project, track, kind, f) {
+        history.push(before);
+    }
+}
+
+/// The curve items, checked by point `k`'s curve; they set the curve after each of points `keys`.
+fn env_curves(ui: &mut Ui, project: &mut Project, history: &mut History, track: &str, kind: EnvKind, k: usize, keys: &[usize]) {
+    let cur = env_of(project, track, kind).and_then(|e| e.points.keys.get(k)).map(|x| x.curve);
+    for (name, curve) in ENV_CURVES {
+        if entry(ui, name, "", true, Mark::Radio(cur == Some(curve))) {
+            env_edit(project, history, track, kind, |e| edit::env_set_curve(e, keys, curve));
+        }
+    }
+}
+
+/// Envelope point menu (§6.7). It acts on the selected points when the clicked one is among them.
+#[allow(clippy::too_many_arguments)]
+fn env_point(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Selection, st: &mut TlState, track: &str, kind: EnvKind, k: usize) {
+    let keys = sel.env.as_ref().filter(|s| s.track == track && s.kind == kind && s.keys.contains(&k)).map_or(vec![k], |s| s.keys.clone());
+    let lane_end = |f: f32| edit::env_clamp(kind, edit::lane_value(kind, f));
+    let (above, below) = envelopes::presets(kind);
+    let named = |v: f32| (format!("Set to {}", envelopes::value_text(kind, v)), v);
+    let items = std::iter::once(("Set to Ma&ximum".to_string(), lane_end(1.0)))
+        .chain(above.into_iter().map(named))
+        .chain([("Set to D&efault".to_string(), edit::env_default(kind))])
+        .chain(below.into_iter().map(named))
+        .chain([("Set to M&inimum".to_string(), lane_end(0.0))]);
+    for (label, v) in items {
+        if entry(ui, &label, "", true, Mark::None) {
+            env_edit(project, history, track, kind, |e| edit::env_set_values(e, &keys, v));
+        }
+    }
+    sep(ui);
+    sub(ui, "Set &To", true, |ui| {
+        let now = env_of(project, track, kind).and_then(|e| e.points.keys.get(k)).map_or(0.0, |x| x.v);
+        let text = st.env_text.get_or_insert_with(|| envelopes::value_text(kind, now));
+        let r = ui.add(TextEdit::singleline(text).desired_width(140.0));
+        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            if let Some(v) = envelopes::parse_value(kind, text) {
+                env_edit(project, history, track, kind, |e| edit::env_set_values(e, &keys, v));
+                ui.close_menu();
+            }
+        }
+    });
+    sep(ui);
+    if entry(ui, "&Delete", "", keys.iter().any(|&i| i > 0), Mark::None) {
+        env_edit(project, history, track, kind, |e| edit::env_delete(e, &keys));
+        sel.env = None; // the indices after the deleted points have moved
+    }
+    sep(ui);
+    env_curves(ui, project, history, track, kind, k, &keys);
+    sep(ui);
+    off(ui, "&Properties");
+}
+
+/// Envelope line menu (§6.7): `t` is where it was clicked, `seg` the point starting that segment.
+#[allow(clippy::too_many_arguments)]
+fn env_line(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Selection, track: &str, kind: EnvKind, t: f64, seg: usize) {
+    if entry(ui, "Add &Point", "", true, Mark::None) {
+        let mut k = None;
+        env_edit(project, history, track, kind, |e| {
+            k = Some(edit::env_insert(e, t, e.at(t)));
+            true
+        });
+        if let Some(k) = k {
+            sel.env = Some(EnvSel { track: track.to_string(), kind, keys: vec![k] });
+        }
+    }
+    sep(ui);
+    env_curves(ui, project, history, track, kind, seg, &[seg]);
+    sep(ui);
+    let all: [(&str, fn(&mut Envelope) -> bool); 3] = [("Fl&ip All Points", edit::env_flip), ("Thi&n All Points", edit::env_thin), ("&Reset All", edit::env_reset)];
+    for (label, f) in all {
+        if entry(ui, label, "", true, Mark::None) {
+            env_edit(project, history, track, kind, f);
+            sel.env = None; // Thin moves the indices
+        }
+    }
+    sep(ui);
+    off(ui, "&Properties");
 }
 
 /// Track ≡ / ⋯ button menu: the switches, default height and the button-set entry.
@@ -293,7 +471,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
             return;
         }
         sep(ui);
-        sub(ui, "Insert/Remove &Envelope", true, |ui| menus::show(ui, &[X("Mute"), X("Composite Level"), X("Fade to Color")]));
+        sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
         sep(ui);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
         sub(ui, "Fade &Colors", true, |ui| menus::show(ui, &[X("Top..."), X("Bottom...")]));
@@ -317,6 +495,8 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         }
         sep(ui);
         menus::show(ui, AUDIO_HEADER_MID);
+        sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
+        menus::show(ui, &[X("F&X Automation Envelopes..."), S]);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
         menus::show(ui, AUDIO_HEADER_END);
         track_group_and_color(ui);
@@ -339,9 +519,7 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
     }
     track_rows(ui, project, history, sel, st, v, i);
     sep(ui);
-    sub(ui, "Insert/Remove Envelope", true, |ui| {
-        menus::show(ui, if v { &[X("Mute"), X("Composite Level"), X("Fade to Color")] } else { &[X("Mute"), X("Volume"), X("Pan")] })
-    });
+    sub(ui, "Insert/Remove Envelope", true, |ui| env_toggles(ui, project, history, v, i));
     if v {
         sep(ui);
         sub(ui, "Fade Colors", true, |ui| menus::show(ui, &[X("Top..."), X("Bottom...")]));
@@ -411,9 +589,6 @@ const AUDIO_HEADER_MID: &[M] = &[
         R("Constant Power", false),
         R("Film", false),
     ]),
-    S,
-    Sub("Insert/Remove &Envelope", &[X("Mute"), X("Volume"), X("Pan")]),
-    X("F&X Automation Envelopes..."),
     S,
 ];
 
@@ -557,3 +732,34 @@ const TIME_DISPLAY: &[M] = &[
     Sub("Text Color", &[R("Default", true), X("Custom...")]),
     Sub("Background Color", &[R("Default", true), X("Custom...")]),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A right-click on a fade handle or an envelope gets their menus; with envelopes hidden, the lane's.
+    #[test]
+    fn right_click_targets_fades_and_envelopes() {
+        let mut p = Project::new("t");
+        let mut c = Clip::new("v", 2.0, 4.0); // x 20..60, fade-in handle at 30
+        c.fade_in = 1.0;
+        let id = c.id.clone();
+        p.timeline.video_tracks[0].clips.push(c);
+        edit::toggle_envelope(&mut p.timeline.audio_tracks[0], EnvKind::Pan); // centre: y 74 on the row 50..100
+        let a1 = p.timeline.audio_tracks[0].id.clone();
+        let lanes = Rect::from_min_max(Pos2::ZERO, pos2(1000.0, 300.0));
+        let g = Geo { rect: lanes, header_w: 0.0, list: Rect::ZERO, band: Rect::ZERO, lanes, vscroll: Rect::ZERO, hscroll: Rect::ZERO, pps: 10.0, scroll_x: 0.0 };
+        let rows = [Row { is_video: true, idx: 0, num: 0, top: 0.0, h: 50.0 }, Row { is_video: false, idx: 0, num: 1, top: 50.0, h: 50.0 }];
+        let sel = Selection::default();
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(30.0, 3.0), true), Some(Target::Fade(id.clone(), true)));
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(59.0, 3.0), true), Some(Target::Fade(id.clone(), false)));
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(2.0, 74.0), true), Some(Target::EnvPoint(a1.clone(), EnvKind::Pan, 0)));
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 75.0), true), Some(Target::EnvLine(a1, EnvKind::Pan, 50.0, 0)));
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 75.0), false), Some(Target::Lane(false, 0)));
+        // A Composite Level envelope at 100% runs along the top (y 2): the fade handles still win over its line.
+        edit::toggle_envelope(&mut p.timeline.video_tracks[0], EnvKind::CompositeLevel);
+        let v1 = p.timeline.video_tracks[0].id.clone();
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(30.0, 3.0), true), Some(Target::Fade(id, true)));
+        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 3.0), true), Some(Target::EnvLine(v1, EnvKind::CompositeLevel, 50.0, 0)));
+    }
+}

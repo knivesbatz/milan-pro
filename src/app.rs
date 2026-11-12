@@ -38,6 +38,8 @@ pub struct MeridianApp {
     /// change to the history (any edit, wherever it is made, or Undo, Redo, New, Open) makes it stale.
     last_edit: (u64, Vec<crate::edit::RippleOp>),
     pub drag_state: Option<DragState>,
+    /// An envelope point drag (its own undo step on release).
+    env_drag: Option<ui::EnvDrag>,
     pub timeline_scroll_y: f32,
     pub preview: Preview,
     pub audio: Player,
@@ -159,6 +161,7 @@ impl MeridianApp {
             tool: ui::EditTool::Normal,
             last_edit: Default::default(),
             drag_state: None,
+            env_drag: None,
             timeline_scroll_y: 0.0,
             preview: Preview::timeline(&cc.egui_ctx),
             audio: Player::new(),
@@ -221,7 +224,21 @@ impl MeridianApp {
             self.sel.clips.retain(|id| all.contains(id.as_str()));
         }
         self.sel.tracks.retain(|id| p.find_track(id).is_some());
+        // Envelope points: the envelope must still be there (an undo, a removed envelope) and so must the points.
+        let env_len = |s: &ui::EnvSel| p.find_track(&s.track).and_then(|(v, i)| p.timeline.tracks(v)[i].envelopes.iter().find(|e| e.kind == s.kind)).map(|e| e.points.keys.len());
+        if let Some(n) = self.sel.env.as_ref().map(env_len) {
+            let keep = self.sel.env.take().filter(|_| n.is_some()).map(|mut s| {
+                s.keys.retain(|k| *k < n.unwrap_or(0));
+                s
+            });
+            self.sel.env = keep.filter(|s| !s.keys.is_empty());
+        }
         self.selected_clip = self.sel.clips.last().and_then(|id| p.find_clip(id));
+    }
+
+    /// An event or envelope drag holds its own undo step.
+    fn dragging(&self) -> bool {
+        self.drag_state.is_some() || self.env_drag.is_some()
     }
 
     /// Files headed for the timeline this frame: dragged from Windows (or just dropped), else the Explorer window's
@@ -434,6 +451,7 @@ impl eframe::App for MeridianApp {
                 &mut self.project,
                 &mut self.sel,
                 &mut self.drag_state,
+                &mut self.env_drag,
                 &mut self.timeline_scroll_y,
                 &mut self.history,
                 opts,
@@ -499,7 +517,7 @@ impl eframe::App for MeridianApp {
             self.file_drop.drop(drag.files, None);
         }
         // Not during an event drag: it restores the tracks from its start every frame and would wipe the drop out.
-        while self.drag_state.is_none() {
+        while !self.dragging() {
             let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len, self.prefs.auto_crossfade) else { break };
             if let Some(before) = placed.before {
                 self.history.push(before);

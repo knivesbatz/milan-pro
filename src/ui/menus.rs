@@ -79,6 +79,15 @@ pub struct CmdState {
     pub auto_ripple: bool,
     pub ripple_mode: RippleMode,
     pub ignore_group: bool,
+    /// View › Show Envelopes, Options › Lock Envelopes to Events.
+    pub show_env: bool,
+    pub lock_env: bool,
+    /// Envelope points are selected (Delete removes them first).
+    pub env_sel: bool,
+    /// An audio / a video track is selected, and the envelopes the focus track of each kind has.
+    pub audio_track_focus: bool,
+    pub video_track_focus: bool,
+    pub focus_envs: Vec<EnvKind>,
 }
 
 impl CmdState {
@@ -97,7 +106,10 @@ impl CmdState {
             // With nothing selected, Split splits every event under the cursor.
             Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
             // With Auto Ripple, Delete with only a time selection deletes that time.
-            Delete => self.n_sel > 0 || (self.list_focus && self.tracks_sel) || (self.auto_ripple && self.selection),
+            Delete => self.env_sel || self.n_sel > 0 || (self.list_focus && self.tracks_sel) || (self.auto_ripple && self.selection),
+            ShowEnvelopes | LockEnvelopes => true,
+            VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope => self.audio_track_focus,
+            ToggleEnvelope(k) => if crate::edit::env_fits(k, true) { self.video_track_focus } else { self.audio_track_focus },
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
@@ -138,10 +150,13 @@ impl CmdState {
             EventMute => self.clip_muted,
             SpacePlayPause => self.space_pauses,
             Quantize => self.quantize,
+            ShowEnvelopes => self.show_env,
+            LockEnvelopes => self.lock_env,
+            ToggleEnvelope(k) => self.focus_envs.contains(&k),
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            SnapGrid | SnapAllEvents | BusTracks | VideoBusTrack | MediaMarkers | ShowEnvelopes | Multicam
+            SnapGrid | SnapAllEvents | BusTracks | VideoBusTrack | MediaMarkers | Multicam
             | ExternalMonitor => false,
             _ => return None,
         })
@@ -634,10 +649,11 @@ pub const VIEW: &[M] = &[
 ];
 
 pub const INSERT: &[M] = &[
-    Sub("A&udio Envelopes", &[K("&Mute", false), C("&Volume", VolumeEnvelope), C("&Pan", PanEnvelope)]),
+    // Insert/Remove: checked while the focus track has it (V and P only insert; Shift+V and Shift+P remove).
+    Sub("A&udio Envelopes", &[C("&Mute", ToggleEnvelope(EnvKind::Mute)), C("&Volume", ToggleEnvelope(EnvKind::Volume)), C("&Pan", ToggleEnvelope(EnvKind::Pan))]),
     Sub("V&ideo Envelopes", &[
         X("Track &Mute"),
-        X("Track &Composite Level"),
+        C("Track &Composite Level", ToggleEnvelope(EnvKind::CompositeLevel)),
         X("Track &Fade to Color"),
         S,
         X("Event &Velocity"),
@@ -796,7 +812,7 @@ pub const OPTIONS: &[M] = &[
         R("Affected Tracks, &Markers, and Regions", false),
         C("&All Tracks, Markers, and Regions", RippleMode(RippleMode::All)),
     ]),
-    K("Lock En&velopes to Events", true),
+    C("Lock En&velopes to Events", LockEnvelopes),
     C("I&gnore Event Grouping", IgnoreGrouping),
     K("Slip All Ta&kes", false),
     S,

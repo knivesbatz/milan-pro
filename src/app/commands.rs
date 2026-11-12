@@ -54,7 +54,22 @@ impl MeridianApp {
             auto_ripple: self.prefs.auto_ripple,
             ripple_mode: self.prefs.ripple_mode,
             ignore_group: self.prefs.ignore_grouping,
+            show_env: self.prefs.show_envelopes,
+            lock_env: self.prefs.lock_envelopes,
+            env_sel: self.sel.env.as_ref().is_some_and(|e| e.keys.iter().any(|&k| k > 0)),
+            audio_track_focus: self.focus_of(false).is_some(),
+            video_track_focus: self.focus_of(true).is_some(),
+            focus_envs: [false, true]
+                .into_iter()
+                .filter_map(|v| self.focus_of(v).map(|i| (v, i)))
+                .flat_map(|(v, i)| tl.tracks(v)[i].envelopes.iter().filter(move |e| edit::env_fits(e.kind, v)).map(|e| e.kind))
+                .collect(),
         }
+    }
+
+    /// The focus track of one kind: the last selected track of that kind.
+    fn focus_of(&self, video: bool) -> Option<usize> {
+        self.sel.tracks.iter().rev().filter_map(|id| self.project.find_track(id)).find(|f| f.0 == video).map(|f| f.1)
     }
 
     /// The editing options the timeline follows.
@@ -67,6 +82,8 @@ impl MeridianApp {
             ripple: p.auto_ripple.then_some(p.ripple_mode),
             ignore_grouping: p.ignore_grouping,
             tool: self.tool,
+            show_envelopes: p.show_envelopes,
+            lock_envelopes: p.lock_envelopes,
         }
     }
 
@@ -125,7 +142,7 @@ impl MeridianApp {
 
     /// One undoable edit (not while a timeline drag holds its own undo step).
     fn edit(&mut self, f: impl FnOnce(&mut Project) -> bool) -> bool {
-        if self.drag_state.is_some() {
+        if self.dragging() {
             return false;
         }
         let before = self.project.clone();
@@ -224,7 +241,7 @@ impl MeridianApp {
         // An event drag restores the tracks every frame and pushes its own undo step on release: anything else that
         // changes tracks or pushes history now would be wiped or leave a mid-drag snapshot.
         let changes_tracks = matches!(c, InsertMarker | InsertRegion | MinimizeTracks | TracksTaller | TracksShorter | DefaultTrackHeights);
-        if changes_tracks && self.drag_state.is_some() {
+        if changes_tracks && self.dragging() {
             return;
         }
         let v16 = st.look == UiLook::Vegas16;
@@ -269,9 +286,10 @@ impl MeridianApp {
                     }
                 }
                 if done {
-                    // Selections keep the ids that still exist (`sync_sel`); a media index may point elsewhere now.
-                    self.selected_media = None;
+                    // Selections keep the ids that still exist (`sync_sel`); a media or point index may point elsewhere now.
+                    (self.selected_media, self.sel.env) = (None, None);
                     self.drag_state = None;
+                    self.env_drag = None;
                 }
             }
             ClearHistory => self.history.clear(),
@@ -289,7 +307,7 @@ impl MeridianApp {
                         (!t.locked && !c.locked).then(|| c.id.clone())
                     })
                     .collect();
-                if !ids.is_empty() && self.drag_state.is_none() {
+                if !ids.is_empty() && !self.dragging() {
                     self.clipboard = edit::copy_clips(&self.project, &ids);
                     self.delete_rippled(&ids);
                 }
@@ -317,7 +335,7 @@ impl MeridianApp {
                     Some(vec![edit::RippleOp { exclude: ids.clone(), ..op }])
                 });
                 if !ids.is_empty() {
-                    self.sel.clips = ids;
+                    (self.sel.clips, self.sel.env) = (ids, None);
                 }
             }
             Delete => {
@@ -326,7 +344,11 @@ impl MeridianApp {
                 // selection affects all events in it, which keeps grouped video and audio in sync).
                 let (clips, tracks) = (self.sel.clips.clone(), self.sel.tracks.clone());
                 let range = self.project.timeline.loop_region.filter(|(a, b)| b > a && self.prefs.auto_ripple);
-                if self.sel.list_focus && !tracks.is_empty() {
+                // Selected envelope points go first (the first point of an envelope stays: then the events go).
+                let es = self.sel.env.clone().filter(|e| e.keys.iter().any(|&k| k > 0));
+                if es.is_some_and(|es| self.edit(|p| edit::edit_envelope(p, &es.track, es.kind, |e| edit::env_delete(e, &es.keys)))) {
+                    self.sel.env = None;
+                } else if self.sel.list_focus && !tracks.is_empty() {
                     self.edit(|p| edit::delete_tracks(p, &tracks));
                 } else if !clips.is_empty() {
                     self.delete_rippled(&clips);
@@ -344,8 +366,9 @@ impl MeridianApp {
             SelectAll => {
                 let tl = &self.project.timeline;
                 self.sel.clips = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).map(|c| c.id.clone()).collect();
+                self.sel.env = None;
             }
-            SelectNone => self.sel.clips.clear(),
+            SelectNone => (self.sel.clips, self.sel.env) = (Vec::new(), None),
             Trim | TrimStart | TrimEnd => {
                 let tl = &self.project.timeline;
                 let (a, b) = match c {
@@ -554,6 +577,34 @@ impl MeridianApp {
                 self.save_prefs();
             }
             MinimizeTracks => edit::toggle_minimize(&mut self.project, &mut self.minimized, ui::MIN_TRACK_H),
+            // Envelopes on the selected tracks they fit. V and P only insert (VEGAS's V shows and hides, it never
+            // deletes points); Shift+V, Shift+P and a checked Insert/Remove item remove.
+            VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope | ToggleEnvelope(_) => {
+                use crate::project::EnvKind;
+                let (kind, on) = match c {
+                    VolumeEnvelope => (EnvKind::Volume, true),
+                    PanEnvelope => (EnvKind::Pan, true),
+                    RemoveVolumeEnvelope => (EnvKind::Volume, false),
+                    RemovePanEnvelope => (EnvKind::Pan, false),
+                    ToggleEnvelope(k) => (k, !st.focus_envs.contains(&k)),
+                    _ => return,
+                };
+                let ids = self.sel.tracks.clone();
+                if self.edit(|p| edit::set_envelope(p, &ids, kind, on)) && on && !self.prefs.show_envelopes {
+                    self.prefs.show_envelopes = true;
+                    self.save_prefs();
+                }
+            }
+            ShowEnvelopes | LockEnvelopes => {
+                let p = &mut self.prefs;
+                if c == ShowEnvelopes {
+                    p.show_envelopes = !p.show_envelopes;
+                    self.sel.env = None;
+                } else {
+                    p.lock_envelopes = !p.lock_envelopes;
+                }
+                self.save_prefs();
+            }
             Snapping => self.snapping = !self.snapping,
             AutoCrossfade | AutoRipple | IgnoreGrouping | RippleMode(_) => {
                 let p = &mut self.prefs;
@@ -578,7 +629,7 @@ impl MeridianApp {
                     _ => edit::clear_groups(p, &ids),
                 });
             }
-            SelectGroup => self.sel.clips = edit::expand_groups(&self.project, &self.sel.clips),
+            SelectGroup => (self.sel.clips, self.sel.env) = (edit::expand_groups(&self.project, &self.sel.clips), None),
             // Post-Edit Ripple: the last edit's ripple, once, in the item's mode.
             RippleAffected | RippleBus | RippleAll => {
                 let mode = match c {
@@ -677,6 +728,7 @@ impl MeridianApp {
         // Files dropped on the old project's timeline are not placed in this one.
         self.file_drop.reset();
         self.drag_state = None;
+        self.env_drag = None;
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {

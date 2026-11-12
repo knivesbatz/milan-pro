@@ -51,6 +51,7 @@ fn trim_left_edge(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limi
     clip.position = start;
     clip.duration = end - start;
     clip.in_point = if shift { (orig.in_point + (start - orig.position) * orig.rate).max(0.0) } else { orig.in_point };
+    rebase_keys(clip, orig, orig.position - start);
     keep_fades(clip, orig);
 }
 
@@ -221,6 +222,7 @@ pub fn split_clip(clip: &Clip, at: f64) -> Option<(Clip, Clip)> {
     second.position = at;
     second.duration -= first_dur;
     second.fade_in = 0.0;
+    shift_clip_keys(&mut second, -first_dur);
     // The half that plays first in source order starts at in_point; reversed, that is the second half.
     if clip.reverse {
         first.in_point += second.duration * clip.rate;
@@ -663,8 +665,9 @@ pub fn trim_ripple(before: &Project, o: &Clip, c: &Clip, ids: &[String], tracks:
 
 /// Move events `ids` by `dt` seconds and `dtrack` tracks (the same index offset within each kind). The earliest
 /// stays at or after 0. A hop onto a missing or locked track refuses the whole move; locked events stay where they
-/// are. Touched tracks are stable-sorted by position.
-pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize) -> bool {
+/// are. Touched tracks are stable-sorted by position. With `lock_env` (Lock Envelopes to Events) the tracks'
+/// envelope points under the moved events go with them (`carry_envelope_points`).
+pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize, lock_env: bool) -> bool {
     let tl = &project.timeline;
     let refs: Vec<ClipRef> = project
         .find_clips(ids)
@@ -682,6 +685,7 @@ pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize)
     if dt == 0.0 && dtrack == 0 {
         return false;
     }
+    let spans: Vec<_> = refs.iter().zip(&targets).map(|(r, &to)| (r.is_video, r.track_idx, to, at(r).position, at(r).position + at(r).duration)).collect();
     // Take them out from the highest index down so the other indices stay valid, then place them.
     let mut order: Vec<usize> = (0..refs.len()).collect();
     order.sort_by_key(|&k| std::cmp::Reverse((refs[k].is_video, refs[k].track_idx, refs[k].clip_idx)));
@@ -702,6 +706,9 @@ pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize)
     }
     for (v, i) in touched {
         tl.tracks_mut(v)[i].clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    if lock_env {
+        carry_spans(tl, spans, dt);
     }
     changed(project, true)
 }
@@ -931,6 +938,386 @@ pub fn drop_media(project: &mut Project, idxs: &[usize], range: Option<(f64, f64
     apply_drop(project, plan, xfade)
 }
 
+/// Fade In ▸ / Fade Out ▸ curve of event `id`.
+pub fn set_fade_curve(project: &mut Project, id: &str, is_in: bool, curve: Curve) -> bool {
+    let Some(r) = project.find_clip(id) else { return false };
+    let c = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx];
+    let f = if is_in { &mut c.fade_in_curve } else { &mut c.fade_out_curve };
+    let done = *f != curve;
+    *f = curve;
+    changed(project, done)
+}
+
+// ---- Envelopes ----
+
+/// Two points closer than this in time are one place.
+const KEY_EPS: f64 = 1e-9;
+/// The least time between a dragged point and its neighbours.
+const KEY_GAP: f64 = 1e-6;
+
+/// The value of a new envelope's point (Set to Default, Reset All).
+pub fn env_default(kind: EnvKind) -> f32 {
+    kind.neutral()
+}
+
+/// An envelope's values: dB for Volume (+6 at the lane top, -120 is silence), -1 (left) ..= 1 (right) for Pan, 0..=1
+/// for the rest.
+pub fn env_range(kind: EnvKind) -> (f32, f32) {
+    match kind {
+        EnvKind::Volume => (-120.0, 6.0),
+        EnvKind::Pan => (-1.0, 1.0),
+        _ => (0.0, 1.0),
+    }
+}
+
+/// `v` inside the range; a Mute point is on (1) or off (0).
+pub fn env_clamp(kind: EnvKind, v: f32) -> f32 {
+    let (lo, hi) = env_range(kind);
+    let v = v.clamp(lo, hi);
+    if kind == EnvKind::Mute { v.round() } else { v }
+}
+
+/// The track envelopes Milan Pro plays: Volume, Pan and Mute on audio tracks, Composite Level on video tracks.
+pub fn env_fits(kind: EnvKind, video: bool) -> bool {
+    matches!((kind, video), (EnvKind::Volume | EnvKind::Pan | EnvKind::Mute, false) | (EnvKind::CompositeLevel, true))
+}
+
+/// Height of value `v` in the envelope's lane, 0 (bottom) ..= 1 (top). Volume: 0 dB at 0.7, linear up to +6 dB at the
+/// top and 0.7 x 10^(dB / 40) below; Pan: left at the top; the rest linear over their range.
+pub fn lane_frac(kind: EnvKind, v: f32) -> f32 {
+    let (lo, hi) = env_range(kind);
+    match kind {
+        EnvKind::Volume if v >= 0.0 => 0.7 + 0.3 * v.min(hi) / hi,
+        EnvKind::Volume => 0.7 * 10f32.powf(v.max(lo) / 40.0),
+        EnvKind::Pan => (1.0 - v.clamp(lo, hi)) / 2.0,
+        _ => ((v - lo) / (hi - lo)).clamp(0.0, 1.0),
+    }
+}
+
+/// The value at lane height `f` (the inverse of `lane_frac`).
+pub fn lane_value(kind: EnvKind, f: f32) -> f32 {
+    let f = f.clamp(0.0, 1.0);
+    let (lo, hi) = env_range(kind);
+    match kind {
+        EnvKind::Volume if f >= 0.7 => (f - 0.7) / 0.3 * hi,
+        EnvKind::Volume => (40.0 * (f / 0.7).log10()).max(lo),
+        EnvKind::Pan => 1.0 - 2.0 * f,
+        _ => lo + f * (hi - lo),
+    }
+}
+
+/// Insert/Remove Envelope: add envelope `kind` to the track (one point at 0 holding the default), or remove it.
+pub fn toggle_envelope(track: &mut Track, kind: EnvKind) -> bool {
+    let n = track.envelopes.len();
+    track.envelopes.retain(|e| e.kind != kind);
+    if track.envelopes.len() == n {
+        let curve = if kind == EnvKind::Mute { Curve::Hold } else { Curve::Linear };
+        track.envelopes.push(Envelope { kind, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: env_default(kind), curve }] } });
+    }
+    true
+}
+
+/// Insert (`on`) or remove envelope `kind` on the unlocked tracks `ids` it fits (`env_fits`).
+pub fn set_envelope(project: &mut Project, ids: &[String], kind: EnvKind, on: bool) -> bool {
+    let mut done = false;
+    for t in tracks_mut(&mut project.timeline).filter(|t| ids.contains(&t.id) && !t.locked && env_fits(kind, t.kind == TrackKind::Video)) {
+        if t.envelopes.iter().any(|e| e.kind == kind) != on {
+            done |= toggle_envelope(t, kind);
+        }
+    }
+    changed(project, done)
+}
+
+/// Run `f` on envelope `kind` of track `track` (unless the track is locked).
+pub fn edit_envelope(project: &mut Project, track: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    let Some((v, i)) = project.find_track(track) else { return false };
+    let t = &mut project.timeline.tracks_mut(v)[i];
+    let done = !t.locked && t.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+    changed(project, done)
+}
+
+/// Add a point at `t` holding `v`; it takes its left neighbour's curve (Mute points hold). Returns its index.
+pub fn env_insert(env: &mut Envelope, t: f64, v: f32) -> usize {
+    let keys = &mut env.points.keys;
+    let t = t.max(0.0);
+    let i = keys.partition_point(|k| k.t <= t);
+    let curve = if env.kind == EnvKind::Mute { Curve::Hold } else { i.checked_sub(1).map_or(Curve::Linear, |j| keys[j].curve) };
+    keys.insert(i, Keyframe { t, v: env_clamp(env.kind, v), curve });
+    i
+}
+
+/// Drag of points `sel` as they are in `orig` by `dt` seconds and `df` of the lane height: they move together, strictly
+/// between their unselected neighbours (the first point keeps its time), with values in the range. True when `env`
+/// now differs from `orig`.
+pub fn env_move(env: &mut Envelope, orig: &Envelope, sel: &[usize], dt: f64, df: f32) -> bool {
+    let keys = &orig.points.keys;
+    let sel: Vec<usize> = sel.iter().copied().filter(|&i| i < keys.len()).collect();
+    let mut dt = if sel.contains(&0) { 0.0 } else { dt };
+    for &i in &sel {
+        if let Some(p) = (0..i).rev().find(|j| !sel.contains(j)) {
+            dt = dt.max(keys[p].t + KEY_GAP - keys[i].t);
+        }
+        if let Some(n) = (i + 1..keys.len()).find(|j| !sel.contains(j)) {
+            dt = dt.min(keys[n].t - KEY_GAP - keys[i].t);
+        }
+    }
+    let mut out = orig.clone();
+    for &i in &sel {
+        let k = &mut out.points.keys[i];
+        k.t = (k.t + dt).max(0.0);
+        if df != 0.0 {
+            k.v = env_clamp(orig.kind, lane_value(orig.kind, lane_frac(orig.kind, k.v) + df));
+        }
+    }
+    *env = out;
+    env != orig
+}
+
+/// Delete points `sel`; the first point stays, so the envelope is never empty.
+pub fn env_delete(env: &mut Envelope, sel: &[usize]) -> bool {
+    let n = env.points.keys.len();
+    let mut i = 0;
+    env.points.keys.retain(|_| {
+        i += 1;
+        i == 1 || !sel.contains(&(i - 1))
+    });
+    env.points.keys.len() != n
+}
+
+/// Points `sel` take value `v` (Set to Maximum / Default / Minimum, Set To...).
+pub fn env_set_values(env: &mut Envelope, sel: &[usize], v: f32) -> bool {
+    let v = env_clamp(env.kind, v);
+    let mut done = false;
+    for (_, k) in env.points.keys.iter_mut().enumerate().filter(|(i, _)| sel.contains(i)) {
+        done |= k.v != v;
+        k.v = v;
+    }
+    done
+}
+
+/// The curve of the segment after each of points `sel`.
+pub fn env_set_curve(env: &mut Envelope, sel: &[usize], curve: Curve) -> bool {
+    let mut done = false;
+    for (_, k) in env.points.keys.iter_mut().enumerate().filter(|(i, _)| sel.contains(i)) {
+        done |= k.curve != curve;
+        k.curve = curve;
+    }
+    done
+}
+
+/// Flip All Points: each point mirrored about the middle of the lane.
+pub fn env_flip(env: &mut Envelope) -> bool {
+    let kind = env.kind;
+    let mut done = false;
+    for k in &mut env.points.keys {
+        let v = env_clamp(kind, lane_value(kind, 1.0 - lane_frac(kind, k.v)));
+        done |= v != k.v;
+        k.v = v;
+    }
+    done
+}
+
+/// Thin All Points: drop points the envelope would pass within 0.005 of the lane height of without them.
+pub fn env_thin(env: &mut Envelope) -> bool {
+    let (kind, n) = (env.kind, env.points.keys.len());
+    let keys = &mut env.points.keys;
+    let mut i = 1;
+    while i + 1 < keys.len() {
+        let (a, k, b) = (&keys[i - 1], &keys[i], &keys[i + 1]);
+        let s = a.curve.shape((k.t - a.t) / (b.t - a.t).max(KEY_EPS)) as f32;
+        let without = a.v + (b.v - a.v) * s;
+        if (lane_frac(kind, without) - lane_frac(kind, k.v)).abs() <= 0.005 && k.curve == a.curve {
+            keys.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    keys.len() != n
+}
+
+/// Reset All: every point to the default value.
+pub fn env_reset(env: &mut Envelope) -> bool {
+    let all: Vec<usize> = (0..env.points.keys.len()).collect();
+    env_set_values(env, &all, env_default(env.kind))
+}
+
+/// Indices of the points in `a..=b`.
+pub fn keys_in_span(env: &Envelope, a: f64, b: f64) -> Vec<usize> {
+    env.points.keys.iter().enumerate().filter(|(_, k)| k.t >= a - KEY_EPS && k.t <= b + KEY_EPS).map(|(i, _)| i).collect()
+}
+
+/// Keys are event-relative and stay put on the timeline: when an event's start moves by `-dt` (a left trim, the
+/// right half of a split), every keyframe list on it (envelopes, Pan/Crop, FX parameters) shifts by `dt`. Keys that
+/// land before 0 go, and a key at 0 keeps the value there.
+pub fn shift_clip_keys(clip: &mut Clip, dt: f64) {
+    for e in &mut clip.envelopes {
+        shift_keys(&mut e.points, dt);
+    }
+    shift_keys(&mut clip.pan_crop, dt);
+    for k in clip.fx.iter_mut().flat_map(|f| f.params.values_mut()) {
+        shift_keys(k, dt);
+    }
+}
+
+// shortcut: the boundary key keeps the cut segment's curve, so only linear segments stay exact; split curves if needed.
+fn shift_keys<T: crate::engine::keyframes::Lerp + Default>(k: &mut Keyframes<T>, dt: f64) {
+    if k.keys.is_empty() || dt == 0.0 {
+        return;
+    }
+    let at0 = k.at(-dt);
+    k.shift(dt);
+    let gone = k.keys.partition_point(|x| x.t < -KEY_EPS);
+    if gone > 0 {
+        let curve = k.keys[gone - 1].curve;
+        k.keys.drain(..gone);
+        if k.keys.first().is_none_or(|x| x.t > KEY_EPS) {
+            k.keys.insert(0, Keyframe { t: 0.0, v: at0, curve });
+        }
+    }
+}
+
+/// `clip`'s keyframe lists as `orig` had them, shifted by `dt` (a trim recomputes from the original every frame).
+fn rebase_keys(clip: &mut Clip, orig: &Clip, dt: f64) {
+    clip.envelopes.clone_from(&orig.envelopes);
+    clip.pan_crop.clone_from(&orig.pan_crop);
+    clip.fx.clone_from(&orig.fx);
+    shift_clip_keys(clip, dt);
+}
+
+/// A point at `t` holding the envelope's value there, with the curve of the segment it lands on.
+fn key_at(k: &Keyframes<f32>, t: f64) -> Keyframe<f32> {
+    let i = k.keys.partition_point(|x| x.t <= t);
+    let curve = k.keys.get(i.saturating_sub(1)).map_or(Curve::Linear, |x| x.curve);
+    Keyframe { t, v: k.at(t), curve }
+}
+
+/// `keys` (each flagged true when added by a carry, not the user's) in time order, without points that change
+/// nothing: a run of points at one time keeps its first value and its last value and curve, and an added point
+/// goes where the envelope is flat or a straight line through it.
+fn sorted_keys(mut keys: Vec<(Keyframe<f32>, bool)>) -> Keyframes<f32> {
+    keys.sort_by(|a, b| a.0.t.total_cmp(&b.0.t)); // stable: equal times keep their order (a step)
+    let same = |a: &Keyframe<f32>, b: &Keyframe<f32>| (a.t - b.t).abs() <= KEY_EPS;
+    let mut out: Vec<(Keyframe<f32>, bool)> = Vec::new();
+    for k in keys {
+        let n = out.len();
+        if n >= 2 && same(&out[n - 2].0, &k.0) && same(&out[n - 1].0, &k.0) {
+            out.pop(); // a point between two at its time changes nothing
+        }
+        match out.last_mut() {
+            Some(l) if same(&l.0, &k.0) && (l.0.v - k.0.v).abs() <= 1e-5 => *l = (k.0, l.1 && k.1),
+            _ => out.push(k),
+        }
+    }
+    let mut i = 1;
+    while i < out.len() {
+        let (p, k) = (&out[i - 1].0, &out[i].0);
+        let flat = |a: f32, b: f32| (a - b).abs() <= 1e-5;
+        let redundant = out[i].1
+            && match out.get(i + 1).map(|n| &n.0) {
+                None => flat(p.v, k.v),
+                Some(n) => {
+                    let on_line = p.curve == Curve::Linear && k.curve == Curve::Linear && n.t - p.t > KEY_EPS && flat(p.v + (n.v - p.v) * ((k.t - p.t) / (n.t - p.t)) as f32, k.v);
+                    (flat(p.v, k.v) && flat(k.v, n.v)) || on_line
+                }
+            };
+        if redundant {
+            out.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    Keyframes { keys: out.into_iter().map(|k| k.0).collect() }
+}
+
+fn user(k: &Keyframe<f32>) -> (Keyframe<f32>, bool) {
+    (k.clone(), false)
+}
+
+/// `k` with its points in `a..=b` taken out and points at `a` and `b` holding its values there.
+fn cut_keys(k: &Keyframes<f32>, a: f64, b: f64) -> Keyframes<f32> {
+    let mut keys: Vec<_> = k.keys.iter().filter(|x| x.t < a - KEY_EPS || x.t > b + KEY_EPS).map(user).collect();
+    keys.extend([(key_at(k, a), true), (key_at(k, b), true)]);
+    sorted_keys(keys)
+}
+
+/// `into` with `from`'s points in `a..=b` moved by `d`, replacing the points in the destination span. The values
+/// just outside it stay (a point at each edge where `edge(t)` allows), and the moved span starts and ends with
+/// `from`'s values at `a` and `b`.
+fn paste_keys(into: &Keyframes<f32>, from: &Keyframes<f32>, (a, b): (f64, f64), d: f64, edge: impl Fn(f64) -> bool) -> Keyframes<f32> {
+    let (c, e) = (a + d, b + d);
+    let inside = |t: f64, lo: f64, hi: f64| t >= lo - KEY_EPS && t <= hi + KEY_EPS;
+    let has = |t: f64| from.keys.iter().any(|x| (x.t - t).abs() <= KEY_EPS);
+    let mut keys: Vec<_> = into.keys.iter().filter(|x| !inside(x.t, c, e)).map(user).collect();
+    if edge(c) {
+        keys.push((key_at(into, c), true));
+    }
+    if !has(a) {
+        keys.push((Keyframe { t: c, ..key_at(from, a) }, true));
+    }
+    keys.extend(from.keys.iter().filter(|x| inside(x.t, a, b)).map(|x| (Keyframe { t: x.t + d, ..x.clone() }, false)));
+    if !has(b) {
+        keys.push((Keyframe { t: e, ..key_at(from, b) }, true));
+    }
+    if edge(e) {
+        keys.push((key_at(into, e), true));
+    }
+    sorted_keys(keys)
+}
+
+/// Lock Envelopes to Events: events covering `span` on `track` moved by `delta`, and its envelope points go with
+/// them. Points in the destination span go; points just outside both spans keep their values.
+pub fn carry_envelope_points(track: &mut Track, span: (f64, f64), delta: f64) -> bool {
+    let (a, b) = span;
+    let mut done = false;
+    for e in track.envelopes.iter_mut().filter(|e| !e.points.keys.is_empty() && delta != 0.0) {
+        // An edge of the destination inside the vacated span gets no point: the vacated part holds the edge value.
+        let new = paste_keys(&cut_keys(&e.points, a, b), &e.points, span, delta, |t| !(t > a + KEY_EPS && t < b - KEY_EPS));
+        done |= new != e.points;
+        e.points = new;
+    }
+    done
+}
+
+/// Carry the envelope points of moved events: `spans` are (is video, from track, to track, start, end) before a move
+/// by `d`. Spans that meet on one track pair move as one; on one track in the direction of the move, so none lands on
+/// points another has still to take. Across tracks every source is cut first and the points pasted come from the
+/// envelopes as they were, so a track that is both a source and a destination keeps its own points moving.
+// shortcut: points go only to an envelope of the same kind the destination already has; add one there if users ask.
+fn carry_spans(tl: &mut Timeline, mut spans: Vec<(bool, usize, usize, f64, f64)>, d: f64) {
+    spans.sort_by(|x, y| (x.0, x.1, x.2).cmp(&(y.0, y.1, y.2)).then(x.3.total_cmp(&y.3)));
+    let mut merged: Vec<(bool, usize, usize, f64, f64)> = Vec::new();
+    for s in spans {
+        match merged.last_mut() {
+            Some(m) if (m.0, m.1, m.2) == (s.0, s.1, s.2) && s.3 <= m.4 + KEY_EPS => m.4 = m.4.max(s.4),
+            _ => merged.push(s),
+        }
+    }
+    if d > 0.0 {
+        merged.reverse();
+    }
+    let before: [Vec<Vec<Envelope>>; 2] = [false, true].map(|v| tl.tracks(v).iter().map(|t| t.envelopes.clone()).collect());
+    let goes = |src: &Envelope, dst: &[Envelope]| !src.points.keys.is_empty() && dst.iter().any(|e| e.kind == src.kind && !e.points.keys.is_empty());
+    for &(v, from, to, a, b) in &merged {
+        let tracks = tl.tracks_mut(v);
+        if from == to {
+            carry_envelope_points(&mut tracks[from], (a, b), d);
+            continue;
+        }
+        for k in 0..tracks[from].envelopes.len() {
+            if goes(&tracks[from].envelopes[k], &before[v as usize][to]) {
+                tracks[from].envelopes[k].points = cut_keys(&tracks[from].envelopes[k].points, a, b);
+            }
+        }
+    }
+    for &(v, from, to, a, b) in merged.iter().filter(|s| s.1 != s.2) {
+        for src in before[v as usize][from].iter().filter(|s| goes(s, &before[v as usize][to])) {
+            if let Some(e) = tl.tracks_mut(v)[to].envelopes.iter_mut().find(|e| e.kind == src.kind && !e.points.keys.is_empty()) {
+                e.points = paste_keys(&e.points, &src.points, (a, b), d, |_| true);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1015,7 +1402,7 @@ mod tests {
         let id = vec![p.timeline.video_tracks[0].clips[0].id.clone()];
         assert!(!split_ids(&mut p, &id, 2.0));
         assert!(!delete_clips(&mut p, &id));
-        assert!(!move_clips(&mut p, &id, 1.0, 0));
+        assert!(!move_clips(&mut p, &id, 1.0, 0, false));
         p.timeline.video_tracks[0].locked = false;
         assert!(split_ids(&mut p, &id, 2.0));
         assert_eq!(p.timeline.video_tracks[0].clips.len(), 2);
@@ -1063,18 +1450,18 @@ mod tests {
     fn move_clips_clamps_hops_and_sorts() {
         let (mut p, ids) = three_events();
         // Clamped so the earliest (at 1.0) lands on 0; the others keep their spacing.
-        assert!(move_clips(&mut p, &ids, -5.0, 0));
+        assert!(move_clips(&mut p, &ids, -5.0, 0, false));
         assert_eq!(p.clip(&ids[0]).unwrap().position, 0.0);
         assert_eq!(p.clip(&ids[1]).unwrap().position, 3.0);
         // A hop of +1: V1 → V2 is fine, but V2 → V3 and A1 → A2 are missing, so nothing moves.
-        assert!(!move_clips(&mut p, &ids, 0.0, 1));
-        assert!(move_clips(&mut p, &ids[..1], 0.5, 1));
+        assert!(!move_clips(&mut p, &ids, 0.0, 1, false));
+        assert!(move_clips(&mut p, &ids[..1], 0.5, 1, false));
         assert_eq!(p.find_clip(&ids[0]).map(|r| r.track_idx), Some(1));
         // Sorted by position on the target track: the moved event (0.5) comes before V2's (3.0).
         assert_eq!(p.timeline.video_tracks[1].clips[0].id, ids[0]);
         // A hop onto a locked track is refused for all events.
         p.timeline.video_tracks[0].locked = true;
-        assert!(!move_clips(&mut p, &ids[..2], 1.0, -1));
+        assert!(!move_clips(&mut p, &ids[..2], 1.0, -1, false));
         assert_eq!(p.timeline.video_tracks[1].clips.len(), 2);
     }
 
@@ -1354,7 +1741,7 @@ mod tests {
 
     fn xfade_move(p: &mut Project, id: &str, dt: f64) {
         let (before, ids) = (p.clone(), vec![id.to_string()]);
-        move_clips(p, &ids, dt, 0);
+        move_clips(p, &ids, dt, 0, false);
         auto_crossfade(p, &before, &ids);
     }
 
@@ -1724,6 +2111,164 @@ mod tests {
         assert_eq!(level_db(1.0), 0.0);
         assert!((level_db(0.5) + 6.0206).abs() < 1e-3);
         assert_eq!(level_db(0.0), -120.0);
+    }
+
+    fn env(kind: EnvKind, keys: &[(f64, f32)]) -> Envelope {
+        Envelope { kind, points: Keyframes { keys: keys.iter().map(|&(t, v)| Keyframe { t, v, curve: Curve::Linear }).collect() } }
+    }
+
+    fn times(e: &Envelope) -> Vec<f64> {
+        e.points.keys.iter().map(|k| k.t).collect()
+    }
+
+    #[test]
+    fn env_insert_keeps_order_and_takes_the_left_curve() {
+        let mut e = env(EnvKind::Volume, &[(0.0, 0.0), (4.0, -6.0)]);
+        e.points.keys[0].curve = Curve::Fast;
+        assert_eq!(env_insert(&mut e, 2.0, 99.0), 1);
+        assert_eq!((times(&e), e.points.keys[1].v, e.points.keys[1].curve), (vec![0.0, 2.0, 4.0], 6.0, Curve::Fast));
+        assert_eq!(env_insert(&mut e, 9.0, -3.0), 3);
+        let mut m = env(EnvKind::Mute, &[(0.0, 1.0)]);
+        env_insert(&mut m, 1.0, 0.3);
+        assert_eq!((m.points.keys[1].v, m.points.keys[1].curve), (0.0, Curve::Hold));
+    }
+
+    #[test]
+    fn env_move_clamps_time_and_value() {
+        let o = env(EnvKind::CompositeLevel, &[(0.0, 1.0), (2.0, 0.5), (4.0, 0.5)]);
+        let mut e = o.clone();
+        assert!(env_move(&mut e, &o, &[1], 10.0, 0.9));
+        assert!(e.points.keys[1].t < 4.0 && e.points.keys[1].t > 3.99 && e.points.keys[1].v == 1.0);
+        assert!(env_move(&mut e, &o, &[1], -10.0, -0.9));
+        assert!(e.points.keys[1].t > 0.0 && e.points.keys[1].t < 0.01 && e.points.keys[1].v == 0.0);
+        assert!(env_move(&mut e, &o, &[0], 3.0, -0.25) && e.points.keys[0].t == 0.0, "the first point keeps its time");
+        assert!(!env_move(&mut e, &o, &[1], 0.0, 0.0) && e == o);
+        // Two points move together, stopped by the unselected one after them.
+        let o = env(EnvKind::CompositeLevel, &[(0.0, 1.0), (1.0, 0.5), (2.0, 0.5), (3.0, 0.5)]);
+        let mut e = o.clone();
+        env_move(&mut e, &o, &[1, 2], 5.0, 0.0);
+        let t = times(&e);
+        assert!((t[2] - 3.0).abs() < 1e-5 && t[2] < 3.0 && (t[2] - t[1] - 1.0).abs() < 1e-9, "{t:?}");
+    }
+
+    #[test]
+    fn env_delete_set_curve_and_span() {
+        let mut e = env(EnvKind::Volume, &[(0.0, 0.0), (1.0, -3.0), (2.0, -6.0)]);
+        assert!(keys_in_span(&e, 1.0, 2.0) == [1, 2] && keys_in_span(&e, 0.5, 0.9).is_empty());
+        assert!(env_set_curve(&mut e, &[1], Curve::Smooth));
+        assert_eq!(e.points.keys.iter().map(|k| k.curve).collect::<Vec<_>>(), [Curve::Linear, Curve::Smooth, Curve::Linear]);
+        assert!(env_delete(&mut e, &[0, 1, 2]));
+        assert_eq!(times(&e), [0.0], "the first point stays");
+        assert!(!env_delete(&mut e, &[0]));
+    }
+
+    #[test]
+    fn env_thin_flip_reset_and_toggle() {
+        let mut e = env(EnvKind::CompositeLevel, &[(0.0, 0.0), (1.0, 0.5), (2.0, 1.0), (3.0, 0.0)]);
+        assert!(env_thin(&mut e));
+        assert_eq!(times(&e), [0.0, 2.0, 3.0], "the collinear midpoint goes, the corner at 2 stays");
+        assert!(!env_thin(&mut e));
+        let o = env(EnvKind::Volume, &[(0.0, -120.0), (1.0, -6.0), (2.0, 4.0)]);
+        let mut f = o.clone();
+        assert!(env_flip(&mut f) && f != o);
+        env_flip(&mut f);
+        assert!(f.points.keys.iter().zip(&o.points.keys).all(|(a, b)| (a.v - b.v).abs() < 1e-2), "{f:?}");
+        assert!(env_reset(&mut f) && f.points.keys.iter().all(|k| k.v == 0.0));
+        let mut t = Track::new("A", TrackKind::Audio);
+        assert!(toggle_envelope(&mut t, EnvKind::Pan));
+        assert_eq!((t.envelopes[0].points.keys.len(), t.envelopes[0].at(5.0)), (1, 0.0));
+        assert!(toggle_envelope(&mut t, EnvKind::Pan) && t.envelopes.is_empty());
+        let mut p = Project::new("t");
+        let ids = vec![p.timeline.video_tracks[0].id.clone(), p.timeline.audio_tracks[0].id.clone()];
+        assert!(set_envelope(&mut p, &ids, EnvKind::Volume, true) && p.timeline.video_tracks[0].envelopes.is_empty());
+        assert!(!set_envelope(&mut p, &ids, EnvKind::Volume, true), "already there");
+    }
+
+    #[test]
+    fn split_and_left_trim_keep_event_keys_on_the_timeline() {
+        let mut c = clip(0.0, 5.0, 0.0);
+        c.envelopes.push(env(EnvKind::Opacity, &[(0.0, 0.0), (3.0, 1.0)]));
+        let (a, b) = split_clip(&c, 2.0).unwrap();
+        assert_eq!(times(&b.envelopes[0]), [0.0, 1.0]);
+        for t in [2.0, 2.5, 3.0, 4.0] {
+            assert!((b.envelopes[0].at(t - 2.0) - c.envelopes[0].at(t)).abs() < 1e-6, "{t}");
+        }
+        assert!((a.envelopes[0].at(1.5) - c.envelopes[0].at(1.5)).abs() < 1e-6);
+        let mut d = c.clone();
+        trim_left(&mut d, &c, 1.0, F, None);
+        assert_eq!(times(&d.envelopes[0]), [0.0, 2.0]);
+        assert!((d.envelopes[0].at(0.0) - c.envelopes[0].at(1.0)).abs() < 1e-6);
+        trim_left(&mut d, &c, 0.0, F, None); // recomputed from the original, not stacked
+        assert_eq!(d.envelopes[0], c.envelopes[0]);
+    }
+
+    #[test]
+    fn locked_envelopes_follow_moved_events() {
+        let (mut p, ids) = three_events(); // the audio event is 2..4
+        let vol = env(EnvKind::Volume, &[(0.0, 0.0), (3.0, -12.0), (8.0, 0.0)]);
+        p.timeline.audio_tracks[0].envelopes.push(vol.clone());
+        let o = p.clone();
+        assert!(move_clips(&mut p, &ids[2..], 3.0, 0, true)); // to 5..7
+        let e = &p.timeline.audio_tracks[0].envelopes[0];
+        assert!(times(e).contains(&6.0) && !times(e).contains(&3.0) && times(e).contains(&8.0), "{:?}", times(e));
+        assert!((e.at(6.0) + 12.0).abs() < 1e-6, "the point moved with its event");
+        for t in [1.0, 1.99, 7.01, 7.5, 9.0] {
+            assert!((e.at(t) - vol.at(t)).abs() < 1e-4, "{t}: {} vs {}", e.at(t), vol.at(t));
+        }
+        // An overlapping move keeps the vacated part flat at the old edge value.
+        let mut q = o.clone();
+        move_clips(&mut q, &ids[2..], 1.0, 0, true); // to 3..5
+        let e = &q.timeline.audio_tracks[0].envelopes[0];
+        assert!((e.at(4.0) + 12.0).abs() < 1e-6 && (e.at(2.5) - vol.at(2.0)).abs() < 1e-6 && (e.at(1.0) - vol.at(1.0)).abs() < 1e-6);
+        let mut q = o.clone();
+        move_clips(&mut q, &ids[2..], 3.0, 0, false);
+        assert_eq!(q.timeline.audio_tracks[0].envelopes[0], vol, "lock off: nothing moves");
+        // To another track: only into an envelope of the same kind.
+        let mut q = o.clone();
+        q.timeline.add_audio_track();
+        q.timeline.audio_tracks[1].envelopes.push(env(EnvKind::Volume, &[(0.0, -6.0)]));
+        assert!(move_clips(&mut q, &ids[2..], 0.0, 1, true));
+        let (a0, a1) = (&q.timeline.audio_tracks[0].envelopes[0], &q.timeline.audio_tracks[1].envelopes[0]);
+        assert!((a1.at(3.0) + 12.0).abs() < 1e-6 && (a1.at(1.0) + 6.0).abs() < 1e-6 && (a1.at(5.0) + 6.0).abs() < 1e-6);
+        assert!(!times(a0).contains(&3.0) && (a0.at(1.0) - vol.at(1.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn locked_moves_add_no_redundant_points() {
+        let (mut p, ids) = three_events(); // the audio event is 2..4
+        p.timeline.audio_tracks[0].envelopes.push(env(EnvKind::Volume, &[(0.0, 0.0)]));
+        let (o, flat) = (p.clone(), p.timeline.audio_tracks[0].envelopes[0].clone());
+        for d in [3.0, -3.0, 3.0] {
+            assert!(move_clips(&mut p, &ids[2..], d, 0, true));
+            assert_eq!(p.timeline.audio_tracks[0].envelopes[0], flat, "a flat envelope stays one point");
+        }
+        // A ramp: moves there and back add no stacked copies, and the count stops growing.
+        let mut p = o;
+        p.timeline.audio_tracks[0].envelopes[0] = env(EnvKind::Volume, &[(0.0, 0.0), (10.0, -20.0)]);
+        let mut counts = Vec::new();
+        for d in [3.0, -3.0, 3.0, -3.0, 3.0, -3.0] {
+            move_clips(&mut p, &ids[2..], d, 0, true);
+            let k = &p.timeline.audio_tracks[0].envelopes[0].points.keys;
+            assert!(k.windows(2).all(|w| w[1].t - w[0].t > KEY_EPS || w[1].v != w[0].v), "{k:?}");
+            assert!(k.windows(3).all(|w| w[2].t - w[0].t > KEY_EPS), "at most two points (a step) at one time: {k:?}");
+            counts.push(k.len());
+        }
+        assert!(counts[5] <= counts[1] + 2, "{counts:?}");
+    }
+
+    #[test]
+    fn locked_move_down_two_tracks_keeps_each_tracks_points() {
+        let (mut p, _) = three_events();
+        p.timeline.add_audio_track();
+        p.timeline.add_audio_track();
+        p.timeline.audio_tracks[1].clips.push(clip(2.0, 2.0, 0.0));
+        let ids = [0, 1].map(|i| p.timeline.audio_tracks[i].clips[0].id.clone());
+        for (i, v) in [-12.0, -24.0, 0.0].into_iter().enumerate() {
+            p.timeline.audio_tracks[i].envelopes.push(env(EnvKind::Volume, &[(0.0, 0.0), (3.0, v)]));
+        }
+        assert!(move_clips(&mut p, &ids, 0.0, 1, true));
+        let at = |i: usize| p.timeline.audio_tracks[i].envelopes[0].at(3.0);
+        assert!((at(1) + 12.0).abs() < 1e-6 && (at(2) + 24.0).abs() < 1e-6, "{} {}", at(1), at(2));
     }
 
     /// Post-Edit Ripple after a paste ends where Auto Ripple would have: the pasted events stay where they landed.

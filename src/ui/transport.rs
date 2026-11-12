@@ -217,8 +217,7 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
         menus::cmd(ui, "Affected Tracks, &Bus Tracks, Markers, and Regions", Command::RippleMode(RippleMode::AffectedMarkers));
         menus::cmd(ui, "&All Tracks, Markers, and Regions", Command::RippleMode(RippleMode::All));
     });
-    // Default on in VEGAS; shown with its active fill although envelopes do not exist yet.
-    inert_button(ui, Icon::LockEnvelopes, "Lock Envelopes to Events (not available yet)", true);
+    button(ui, Icon::LockEnvelopes, "Lock Envelopes to Events", Command::LockEnvelopes, st.lock_env);
     button(ui, Icon::IgnoreGrouping, "Ignore Event Grouping (Ctrl+Shift+U)", Command::IgnoreGrouping, st.ignore_group);
     if v23 {
         separator(ui);

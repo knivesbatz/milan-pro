@@ -167,7 +167,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         let br = ui.interact(body_r, id.with("body"), Sense::click_and_drag());
         if br.clicked() || br.secondary_clicked() {
             let m = ui.input(|i| i.modifiers);
-            sel.list_focus = true;
+            (sel.list_focus, sel.env) = (true, None);
             if br.secondary_clicked() {
                 if !sel.tracks.contains(&tid) {
                     sel.tracks = vec![tid.clone()];
