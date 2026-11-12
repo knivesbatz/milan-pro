@@ -151,7 +151,7 @@ impl Welcome {
         ui.add_space(28.0);
         ui.horizontal(|ui| {
             let (_, w, h) = res[self.res];
-            let settings = ProjectSettings { width: w, height: h, frame_rate: (fps * 1000.0).round() / 1000.0, sample_rate };
+            let settings = ProjectSettings { width: w, height: h, frame_rate: (fps * 1000.0).round() / 1000.0, sample_rate, ..Default::default() };
             if ui.add(Button::new(RichText::new("Create Project").color(d.accent_text)).fill(d.accent).min_size(vec2(140.0, 30.0))).clicked() {
                 *out = Some(WelcomeResult::Create(settings.clone(), false));
             }

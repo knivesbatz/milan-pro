@@ -94,7 +94,7 @@ fn render(p: &Project, preset: &Preset, out: &Path, range: (f64, f64), ctl: &Ctl
 
 fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &Path, ctl: &Ctl) -> Result<(), String> {
     let vp = preset.video.map(|_| plan::compile(p));
-    let frames = vp.as_ref().map(|vp| ((a * vp.fps).round() as i64, (b * vp.fps).round() as i64));
+    let frames = vp.as_ref().map(|vp| plan::frame_range((a, b), vp.fps));
     if b <= a || frames.is_some_and(|(n0, n1)| n1 <= n0) {
         return Err("Nothing to render: the range is empty".into());
     }

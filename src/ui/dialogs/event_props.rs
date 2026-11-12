@@ -3,7 +3,7 @@
 //! focusing it does not round an off-frame value to the frame or rate shown.
 use eframe::egui::*;
 use crate::edit;
-use crate::project::{Clip, Curve, MediaItem, Project, format_timecode};
+use crate::project::{Clip, Curve, MediaItem, Project, format_timecode, parse_timecode};
 use super::super::menus::Later;
 
 pub struct EventProps {
@@ -152,20 +152,7 @@ fn num_edit<T: emath::Numeric + std::fmt::Display>(ui: &mut Ui, v: &mut T, range
 /// A timecode field: shows `v` and sets it from what was typed when the field loses focus (unparsable text is dropped;
 /// text left as shown keeps the exact value, which may lie between frames).
 fn tc_edit(ui: &mut Ui, id: &str, v: &mut f64, fps: f64) {
-    let id = ui.id().with(id);
-    let buf_id = id.with("buf");
-    let shown = format_timecode(*v, fps);
-    let mut buf = ui.data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| shown.clone());
-    let r = ui.add(TextEdit::singleline(&mut buf).id(id).desired_width(110.0));
-    if r.lost_focus() {
-        if let Some(t) = parse_timecode(&buf, fps).filter(|_| buf.trim() != shown) {
-            *v = t;
-        }
-
-        ui.data_mut(|d| d.remove::<String>(buf_id));
-    } else if r.has_focus() {
-        ui.data_mut(|d| d.insert_temp(buf_id, buf));
-    }
+    super::time_edit(ui, id, v, |t| format_timecode(t, fps), |s| parse_timecode(s, fps));
 }
 
 fn media_page(ui: &mut Ui, m: Option<&MediaItem>, fps: f64) {
@@ -198,46 +185,3 @@ fn media_page(ui: &mut Ui, m: Option<&MediaItem>, fps: f64) {
     });
 }
 
-/// Inverse of `format_timecode`: "hh:mm:ss:ff" (drop-frame "hh:mm:ss;ff" at 29.97 and 59.94, as shown), the
-/// shorter "mm:ss:ff" and "ss:ff", or plain seconds ("1.5"). None when it is not a time.
-pub fn parse_timecode(s: &str, fps: f64) -> Option<f64> {
-    let s = s.trim();
-    if !s.contains([':', ';']) {
-        return s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
-    }
-    let nominal = fps.round() as i64;
-    let parts: Vec<i64> = s.split([':', ';']).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
-    if nominal <= 0 || parts.len() > 4 || parts.iter().any(|&p| p < 0) {
-        return None;
-    }
-    let mut p = [0; 4];
-    p[4 - parts.len()..].copy_from_slice(&parts);
-    let [h, m, sec, ff] = p;
-    let mins = h * 60 + m;
-    let mut frames = (mins * 60 + sec) * nominal + ff;
-    if fps.fract() != 0.0 && (nominal == 30 || nominal == 60) {
-        // Frame numbers 0..k are skipped at each minute except every tenth (SMPTE 12M).
-        frames -= nominal / 15 * (mins - mins / 10);
-    }
-    Some(frames as f64 / fps)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn timecode_parses_what_format_shows() {
-        for fps in [29.97, 25.0, 59.94, 23.976, 30.0] {
-            for n in [0u32, 1, 29, 1799, 1800, 1801, 17982, 107892, 123456] {
-                let t = n as f64 / fps;
-                let back = parse_timecode(&format_timecode(t, fps), fps).unwrap();
-                assert!((back - t).abs() < 1e-9, "{fps} fps frame {n}: {} -> {back}", format_timecode(t, fps));
-            }
-        }
-        assert_eq!(parse_timecode("1.5", 25.0), Some(1.5));
-        assert_eq!(parse_timecode("02:10", 25.0), Some(2.4)); // ss:ff
-        assert_eq!(parse_timecode("1:00:00", 25.0), Some(60.0)); // mm:ss:ff
-        assert!(parse_timecode("abc", 25.0).is_none() && parse_timecode("1:-2", 25.0).is_none() && parse_timecode("-1", 25.0).is_none());
-    }
-}

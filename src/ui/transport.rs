@@ -266,11 +266,12 @@ const BOXES_W: f32 = 8.0 + 3.0 * BOX_W + 2.0;
 fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
     let t = theme::get();
     let font = t.font(t.font.transport_time);
-    let fps = project.settings.frame_rate;
-    let tc = |s: f64| format_timecode(s, fps);
+    // In the ruler's format, as VEGAS shows them.
+    let s = &project.settings;
+    let tc = |t: f64| s.ruler_time(t);
     let tl = &project.timeline;
     let texts = match tl.loop_region.filter(|(a, b)| b > a) {
-        Some((a, b)) => [tc(a), tc(b), tc(b - a)],
+        Some((a, b)) => [tc(a), tc(b), s.ruler_len(b - a)],
         None => [tc(tl.cursor_position), String::new(), String::new()],
     };
     let w = BOX_W;

@@ -71,6 +71,11 @@ pub enum Command {
     Tool(super::EditTool),
     /// Options › Ripple modes and the transport Auto Ripple ▾ list.
     RippleMode(crate::edit::RippleMode),
+    /// Options › Grid Spacing and Ruler Format radios; Set Time at Cursor; Set Project Tempo (Project Properties › Ruler).
+    SetGrid(crate::project::GridSpacing),
+    SetRuler(crate::project::RulerFormat),
+    SetTimeAtCursor,
+    ProjectTempo,
 }
 
 use Command::*;

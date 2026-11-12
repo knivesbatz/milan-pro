@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 181 |
-| PARTIAL | 152 |
-| MISSING | 87 |
+| DONE | 184 |
+| PARTIAL | 150 |
+| MISSING | 86 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** The gaps are snap-to-grid, event looping, velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 85 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1). The gaps are event looping, velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 85 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -122,7 +122,7 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs:281-366`: only width, height, frame rate and sample rate are editable. 17 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R1, R8a, R11, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate and (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) are editable. 17 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R8a, R11, R40b |
 | 4.12 | Render / export controls | PARTIAL | `ui/dialogs/render.rs`: 5 presets. "Customize Template..." and the render options are greyed. → R11 |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
@@ -180,13 +180,13 @@ What matters most:
 | 5.31 | Fade-in and fade-out | DONE | Fade curves and crossfades |
 | 5.32 | Audio and video synchronization | DONE | Grouped A/V, audio master clock (`FEATURE_PLAN.md` 1.6) |
 | 5.33 | Precise frame-level editing | DONE | Quantize to Frames |
-| 5.34 | Snap-to-grid | MISSING | `SnapGrid` is always disabled (`menus.rs:162`), and the Grid Spacing radios are greyed (`menus.rs:794`). → R1 |
-| 5.35 | Snapping to clips and markers | DONE | `edit.rs:203` snap points. "Snap to All Events" (all tracks) is disabled → R1 |
+| 5.34 | Snap-to-grid | DONE | R1: Options › Snap to Grid (Ctrl+F8) and the 14 Grid Spacing radios (`Prefs::snap_grid`, `Prefs::grid`); `edit::Snaps` snaps to grid lines from `ui/timeline/ruler.rs::grid_line`, which also draws them. Move Left/Right by Grid Marks (PageUp/PageDown, `edit::grid_step`). Tests `snap_to_a_one_second_grid_lands_on_whole_seconds`, `ruler_and_grid_intervals` |
+| 5.35 | Snapping to clips and markers | DONE | `edit::snap_targets_except`. Snap to All Events (Ctrl+Shift+F8, R1): off, a dragged event snaps to edges on its own tracks only, as in VEGAS; test `snap_to_all_events_reaches_other_tracks` |
 | 5.36 | Timeline zooming and scrolling | DONE | |
 | 5.37 | Markers and regions | DONE | `Timeline.markers`, `regions` |
 | 5.38 | Undo and redo | DONE | `history.rs`, Undo All, history list on the split button |
-| 5.39 | Accurate timeline mathematics and timecode | PARTIAL | Drop-frame timecode is correct (`project.rs:710`). Missing: the other 14 ruler formats (`menus.rs:814` all greyed) and Go to Time (`GoTo` disabled). → R1 |
-| 5.40 | Different frame rates, timebases, resolutions and sample rates without drift | PARTIAL | Rates are `f64` (29.97, not 30000/1001), which gives about 1 ppm, roughly 3.6 ms per hour. `fps_str` gives the encoder an exact rational. Not proven by a long-duration test. → R1 |
+| 5.39 | Accurate timeline mathematics and timecode | DONE | R1: All 15 VEGAS ruler formats (`project::format_time` / `parse_time`, `RulerFormat`), used by the ruler, time display, transport length boxes and Go to Time (Ctrl+G, `ui/dialogs/goto.rs`); ruler start time and Set Time at Cursor; Measures & Beats from the project tempo. Test `every_ruler_format_round_trips` (every format at 23.976, 25, 29.97 DF, 59.94 DF, 48 kHz) |
+| 5.40 | Different frame rates, timebases, resolutions and sample rates without drift | DONE | R1: `project::rate_ratio` makes 29.97 exactly 30000/1001; the video plan (`frame_time`), render frame count (`plan::frame_range`), Quantize to Frames and timecode all use it, and `fps_str` is built from it. Test `exact_rates_do_not_drift`: frame n at 3 h lands on n, 1 h at 29.97 renders 107892 frames |
 
 ### 2.6 Section 6: preview player
 
@@ -619,12 +619,12 @@ The inventory as found before R0:
 | File | SaveVersion | R42 |
 | Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2, R18a, R6b, R12, R18a, R17b |
 | Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2, R8b, R23, R23, R14 |
-| Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1, R2 |
+| Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2, R4b |
 | Markers | InsertCommand, CdTrack, CdIndex | R18a |
 | Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2, R5, R8c |
-| Snapping | SnapGrid, SnapAllEvents | R1 |
+| Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7, R18a, R13 |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
@@ -795,6 +795,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R1: Grid, snapping and ruler formats (M)
+
+**Status: DONE.** Built as designed below, except:
+- The ruler settings (format, start time, tempo, beats per measure, beat note) live in `ProjectSettings.ruler`, not `Timeline.tempo` and `Prefs.ruler`: VEGAS keeps them with the project on the Project Properties Ruler page, which R1 also builds. Changing the format is an undo step, like any project setting. Grid spacing, Snap to Grid and Snap to All Events are in `Prefs`.
+- `rate_ratio`, `exact_fps` and `frame_time` are in `project.rs`; `render::fps_str` is built from them, and Quantize to Frames uses the same exact grid.
+- Also built: Set Time at Cursor (the ruler start time), VP23 Set Project Tempo (opens Project Properties at the Ruler page), and the time display's Time Format list. The time display shares the ruler's format (VEGAS can set it separately).
+- Snap to All Events off means a dragged event snaps to event edges on its own tracks only. The cursor, markers and the time selection always count.
+- With a frame-based format, ruler ticks fall on whole frames of that format, so at 29.97 the labels read 00:00:18;00 rather than 00:00:17;29.
+- Grid lines are thinned at low zoom to at least 6 px apart (1-2-5 steps, or doubling for musical spacings). Snapping uses the lines that are drawn.
 
 **Scope**
 - Snap to Grid, Snap to All Events, the Grid Spacing radios and all 15 Ruler Format radios.

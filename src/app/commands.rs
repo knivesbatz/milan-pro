@@ -35,6 +35,7 @@ impl MeridianApp {
             || self.welcome.is_some()
             || self.shortcuts_open
             || self.unfinished_open
+            || self.time_entry.is_some()
             || self.event_props.is_some()
             || self.take_chooser.is_some()
             || self.default_track.is_some()
@@ -65,6 +66,10 @@ impl MeridianApp {
             selection: self.project.timeline.loop_region.is_some_and(|(a, b)| b > a),
             looping: self.looping,
             snapping: self.snapping,
+            snap_grid: self.prefs.snap_grid,
+            snap_all: self.prefs.snap_all,
+            grid: self.prefs.grid,
+            ruler: self.project.settings.ruler.format,
             auto_crossfade: self.prefs.auto_crossfade,
             open_panels: Panel::ALL.into_iter().filter(|p| self.dock.is_open(*p)).collect(),
             quality: Some(self.preview.quality),
@@ -267,6 +272,9 @@ impl MeridianApp {
         let p = &self.prefs;
         ui::EditOpts {
             snapping: self.snapping,
+            snap_grid: p.snap_grid,
+            snap_all: p.snap_all,
+            grid: p.grid,
             quantize: p.quantize,
             auto_crossfade: p.auto_crossfade,
             ripple: p.auto_ripple.then_some(p.ripple_mode),
@@ -944,6 +952,34 @@ impl MeridianApp {
                 self.save_prefs();
             }
             Snapping => self.snapping = !self.snapping,
+            SnapGrid | SnapAllEvents | SetGrid(_) => {
+                let p = &mut self.prefs;
+                match c {
+                    SnapGrid => p.snap_grid = !p.snap_grid,
+                    SnapAllEvents => p.snap_all = !p.snap_all,
+                    SetGrid(g) => p.grid = g,
+                    _ => {}
+                }
+                self.save_prefs();
+            }
+            // The ruler format is a project setting (Project Properties › Ruler), so it is an undo step like the rest.
+            SetRuler(f) if f != self.project.settings.ruler.format => {
+                self.edit(|p| {
+                    p.settings.ruler.format = f;
+                    p.mark_modified();
+                    true
+                });
+            }
+            GoTo | SetTimeAtCursor => {
+                let shown = self.project.settings.ruler_time(self.project.timeline.cursor_position);
+                self.time_entry = Some(dialogs::TimeEntry::new(c == SetTimeAtCursor, shown));
+            }
+            ProjectTempo => self.settings.open_tab(&self.project, 2),
+            GridLeft | GridRight => {
+                let grid = ui::grid_line(self.prefs.grid, &self.project.settings, self.pps());
+                let tl = &mut self.project.timeline;
+                tl.cursor_position = edit::grid_step(tl.cursor_position, grid, c == GridRight);
+            }
             AutoCrossfade | AutoRipple | IgnoreGrouping | RippleMode(_) => {
                 let p = &mut self.prefs;
                 match c {
@@ -1218,6 +1254,7 @@ impl MeridianApp {
         if self.vegas_report.as_ref().is_some_and(|(intro, lines)| dialogs::report(ctx, "Import VEGAS Project", intro, lines)) {
             self.vegas_report = None;
         }
+        self.show_time_entry(ctx);
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_layout_as(ctx);
@@ -1276,6 +1313,33 @@ impl MeridianApp {
                     }
                     WelcomeResult::Close => {}
                 }
+            }
+        }
+    }
+
+    /// Go to Time moves the cursor to the typed ruler time (on a frame with Quantize to Frames) and brings it into
+    /// view; Set Time at Cursor makes the ruler read the typed time at the cursor (one undo step).
+    fn show_time_entry(&mut self, ctx: &egui::Context) {
+        let s = self.project.settings.clone();
+        let Some(e) = &mut self.time_entry else { return };
+        let set = e.set_ruler;
+        let Some(answer) = e.show(ctx, |x| crate::project::parse_time(x, s.ruler.format, &s).is_some()) else { return };
+        self.time_entry = None;
+        let Some(text) = answer else { return };
+        let cur = self.project.timeline.cursor_position;
+        if set {
+            let Some(off) = crate::project::parse_time(&text, s.ruler.format, &s).map(|v| v - cur).filter(|o| *o != s.ruler.offset) else { return };
+            self.edit(|p| {
+                p.settings.ruler.offset = off;
+                p.mark_modified();
+                true
+            });
+        } else if let Some(t) = s.parse_ruler_time(&text) {
+            let (t, view) = (self.quantized(t.max(0.0)), self.view_secs(ctx));
+            let tl = &mut self.project.timeline;
+            tl.cursor_position = t;
+            if t < tl.scroll_x || t > tl.scroll_x + view {
+                tl.scroll_x = (t - view * 0.5).max(0.0);
             }
         }
     }
@@ -1381,6 +1445,8 @@ impl MeridianApp {
                 self.recorded = audio.map(|m| dialogs::RecordedFiles::new(vec![m.id.clone()]));
             }
             "props" => self.settings.open(&self.project),
+            "props-ruler" => self.settings.open_tab(&self.project, 2),
+            "goto" => self.exec(ctx, GoTo),
             "render" => self.render.open = true,
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),

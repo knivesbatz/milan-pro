@@ -2,6 +2,7 @@
 //! the shared frame (title row with ? and ×, tabs, group headings, 75×23 buttons) and the dialogs themselves.
 mod default_track;
 mod event_props;
+mod goto;
 mod prefs;
 mod recorded;
 mod render;
@@ -13,6 +14,7 @@ mod welcome;
 
 pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
+pub use goto::TimeEntry;
 pub use prefs::PrefsDialog;
 pub use recorded::{Recorded, RecordedFiles};
 pub use render::{RenderDialog, open_folder};
@@ -303,6 +305,24 @@ pub fn fixed_combo(ui: &mut Ui, id: &str, value: &str, width: f32, why: Why) {
     ui.add_enabled_ui(false, |ui| {
         ComboBox::from_id_salt(id).width(width).selected_text(value).show_ui(ui, |_| {}).response.on_disabled_hover_text(why.text());
     });
+}
+
+/// A time field: shows `v` through `show` and sets it from what was typed (through `parse`) when the field loses
+/// focus. Unparsable text is dropped; text left as shown keeps the exact value, which may lie between frames.
+pub fn time_edit(ui: &mut Ui, id: &str, v: &mut f64, show: impl Fn(f64) -> String, parse: impl Fn(&str) -> Option<f64>) {
+    let id = ui.id().with(id);
+    let buf_id = id.with("buf");
+    let shown = show(*v);
+    let mut buf = ui.data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| shown.clone());
+    let r = ui.add(TextEdit::singleline(&mut buf).id(id).desired_width(110.0));
+    if r.lost_focus() {
+        if let Some(t) = parse(&buf).filter(|_| buf.trim() != shown) {
+            *v = t;
+        }
+        ui.data_mut(|d| d.remove::<String>(buf_id));
+    } else if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(buf_id, buf));
+    }
 }
 
 /// The note on a Preferences or Project Properties page Milan Pro has no settings for.

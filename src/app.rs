@@ -118,6 +118,8 @@ pub struct MeridianApp {
     shortcuts_open: bool,
     /// Help › Unfinished Features.
     unfinished_open: bool,
+    /// Go to Time / Set Time at Cursor.
+    time_entry: Option<crate::ui::dialogs::TimeEntry>,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
     shuttle: f64,
     /// Options › Bypass All Audio FX (playback only, for this session).
@@ -265,6 +267,7 @@ impl MeridianApp {
             welcome,
             shortcuts_open: false,
             unfinished_open: false,
+            time_entry: None,
             shuttle: 0.0,
             bypass_audio_fx: false,
             input: None,

@@ -55,13 +55,11 @@ pub static PRESETS: [Preset; 5] = [
     Preset { name: "MP3 audio only", ext: "mp3", muxer: "mp3", video: None, audio: &["-c:a", "libmp3lame", "-b:a", "320k"], max_rate: 48_000 },
 ];
 
-/// NTSC rates as exact rationals so 29.97 renders as 30000/1001, not 2997/100.
+/// The exact rate for ffmpeg (`project::rate_ratio`): 29.97 renders as 30000/1001, not 2997/100.
 pub fn fps_str(fps: f64) -> String {
-    let n = (fps * 1.001).round();
-    if fps.fract() != 0.0 && (fps - n * 1000.0 / 1001.0).abs() < 0.01 {
-        format!("{}/1001", n as u64 * 1000)
-    } else {
-        format!("{fps}")
+    match crate::project::rate_ratio(fps) {
+        (n, 1) => n.to_string(),
+        (n, d) => format!("{n}/{d}"),
     }
 }
 

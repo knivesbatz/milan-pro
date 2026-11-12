@@ -886,7 +886,7 @@ const TIME_DISPLAY: &[M] = &[
     X("MIDI Timecode Out", NotPlanned("R59")),
     X("MIDI Clock Out", NotPlanned("R59")),
     S,
-    Sub("Time Format", menus::RULER_MENU),
+    Sub("Time Format", menus::RULER_FORMATS),
     S,
     Sub("Text Color", &[R("Default", true, NotPlanned("R58")), X("Custom...", NotPlanned("R58"))]),
     Sub("Background Color", &[R("Default", true, NotPlanned("R58")), X("Custom...", NotPlanned("R58"))]),
@@ -921,7 +921,7 @@ mod tests {
         edit::toggle_envelope(&mut p.timeline.audio_tracks[0], EnvKind::Pan); // centre: y 74 on the row 50..100
         let a1 = p.timeline.audio_tracks[0].id.clone();
         let lanes = Rect::from_min_max(Pos2::ZERO, pos2(1000.0, 300.0));
-        let g = Geo { rect: lanes, header_w: 0.0, list: Rect::ZERO, band: Rect::ZERO, lanes, vscroll: Rect::ZERO, hscroll: Rect::ZERO, pps: 10.0, scroll_x: 0.0 };
+        let g = Geo { rect: lanes, header_w: 0.0, list: Rect::ZERO, band: Rect::ZERO, lanes, vscroll: Rect::ZERO, hscroll: Rect::ZERO, pps: 10.0, scroll_x: 0.0, grid: (1.0, 0.0), grid_snap: false };
         let rows = [Row { is_video: true, idx: 0, num: 0, top: 0.0, h: 50.0 }, Row { is_video: false, idx: 0, num: 1, top: 50.0, h: 50.0 }];
         let sel = Selection::default();
         assert_eq!(target(&g, &rows, &p, &sel, pos2(30.0, 3.0), true), Some(Target::Fade(id.clone(), true)));

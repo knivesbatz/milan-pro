@@ -27,7 +27,7 @@ pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project) {
         p.rect_filled(d, 0.0, dot);
     }
     let font = if t.font.time_display_semibold { t.semibold(t.font.time_display) } else { t.font(t.font.time_display) };
-    let tc = format_timecode(project.timeline.cursor_position, project.settings.frame_rate);
+    let tc = project.settings.ruler_time(project.timeline.cursor_position);
     p.with_clip_rect(r).text(pos2(r.max.x - 8.0, cy), Align2::RIGHT_CENTER, tc, font, t.time_display_text);
 }
 
@@ -49,6 +49,39 @@ pub(super) fn major_interval(pps: f64, fps: f64) -> f64 {
     let f = 1.0 / fps.max(1.0);
     let steps = [f, 2.0 * f, 5.0 * f, 10.0 * f, 15.0 * f, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0];
     steps.into_iter().find(|s| s * pps >= 90.0).unwrap_or(3600.0)
+}
+
+/// Major tick interval in the ruler's format: Measures & Beats ticks on beats and whole measures, the frame formats
+/// on their own frames.
+pub(super) fn ruler_interval(pps: f64, s: &ProjectSettings) -> f64 {
+    match s.ruler.format {
+        RulerFormat::MeasuresBeats => {
+            let (beat, per) = (s.beat_secs(), s.ruler.beats_per_measure.max(1) as f64);
+            let steps = [beat / 4.0, beat / 2.0, beat].into_iter().chain((0..16).map(|k| beat * per * (1u32 << k) as f64));
+            steps.clone().find(|st| st * pps >= 90.0).unwrap_or_else(|| steps.last().unwrap_or(beat))
+        }
+        f @ (RulerFormat::Samples | RulerFormat::Time | RulerFormat::Seconds) => major_interval(pps, f.frame_rate(s.frame_rate)),
+        // A whole number of the format's frames, so at 29.97 the 2 s ticks read 00:00:18;00, not 00:00:17;29.
+        f => {
+            let rate = f.frame_rate(s.frame_rate);
+            (major_interval(pps, rate) * rate.round()).round() / rate
+        }
+    }
+}
+
+/// Grid lines as (step, phase): Ruler Marks follow the ruler's major ticks; the other spacings are thinned to whole
+/// multiples (1-2-5, or doubling for musical ones) at least 6 px apart. Lines fall where the ruler time (from its
+/// start time) is a multiple of the step.
+pub fn grid_line(gs: GridSpacing, s: &ProjectSettings, pps: f64) -> (f64, f64) {
+    let step = match gs.base(s) {
+        None => ruler_interval(pps, s),
+        Some(b) => {
+            let musical = matches!(gs, GridSpacing::Measures | GridSpacing::Note(..));
+            let mults: &[f64] = if musical { &[1.0, 2.0, 4.0, 8.0] } else { &[1.0, 2.0, 5.0] };
+            (0..12).flat_map(|e| mults.iter().map(move |m| m * if musical { 16f64.powi(e) } else { 10f64.powi(e) })).map(|k| b * k).find(|st| st * pps >= 6.0).unwrap_or(b)
+        }
+    };
+    (step, (-s.ruler.offset).rem_euclid(step))
 }
 
 /// Minor ticks per major interval so they land 6–8 px apart.
@@ -91,11 +124,11 @@ pub(super) fn loop_drag_to(tl: &mut Timeline, drag: LoopDrag, t: f64) {
 }
 
 /// Snap `t` to the project's snap targets unless snapping is off (Shift disables it during a drag).
-pub(super) fn snapped(ui: &Ui, project: &Project, t: f64, pps: f64, snapping: bool, st: &mut TlState) -> f64 {
+pub(super) fn snapped(ui: &Ui, project: &Project, t: f64, g: &Geo, snapping: bool, st: &mut TlState) -> f64 {
     if !snapping || ui.input(|i| i.modifiers.shift) {
         return t;
     }
-    match edit::snap(t, &edit::snap_targets(project, None), SNAP_PX / pps) {
+    match g.snaps(edit::snap_targets(project, None)).nearest(t, SNAP_PX / g.pps) {
         Some(s) => {
             st.snap = Some(s);
             s
@@ -122,7 +155,7 @@ pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut Hi
                 Some((a, _)) if (o.x - g.to_x(a)).abs() <= 5.0 => LoopDrag::Start,
                 Some((_, b)) if (o.x - g.to_x(b)).abs() <= 5.0 => LoopDrag::End,
                 Some((a, b)) if t0 > a && t0 < b => LoopDrag::Move(t0 - a),
-                _ => LoopDrag::Create(snapped(ui, project, t0, g.pps, snapping, st)),
+                _ => LoopDrag::Create(snapped(ui, project, t0, g, snapping, st)),
             });
         }
     }
@@ -130,9 +163,9 @@ pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut Hi
         let mut tp = g.to_time(p.x);
         if let LoopDrag::Move(gr) = drag {
             // Snap the moved region by its start.
-            tp = snapped(ui, project, tp - gr, g.pps, snapping, st) + gr;
+            tp = snapped(ui, project, tp - gr, g, snapping, st) + gr;
         } else {
-            tp = snapped(ui, project, tp, g.pps, snapping, st);
+            tp = snapped(ui, project, tp, g, snapping, st);
         }
         loop_drag_to(&mut project.timeline, drag, tp);
     }
@@ -173,7 +206,7 @@ pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut Hi
                 let mut targets = edit::snap_targets(project, None);
                 targets.retain(|v| (v - own).abs() > 1e-9);
                 let pos = if snapping && !ui.input(|i| i.modifiers.shift) {
-                    edit::snap(raw, &targets, SNAP_PX / g.pps).inspect(|s| st.snap = Some(*s)).unwrap_or(raw)
+                    g.snaps(targets).nearest(raw, SNAP_PX / g.pps).inspect(|s| st.snap = Some(*s)).unwrap_or(raw)
                 } else {
                     raw
                 };
@@ -210,16 +243,19 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
 
     // Ruler: 1 px major ticks 11 px tall, minor ticks 3 px, labels 4 px right of the tick, baseline 3 px up.
     let p_r = p.with_clip_rect(ruler.intersect(p.clip_rect()));
-    let major = major_interval(g.pps, fps);
+    // Ticks where the ruler time (timeline time plus the ruler's start time) is a whole number of intervals.
+    let s = &project.settings;
+    let major = ruler_interval(g.pps, s);
     let n_minor = minor_count(major * g.pps);
-    let first = (g.scroll_x / major).floor().max(0.0) as i64;
-    let last = ((g.scroll_x + band.width() as f64 / g.pps) / major).ceil() as i64;
+    let off = s.ruler.offset;
+    let first = ((g.scroll_x + off) / major).floor() as i64;
+    let last = ((g.scroll_x + off + band.width() as f64 / g.pps) / major).ceil() as i64;
     let font = t.font(t.font.ruler);
     for i in first..=last {
-        let time = i as f64 * major;
+        let time = i as f64 * major - off;
         let x = g.to_x(time).floor();
         p_r.rect_filled(Rect::from_min_max(pos2(x, ruler.max.y - 11.0), pos2(x + 1.0, ruler.max.y)), 0.0, t.ruler_major_tick);
-        let label = format_timecode(time, fps);
+        let label = s.ruler_time(time);
         p_r.text(pos2(x + 4.0, ruler.max.y - 2.0), Align2::LEFT_BOTTOM, label, font.clone(), t.ruler_text);
         for k in 1..n_minor {
             let mx = g.to_x(time + major * k as f64 / n_minor as f64).floor();
@@ -248,7 +284,8 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     flag(vec![pos2(xb + 1.0 - 6.0, fy), pos2(xb + 1.0, fy), pos2(xb + 1.0, fy + 6.0)]);
     if v16 && b > a {
         // Length tag: white box, black text, at the right end (§5.9.2).
-        let text = format!("+{}", short_tc(b - a, fps));
+        let len = if s.ruler.format == RulerFormat::TimeFrames { short_tc(b - a, fps) } else { s.ruler_len(b - a) };
+        let text = format!("+{len}");
         let galley = p.layout_no_wrap(text, t.font(10.0), t.length_tag_text);
         let r = Rect::from_min_size(pos2(xb + 3.0, fy - 1.0), vec2(galley.size().x + 6.0, 12.0));
         if dragging_loop || r.max.x < band.max.x {
@@ -291,21 +328,21 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     }
 }
 
-/// Grid lines at every major tick through the lanes: dashed 2/2 (16), dotted 1/2 (23 dark) or 3/3 (23 White).
-/// Drawn as one mesh of pixel quads: egui turns 1×1 rects into feathered line segments that vanish.
-pub(super) fn paint_grid(p: &Painter, g: &Geo, fps: f64) {
+/// Grid lines (Options › Grid Spacing, `Geo::grid`) through the lanes: dashed 2/2 (16), dotted 1/2 (23 dark) or 3/3
+/// (23 White). Drawn as one mesh of pixel quads: egui turns 1×1 rects into feathered line segments that vanish.
+pub(super) fn paint_grid(p: &Painter, g: &Geo) {
     let t = theme::get();
-    let major = major_interval(g.pps, fps);
+    let (step, phase) = g.grid;
     let (on, off) = match t.look() {
         UiLook::Vegas16 => (2.0, 2.0),
         _ if t.dark_mode => (1.0, 2.0),
         _ => (3.0, 3.0),
     };
-    let first = (g.scroll_x / major).floor().max(0.0) as i64;
-    let last = ((g.scroll_x + g.lanes.width() as f64 / g.pps) / major).ceil() as i64;
+    let first = ((g.scroll_x - phase) / step).floor().max(0.0) as i64;
+    let last = ((g.scroll_x - phase + g.lanes.width() as f64 / g.pps) / step).ceil() as i64;
     let mut mesh = Mesh::default();
     for i in first..=last {
-        let x = g.to_x(i as f64 * major).floor();
+        let x = g.to_x(i as f64 * step + phase).floor();
         if x < g.lanes.min.x || x > g.lanes.max.x {
             continue;
         }
@@ -400,6 +437,38 @@ mod tests {
         assert_eq!(short_tc(5.0, 29.97), "5;00");
         assert_eq!(short_tc(0.48, 25.0), "0:12");
         assert_eq!(short_tc(75.0, 25.0), "1:15:00");
+    }
+
+    /// R1: musical rulers tick on beats and measures; grid spacings thin out to ≥ 6 px; the ruler start time shifts
+    /// the lines.
+    #[test]
+    fn ruler_and_grid_intervals() {
+        let mut s = ProjectSettings::default(); // 120 bpm, 4/4: a beat is 0.5 s, a measure 2 s
+        s.ruler.format = RulerFormat::MeasuresBeats;
+        assert_eq!(ruler_interval(200.0, &s), 0.5);
+        assert_eq!(ruler_interval(80.0, &s), 2.0);
+        assert_eq!(ruler_interval(20.0, &s), 8.0);
+        s.ruler.format = RulerFormat::SmpteEbu;
+        assert!((ruler_interval(1000.0, &s) - 5.0 / 25.0).abs() < 1e-12); // 5 EBU frames
+        // Time & Frames at 29.97 ticks on whole frames: every 60 frames reads as a whole 2 s.
+        s.ruler.format = RulerFormat::TimeFrames;
+        let m = ruler_interval(80.0, &s);
+        assert!((m - 60.0 * 1001.0 / 30000.0).abs() < 1e-12);
+        assert_eq!((s.ruler_time(9.0 * m), s.ruler_time(30.0 * m)), ("00:00:18;00".to_string(), "00:01:00;02".to_string()));
+        s.ruler.format = RulerFormat::Seconds;
+        assert_eq!(ruler_interval(80.0, &s), 2.0);
+        let line = |gs, pps| grid_line(gs, &s, pps);
+        assert_eq!(line(GridSpacing::Seconds, 80.0), (1.0, 0.0));
+        assert_eq!(line(GridSpacing::Seconds, 2.0).0, 5.0); // 1 s would be 2 px
+        assert!((line(GridSpacing::Milliseconds, 80.0).0 - 0.1).abs() < 1e-12);
+        assert!((line(GridSpacing::Frames, 400.0).0 - 1001.0 / 30000.0).abs() < 1e-15);
+        assert_eq!(line(GridSpacing::Measures, 80.0).0, 2.0);
+        assert_eq!(line(GridSpacing::Note(16, false), 80.0).0, 0.125); // 10 px
+        assert_eq!(line(GridSpacing::Note(32, false), 80.0).0, 0.125); // 5 px doubles
+        assert!((line(GridSpacing::Note(8, true), 80.0).0 - 0.5 / 3.0).abs() < 1e-12);
+        assert_eq!(line(GridSpacing::RulerMarks, 80.0), (ruler_interval(80.0, &s), 0.0));
+        s.ruler.offset = 0.25;
+        assert_eq!(grid_line(GridSpacing::Seconds, &s, 80.0), (1.0, 0.75));
     }
 
     #[test]

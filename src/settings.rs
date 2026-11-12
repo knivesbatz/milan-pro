@@ -35,6 +35,11 @@ pub struct Prefs {
     pub still_len: f64,
     /// Options › Automatic Crossfades: overlapping events on a track crossfade.
     pub auto_crossfade: bool,
+    /// Options › Snap to Grid, Snap to All Events (event edges on every track, not only the dragged event's own)
+    /// and Grid Spacing.
+    pub snap_grid: bool,
+    pub snap_all: bool,
+    pub grid: crate::project::GridSpacing,
     /// Options › Auto Ripple and its mode.
     pub auto_ripple: bool,
     pub ripple_mode: crate::edit::RippleMode,
@@ -96,6 +101,9 @@ impl Default for Prefs {
             quantize: true,
             still_len: 5.0,
             auto_crossfade: true,
+            snap_grid: false,
+            snap_all: false,
+            grid: crate::project::GridSpacing::RulerMarks,
             auto_ripple: false,
             ripple_mode: crate::edit::RippleMode::Affected,
             ignore_grouping: false,
@@ -236,8 +244,13 @@ pub struct SettingsDialog {
 
 impl SettingsDialog {
     pub fn open(&mut self, project: &Project) {
+        self.open_tab(project, 0);
+    }
+
+    /// Open on page `tab` (2: Ruler, for Set Project Tempo).
+    pub fn open_tab(&mut self, project: &Project, tab: usize) {
         self.draft = Some(project.settings.clone());
-        self.tab = 0;
+        self.tab = tab;
     }
 
     pub fn is_open(&self) -> bool {
@@ -255,7 +268,7 @@ impl SettingsDialog {
             dialogs::page(ui, 590.0, |ui| match *tab {
                 0 => video_tab(ui, d, project, v23),
                 1 => audio_tab(ui, d),
-                2 => dialogs::empty_page(ui, Later("R1")),
+                2 => ruler_tab(ui, d),
                 3 => dialogs::empty_page(ui, Later("R16a")),
                 4 => dialogs::empty_page(ui, NotPlanned("R59")),
                 _ => dialogs::empty_page(ui, Later("R49")),
@@ -354,6 +367,32 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
 }
 
+/// The Ruler page: start time (typed in the ruler's format), format, tempo, meter and beat note.
+fn ruler_tab(ui: &mut Ui, d: &mut ProjectSettings) {
+    use crate::project::{RulerFormat, format_time, parse_time};
+    let s = d.clone();
+    dialogs::row(ui, "Ruler time starts at:", 150.0, true, |ui| {
+        dialogs::time_edit(ui, "pr_start", &mut d.ruler.offset, |t| format_time(t, s.ruler.format, &s), |x| parse_time(x, s.ruler.format, &s));
+    });
+    dialogs::row(ui, "Ruler time format:", 150.0, true, |ui| {
+        egui::ComboBox::from_id_salt("pr_format").width(230.0).selected_text(d.ruler.format.name()).show_ui(ui, |ui| {
+            for f in RulerFormat::ALL {
+                ui.selectable_value(&mut d.ruler.format, f, f.name());
+            }
+        });
+    });
+    ui.add_space(8.0);
+    dialogs::row(ui, "Beats per minute:", 150.0, true, |ui| ui.add(egui::DragValue::new(&mut d.ruler.tempo).range(20.0..=500.0).speed(0.1).max_decimals(3)));
+    dialogs::row(ui, "Beats per measure:", 150.0, true, |ui| ui.add(egui::DragValue::new(&mut d.ruler.beats_per_measure).range(1..=32)));
+    dialogs::row(ui, "Note length (one beat):", 150.0, true, |ui| {
+        egui::ComboBox::from_id_salt("pr_note").width(80.0).selected_text(d.ruler.beat_note.to_string()).show_ui(ui, |ui| {
+            for n in [1, 2, 4, 8, 16, 32] {
+                ui.selectable_value(&mut d.ruler.beat_note, n, n.to_string());
+            }
+        });
+    });
+}
+
 fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings) {
     dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R8a")));
     dialogs::row(ui, "Number of stereo busses:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_n", "0", 200.0, Later("R8a")));
@@ -383,6 +422,9 @@ mod tests {
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none());
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
+        assert!(!d.snap_grid && !d.snap_all && d.grid == crate::project::GridSpacing::RulerMarks);
+        let g = Prefs { snap_grid: true, snap_all: true, grid: crate::project::GridSpacing::Note(16, true), ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&g).unwrap()).unwrap(), g);
         let chain = crate::project::default_track_chain(None);
         let a = Prefs {
             auto_proxy: true,

@@ -21,6 +21,134 @@ pub struct ProjectSettings {
     pub height: u32,
     pub frame_rate: f64,
     pub sample_rate: u32,
+    /// Project Properties › Ruler (VEGAS keeps the ruler format and tempo with the project).
+    #[serde(default)]
+    pub ruler: Ruler,
+}
+
+/// Options › Ruler Format: VEGAS's 15 formats.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RulerFormat {
+    Samples,
+    Time,
+    Seconds,
+    #[default]
+    TimeFrames,
+    AbsFrames,
+    MeasuresBeats,
+    Feet16,
+    Feet35,
+    SmpteFilmIvtc,
+    SmpteFilm,
+    SmpteEbu,
+    SmpteNonDrop,
+    SmpteDrop,
+    Smpte30,
+    AudioCd,
+}
+
+impl RulerFormat {
+    pub const ALL: [RulerFormat; 15] = {
+        use RulerFormat::*;
+        [Samples, Time, Seconds, TimeFrames, AbsFrames, MeasuresBeats, Feet16, Feet35, SmpteFilmIvtc, SmpteFilm, SmpteEbu, SmpteNonDrop, SmpteDrop, Smpte30, AudioCd]
+    };
+
+    pub fn name(self) -> &'static str {
+        use RulerFormat::*;
+        match self {
+            Samples => "Samples",
+            Time => "Time",
+            Seconds => "Seconds",
+            TimeFrames => "Time & Frames",
+            AbsFrames => "Absolute Frames",
+            MeasuresBeats => "Measures & Beats",
+            Feet16 => "Feet and Frames 16mm (40 fpf)",
+            Feet35 => "Feet and Frames 35mm (16 fpf)",
+            SmpteFilmIvtc => "SMPTE Film Sync IVTC (23.976 fps, Video)",
+            SmpteFilm => "SMPTE Film Sync (24 fps, Film)",
+            SmpteEbu => "SMPTE EBU (25 fps, Video)",
+            SmpteNonDrop => "SMPTE Non-Drop (29.97 fps, Video)",
+            SmpteDrop => "SMPTE Drop (29.97 fps, Video)",
+            Smpte30 => "SMPTE 30 (30 fps, Audio)",
+            AudioCd => "Audio CD Time",
+        }
+    }
+
+    /// (exact rate, nominal frames per second, drop-frame) of the timecode formats; Time & Frames uses the project's.
+    fn smpte(self, fps: f64) -> Option<(f64, u64, bool)> {
+        use RulerFormat::*;
+        let ntsc = |n: f64| n * 1000.0 / 1001.0;
+        Some(match self {
+            TimeFrames => (exact_fps(fps), fps.round() as u64, is_drop(fps)),
+            SmpteFilmIvtc => (ntsc(24.0), 24, false),
+            SmpteFilm => (24.0, 24, false),
+            SmpteEbu => (25.0, 25, false),
+            SmpteNonDrop => (ntsc(30.0), 30, false),
+            SmpteDrop => (ntsc(30.0), 30, true),
+            Smpte30 => (30.0, 30, false),
+            _ => return None,
+        })
+    }
+
+    /// Frames per second the format counts (its ruler ticks fall on these frames).
+    pub fn frame_rate(self, fps: f64) -> f64 {
+        match self {
+            RulerFormat::AudioCd => 75.0,
+            f => f.smpte(fps).map_or(exact_fps(fps), |s| s.0),
+        }
+    }
+}
+
+/// Project Properties › Ruler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ruler {
+    #[serde(deserialize_with = "lenient")]
+    pub format: RulerFormat,
+    /// Ruler time at timeline 0 ("Ruler time starts at", Set Time at Cursor), in seconds.
+    pub offset: f64,
+    /// Beats per minute.
+    pub tempo: f64,
+    pub beats_per_measure: u32,
+    /// The note one beat is: 4 = a quarter note.
+    pub beat_note: u32,
+}
+
+impl Default for Ruler {
+    fn default() -> Self {
+        Self { format: RulerFormat::TimeFrames, offset: 0.0, tempo: 120.0, beats_per_measure: 4, beat_note: 4 }
+    }
+}
+
+/// Options › Grid Spacing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GridSpacing {
+    /// The ruler's major ticks.
+    #[default]
+    RulerMarks,
+    Minutes,
+    Seconds,
+    Milliseconds,
+    Frames,
+    Measures,
+    /// 1/n notes (4, 8, 16, 32), triplets when true.
+    Note(u32, bool),
+}
+
+impl GridSpacing {
+    /// Seconds from one grid line to the next before thinning for the zoom; None for Ruler Marks.
+    pub fn base(self, s: &ProjectSettings) -> Option<f64> {
+        use GridSpacing::*;
+        Some(match self {
+            RulerMarks => return None,
+            Minutes => 60.0,
+            Seconds => 1.0,
+            Milliseconds => 0.001,
+            Frames => 1.0 / exact_fps(s.frame_rate.max(1.0)),
+            Measures => s.beat_secs() * s.ruler.beats_per_measure.max(1) as f64,
+            Note(n, triplet) => s.beat_secs() * s.ruler.beat_note.max(1) as f64 / n.max(1) as f64 * if triplet { 2.0 / 3.0 } else { 1.0 },
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,7 +623,33 @@ impl Default for ProjectSettings {
             height: 1080,
             frame_rate: 29.97,
             sample_rate: 48000,
+            ruler: Ruler::default(),
         }
+    }
+}
+
+impl ProjectSettings {
+    /// Timeline time `t` as the ruler shows it (its format, from its start time).
+    pub fn ruler_time(&self, t: f64) -> String {
+        format_time(t + self.ruler.offset, self.ruler.format, self)
+    }
+
+    /// A length (no start time) in the ruler's format; in Measures & Beats it counts from 0.0.000, not 1.1.000.
+    pub fn ruler_len(&self, d: f64) -> String {
+        match self.ruler.format {
+            RulerFormat::MeasuresBeats => measures(d.abs(), self, 0),
+            f => format_time(d, f, self),
+        }
+    }
+
+    /// Ruler time typed in the ruler's format, as timeline time.
+    pub fn parse_ruler_time(&self, text: &str) -> Option<f64> {
+        parse_time(text, self.ruler.format, self).map(|v| v - self.ruler.offset)
+    }
+
+    /// Seconds per beat at the project tempo.
+    pub fn beat_secs(&self) -> f64 {
+        60.0 / self.ruler.tempo.max(1.0)
     }
 }
 
@@ -706,14 +860,164 @@ fn hue_to_rgb(h: u8) -> [u8; 3] {
     ]
 }
 
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// The project rate as an exact fraction: NTSC rates (23.976, 29.97, 59.94...) are n×1000/1001, others are taken to
+/// the thousandth. Preview, render, audio and the ruler all count frames on this one grid, so nothing drifts.
+pub fn rate_ratio(fps: f64) -> (u64, u64) {
+    let n = (fps * 1.001).round();
+    if fps.fract() != 0.0 && (fps - n * 1000.0 / 1001.0).abs() < 0.01 {
+        return (n as u64 * 1000, 1001);
+    }
+    let num = (fps.max(0.0) * 1000.0).round() as u64;
+    let g = gcd(num, 1000).max(1);
+    (num / g, 1000 / g)
+}
+
+/// `rate_ratio` as a number: 30000/1001 for 29.97.
+pub fn exact_fps(fps: f64) -> f64 {
+    let (n, d) = rate_ratio(fps);
+    n as f64 / d as f64
+}
+
+/// Time of frame `n` at `fps`: n × den / num, exact to the f64.
+pub fn frame_time(n: i64, fps: f64) -> f64 {
+    let (num, den) = rate_ratio(fps);
+    n as f64 * den as f64 / num.max(1) as f64
+}
+
+/// 29.97 and 59.94 count in drop-frame timecode.
+fn is_drop(fps: f64) -> bool {
+    let nominal = fps.round();
+    fps.fract() != 0.0 && (nominal == 30.0 || nominal == 60.0)
+}
+
 /// VEGAS "Time & Frames": hh:mm:ss:ff, or SMPTE drop-frame hh:mm:ss;ff at 29.97/59.94 fps.
 pub fn format_timecode(seconds: f64, fps: f64) -> String {
-    let nominal = fps.round() as u64;
+    smpte(seconds, exact_fps(fps), fps.round() as u64, is_drop(fps))
+}
+
+/// Inverse of `format_timecode`: "hh:mm:ss:ff" (drop-frame "hh:mm:ss;ff" at 29.97 and 59.94, as shown), the
+/// shorter "mm:ss:ff" and "ss:ff", or plain seconds ("1.5"). None when it is not a time.
+pub fn parse_timecode(s: &str, fps: f64) -> Option<f64> {
+    parse_smpte(s, exact_fps(fps), fps.round() as u64, is_drop(fps))
+}
+
+fn parse_smpte(s: &str, rate: f64, nominal: u64, drop: bool) -> Option<f64> {
+    let s = s.trim();
+    if !s.contains([':', ';']) {
+        return s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+    }
+    let nominal = nominal as i64;
+    let parts: Vec<i64> = s.split([':', ';']).map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    if nominal <= 0 || parts.len() > 4 || parts.iter().any(|&p| p < 0) {
+        return None;
+    }
+    let mut p = [0; 4];
+    p[4 - parts.len()..].copy_from_slice(&parts);
+    let [h, m, sec, ff] = p;
+    let mins = h * 60 + m;
+    let mut frames = (mins * 60 + sec) * nominal + ff;
+    if drop {
+        // Frame numbers 0..k are skipped at each minute except every tenth (SMPTE 12M).
+        frames -= nominal / 15 * (mins - mins / 10);
+    }
+    Some(frames as f64 / rate)
+}
+
+/// Measures & Beats ticks per beat (ACID's and VEGAS's 768).
+const TICKS: f64 = 768.0;
+
+/// `t` seconds in ruler format `fmt` (no ruler offset: `ProjectSettings::ruler_time` adds it).
+pub fn format_time(t: f64, fmt: RulerFormat, s: &ProjectSettings) -> String {
+    use RulerFormat::*;
+    if t < -1e-9 {
+        return format!("-{}", format_time(-t, fmt, s));
+    }
+    let t = t.max(0.0);
+    let fps = s.frame_rate.max(1.0);
+    let frames = |rate: f64| (t * rate).round() as u64;
+    match fmt {
+        Samples => frames(s.sample_rate.max(1) as f64).to_string(),
+        Time => {
+            let ms = frames(1000.0);
+            format!("{:02}:{:02}:{:02}.{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000)
+        }
+        Seconds => format!("{t:.3}"),
+        AbsFrames => frames(exact_fps(fps)).to_string(),
+        MeasuresBeats => measures(t, s, 1),
+        Feet16 | Feet35 => {
+            let (n, fpf) = (frames(exact_fps(fps)), if fmt == Feet16 { 40 } else { 16 });
+            format!("{}+{:02}", n / fpf, n % fpf)
+        }
+        AudioCd => {
+            let n = frames(75.0);
+            format!("{:02}:{:02}:{:02}", n / 75 / 60, n / 75 % 60, n % 75)
+        }
+        _ => {
+            let (rate, nominal, drop) = fmt.smpte(fps).expect("timecode format");
+            smpte(t, rate, nominal, drop)
+        }
+    }
+}
+
+/// measure.beat.ticks, counting measures and beats from `base` (1 for a position, 0 for a length).
+fn measures(t: f64, s: &ProjectSettings, base: u64) -> String {
+    let ticks = (t / s.beat_secs() * TICKS).round() as u64;
+    let (beat, bpm) = (ticks / TICKS as u64, s.ruler.beats_per_measure.max(1) as u64);
+    format!("{}.{}.{:03}", beat / bpm + base, beat % bpm + base, ticks % TICKS as u64)
+}
+
+/// Inverse of `format_time`, also taking shortened forms ("1:30" in Time, "5" in Measures & Beats) and a leading
+/// minus. None when the text is not a time in that format.
+pub fn parse_time(text: &str, fmt: RulerFormat, s: &ProjectSettings) -> Option<f64> {
+    use RulerFormat::*;
+    let text = text.trim();
+    if let Some(rest) = text.strip_prefix('-') {
+        return parse_time(rest, fmt, s).map(|v| -v);
+    }
+    let num = |x: &str| x.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+    // Up to `n` numbers split by `sep`, right-aligned (missing leading fields are 0).
+    let fields = |sep: &[char], n: usize| -> Option<Vec<f64>> {
+        let v: Vec<f64> = text.split(sep).map(num).collect::<Option<_>>()?;
+        (v.len() <= n).then(|| [vec![0.0; n - v.len()], v].concat())
+    };
+    let fps = s.frame_rate.max(1.0);
+    match fmt {
+        Samples => num(text).map(|n| n / s.sample_rate.max(1) as f64),
+        Seconds => num(text),
+        AbsFrames => num(text).map(|n| n / exact_fps(fps)),
+        Time => fields(&[':'], 3).map(|f| f[0] * 3600.0 + f[1] * 60.0 + f[2]),
+        MeasuresBeats => {
+            let mut f: Vec<f64> = text.split('.').map(num).collect::<Option<_>>()?;
+            if f.len() > 3 || f.iter().take(2).any(|v| *v < 1.0) {
+                return None;
+            }
+            f.resize(3, 0.0);
+            f.iter_mut().take(2).for_each(|v| *v = v.max(1.0));
+            let beats = (f[0] - 1.0) * s.ruler.beats_per_measure.max(1) as f64 + f[1] - 1.0 + f[2] / TICKS;
+            Some(beats * s.beat_secs())
+        }
+        Feet16 | Feet35 => {
+            let fpf = if fmt == Feet16 { 40.0 } else { 16.0 };
+            fields(&['+'], 2).map(|f| (f[0] * fpf + f[1]) / exact_fps(fps))
+        }
+        AudioCd => fields(&[':'], 3).map(|f| (f[0] * 60.0 + f[1]) + f[2] / 75.0),
+        _ => {
+            let (rate, nominal, drop) = fmt.smpte(fps)?;
+            parse_smpte(text, rate, nominal, drop)
+        }
+    }
+}
+
+/// hh:mm:ss:ff at `rate` frames per second counted as `nominal` (";" and SMPTE 12M numbering when `drop`).
+fn smpte(seconds: f64, rate: f64, nominal: u64, drop: bool) -> String {
     if nominal == 0 {
         return "00:00:00:00".to_string();
     }
-    let mut frames = (seconds.max(0.0) * fps).round() as u64;
-    let drop = fps.fract() != 0.0 && (nominal == 30 || nominal == 60);
+    let mut frames = (seconds.max(0.0) * rate).round() as u64;
     if drop {
         // Skip frame numbers 0..k at each minute except every tenth (SMPTE 12M).
         let k = nominal / 15; // 2 at 30, 4 at 60
@@ -744,6 +1048,94 @@ mod tests {
         assert_eq!(format_timecode(3600.0, 29.97), "01:00:00;00");
     }
 
+    #[test]
+    fn timecode_parses_what_format_shows() {
+        for fps in [29.97, 25.0, 59.94, 23.976, 30.0] {
+            for n in [0, 1, 29, 1799, 1800, 1801, 17982, 107892, 123456] {
+                let t = frame_time(n, fps);
+                let back = parse_timecode(&format_timecode(t, fps), fps).unwrap();
+                assert!((back - t).abs() < 1e-9, "{fps} fps frame {n}: {} -> {back}", format_timecode(t, fps));
+            }
+        }
+        assert_eq!(parse_timecode("1.5", 25.0), Some(1.5));
+        assert_eq!(parse_timecode("02:10", 25.0), Some(2.4)); // ss:ff
+        assert_eq!(parse_timecode("1:00:00", 25.0), Some(60.0)); // mm:ss:ff
+        assert!(parse_timecode("abc", 25.0).is_none() && parse_timecode("1:-2", 25.0).is_none() && parse_timecode("-1", 25.0).is_none());
+    }
+
+    /// R1: every ruler format reads back what it shows, to within its own resolution, at 23.976, 25, 29.97 DF and
+    /// 59.94 DF, 48 kHz; with a ruler start time too.
+    #[test]
+    fn every_ruler_format_round_trips() {
+        for fps in [23.976, 25.0, 29.97, 59.94] {
+            let mut s = ProjectSettings { frame_rate: fps, sample_rate: 48000, ..Default::default() };
+            s.ruler.tempo = 97.0;
+            s.ruler.beats_per_measure = 3;
+            for fmt in RulerFormat::ALL {
+                let res = match fmt {
+                    RulerFormat::Samples => 1.0 / 48000.0,
+                    RulerFormat::Time | RulerFormat::Seconds => 0.001,
+                    RulerFormat::MeasuresBeats => s.beat_secs() / TICKS,
+                    f => 1.0 / f.frame_rate(fps),
+                };
+                for n in [0, 1, 29, 1799, 1800, 17982, 107892, 323_676] {
+                    let t = frame_time(n, fps);
+                    let shown = format_time(t, fmt, &s);
+                    let back = parse_time(&shown, fmt, &s).unwrap_or_else(|| panic!("{fmt:?} {fps}: {shown}"));
+                    assert!((back - t).abs() <= res / 2.0 + 1e-9, "{fmt:?} {fps} frame {n}: {shown} -> {back} (t {t})");
+                    assert_eq!(format_time(back, fmt, &s), shown, "{fmt:?} {fps} frame {n}");
+                    // From a ruler start time, and as a negative length.
+                    (s.ruler.offset, s.ruler.format) = (3600.0, fmt);
+                    let back = s.parse_ruler_time(&s.ruler_time(t));
+                    assert!(back.is_some_and(|b| (b - t).abs() <= res / 2.0 + 1e-9), "{fmt:?} {fps} frame {n} offset: {} -> {back:?}", s.ruler_time(t));
+                    s.ruler.offset = 0.0;
+                    assert!((parse_time(&format_time(-t, fmt, &s), fmt, &s).unwrap() + t).abs() <= res / 2.0 + 1e-9);
+                }
+                assert!(parse_time("x", fmt, &s).is_none() && parse_time("", fmt, &s).is_none(), "{fmt:?}");
+            }
+        }
+        let s = ProjectSettings::default(); // 29.97, 120 bpm in 4/4
+        let f = |fmt, t| format_time(t, fmt, &s);
+        assert_eq!(f(RulerFormat::Samples, 1.5), "72000");
+        assert_eq!(f(RulerFormat::Time, 3725.25), "01:02:05.250");
+        assert_eq!(f(RulerFormat::Seconds, 2.5), "2.500");
+        assert_eq!(f(RulerFormat::AbsFrames, frame_time(150, 29.97)), "150");
+        assert_eq!(f(RulerFormat::MeasuresBeats, 2.25), "2.1.384"); // 4.5 beats: measure 2, beat 1 and a half
+        assert_eq!(f(RulerFormat::Feet16, frame_time(85, 29.97)), "2+05");
+        assert_eq!(f(RulerFormat::Feet35, frame_time(85, 29.97)), "5+05");
+        assert_eq!(f(RulerFormat::SmpteEbu, 10.0), "00:00:10:00");
+        assert_eq!(f(RulerFormat::SmpteNonDrop, 60.0), "00:00:59:28");
+        assert_eq!(f(RulerFormat::SmpteDrop, 60.0), "00:00:59;28"); // drop frame meets the clock every 10 min
+        assert_eq!(f(RulerFormat::SmpteDrop, 600.0), "00:10:00;00");
+        assert_eq!(f(RulerFormat::Smpte30, 1.5), "00:00:01:15");
+        assert_eq!(f(RulerFormat::SmpteFilm, 1.5), "00:00:01:12");
+        assert_eq!(f(RulerFormat::AudioCd, 61.4), "01:01:30");
+        assert_eq!(parse_time("3", RulerFormat::MeasuresBeats, &s), Some(4.0));
+        let mut m = s.clone();
+        m.ruler.format = RulerFormat::MeasuresBeats;
+        assert_eq!((m.ruler_time(3.0), m.ruler_len(3.0)), ("2.3.000".to_string(), "1.2.000".to_string())); // 6 beats
+        assert_eq!(parse_time("1:30", RulerFormat::Time, &s), Some(90.0));
+    }
+
+    /// R1: 29.97 is 30000/1001 exactly, so frame n lands on n after hours, and an hour holds 107892 frames.
+    #[test]
+    fn exact_rates_do_not_drift() {
+        assert_eq!([rate_ratio(29.97), rate_ratio(23.976), rate_ratio(59.94), rate_ratio(25.0), rate_ratio(12.5)], [(30000, 1001), (24000, 1001), (60000, 1001), (25, 1), (25, 2)]);
+        assert_eq!(rate_ratio(exact_fps(29.97)), (30000, 1001));
+        for n in [0, 1, 107_892, 323_676, 323_677, 1_000_003] {
+            let t = frame_time(n, 29.97); // 323 676 is 3 h
+            assert!((t * 30000.0 / 1001.0 - n as f64).abs() < 1e-6, "{n}");
+            assert_eq!(crate::engine::plan::frame_at(t, exact_fps(29.97)), n);
+        }
+        assert_eq!(format_timecode(frame_time(323_676, 29.97), 29.97), "03:00:00;00");
+        // A render of 1 h at 29.97 writes 107892 frames; the 3 h point is frame 323 676 of the video plan.
+        assert_eq!(crate::engine::plan::frame_range((0.0, 3600.0), 29.97), (0, 107_892));
+        assert_eq!(crate::engine::plan::frame_range((0.0, 10_800.0), 29.97).1, 323_676);
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.push(Clip::new("c", 0.0, 1.0));
+        assert_eq!(crate::engine::plan::compile(&p).fps, 30000.0 / 1001.0);
+    }
+
     // Fade gain curves are tested with the mixer (engine/mix.rs) and the video plan.
     #[test]
     fn clamp_fades_keeps_both_inside_the_event() {
@@ -769,12 +1161,17 @@ mod tests {
             }
         };
         strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
+        strip(&mut v["settings"], &["ruler"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes"]);
         strip(&mut v["timeline"]["audio_tracks"][0], &["fx"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes"];
         strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &clip_keys);
         strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator"]);
         let back: Project = serde_json::from_value(v).unwrap();
+        // R1: an old project opens at 120 bpm in 4/4, Time & Frames from 0.
+        assert_eq!(back.settings.ruler, Ruler { format: RulerFormat::TimeFrames, offset: 0.0, tempo: 120.0, beats_per_measure: 4, beat_note: 4 });
+        let r: Ruler = serde_json::from_str(r#"{"format":"Bars","tempo":90}"#).unwrap(); // a format from a newer build
+        assert_eq!((r.format, r.tempo, r.beats_per_measure), (RulerFormat::TimeFrames, 90.0, 4));
         let tl = &back.timeline;
         assert_eq!((tl.loop_region, tl.record_dir.as_ref()), (None, None));
         assert_eq!(tl.master.gain, [1.0, 1.0]);
@@ -824,6 +1221,7 @@ mod tests {
         p.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Pan), env(EnvKind::Mute)];
         p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
         p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
+        p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
         p.media_pool.push(MediaItem {
             id: "g".into(),
             media_type: MediaType::Image,

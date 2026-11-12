@@ -193,25 +193,64 @@ pub fn snap(t: f64, targets: &[f64], threshold: f64) -> Option<f64> {
         .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
 }
 
-/// Snap a span [start, start+len] by whichever edge is closest to a target.
-pub fn snap_span(start: f64, len: f64, targets: &[f64], threshold: f64) -> f64 {
-    let a = snap(start, targets, threshold).map(|s| s - start);
-    let b = snap(start + len, targets, threshold).map(|s| s - start - len);
-    start + [a, b].into_iter().flatten().min_by(|x, y| x.abs().total_cmp(&y.abs())).unwrap_or(0.0)
+/// What a drag snaps to: `points`, and with Snap to Grid the grid lines `step` seconds apart through `phase`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Snaps {
+    pub points: Vec<f64>,
+    /// (step, phase)
+    pub grid: Option<(f64, f64)>,
+}
+
+impl Snaps {
+    /// The grid line nearest `t`.
+    fn line(&self, t: f64) -> Option<f64> {
+        self.grid.filter(|(step, _)| *step > 0.0).map(|(step, ph)| ((t - ph) / step).round() * step + ph).filter(|l| *l >= -1e-9)
+    }
+
+    /// Nearest point or grid line within `threshold` of `t`.
+    pub fn nearest(&self, t: f64, threshold: f64) -> Option<f64> {
+        let line = self.line(t).filter(|l| (l - t).abs() <= threshold);
+        match (snap(t, &self.points, threshold), line) {
+            (Some(p), Some(l)) => Some(if (l - t).abs() < (p - t).abs() { l } else { p }),
+            (p, l) => p.or(l),
+        }
+    }
+
+    /// Snap a span [start, start+len] by whichever edge is closest to a target.
+    pub fn span(&self, start: f64, len: f64, threshold: f64) -> f64 {
+        let a = self.nearest(start, threshold).map(|s| s - start);
+        let b = self.nearest(start + len, threshold).map(|s| s - start - len);
+        start + [a, b].into_iter().flatten().min_by(|x, y| x.abs().total_cmp(&y.abs())).unwrap_or(0.0)
+    }
+
+    /// `v` lies on a point or a grid line.
+    pub fn hits(&self, v: f64) -> bool {
+        self.points.iter().any(|x| (x - v).abs() < 1e-9) || self.line(v).is_some_and(|l| (l - v).abs() < 1e-9)
+    }
+}
+
+/// The grid line after `t` (`forward`) or before it: Move Right/Left by Grid Marks. Never before 0.
+pub fn grid_step(t: f64, (step, phase): (f64, f64), forward: bool) -> f64 {
+    let k = (t - phase) / step;
+    // A cursor on a line (to rounding) moves a whole step.
+    let k = if forward { (k + 1e-6).floor() + 1.0 } else { (k - 1e-6).ceil() - 1.0 };
+    (k * step + phase).max(0.0)
 }
 
 /// 0, playhead, markers, loop ends and every clip edge except the clip with `exclude_id`.
 pub fn snap_targets(project: &Project, exclude_id: Option<&str>) -> Vec<f64> {
-    snap_targets_except(project, exclude_id.as_slice())
+    snap_targets_except(project, exclude_id.as_slice(), None)
 }
 
-/// `snap_targets` without the edges of the events in `ids` (the ones being dragged).
-pub fn snap_targets_except(project: &Project, ids: &[&str]) -> Vec<f64> {
+/// `snap_targets` without the edges of the events in `ids` (the ones being dragged); with `tracks` (Snap to All
+/// Events off), only the edges of events on those tracks (by id).
+pub fn snap_targets_except(project: &Project, ids: &[&str], tracks: Option<&[String]>) -> Vec<f64> {
     let tl = &project.timeline;
     let mut v = vec![0.0, tl.cursor_position];
     v.extend(tl.markers.iter().map(|m| m.position));
     v.extend(tl.loop_region.iter().flat_map(|&(a, b)| [a, b]));
-    for c in tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips) {
+    let on = |t: &Track| tracks.is_none_or(|ts| ts.contains(&t.id));
+    for c in tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| on(t)).flat_map(|t| &t.clips) {
         if !ids.contains(&c.id.as_str()) {
             v.push(c.position);
             v.push(c.position + c.duration);
@@ -742,7 +781,7 @@ pub fn move_clips(project: &mut Project, ids: &[String], dt: f64, dtrack: isize,
 
 /// Snap `t` to the project frame grid (Options › Quantize to Frames).
 pub fn quantize(t: f64, fps: f64) -> f64 {
-    let fps = fps.max(1.0);
+    let fps = exact_fps(fps.max(1.0)); // the render's grid: 30000/1001 at 29.97
     (t * fps).round() / fps
 }
 
@@ -754,7 +793,7 @@ pub fn quantize_toward(t: f64, fps: f64, toward: f64) -> f64 {
         _ if (q - t).abs() < 1e-9 => q,
         s if s > 0.0 => q,
         _ if toward == t => t,
-        _ => q + (toward - t).signum() / fps.max(1.0),
+        _ => q + (toward - t).signum() / exact_fps(fps.max(1.0)),
     }
 }
 
@@ -1991,9 +2030,42 @@ mod tests {
         let t = [0.0, 5.0, 10.0];
         assert_eq!(snap(5.05, &t, 0.1), Some(5.0));
         assert_eq!(snap(5.5, &t, 0.1), None);
-        assert!((snap_span(4.95, 2.0, &t, 0.1) - 5.0).abs() < 1e-9); // start snaps
-        assert!((snap_span(2.98, 7.0, &t, 0.1) - 3.0).abs() < 1e-9); // end snaps to 10
-        assert_eq!(snap_span(3.0, 1.0, &t, 0.1), 3.0);
+        let s = Snaps { points: t.to_vec(), grid: None };
+        assert!((s.span(4.95, 2.0, 0.1) - 5.0).abs() < 1e-9); // start snaps
+        assert!((s.span(2.98, 7.0, 0.1) - 3.0).abs() < 1e-9); // end snaps to 10
+        assert_eq!(s.span(3.0, 1.0, 0.1), 3.0);
+    }
+
+    /// R1: with Snap to Grid on a 1 s grid, times land on whole seconds; the nearer of a point and a line wins.
+    #[test]
+    fn snap_to_a_one_second_grid_lands_on_whole_seconds() {
+        let mut s = Snaps { points: vec![7.03], grid: Some((1.0, 0.0)) };
+        for (t, want) in [(3.04, Some(3.0)), (11.97, Some(12.0)), (0.02, Some(0.0)), (5.5, None), (7.06, Some(7.03)), (6.98, Some(7.0))] {
+            assert_eq!(s.nearest(t, 0.08), want, "{t}");
+        }
+        assert!((s.span(2.96, 1.5, 0.08) - 3.0).abs() < 1e-12 && s.hits(3.0) && s.hits(7.03) && !s.hits(3.5));
+        // Through a phase (a ruler start time of 0.25 s): lines at .25.
+        s.grid = Some((1.0, 0.25));
+        assert_eq!(s.nearest(4.3, 0.08), Some(4.25));
+        // Move Left/Right by Grid Marks: the next line each way, a whole step from a line, never before 0.
+        let g = (1.0, 0.0);
+        assert_eq!((grid_step(3.4, g, true), grid_step(3.4, g, false), grid_step(3.0, g, true), grid_step(3.0, g, false)), (4.0, 3.0, 4.0, 2.0));
+        assert_eq!(grid_step(0.5, g, false), 0.0);
+        assert_eq!(grid_step(0.0, g, false), 0.0);
+        let f = 1001.0 / 30000.0; // a frame grid at 29.97 a long way in
+        assert!((grid_step(100_000.0 * f, (f, 0.0), true) - 100_001.0 * f).abs() < 1e-9);
+    }
+
+    /// R1: Snap to All Events off snaps an event only to edges on its own tracks.
+    #[test]
+    fn snap_to_all_events_reaches_other_tracks() {
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.push(Clip::new("v", 2.0, 3.0));
+        p.timeline.audio_tracks[0].clips.push(Clip::new("a", 4.0, 3.0));
+        let v1 = vec![p.timeline.video_tracks[0].id.clone()];
+        let all = snap_targets_except(&p, &[], None);
+        let own = snap_targets_except(&p, &[], Some(&v1));
+        assert!(all.contains(&7.0) && !own.contains(&7.0) && own.contains(&5.0) && own.contains(&0.0));
     }
 
     #[test]
@@ -2255,7 +2327,7 @@ mod tests {
     #[test]
     fn quantize_lands_on_frames() {
         let q = quantize(1.0, 29.97);
-        assert!((q - 30.0 / 29.97).abs() < 1e-12);
+        assert!((q - 30.0 * 1001.0 / 30000.0).abs() < 1e-12); // frame 30 of the exact 30000/1001 grid
         assert_eq!(quantize(q, 29.97), q);
         assert_eq!(quantize(2.0, 25.0), 2.0);
         assert!((quantize(2.03, 25.0) - 2.04).abs() < 1e-12);

@@ -42,7 +42,7 @@ pub use pancrop::PanCropWin;
 pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, rename_event};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, grid_line, rename_event};
 pub use toolbar::draw_main_toolbar;
 pub use trackmotion::TrackMotionWin;
 pub use transport::{Cmd, Playback, TransportAction, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
@@ -220,6 +220,10 @@ impl EditTool {
 #[derive(Clone, Copy, Default)]
 pub struct EditOpts {
     pub snapping: bool,
+    /// Options › Snap to Grid, Snap to All Events and Grid Spacing (the grid is drawn whether or not it snaps).
+    pub snap_grid: bool,
+    pub snap_all: bool,
+    pub grid: crate::project::GridSpacing,
     pub quantize: bool,
     pub auto_crossfade: bool,
     /// Some(mode) while Auto Ripple is on.
@@ -302,7 +306,7 @@ pub struct DragState {
     /// The tracks (by id) the dragged events are on, and the earliest start among them, at drag start.
     pub tracks: Vec<String>,
     pub from: f64,
-    pub snap_targets: Vec<f64>,
+    pub snaps: crate::edit::Snaps,
     /// Project before the drag; pushed to history on release if anything changed.
     pub before: crate::project::Project,
     pub changed: bool,

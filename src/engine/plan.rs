@@ -197,7 +197,8 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
 
 pub fn compile(p: &Project) -> VideoPlan {
     let s = &p.settings;
-    let fps = s.frame_rate.max(1.0);
+    // 30000/1001, not 29.97: frame n is at n × 1001 / 30000 s, on the same grid as the ruler and the mixer.
+    let fps = crate::project::exact_fps(s.frame_rate.max(1.0));
     // Even: an odd size (an imported VEGAS project) cannot be encoded 4:2:0.
     let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
     let refs: HashMap<&str, (Arc<MediaRef>, &Option<Fx>)> =
@@ -293,8 +294,14 @@ pub fn motion(m: Motion, (w, h): (f64, f64)) -> Affine {
         .then(Affine::scale(1.0 / w, 1.0 / h))
 }
 
+/// Frames `a..b` seconds cover, to render: [round(a), round(b)) on the exact grid.
+pub fn frame_range((a, b): (f64, f64), fps: f64) -> (i64, i64) {
+    let fps = crate::project::exact_fps(fps);
+    ((a * fps).round() as i64, (b * fps).round() as i64)
+}
+
 pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
-    let t = n as f64 / p.fps;
+    let t = crate::project::frame_time(n, p.fps);
     let te = t + 1e-6; // positions snapped to frames sit on, not after, the frame time
     let size = (p.w as f64, p.h as f64);
     let layers = p

@@ -9,6 +9,7 @@ mod tracks;
 
 pub(super) use tracks::{fader_gain, fader_pos};
 pub(super) use ctx::MENUS as CONTEXT_MENUS;
+pub use ruler::grid_line;
 
 use eframe::egui::*;
 use crate::audio::Waveforms;
@@ -47,9 +48,16 @@ struct Geo {
     hscroll: Rect,
     pps: f64,
     scroll_x: f64,
+    /// Grid lines (step, phase) at this zoom, and whether drags snap to them (Snap to Grid).
+    grid: (f64, f64),
+    grid_snap: bool,
 }
 
 impl Geo {
+    /// Snap targets: `points`, plus the grid with Snap to Grid.
+    fn snaps(&self, points: Vec<f64>) -> edit::Snaps {
+        edit::Snaps { points, grid: self.grid_snap.then_some(self.grid) }
+    }
     fn to_x(&self, t: f64) -> f32 {
         ((t - self.scroll_x) * self.pps) as f32 + self.lanes.min.x
     }
@@ -190,7 +198,8 @@ pub fn draw_timeline(
     let frame = 1.0 / fps.max(1.0);
     // Quantize to Frames also puts a clicked cursor on a frame, as in VEGAS.
     let cursor_at = |t: f64| if quantize { edit::quantize(t.max(0.0), fps) } else { t.max(0.0) };
-    let make_geo = |tl: &Timeline| {
+    let make_geo = |project: &Project| {
+        let tl = &project.timeline;
         let clips_left = rect.min.x + header_w + gap;
         let rows_top = rect.min.y + t.m.band_h;
         let lanes = Rect::from_min_max(pos2(clips_left, rows_top), pos2(rect.max.x - t.m.scrollbar_w, rect.max.y - t.m.hscroll_h));
@@ -204,6 +213,8 @@ pub fn draw_timeline(
             hscroll: Rect::from_min_max(pos2(clips_left, lanes.max.y), rect.max),
             pps: tl.zoom * BASE_PPS,
             scroll_x: tl.scroll_x,
+            grid: ruler::grid_line(opts.grid, &project.settings, tl.zoom * BASE_PPS),
+            grid_snap: opts.snap_grid,
         }
     };
     let rows_of = |project: &Project, g: &Geo, scroll_y: &mut f32| -> Vec<Row> {
@@ -221,7 +232,7 @@ pub fn draw_timeline(
         }
         rows
     };
-    let mut g = make_geo(&project.timeline);
+    let mut g = make_geo(project);
     let rows = rows_of(project, &g, scroll_y);
 
     // ---- Interaction ----
@@ -254,11 +265,11 @@ pub fn draw_timeline(
             tl.scroll_x = tl.cursor_position;
         }
     }
-    g = make_geo(&project.timeline);
+    g = make_geo(project);
 
     ruler::interact(ui, &g, project, history, &mut st, snapping);
     scroll::interact(ui, &g, &rows, project, &mut st, scroll_y);
-    g = make_geo(&project.timeline);
+    g = make_geo(project);
     let rows = rows_of(project, &g, scroll_y);
 
     let row_at = |py: f32| rows.iter().find(|r| py >= r.top.max(g.lanes.min.y) && py < r.top + r.h && py < g.lanes.max.y).copied();
@@ -443,7 +454,8 @@ pub fn draw_timeline(
                     mode,
                     grab_offset: g.to_time(p.x) - edge,
                     limit: edit::media_limit(project, &clip),
-                    snap_targets: edit::snap_targets_except(project, &moving),
+                    // Snap to All Events off: only the edges on the dragged events' own tracks.
+                    snaps: g.snaps(edit::snap_targets_except(project, &moving, (!opts.snap_all).then_some(&tracks[..]))),
                     ids,
                     original: clip,
                     others,
@@ -454,14 +466,14 @@ pub fn draw_timeline(
                     changed: false,
                 });
             } else if v16 && hit.is_none() {
-                let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), g.pps, snapping, &mut st);
+                let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), &g, snapping, &mut st);
                 st.loop_drag = Some(LoopDrag::Create(t0));
             }
         }
     }
     if response.drag_started_by(PointerButton::Secondary) && !v16 {
         if let Some(p) = press.filter(|p| hit_clip(project, *p).is_none()) {
-            let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), g.pps, snapping, &mut st);
+            let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), &g, snapping, &mut st);
             st.loop_drag = Some(LoopDrag::Create(t0));
         }
     }
@@ -469,7 +481,7 @@ pub fn draw_timeline(
         if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
             let thr = SNAP_PX / g.pps;
             let edge = g.to_time(p.x) - ds.grab_offset;
-            let snap = if snap_on { edit::snap(edge, &ds.snap_targets, thr) } else { None };
+            let snap = if snap_on { ds.snaps.nearest(edge, thr) } else { None };
             let snapped_edge = snap.unwrap_or(edge);
             let q = |t: f64| if quantize { edit::quantize(t, fps) } else { t };
             let trim_edge = snap.unwrap_or_else(|| q(edge));
@@ -484,8 +496,8 @@ pub fn draw_timeline(
                 let mut pos = edge.max(0.0);
                 let mut hit = None;
                 if snap_on {
-                    pos = edit::snap_span(pos, o.duration, &ds.snap_targets, thr).max(0.0);
-                    hit = [pos, pos + o.duration].into_iter().find(|v| ds.snap_targets.iter().any(|x| (x - v).abs() < 1e-9));
+                    pos = ds.snaps.span(pos, o.duration, thr).max(0.0);
+                    hit = [pos, pos + o.duration].into_iter().find(|v| ds.snaps.hits(*v));
                     st.snap = hit;
                 }
                 if hit.is_some() { pos } else { q(pos) }
@@ -619,7 +631,7 @@ pub fn draw_timeline(
             if !ed.segment && !fine {
                 let k0 = ed.orig.points.keys.get(ed.grab).map_or(0.0, |k| k.t);
                 let want = k0 + g.to_time(p.x) - ed.press_t;
-                let snap = if snap_on { edit::snap(want, &edit::snap_targets(project, None), SNAP_PX / g.pps) } else { None };
+                let snap = if snap_on { g.snaps(edit::snap_targets(project, None)).nearest(want, SNAP_PX / g.pps) } else { None };
                 st.snap = snap;
                 dt = snap.unwrap_or(if quantize && !shift { edit::quantize(want.max(0.0), fps) } else { want }) - k0;
             }
@@ -635,7 +647,7 @@ pub fn draw_timeline(
         let origin = ui.input(|i| i.pointer.press_origin());
         if let (Some(o), Some(p)) = (origin, response.interact_pointer_pos()) {
             if let Some(d) = st.loop_drag {
-                let tp = ruler::snapped(ui, project, g.to_time(p.x), g.pps, snapping, &mut st);
+                let tp = ruler::snapped(ui, project, g.to_time(p.x), &g, snapping, &mut st);
                 ruler::loop_drag_to(&mut project.timeline, d, tp);
             } else if g.band.contains(o) {
                 project.timeline.cursor_position = cursor_at(g.to_time(p.x.clamp(g.lanes.min.x, g.lanes.max.x)));
@@ -694,7 +706,7 @@ pub fn draw_timeline(
     // planned every frame for the ghost, at the start time snapped (or quantized) once, as the drop itself is.
     let drop_time = |project: &Project, x: f32| {
         let t = g.to_time(x).max(0.0);
-        let s = if snapping { edit::snap(t, &edit::snap_targets(project, None), SNAP_PX / g.pps) } else { None };
+        let s = if snapping { g.snaps(edit::snap_targets(project, None)).nearest(t, SNAP_PX / g.pps) } else { None };
         s.unwrap_or(if quantize { edit::quantize(t, fps) } else { t })
     };
     let payload = response.dnd_hover_payload::<super::MediaDrag>();
@@ -909,7 +921,7 @@ pub fn draw_timeline(
         pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(lane.max.y, lane.max.y + 1.0)), 0.0, t.track_separator);
         pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(lane.max.y + 1.0, lane.max.y + 2.0)), 0.0, t.track_separator_2);
     }
-    ruler::paint_grid(&pl, &g, fps);
+    ruler::paint_grid(&pl, &g);
 
     let hover_ref = hovered_clip.map(|(cr, _)| cr).or_else(|| drag_state.as_ref().and_then(|d| project.find_clip(&d.id)));
     let selected: std::collections::HashSet<&str> = sel.clips.iter().map(String::as_str).collect();
@@ -1463,7 +1475,7 @@ mod tests {
         p.timeline.video_tracks[0].clips.push(Clip::new("v", 2.0, 4.0)); // x 20..60, row y 0..50
         p.timeline.audio_tracks[0].clips.push(Clip::new("a", 2.0, 4.0)); // row y 50..100
         let lanes = Rect::from_min_max(Pos2::ZERO, pos2(1000.0, 300.0));
-        let g = Geo { rect: lanes, header_w: 0.0, list: Rect::ZERO, band: Rect::ZERO, lanes, vscroll: Rect::ZERO, hscroll: Rect::ZERO, pps: 10.0, scroll_x: 0.0 };
+        let g = Geo { rect: lanes, header_w: 0.0, list: Rect::ZERO, band: Rect::ZERO, lanes, vscroll: Rect::ZERO, hscroll: Rect::ZERO, pps: 10.0, scroll_x: 0.0, grid: (1.0, 0.0), grid_snap: false };
         let rows = [Row { is_video: true, idx: 0, num: 0, top: 0.0, h: 50.0 }, Row { is_video: false, idx: 0, num: 1, top: 50.0, h: 50.0 }];
         let v = p.timeline.video_tracks[0].clips[0].id.clone();
         // Partly inside on the video row; the audio row below is not touched.
@@ -1596,7 +1608,7 @@ mod tests {
     /// frame grid; a slide stopped by the media start (in_point off the grid) is pulled back onto it.
     #[test]
     fn quantized_drags_land_on_frames() {
-        let fps = 29.97;
+        let fps = 30000.0 / 1001.0; // the project's 29.97, exactly
         let on_grid = |t: f64| (t * fps - (t * fps).round()).abs() < 1e-6;
         let alt = Modifiers { alt: true, ..Default::default() };
         let ctrl_alt = Modifiers { ctrl: true, command: true, alt: true, ..Default::default() };

@@ -258,7 +258,7 @@ pub fn to_project(e: &VegasExport, probed: &HashMap<String, Result<MediaItem, St
     let nz = |v: u32, d: u32| if v > 0 { v } else { d };
     // VEGAS has 29.97002997...; Milan's rate list has 29.97.
     let fps = if e.project.fps > 0.0 { (e.project.fps * 1000.0).round() / 1000.0 } else { d.frame_rate };
-    p.settings = ProjectSettings { width: nz(e.project.w, d.width), height: nz(e.project.h, d.height), frame_rate: fps, sample_rate: nz(e.project.sample_rate, d.sample_rate) };
+    p.settings = ProjectSettings { width: nz(e.project.w, d.width), height: nz(e.project.h, d.height), frame_rate: fps, sample_rate: nz(e.project.sample_rate, d.sample_rate), ..d };
     let snap = |t: f64| edit::quantize(t.max(0.0), fps);
     let span = |s: &VSpan| {
         let (a, b) = if s.length < 0.0 { (s.t + s.length, s.t) } else { (s.t, s.t + s.length) };
@@ -529,8 +529,8 @@ mod tests {
         let e = read_vegas_json(FIXTURE).unwrap();
         let (p, w) = to_project(&e, &probed());
         assert_eq!((p.name.as_str(), p.modified, p.path.is_none()), ("Show", true, true));
-        assert_eq!(p.settings, ProjectSettings { width: 1280, height: 720, frame_rate: 29.97, sample_rate: 44100 });
-        let f = |n: f64| n / 29.97;
+        assert_eq!(p.settings, ProjectSettings { width: 1280, height: 720, frame_rate: 29.97, sample_rate: 44100, ..Default::default() });
+        let f = |n: f64| n * 1001.0 / 30000.0;
         let tl = &p.timeline;
         assert_eq!((tl.video_tracks.len(), tl.audio_tracks.len()), (1, 1));
 
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn timeline_times_land_on_29_97_frames() {
         let (p, _) = to_project(&read_vegas_json(FIXTURE).unwrap(), &probed());
-        let on_grid = |t: f64| ((t * 29.97) - (t * 29.97).round()).abs() < 1e-6;
+        let on_grid = |t: f64| ((t * 30000.0 / 1001.0) - (t * 30000.0 / 1001.0).round()).abs() < 1e-6;
         let tl = &p.timeline;
         for c in tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips) {
             assert!(on_grid(c.position) && on_grid(c.position + c.duration) && on_grid(c.fade_in) && on_grid(c.fade_out));

@@ -72,6 +72,11 @@ pub struct CmdState {
     pub selection: bool,
     pub looping: bool,
     pub snapping: bool,
+    /// Options › Snap to Grid, Snap to All Events, Grid Spacing and Ruler Format.
+    pub snap_grid: bool,
+    pub snap_all: bool,
+    pub grid: GridSpacing,
+    pub ruler: RulerFormat,
     pub auto_crossfade: bool,
     pub open_panels: Vec<Panel>,
     pub quality: Option<Quality>,
@@ -158,6 +163,7 @@ impl CmdState {
             SetSelStart | SetSelEnd | SelectionToView | SelectionToProject | InsertMarker | InsertAudioTrack
             | InsertVideoTrack | Snapping | AutoCrossfade | ZoomIn | ZoomOut | ZoomOutLarge | TracksTaller
             | TracksShorter | DefaultTrackHeights | PreviewQuality(_) => true,
+            GoTo | GridLeft | GridRight | SnapGrid | SnapAllEvents | SetGrid(_) | SetRuler(_) | SetTimeAtCursor | ProjectTempo => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -168,6 +174,10 @@ impl CmdState {
         Some(match c {
             Loop => self.looping,
             Snapping => self.snapping,
+            SnapGrid => self.snap_grid,
+            SnapAllEvents => self.snap_all,
+            SetGrid(g) => self.grid == g,
+            SetRuler(r) => self.ruler == r,
             AutoCrossfade => self.auto_crossfade,
             Window(p) => self.open_panels.contains(&p),
             PreviewQuality(q) => self.quality == Some(q),
@@ -190,8 +200,7 @@ impl CmdState {
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            SnapGrid | SnapAllEvents | BusTracks | VideoBusTrack | MediaMarkers | Multicam
-            | ExternalMonitor => false,
+            BusTracks | VideoBusTrack | MediaMarkers | Multicam | ExternalMonitor => false,
             _ => return None,
         })
     }
@@ -267,7 +276,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         | RestoreSelection | SelPrevEvent | SelNextEvent | SelectEventStart | SelectEventEnd | ExpandedEdit | NudgeFrameLeft
         | NudgeFrameRight | NudgePixelLeft | NudgePixelRight | NudgeTrackUp | NudgeTrackDown | MuteExclusive | SoloExclusive
         | ToggleListFocus | ZoomFramePerThumb | WaveZoomIn | WaveZoomOut => Later("R2"),
-        GridLeft | GridRight | GoTo | SnapGrid | SnapAllEvents => Later("R1"),
         PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => Later("R4b"),
         GroupMute | GroupSolo => Later("R5"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
@@ -385,7 +393,7 @@ fn row(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark, why:
 /// A row for `cmd`: state from the published `CmdState`, shortcut from the keymap; sends it when chosen.
 pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
-    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault);
+    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_));
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
         Some(on) => Mark::Check(on),
@@ -896,45 +904,56 @@ pub const TOOLS: &[M] = &[
     X("Rebuild Offline &Nested Audio", Later("R6a")),
 ];
 
-pub const GRID_SPACING: &[M] = &[
-    R("&Ruler Marks", true, Later("R1")),
-    S,
-    R("Mi&nutes", false, Later("R1")),
-    R("&Seconds", false, Later("R1")),
-    R("&Milliseconds", false, Later("R1")),
-    R("&Frames", false, Later("R1")),
-    S,
-    R("Me&asures", false, Later("R1")),
-    R("&Quarter Notes", false, Later("R1")),
-    R("Q&uarter Note Triplets", false, Later("R1")),
-    R("&8th Notes", false, Later("R1")),
-    R("8th Note &Triplets", false, Later("R1")),
-    R("&16th Notes", false, Later("R1")),
-    R("16t&h Note Triplets", false, Later("R1")),
-    R("&32nd Notes", false, Later("R1")),
-    R("32nd Note Tr&iplets", false, Later("R1")),
-];
+pub const GRID_SPACING: &[M] = {
+    use GridSpacing::*;
+    &[
+        C("&Ruler Marks", SetGrid(RulerMarks)),
+        S,
+        C("Mi&nutes", SetGrid(Minutes)),
+        C("&Seconds", SetGrid(GridSpacing::Seconds)),
+        C("&Milliseconds", SetGrid(Milliseconds)),
+        C("&Frames", SetGrid(Frames)),
+        S,
+        C("Me&asures", SetGrid(Measures)),
+        C("&Quarter Notes", SetGrid(Note(4, false))),
+        C("Q&uarter Note Triplets", SetGrid(Note(4, true))),
+        C("&8th Notes", SetGrid(Note(8, false))),
+        C("8th Note &Triplets", SetGrid(Note(8, true))),
+        C("&16th Notes", SetGrid(Note(16, false))),
+        C("16t&h Note Triplets", SetGrid(Note(16, true))),
+        C("&32nd Notes", SetGrid(Note(32, false))),
+        C("32nd Note Tr&iplets", SetGrid(Note(32, true))),
+    ]
+};
 
-/// Options › Ruler Format, also the time ruler's and time display's right-click list (§6.6, §6.10).
+/// The Ruler Format radios: Options › Ruler Format, the time ruler's and the time display's right-click lists.
+pub const RULER_FORMATS: &[M] = {
+    use RulerFormat::*;
+    &[
+        C("&Samples", SetRuler(Samples)),
+        C("&Time", SetRuler(Time)),
+        C("Se&conds", SetRuler(RulerFormat::Seconds)),
+        C("Time && Fra&mes", SetRuler(TimeFrames)),
+        C("Absol&ute Frames", SetRuler(AbsFrames)),
+        C("Measures && &Beats", SetRuler(MeasuresBeats)),
+        C("Feet and Frames &16mm (40 fpf)", SetRuler(Feet16)),
+        C("Feet and Frames &35mm (16 fpf)", SetRuler(Feet35)),
+        C("SMPTE Fi&lm Sync IVTC (23.976 fps, Video)", SetRuler(SmpteFilmIvtc)),
+        C("SMPTE &Film Sync (24 fps, Film)", SetRuler(SmpteFilm)),
+        C("SMPTE &EBU (25 fps, Video)", SetRuler(SmpteEbu)),
+        C("SMPTE &Non-Drop (29.97 fps, Video)", SetRuler(SmpteNonDrop)),
+        C("SMPTE &Drop (29.97 fps, Video)", SetRuler(SmpteDrop)),
+        C("SM&PTE 30 (30 fps, Audio)", SetRuler(Smpte30)),
+        C("&Audio CD Time", SetRuler(AudioCd)),
+    ]
+};
+
+/// Options › Ruler Format, also the time ruler's right-click menu (§6.6, §6.10).
 pub const RULER_MENU: &[M] = &[
-    R("&Samples", false, Later("R1")),
-    R("&Time", false, Later("R1")),
-    R("Se&conds", false, Later("R1")),
-    R("Time && Fra&mes", true, Later("R1")),
-    R("Absol&ute Frames", false, Later("R1")),
-    R("Measures && &Beats", false, Later("R1")),
-    R("Feet and Frames &16mm (40 fpf)", false, Later("R1")),
-    R("Feet and Frames &35mm (16 fpf)", false, Later("R1")),
-    R("SMPTE Fi&lm Sync IVTC (23.976 fps, Video)", false, Later("R1")),
-    R("SMPTE &Film Sync (24 fps, Film)", false, Later("R1")),
-    R("SMPTE &EBU (25 fps, Video)", false, Later("R1")),
-    R("SMPTE &Non-Drop (29.97 fps, Video)", false, Later("R1")),
-    R("SMPTE &Drop (29.97 fps, Video)", false, Later("R1")),
-    R("SM&PTE 30 (30 fps, Audio)", false, Later("R1")),
-    R("&Audio CD Time", false, Later("R1")),
+    Inline(RULER_FORMATS),
     S,
-    X("Set T&ime at Cursor", Later("R1")),
-    V23(&X("Set Project Tempo", Later("R1"))),
+    C("Set T&ime at Cursor", SetTimeAtCursor),
+    V23(&C("Set Project Tempo", ProjectTempo)),
 ];
 
 pub const OPTIONS: &[M] = &[
@@ -1284,6 +1303,25 @@ mod tests {
         assert!(st.enabled(BypassAudioFx) && st.checked(BypassAudioFx) == Some(true));
     }
 
+    /// R1: the snapping switches and the Grid Spacing / Ruler Format radios follow the state.
+    #[test]
+    fn grid_and_ruler_items_follow_the_state() {
+        let mut st = CmdState::default();
+        assert_eq!((st.checked(SnapGrid), st.checked(SnapAllEvents)), (Some(false), Some(false)));
+        assert_eq!(st.checked(SetGrid(GridSpacing::RulerMarks)), Some(true));
+        assert_eq!(st.checked(SetRuler(RulerFormat::TimeFrames)), Some(true));
+        (st.snap_grid, st.grid, st.ruler) = (true, GridSpacing::Note(8, true), RulerFormat::MeasuresBeats);
+        assert_eq!((st.checked(SnapGrid), st.checked(SetGrid(GridSpacing::Note(8, true))), st.checked(SetGrid(GridSpacing::Note(8, false)))), (Some(true), Some(true), Some(false)));
+        assert_eq!((st.checked(SetRuler(RulerFormat::MeasuresBeats)), st.checked(SetRuler(RulerFormat::TimeFrames))), (Some(true), Some(false)));
+        for c in [GoTo, GridLeft, GridRight, SnapGrid, SnapAllEvents, SetTimeAtCursor, ProjectTempo, SetGrid(GridSpacing::Frames)] {
+            assert!(st.enabled(c) && unfinished(c).is_none(), "{c:?}");
+        }
+        let mut cmds = Vec::new();
+        commands(GRID_SPACING, &mut cmds);
+        commands(RULER_FORMATS, &mut cmds);
+        assert_eq!(cmds.len(), 14 + 15);
+    }
+
     #[test]
     fn record_and_arm_follow_the_armed_tracks() {
         let mut st = CmdState::default();
@@ -1350,7 +1388,9 @@ mod tests {
         // Every greyed menu row has a reason by construction (`X`, `K`, `R` carry one); the list has them all.
         let mut rows = Vec::new();
         greyed(MENUS[5].1, &mut rows);
-        assert!(rows.iter().any(|(l, w)| l == "Snap to Grid" && *w == Later("R1")), "{rows:?}");
+        assert!(rows.iter().any(|(l, w)| l == "Metronome" && *w == Later("R18a")), "{rows:?}");
+        // R1 built snapping, the grid and the ruler formats: nothing in the menus waits on it any more.
+        assert!(!rows.iter().any(|(l, w)| l.contains("Grid") || l.contains("SMPTE") || *w == Later("R1")), "{rows:?}");
     }
 
     /// Every `Later` and `NotPlanned` in the source names a batch heading of docs/REMAINING.md (`NotPlanned` only the
