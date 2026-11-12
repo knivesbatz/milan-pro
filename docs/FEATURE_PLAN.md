@@ -879,6 +879,33 @@ Why this order:
 
 ---
 
+### Batch 5b: Drag media to the timeline (user priority)
+
+The user asked for this explicitly. Today a drag from Project Media, the Explorer tab or the Trimmer onto an existing track of the right kind works (`ui/timeline/mod.rs` `dnd_release_payload::<MediaDrag>`, `edit::drop_media_range`). Everything below is missing and must work the way VEGAS Pro does it.
+
+1. **Files from Windows File Explorer onto the timeline.** `app.rs` imports `raw.dropped_files` into Project Media only. Instead:
+   - track where the OS drag is hovering (`raw.hovered_files` and the pointer position) and show the same drop indicator and ghost as an in-app drag;
+   - on drop over the timeline, import the files (reuse the importer and `merge_new`; a file already in the pool is reused, not imported twice), then place each one when its probe finishes, at the drop time and track that were captured at drop time (store a pending placement keyed by path; it is cancelled by New/Open, and is one undo step per placed batch);
+   - several files are added across time (one after another from the drop point, VEGAS's default "Add Across Time");
+   - a drop anywhere else (media panel, preview, empty window) keeps today's behaviour: import only;
+   - files that ffprobe rejects show the existing error and place nothing.
+2. **Drop below the last track, or on an empty timeline, creates tracks** of the right kind (video track for video/image media, audio track for audio), as VEGAS does. A video file with audio creates a video track and an audio track.
+3. **Wrong-kind rows:** dropping audio on a video row places it on the first audio track (creating one if none), and video/image on an audio row places it on the first video track (creating one), instead of silently failing.
+4. **Paired audio placement:** a video with audio puts its audio on the audio track that VEGAS would use: the first audio track if it is free over the event's time range, otherwise a new audio track (no overlap onto existing audio). Both events share the group id once batch 6 lands; leave a `group` hook if batch 6 is not in yet.
+5. **Ghost while dragging:** draw a translucent event rectangle (event colour, name, real length at the current zoom) for each event that will be created, on the target rows, snapped like the drop itself, plus the existing indicator line. Rows that would be created are shown as a dashed ghost row below the last track.
+6. **Multi-select drag from Project Media:** dragging with several media items selected adds all of them across time, in list order.
+7. **Stills** get the image length from prefs (default 5 s, VEGAS's "New still image length"), using the existing default if one exists.
+8. **Locked tracks** refuse the drop with the "no" cursor; the ghost turns red.
+9. Every drop is one undo step and marks the project modified; the dropped events become the selection.
+
+**Test plan**
+- `edit` unit tests: wrong-kind row redirect; drop below last track creates tracks; paired audio goes to a new audio track when the first one is occupied; across-time placement of three items; still length; locked track refused.
+- A simulated-input UI test (like the existing drag tests) that drags a Project Media item onto a track and below the last track.
+- A test for the pending OS-file placement: a fake probe result arriving after New is discarded; one arriving normally lands at the captured time and track.
+- Harness screenshot is not enough for the ghost; add a debug flag or test that renders a frame mid-drag if practical, otherwise describe what was checked.
+
+---
+
 ### Batch 6: Edit tools, grouping, automatic crossfades, ripple
 
 **Scope**
