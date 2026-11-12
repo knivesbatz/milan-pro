@@ -214,6 +214,7 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     drag.dnd_set_drag_payload(MediaDrag::Pool(vec![idx], Some((a, b))));
 
     // Keys while the pointer is over the Trimmer: I / O set in / out, A / Shift+A add to the timeline.
+    super::claim_plain_keys(ui.ctx(), rect);
     if ui.rect_contains_pointer(rect) && !ui.ctx().wants_keyboard_input() {
         let (i, o, add, shift) = ui.input(|i| (i.key_pressed(Key::I), i.key_pressed(Key::O), i.key_pressed(Key::A), i.modifiers.shift));
         if i {

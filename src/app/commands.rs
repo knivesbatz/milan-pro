@@ -17,6 +17,13 @@ use super::MeridianApp;
 /// Heads the report of what an imported VEGAS project lost.
 const IMPORTED_VEGAS: &str = "The VEGAS project is open as a new, unsaved project. These parts of it did not carry over:";
 
+/// Copied events live in the app, but egui hears Ctrl+V only while the Windows clipboard holds text: put some there.
+fn claim_clipboard<T>(ctx: &egui::Context, copied: &[T]) {
+    if !copied.is_empty() {
+        ctx.copy_text("Milan Pro events".into());
+    }
+}
+
 impl MeridianApp {
     /// A modal dialog is up: shortcuts and drops wait.
     pub(super) fn modal_open(&self) -> bool {
@@ -335,8 +342,8 @@ impl MeridianApp {
     /// Keyboard shortcuts for this frame, run before the UI is drawn (as the old hard-wired keys were).
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
         let blocked = ctx.wants_keyboard_input() || menus::any_open(ctx) || self.modal_open();
-        // Over a dock window or a Pan/Crop / Track Motion window, plain keys (Delete) are that window's.
-        let over_dock = ui::over_tool_window(ctx) || ctx.pointer_hover_pos().is_some_and(|p| self.dock_rect.contains(p));
+        // Over the Trimmer, Project Media's items or a Pan/Crop / Track Motion window, plain keys (Delete) are that window's.
+        let over_dock = ui::over_plain_key_area(ctx) | ui::over_tool_window(ctx);
         let look = theme::get().look();
         for c in self.keymap.poll(ctx, look, Scope { blocked, over_dock }) {
             self.exec(ctx, c);
@@ -432,21 +439,21 @@ impl MeridianApp {
 
     pub(super) fn save_prefs(&mut self) {
         if !self.demo {
-            // Another window may have changed the update choices or layouts since; keep its values unless this one
-            // changed them. An unreadable file has nothing to keep.
-            if let Some(disk) = crate::settings::Prefs::try_load() {
-                if self.prefs.auto_update == self.update_prefs_seen.0 {
-                    self.prefs.auto_update = disk.auto_update;
+            // Another window may have saved since: keep its values except for what this one changed. An unreadable
+            // file is set aside as prefs.json.bad rather than written over.
+            let mine = std::mem::take(&mut self.prefs);
+            self.prefs = match crate::settings::Prefs::try_load() {
+                Some(disk) => mine.merged(disk, &self.prefs_seen, &self.layouts_changed),
+                None => {
+                    crate::settings::Prefs::keep_unreadable();
+                    mine
                 }
-                if self.prefs.skipped_update == self.update_prefs_seen.1 {
-                    self.prefs.skipped_update = disk.skipped_update;
-                }
-                let mine = std::mem::take(&mut self.prefs.layouts);
-                self.prefs.layouts = crate::settings::merge_layouts(disk.layouts, mine, &self.layouts_changed);
-            }
-            self.update_prefs_seen = (self.prefs.auto_update, self.prefs.skipped_update.clone());
+            };
             match self.prefs.save() {
-                Ok(()) => self.layouts_changed.clear(),
+                Ok(()) => {
+                    self.layouts_changed.clear();
+                    self.prefs_seen = self.prefs.clone();
+                }
                 Err(e) => self.message = Some(format!("Could not save preferences: {e}")),
             }
         }
@@ -525,6 +532,8 @@ impl MeridianApp {
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
             // Edit
+            // A drag in progress holds its own undo step until release; undoing under it would stack a half drag.
+            Undo | Redo | UndoAll if self.dragging() => {}
             Undo | Redo | UndoAll => {
                 // Arming and the recording folder are not edits: they stay as they are through undo and redo.
                 let armed: Vec<String> = self.project.timeline.audio_tracks.iter().filter(|t| t.armed).map(|t| t.id.clone()).collect();
@@ -549,7 +558,10 @@ impl MeridianApp {
                 }
             }
             ClearHistory => self.history.clear(),
-            Copy => self.clipboard = edit::copy_clips(&self.project, &self.sel.clips),
+            Copy => {
+                self.clipboard = edit::copy_clips(&self.project, &self.sel.clips);
+                claim_clipboard(ctx, &self.clipboard);
+            }
             Cut => {
                 // Only what the delete removes goes to the clipboard: locked events stay, so pasting them would
                 // duplicate them.
@@ -565,6 +577,7 @@ impl MeridianApp {
                     .collect();
                 if !ids.is_empty() && !self.dragging() {
                     self.clipboard = edit::copy_clips(&self.project, &ids);
+                    claim_clipboard(ctx, &self.clipboard);
                     self.delete_rippled(&ids);
                 }
             }
@@ -1007,6 +1020,7 @@ impl MeridianApp {
                 }
             },
             Window(p) => self.dock.toggle(p),
+            ShowWindow(p) => self.dock.open(p),
             _ => {}
         }
     }
@@ -1092,6 +1106,10 @@ impl MeridianApp {
         self.message = None;
         if action == MenuAction::Open {
             self.remember();
+            let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
+            if !missing.is_empty() {
+                self.message = Some(format!("Media offline: {}", missing.join("; ")));
+            }
         }
         if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
             self.settings.open(&self.project);

@@ -126,11 +126,53 @@ impl Prefs {
         Self::path().map_or(Some(Self::default()), |p| Self::parse(std::fs::read_to_string(p)))
     }
 
+    /// A field that does not parse (a variant from a newer build, a NaN written as null) falls back to its default
+    /// alone; a file that is not a JSON object at all is None.
     fn parse(file: std::io::Result<String>) -> Option<Self> {
+        use serde_json::Value;
         match file {
-            Ok(s) => serde_json::from_str(&s).ok(),
+            Ok(s) => {
+                let Value::Object(fields) = serde_json::from_str(&s).ok()? else { return None };
+                let mut good = serde_json::Map::new();
+                for (k, v) in fields {
+                    let mut trial = good.clone();
+                    trial.insert(k.clone(), v.clone());
+                    if serde_json::from_value::<Self>(Value::Object(trial)).is_ok() {
+                        good.insert(k, v);
+                    }
+                }
+                serde_json::from_value(Value::Object(good)).ok()
+            }
             Err(e) => (e.kind() == std::io::ErrorKind::NotFound).then(Self::default),
         }
+    }
+
+    /// An unreadable preferences file is kept as prefs.json.bad before a save writes over it.
+    pub fn keep_unreadable() {
+        if let Some(p) = Self::path().filter(|p| p.exists()) {
+            let _ = std::fs::rename(&p, p.with_extension("json.bad"));
+        }
+    }
+
+    /// The preferences to save from this window: those on `disk` (another window may have saved since), with the
+    /// fields this window changed since it last read or wrote them (`seen`) taken from `self`. The recent list puts
+    /// this window's new entries first over the disk's; layouts merge by the `changed` keys (`merge_layouts`).
+    pub fn merged(self, disk: Prefs, seen: &Prefs, changed: &BTreeSet<String>) -> Prefs {
+        use serde_json::{Value, to_value};
+        let (Ok(Value::Object(mut out)), Ok(Value::Object(s)), Ok(Value::Object(m))) = (to_value(&disk), to_value(seen), to_value(&self)) else { return self };
+        for (k, v) in m {
+            if s.get(&k) != Some(&v) {
+                out.insert(k, v);
+            }
+        }
+        let Ok(mut p) = serde_json::from_value::<Prefs>(Value::Object(out)) else { return self };
+        p.recent = disk.recent;
+        let added: Vec<&String> = self.recent.iter().take_while(|r| seen.recent.first() != Some(*r)).collect();
+        for r in added.into_iter().rev() {
+            p.add_recent(std::path::Path::new(r));
+        }
+        p.layouts = merge_layouts(disk.layouts, self.layouts, changed);
+        p
     }
 
     /// Written to a temporary file and renamed, so another window never reads a half-written file.
@@ -386,6 +428,26 @@ mod tests {
         assert_eq!(Prefs::parse(Err(Error::from(ErrorKind::PermissionDenied))), None);
         assert_eq!(Prefs::parse(Ok(r#"{"recent":["a""#.into())), None);
         assert_eq!(Prefs::parse(Ok(r#"{"quantize":false}"#.into())).map(|p| p.quantize), Some(false));
+    }
+
+    /// Window B toggling Quantize keeps window A's newer recent list and still length; B's own new recent entry goes
+    /// first.
+    #[test]
+    fn merged_writes_only_this_windows_changes() {
+        let seen = Prefs { recent: vec!["old".into()], ..Default::default() };
+        let disk = Prefs { recent: vec!["Wedding".into(), "old".into()], still_len: 10.0, ..Default::default() };
+        let mut mine = seen.clone();
+        mine.quantize = false;
+        assert_eq!(mine.clone().merged(disk.clone(), &seen, &BTreeSet::new()), Prefs { quantize: false, ..disk.clone() });
+        mine.add_recent(std::path::Path::new("Mine"));
+        assert_eq!(mine.merged(disk, &seen, &BTreeSet::new()).recent, ["Mine", "Wedding", "old"]);
+    }
+
+    /// One field from a newer build does not cost the others.
+    #[test]
+    fn a_bad_field_falls_back_alone() {
+        let p = Prefs::parse(Ok(r#"{"quantize":false,"ripple_mode":"FromTheFuture","still_len":null,"recent":["a"]}"#.into())).unwrap();
+        assert_eq!((p.quantize, p.ripple_mode, p.still_len, p.recent), (false, crate::edit::RippleMode::Affected, 5.0, vec!["a".to_string()]));
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

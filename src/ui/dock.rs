@@ -231,12 +231,16 @@ impl Dock {
             Some(g) if g < self.groups.len() => vec![g],
             _ => (0..self.groups.len()).collect(),
         };
-        // Column x ranges: later columns keep their width, the first takes the rest.
-        let rest: f32 = visible[1..].iter().map(|&g| self.groups[g].width + sw).sum();
+        // Column x ranges: later columns keep their width, the first takes the rest. A dock too narrow for those
+        // widths shows the later columns narrower alike (their widths are kept), so the first still gets MIN_W.
+        let later: f32 = visible[1..].iter().map(|&g| self.groups[g].width).sum();
+        let room = rect.width() - MIN_W - sw * visible[1..].len() as f32;
+        let scale = if later > room && later > 0.0 { (room / later).max(0.0) } else { 1.0 };
+        let rest: f32 = visible[1..].iter().map(|&g| self.groups[g].width * scale + sw).sum();
         let mut x = rect.min.x;
         let mut cols = Vec::with_capacity(visible.len());
         for (k, &g) in visible.iter().enumerate() {
-            let w = if k == 0 { (rect.width() - rest).max(MIN_W) } else { self.groups[g].width };
+            let w = if k == 0 { (rect.width() - rest).max(MIN_W) } else { self.groups[g].width * scale };
             let w = w.min(rect.max.x - x).max(0.0).round();
             cols.push((g, Rect::from_min_max(pos2(x, rect.min.y), pos2(x + w, rect.max.y))));
             x += w + sw;

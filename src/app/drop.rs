@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use eframe::egui;
 use crate::edit;
-use crate::media::{Importer, merge_new};
+use crate::media::{Importer, in_pool, merge_new};
 use crate::project::{MediaItem, Project};
 
 /// A drop waiting for probes: its files and where it goes on the timeline (None: only imported).
@@ -47,7 +47,7 @@ impl FileDrop {
             self.probed.clear();
             return;
         }
-        let new: Vec<PathBuf> = paths.iter().filter(|p| !pool.iter().any(|m| m.path == **p) && self.asked.insert((*p).clone())).cloned().collect();
+        let new: Vec<PathBuf> = paths.iter().filter(|p| !in_pool(pool, p) && self.asked.insert((*p).clone())).cloned().collect();
         if !new.is_empty() {
             self.importer.import(ctx, new);
         }
@@ -57,7 +57,7 @@ impl FileDrop {
     pub fn items(&self, paths: &[PathBuf], pool: &[MediaItem]) -> Option<Vec<MediaItem>> {
         let mut out = Vec::new();
         for p in paths {
-            if let Some(m) = pool.iter().find(|m| m.path == *p) {
+            if let Some(m) = pool.iter().find(|m| m.path == *p && !m.is_offline()) {
                 out.push(m.clone());
             } else if let Ok(m) = self.probed.get(p)? {
                 out.push(m.clone());
@@ -82,13 +82,13 @@ impl FileDrop {
         while let Some(batch) = self.importer.poll() {
             self.probed.extend(batch);
         }
-        let known = |p: &PathBuf| project.media_pool.iter().any(|m| m.path == *p) || self.probed.contains_key(p);
+        let known = |p: &PathBuf| in_pool(&project.media_pool, p) || self.probed.contains_key(p);
         let k = self.pending.iter().position(|d| d.paths.iter().all(known))?;
         let d = self.pending.remove(k);
         let before = project.clone();
-        let in_pool = |p: &PathBuf| project.media_pool.iter().any(|m| m.path == *p);
-        let errors: Vec<String> = d.paths.iter().filter(|p| !in_pool(p)).filter_map(|p| self.probed.get(p)?.as_ref().err().cloned()).collect();
-        let new: Vec<MediaItem> = d.paths.iter().filter(|p| !in_pool(p)).filter_map(|p| self.probed.get(p)?.as_ref().ok().cloned()).collect();
+        let usable = |p: &PathBuf| in_pool(&project.media_pool, p);
+        let errors: Vec<String> = d.paths.iter().filter(|p| !usable(p)).filter_map(|p| self.probed.get(p)?.as_ref().err().cloned()).collect();
+        let new: Vec<MediaItem> = d.paths.iter().filter(|p| !usable(p)).filter_map(|p| self.probed.get(p)?.as_ref().ok().cloned()).collect();
         let added = merge_new(&mut project.media_pool, new);
         if added {
             project.mark_modified();
@@ -187,6 +187,20 @@ mod tests {
         fd.drop(vec!["c.wav".into()], Some((Some(v1), 0.0, edit::DropMode::AcrossTime)));
         let placed = fd.poll(&mut p, 5.0, false).expect("handled");
         assert!(placed.refused && placed.before.is_none());
+    }
+
+    /// A VEGAS import's offline item is probed again on a drop and filled in place (events keep its id).
+    #[test]
+    fn an_offline_pool_item_is_probed_again() {
+        let mut p = Project::new("t");
+        p.media_pool.push(MediaItem { id: "old".into(), path: "a.wav".into(), name: "a.wav".into(), media_type: MediaType::Video, ..Default::default() });
+        let mut fd = FileDrop::new();
+        fd.drop(vec!["a.wav".into()], Some((None, 0.0, edit::DropMode::AcrossTime)));
+        assert!(fd.poll(&mut p, 5.0, false).is_none(), "waits for the probe");
+        fd.importer.sender().send(vec![probed("a.wav")]).unwrap();
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed");
+        assert_eq!((p.media_pool.len(), p.media_pool[0].id.as_str(), p.media_pool[0].sample_rate), (1, "old", Some(48_000)));
+        assert_eq!(p.clip(&placed.ids[0]).map(|c| c.duration), Some(4.0));
     }
 
     #[test]

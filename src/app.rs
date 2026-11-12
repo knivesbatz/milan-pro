@@ -139,8 +139,6 @@ pub struct MeridianApp {
     props_after_new: bool,
     /// Settings for the next new project (Welcome › Create Project).
     new_settings: Option<crate::project::ProjectSettings>,
-    /// Dock area last frame: plain keys over it go to the dock window.
-    dock_rect: egui::Rect,
     /// Copied or cut events (Edit › Cut/Copy/Paste), from `edit::copy_clips`.
     clipboard: Vec<(bool, usize, crate::project::Clip)>,
     /// Track heights saved by View › Minimize All Tracks, restored by the next toggle.
@@ -148,8 +146,8 @@ pub struct MeridianApp {
     updater: crate::updater::Updater,
     /// Verified installer and its SHA-256, to start when the app exits ("Install and restart", after the save prompt).
     install_on_exit: Option<(std::path::PathBuf, String)>,
-    /// `prefs.auto_update` and `skipped_update` as last read or written, to tell this window's changes from another's.
-    update_prefs_seen: (bool, Option<String>),
+    /// The preferences as last read or written, to tell this window's changes from another window's.
+    prefs_seen: Prefs,
 }
 
 impl MeridianApp {
@@ -276,12 +274,11 @@ impl MeridianApp {
             pending_open: None,
             props_after_new: false,
             new_settings: None,
-            dock_rect: egui::Rect::NOTHING,
             clipboard: Vec::new(),
             minimized: None,
             updater,
             install_on_exit: None,
-            update_prefs_seen: (prefs.auto_update, prefs.skipped_update.clone()),
+            prefs_seen: prefs.clone(),
             prefs,
         };
         app.sync_sel();
@@ -355,7 +352,7 @@ impl MeridianApp {
 
     /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
     fn import_new(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>) {
-        let new: Vec<_> = paths.into_iter().filter(|p| !self.project.media_pool.iter().any(|m| m.path == *p)).collect();
+        let new: Vec<_> = paths.into_iter().filter(|p| !crate::media::in_pool(&self.project.media_pool, p)).collect();
         if !new.is_empty() {
             self.importer.import(ctx, new);
         }
@@ -415,7 +412,6 @@ impl eframe::App for MeridianApp {
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
             // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
-            self.dock_rect = a.dock;
             ui::menus::publish_state(ctx, self.cmd_state());
             chrome::with_menu_style(ctx, &t, || {
                 if v16 { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
@@ -643,7 +639,9 @@ impl eframe::App for MeridianApp {
                 placed.refused.then(|| "Drop refused: the track is locked".to_string())
             };
         }
-        while let Some(batch) = self.importer.poll() {
+        // Not during a drag either: its undo step was cloned at its start, without this media (it waits queued).
+        while !self.dragging() {
+            let Some(batch) = self.importer.poll() else { break };
             let before = self.project.clone();
             let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().map(|(_, r)| r).partition(Result::is_ok);
             let errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();

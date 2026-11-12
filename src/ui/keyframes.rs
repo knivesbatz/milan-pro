@@ -136,6 +136,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     // VEGAS always shows the first keyframe, even before anything is keyed.
     let keys = if keys.is_empty() { &[(0.0, Curve::Smooth)][..] } else { keys };
     let t = theme::get();
+    let ink = lane_ink(&t);
     let body = rect.with_max_y(rect.max.y - BTN_H);
     let labels = body.with_max_x(body.min.x + LABEL_W);
     let area = body.with_min_x(labels.max.x + 1.0);
@@ -232,7 +233,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
         if (k == 0 && st.sync) || (enabled && b.hovered()) {
             p.rect_filled(r, CornerRadius::same(2), if k == 0 && st.sync { t.accent.gamma_multiply(0.6) } else { t.button_hover_bg });
         }
-        glyph(&p, r, k, if enabled { t.text_bright } else { t.text_disabled });
+        glyph(&p, r, k, if enabled { t.icon } else { t.text_disabled });
         if b.clicked() {
             if k == 0 {
                 st.sync = !st.sync;
@@ -243,7 +244,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     }
     let tc = Rect::from_min_max(pos2(row.max.x - 96.0, row.min.y + 3.0), pos2(row.max.x - 4.0, row.max.y - 3.0));
     p.rect_filled(tc, 0.0, t.kf_lane);
-    p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.font(12.0), t.text);
+    p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.font(12.0), ink.text);
 
     // ---- Painting ----
     p.rect_filled(labels, 0.0, t.panel_bg);
@@ -277,16 +278,16 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     let mut k = 0.0;
     while k <= view {
         let x = x_of(k).round() + 0.5;
-        p.vline(x, Rangef::new(ruler.max.y - 5.0, ruler.max.y), Stroke::new(1.0_f32, t.ruler_major_tick));
-        p.text(pos2(x + 3.0, ruler.min.y + 1.0), Align2::LEFT_TOP, format_timecode(k, fps), t.font(10.0), t.ruler_text);
+        p.vline(x, Rangef::new(ruler.max.y - 5.0, ruler.max.y), Stroke::new(1.0_f32, ink.ruler_major_tick));
+        p.text(pos2(x + 3.0, ruler.min.y + 1.0), Align2::LEFT_TOP, format_timecode(k, fps), t.font(10.0), ink.ruler_text);
         k += step;
     }
     for (i, &kt) in times.iter().enumerate() {
         let c = pos2(x_of(kt), lane0.center().y);
         if lanes.x_range().contains(c.x) {
-            let ink = if st.sel == Some(i) { t.text_bright } else { t.text_secondary };
+            let fill = if st.sel == Some(i) { t.text_bright } else { ink.text_secondary };
             let d = 4.5;
-            p.add(Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], ink, Stroke::new(1.0_f32, t.kf_lane)));
+            p.add(Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], fill, Stroke::new(1.0_f32, t.kf_lane)));
         }
     }
     let cx = x_of(at.clamp(0.0, view)).round() + 0.5;
@@ -299,6 +300,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
 /// read-only; Some(k) when lane k's name is clicked. Lanes that do not fit are left out.
 pub fn passive_lanes(ui: &Ui, rect: Rect, span: f64, fps: f64, lanes: &[(&str, &[f64])]) -> Option<usize> {
     let t = theme::get();
+    let ink = lane_ink(&t);
     // The controller's layout: label column, ruler, then its own lane.
     let body = rect.with_max_y(rect.max.y - BTN_H);
     let area = body.with_min_x(body.min.x + LABEL_W + 1.0);
@@ -319,11 +321,16 @@ pub fn passive_lanes(ui: &Ui, rect: Rect, span: f64, fps: f64, lanes: &[(&str, &
             let c = pos2(area.min.x + (kt / view) as f32 * area.width(), label.center().y);
             if area.x_range().contains(c.x) {
                 let d = 3.5;
-                p.add(Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], t.text_dim, Stroke::NONE));
+                p.add(Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], ink.text_dim, Stroke::NONE));
             }
         }
     }
     picked
+}
+
+/// The ruler and lanes are dark in every look, White too: what is drawn on them takes VP23 Dark's ink there.
+fn lane_ink(t: &theme::Theme) -> theme::Theme {
+    if t.dark_mode { t.clone() } else { theme::Theme::vegas23_dark() }
 }
 
 /// Button glyphs: 0 Sync (a padlock), 1 First, 2 Previous, 3 Next, 4 Last, 5 Create (◆+), 6 Delete (◆×).

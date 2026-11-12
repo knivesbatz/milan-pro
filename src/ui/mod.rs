@@ -81,7 +81,8 @@ pub fn plugin_dropped(resp: &eframe::egui::Response) -> Option<std::sync::Arc<Pl
 }
 
 fn hint_id() -> eframe::egui::Id {
-    eframe::egui::Id::new("milan_status_hint")
+    // Not toolbar's "milan_status_hint": the status bar takes that one as a hover hint before the app reads this.
+    eframe::egui::Id::new("milan_status_message")
 }
 
 /// A status-bar message from a window without its own (a refused plug-in drop); the app shows it.
@@ -91,6 +92,22 @@ pub fn hint(ctx: &eframe::egui::Context, msg: impl Into<String>) {
 
 pub fn take_hint(ctx: &eframe::egui::Context) -> Option<String> {
     ctx.data_mut(|d| d.remove_temp::<String>(hint_id()))
+}
+
+fn keys_id() -> eframe::egui::Id {
+    eframe::egui::Id::new("milan_plain_key_areas")
+}
+
+/// An area of a dock window that reads plain keys itself (Trimmer I/O/A, Project Media Delete): while the pointer
+/// is over it the keymap leaves those keys alone. Claimed while drawing, read by the next frame's keymap.
+pub fn claim_plain_keys(ctx: &eframe::egui::Context, rect: eframe::egui::Rect) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<Vec<eframe::egui::Rect>>(keys_id()).push(rect));
+}
+
+/// The pointer is over an area claimed last frame (the claims are cleared for this frame's).
+pub fn over_plain_key_area(ctx: &eframe::egui::Context) -> bool {
+    let areas = ctx.data_mut(|d| d.remove_temp::<Vec<eframe::egui::Rect>>(keys_id())).unwrap_or_default();
+    ctx.pointer_hover_pos().is_some_and(|p| areas.iter().any(|r| r.contains(p)))
 }
 
 fn tool_id() -> eframe::egui::Id {

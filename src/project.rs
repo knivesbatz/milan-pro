@@ -67,7 +67,7 @@ pub struct Track {
     pub volume: f32,
     pub pan: f32,
     /// How a video track composites over the tracks below.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub composite: Composite,
     /// Track Motion keys (video).
     #[serde(default)]
@@ -110,9 +110,9 @@ pub struct Clip {
     /// Event gain (audio) in dB.
     #[serde(default)]
     pub gain_db: f32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub fade_in_curve: Curve,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub fade_out_curve: Curve,
     /// Playback rate: source seconds per timeline second.
     #[serde(default = "one")]
@@ -168,6 +168,34 @@ pub struct MediaItem {
     /// Generated media (solid colour, text, ...): an Image with an empty path, drawn by this plug-in.
     #[serde(default)]
     pub generator: Option<Fx>,
+    /// `path` relative to the project's folder, written on save; where Open looks when `path` is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rel_path: Option<PathBuf>,
+}
+
+/// `path` relative to the folder `base` (with `..` steps); None on another drive or for a relative `path`.
+fn relative(path: &Path, base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    if !path.is_absolute() {
+        return None;
+    }
+    let (mut p, mut b) = (path.components().peekable(), base.components().peekable());
+    if p.peek() != b.peek() {
+        return None; // the drive differs: no way between them
+    }
+    while p.peek().is_some() && p.peek() == b.peek() {
+        p.next();
+        b.next();
+    }
+    let up = b.filter(|c| matches!(c, Component::Normal(_))).map(|_| Component::ParentDir);
+    Some(up.chain(p).collect())
+}
+
+impl MediaItem {
+    /// Never probed: a file that was missing when a VEGAS project was imported (no picture or sound known).
+    pub fn is_offline(&self) -> bool {
+        self.generator.is_none() && self.width.is_none() && self.sample_rate.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,7 +203,9 @@ pub enum MediaType {
     Video,
     Audio,
     Image,
+    /// Also a type written by a later version.
     #[default]
+    #[serde(other)]
     Unknown,
 }
 
@@ -191,6 +221,12 @@ pub struct Region {
     pub start: f64,
     pub end: f64,
     pub name: String,
+}
+
+/// A compositing mode or curve written by a later version (VEGAS's Hard Light, ...) loads as the default instead of
+/// failing the whole project.
+fn lenient<'de, D: serde::Deserializer<'de>, T: Deserialize<'de> + Default>(d: D) -> Result<T, D::Error> {
+    Ok(T::deserialize(serde_json::Value::deserialize(d)?).unwrap_or_default())
 }
 
 /// Fade and keyframe curve (VEGAS's six). The shapes are in `engine::keyframes`.
@@ -216,7 +252,7 @@ impl Curve {
 pub struct Keyframe<T> {
     pub t: f64,
     pub v: T,
-    #[serde(default = "Curve::linear")]
+    #[serde(default = "Curve::linear", deserialize_with = "lenient")]
     pub curve: Curve,
 }
 
@@ -369,7 +405,12 @@ impl Project {
         // The project is named after its file, so titles and autosave backups are per-project.
         let name = file_stem(path).unwrap_or_else(|| self.name.clone());
         let old_name = std::mem::replace(&mut self.name, name);
-        let res = serde_json::to_string_pretty(self).map_err(anyhow::Error::from).and_then(|json| write_atomic(path, &json));
+        // Media paths are also kept relative to the project, so a moved folder or a new drive letter still finds them.
+        let dir = path.parent().map(std::path::absolute).and_then(Result::ok);
+        for m in &mut self.media_pool {
+            m.rel_path = dir.as_deref().and_then(|d| relative(&m.path, d));
+        }
+        let res =serde_json::to_string_pretty(self).map_err(anyhow::Error::from).and_then(|json| write_atomic(path, &json));
         match res {
             Ok(()) => {
                 self.path = Some(path.clone());
@@ -382,9 +423,19 @@ impl Project {
 
     pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
         let json = std::fs::read_to_string(path)?;
-        let mut project: Self = serde_json::from_str(&json)?;
+        // Notepad and PowerShell may save the hand-edited file with a BOM.
+        let mut project: Self = serde_json::from_str(json.trim_start_matches('\u{feff}'))?;
         if let Some(stem) = file_stem(path) {
             project.name = stem;
+        }
+        // Media not where it was saved: relative to the project as it was then, else next to the project file.
+        if let Some(dir) = path.parent().map(std::path::absolute).and_then(Result::ok) {
+            for m in project.media_pool.iter_mut().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()) {
+                let found = [m.rel_path.as_ref().map(|r| dir.join(r)), m.path.file_name().map(|f| dir.join(f))].into_iter().flatten().find(|p| p.exists());
+                if let Some(p) = found {
+                    m.path = p;
+                }
+            }
         }
         project.path = Some(path.clone());
         project.timeline.zoom = 1.0;
@@ -886,5 +937,39 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(back.name, "Show");
         assert_eq!(back.timeline.video_tracks[0].clips, p.timeline.video_tracks[0].clips);
+    }
+
+    /// The project folder copied elsewhere: its media is found relative to the project; a BOM does not stop Open.
+    #[test]
+    fn a_moved_project_finds_its_media() {
+        let dir = temp_dir("move");
+        std::fs::create_dir_all(dir.join("old/footage")).unwrap();
+        std::fs::write(dir.join("old/footage/a.mp4"), b"x").unwrap();
+        let mut p = Project::new("t");
+        p.media_pool.push(MediaItem { id: "a".into(), path: dir.join("old/footage/a.mp4"), ..Default::default() });
+        p.save(&dir.join("old/Show.mnle")).unwrap();
+        std::fs::rename(dir.join("old"), dir.join("new")).unwrap();
+        let json = std::fs::read_to_string(dir.join("new/Show.mnle")).unwrap();
+        std::fs::write(dir.join("new/Show.mnle"), format!("\u{feff}{json}")).unwrap();
+        let back = Project::load(&dir.join("new/Show.mnle")).unwrap();
+        let found = back.media_pool[0].path.clone();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found, dir.join("new").join("footage").join("a.mp4"));
+        assert_eq!(relative(Path::new(r"D:\Footage\a.mp4"), Path::new(r"D:\Projects")), Some(PathBuf::from(r"..\Footage\a.mp4")));
+    }
+
+    /// A compositing mode or curve from a newer Milan opens as the default instead of failing the project.
+    #[test]
+    fn newer_variants_fall_back() {
+        #[derive(Deserialize)]
+        struct T {
+            #[serde(deserialize_with = "lenient")]
+            c: Composite,
+        }
+        let c = serde_json::from_str::<T>(r#"{"c":"HardLight"}"#).unwrap().c;
+        let k = serde_json::from_str::<Keyframe<f32>>(r#"{"t":0,"v":1,"curve":"Bezier"}"#).unwrap().curve;
+        let m: MediaType = serde_json::from_str(r#""Vector""#).unwrap();
+        assert_eq!((c, k, m), (Composite::SourceAlpha, Curve::Smooth, MediaType::Unknown));
+        assert_eq!(serde_json::from_str::<T>(r#"{"c":"Screen"}"#).unwrap().c, Composite::Screen);
     }
 }

@@ -50,7 +50,7 @@ pub enum Command {
     LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
     SaveLayoutAs,
     // Windows
-    FocusTimeline, Window(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole,
+    FocusTimeline, Window(Panel), ShowWindow(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole,
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
@@ -422,21 +422,18 @@ impl Keymap {
             self.chord = None;
         }
         ctx.input_mut(|i| {
+            let mods = i.modifiers;
             i.events.retain(|e| {
-                let (key, physical, repeat, m) = match e {
-                    Event::Key { key, physical_key, pressed: true, repeat, modifiers } => (*key, *physical_key, *repeat, *modifiers),
-                    Event::Cut | Event::Copy | Event::Paste(_) => {
-                        out.push(match e {
-                            Event::Cut => Cut,
-                            Event::Copy => Copy,
-                            _ => Paste,
-                        });
-                        return false;
-                    }
+                // egui-winit sends Ctrl+X/C/V (and Shift+Delete, Ctrl+Insert, Shift+Insert) as Cut/Copy/Paste, without
+                // the key and whatever else is held: rebuild the stroke so Ctrl+Shift+X and the like reach their rows.
+                let (key, physical, repeat, m, clip) = match e {
+                    Event::Key { key, physical_key, pressed: true, repeat, modifiers } => (*key, *physical_key, *repeat, *modifiers, None),
+                    Event::Cut => (if mods.command { Key::X } else { Key::Delete }, None, false, mods, Some(Cut)),
+                    Event::Copy => (Key::C, None, false, mods, Some(Copy)),
+                    Event::Paste(_) => (if mods.command { Key::V } else { Key::Insert }, None, false, mods, Some(Paste)),
                     _ => return true,
                 };
-                // Physical key: layout-independent and unaffected by Shift ("Ctrl+Shift+[" arrives as "{").
-                let stroke = Stroke { ctrl: m.ctrl || m.command, alt: m.alt, shift: m.shift, key: physical.unwrap_or(key) };
+                let stroke = Stroke { ctrl: m.ctrl || m.command, alt: m.alt, shift: m.shift, key: stroke_key(key, physical) };
                 let digit = stroke.key.name().len() == 1 && stroke.key.name().as_bytes()[0].is_ascii_digit();
                 let plain_local =
                     !stroke.ctrl && !stroke.alt && !stroke.shift && (digit || matches!(stroke.key, Key::I | Key::O | Key::A | Key::Delete));
@@ -461,11 +458,23 @@ impl Keymap {
                         }
                     }
                 }
+                if let Some(c) = clip {
+                    out.push(c);
+                    return false;
+                }
                 true
             });
         });
         out
     }
+}
+
+/// The key a stroke matches on. Letters follow the key's label (Ctrl+Z is Undo on QWERTZ and AZERTY too); digits and
+/// punctuation follow the key's position, which Shift does not change ("Ctrl+Shift+[" arrives as "{") and which every
+/// layout has. A letter position labelled with punctuation (AZERTY's ",") is that punctuation, not the letter.
+fn stroke_key(key: Key, physical: Option<Key>) -> Key {
+    let letter = |k: Key| k.name().len() == 1 && k.name().as_bytes()[0].is_ascii_alphabetic();
+    if letter(key) || physical.is_some_and(letter) { key } else { physical.unwrap_or(key) }
 }
 
 /// egui's own Ctrl+Plus/Minus UI zoom would steal the pitch keys; VEGAS has no UI zoom.
@@ -576,5 +585,36 @@ mod tests {
         assert_eq!(over(key(Key::Num9, Modifiers::NONE)), vec![]);
         assert_eq!(over(key(Key::D, Modifiers::ALT)), vec![]);
         assert_eq!(over(key(Key::Num9, Modifiers::NONE)), vec![LayoutUser(9)]);
+    }
+
+    /// QWERTZ: the key labelled Z sits where US has Y. AZERTY: A sits on Q, and "," on M.
+    #[test]
+    fn letters_follow_the_label_and_punctuation_the_position() {
+        assert_eq!(stroke_key(Key::Z, Some(Key::Y)), Key::Z);
+        assert_eq!(stroke_key(Key::A, Some(Key::Q)), Key::A);
+        assert_eq!(stroke_key(Key::Comma, Some(Key::M)), Key::Comma);
+        assert_eq!(stroke_key(Key::OpenCurlyBracket, Some(Key::OpenBracket)), Key::OpenBracket);
+        assert_eq!(stroke_key(Key::Num1, Some(Key::Num1)), Key::Num1);
+    }
+
+    /// egui sends Ctrl+Shift+X as Cut: it still toggles Automatic Crossfades, and Ctrl+Shift+V is Paste Insert.
+    #[test]
+    fn clipboard_events_keep_their_modifiers() {
+        let ctx = Context::default();
+        let mut km = Keymap::default();
+        let mut run = |e: Event, modifiers: Modifiers| {
+            let mut out = Vec::new();
+            let _ = ctx.run(egui::RawInput { events: vec![e], modifiers, ..Default::default() }, |ctx| {
+                out = km.poll(ctx, UiLook::Vegas23, Scope { blocked: false, over_dock: false });
+            });
+            out
+        };
+        assert_eq!(run(Event::Cut, Modifiers::COMMAND | Modifiers::SHIFT), vec![AutoCrossfade]);
+        assert_eq!(run(Event::Cut, Modifiers::COMMAND | Modifiers::ALT), vec![GroupSolo]);
+        assert_eq!(run(Event::Paste("x".into()), Modifiers::COMMAND | Modifiers::SHIFT), vec![PasteInsert]);
+        assert_eq!(run(Event::Cut, Modifiers::COMMAND), vec![Cut]);
+        assert_eq!(run(Event::Cut, Modifiers::SHIFT), vec![Cut]);
+        assert_eq!(run(Event::Paste("x".into()), Modifiers::SHIFT), vec![Paste]);
+        assert_eq!(run(Event::Copy, Modifiers::COMMAND), vec![Copy]);
     }
 }

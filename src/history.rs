@@ -65,6 +65,15 @@ impl History {
 /// Swap `snap` into `project`, keeping view state; returns the replaced project.
 fn restore(project: &mut Project, mut snap: Project) -> Project {
     snap.path = project.path.clone();
+    snap.name = project.name.clone(); // derived from the path
+    // Track heights are view state too.
+    let live = &project.timeline;
+    let heights: std::collections::HashMap<&str, _> = live.video_tracks.iter().chain(&live.audio_tracks).map(|t| (t.id.as_str(), t.height)).collect();
+    for t in snap.timeline.video_tracks.iter_mut().chain(&mut snap.timeline.audio_tracks) {
+        if let Some(&h) = heights.get(t.id.as_str()) {
+            t.height = h;
+        }
+    }
     snap.timeline.cursor_position = project.timeline.cursor_position;
     snap.timeline.zoom = project.timeline.zoom;
     snap.timeline.scroll_x = project.timeline.scroll_x;
@@ -98,6 +107,20 @@ mod tests {
         h.undo(&mut p);
         h.push(p.clone());
         assert!(!h.can_redo());
+    }
+
+    #[test]
+    fn undo_keeps_track_heights_and_the_name() {
+        let mut h = History::default();
+        let mut p = Project::new("Untitled");
+        h.push(p.clone());
+        p.timeline.markers.push(crate::project::Marker { position: 1.0, name: String::new(), color: [0; 3] });
+        p.timeline.video_tracks[0].height += 40.0;
+        p.name = "Show".into();
+        let height = p.timeline.video_tracks[0].height;
+        assert!(h.undo(&mut p));
+        assert!(p.timeline.markers.is_empty());
+        assert_eq!((p.timeline.video_tracks[0].height, p.name.as_str()), (height, "Show"));
     }
 
     #[test]

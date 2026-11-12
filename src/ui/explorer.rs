@@ -5,7 +5,6 @@ use eframe::egui::*;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use super::icons::{Icon, paint_icon};
-use super::menus::MEDIA_EXTS;
 use super::toolbar::{arrow_menu, split_button, tool_button};
 use super::widgets::{self, ROW_H};
 use super::{MediaDrag, WinAction, theme};
@@ -55,7 +54,7 @@ impl Default for Explorer {
 }
 
 pub fn is_media(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| MEDIA_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| crate::media::classify_extension(&e.to_ascii_lowercase()) != crate::project::MediaType::Unknown)
 }
 
 /// Existing drive roots, A:\ … Z:\.
@@ -308,5 +307,13 @@ mod tests {
         let names: Vec<String> = list_dir(&dir).unwrap().into_iter().map(|e| e.name).collect();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(names, ["b_sub", "a.WAV", "z.mp4"]);
+    }
+
+    #[test]
+    fn camera_and_phone_formats_are_media() {
+        for f in ["00001.MTS", "a.m2ts", "memo.m4a", "clip.m4v", "x.3gp", "scan.tif", "t.tga", "s.ac3"] {
+            assert!(is_media(Path::new(f)), "{f}");
+        }
+        assert!(!is_media(Path::new("notes.txt")));
     }
 }

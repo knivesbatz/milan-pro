@@ -178,7 +178,7 @@ pub fn draw_main_toolbar(ui: &mut Ui, project: &Project, history: &History) -> O
     if tool_button(ui, Icon::Save, "Save (Ctrl+S)", true, false).clicked() {
         send(ui.ctx(), Command::Save);
     }
-    let render = if v16 { "Render As (Ctrl+M)" } else { "Render (Ctrl+M)" };
+    let render = if v16 { "Render As" } else { "Render" }; // no key: Ctrl+M is Render to New Track
     // Greyed with nothing to render, as VEGAS does.
     act(tool_button(ui, Icon::Render, render, crate::render::content_end(project) > 0.0, false), MenuAction::RenderAs);
     act(tool_button(ui, Icon::Properties, "Properties (Alt+Enter)", true, false), MenuAction::Properties);
@@ -204,8 +204,8 @@ pub fn draw_main_toolbar(ui: &mut Ui, project: &Project, history: &History) -> O
         }
     }
     if v16 {
-        act(tool_button(ui, Icon::Tutorials, "Interactive Tutorials", true, false), MenuAction::About);
-        act(tool_button(ui, Icon::WhatsThis, "What's This? Help (Shift+F1)", true, false), MenuAction::About);
+        inert_button(ui, Icon::Tutorials, "Interactive Tutorials (not available)", false);
+        inert_button(ui, Icon::WhatsThis, "What's This? Help (not available)", false);
     }
     action
 }

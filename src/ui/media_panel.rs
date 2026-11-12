@@ -243,6 +243,9 @@ pub fn draw_media_browser(
             }
         }
     });
+    if selected.is_some() {
+        super::claim_plain_keys(ui.ctx(), right);
+    }
     if ui.rect_contains_pointer(right) && selected.is_some() && ui.input(|i| i.key_pressed(Key::Delete)) && !ui.ctx().wants_keyboard_input() {
         cmd = selected.map(|i| (i, ItemCmd::Remove));
     }
@@ -270,6 +273,19 @@ pub fn draw_media_browser(
         }
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
         Some((i, ItemCmd::Proxy)) => actions.push(WinAction::CreateProxy(targets(view, &items, i).into_iter().map(|k| project.media_pool[k].clone()).collect())),
+        // Replace...: the item (and every event using it) takes another file, probed in the background like an import.
+        Some((i, ItemCmd::Replace)) if project.media_pool[i].generator.is_none() => {
+            let file = rfd::FileDialog::new().pick_file().filter(|p| !project.media_pool.iter().any(|m| m.path == *p));
+            if let Some(path) = file {
+                history.push(project.clone());
+                let m = &mut project.media_pool[i];
+                let name = path.file_name().map_or(m.name.clone(), |n| n.to_string_lossy().into_owned());
+                *m = crate::project::MediaItem { id: std::mem::take(&mut m.id), path: path.clone(), name, media_type: m.media_type, ..Default::default() };
+                project.mark_modified();
+                actions.push(WinAction::Import(vec![path]));
+            }
+        }
+        Some((_, ItemCmd::Replace)) => {}
         Some((i, ItemCmd::Properties)) => {
             (*selected, *sel_clips) = (Some(i), Vec::new());
             properties(ui.ctx(), project.media_pool.get(i), actions);
@@ -294,6 +310,7 @@ enum ItemCmd {
     Remove,
     Explore,
     Proxy,
+    Replace,
     Properties,
 }
 
@@ -326,6 +343,8 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool
         menus::off(ui, "Remove from Current &Bin");
         item(ui, "&Remove from Project", ItemCmd::Remove, true);
         menus::show(ui, ITEM_REST);
+        item(ui, "R&eplace...", ItemCmd::Replace, true);
+        menus::show(ui, ITEM_TAIL);
         item(ui, "&Properties...", ItemCmd::Properties, true);
         menus::show(ui, &[V23(&S), V23(&X("Tempo Detection")), V23(&X("Detect Scenes and Add to Timeline")), V23(&X("Detect Scenes and Add to Timeline from Cursor")), V23(&X("Detect Scenes and Create Subclips"))]);
     });
@@ -337,7 +356,9 @@ const ITEM_REST: &[menus::M] = &[
     X("&Search Media Bins..."),
     S,
     X("Re&name"),
-    X("R&eplace..."),
+];
+
+const ITEM_TAIL: &[menus::M] = &[
     X("Refres&h"),
     S,
     X("Media &FX..."),

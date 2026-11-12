@@ -82,26 +82,40 @@ impl Importer {
     }
 }
 
-/// Add probed `items` whose path is not in the pool yet (nor earlier in the same batch). True if any was added.
+/// Add probed `items` whose path is not in the pool yet (nor earlier in the same batch). An offline pool item (a
+/// VEGAS import's missing file) takes the probe in place, keeping its id. True if any was added or filled in.
 pub fn merge_new(pool: &mut Vec<MediaItem>, items: Vec<MediaItem>) -> bool {
-    let n = pool.len();
+    let mut done = false;
     for m in items {
-        if !pool.iter().any(|p| p.path == m.path) {
-            pool.push(m);
+        match pool.iter_mut().find(|p| p.path == m.path) {
+            None => pool.push(m),
+            Some(p) if p.is_offline() && !m.is_offline() => *p = MediaItem { id: std::mem::take(&mut p.id), ..m },
+            Some(_) => continue,
         }
+        done = true;
     }
-    pool.len() != n
+    done
 }
 
+/// `path` has a usable (probed) item in the pool; an offline one is probed again on import or drop.
+pub fn in_pool(pool: &[MediaItem], path: &std::path::Path) -> bool {
+    pool.iter().any(|m| m.path == path && !m.is_offline())
+}
+
+/// File extensions Milan Pro imports, by kind (lower case): the Import dialog, drops and the Explorer use these.
+pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "mxf", "mpg", "mpeg", "ts", "m2ts", "mts", "m2t", "vob", "3gp", "m4v"];
+pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "wma", "aiff", "opus", "m4a", "ac3", "dts", "pcm"];
+pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "gif", "exr", "tga", "psd"];
+
 pub(crate) fn classify_extension(ext: &str) -> MediaType {
-    match ext {
-        "mp4" | "mov" | "avi" | "mkv" | "wmv" | "flv" | "webm" | "mxf" | "mpg" | "mpeg"
-        | "ts" | "m2ts" | "mts" | "m2t" | "vob" | "3gp" | "m4v" => MediaType::Video,
-        "mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "aiff" | "opus" | "m4a" | "ac3"
-        | "dts" | "pcm" => MediaType::Audio,
-        "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp" | "gif" | "exr" | "tga"
-        | "psd" => MediaType::Image,
-        _ => MediaType::Unknown,
+    if VIDEO_EXTS.contains(&ext) {
+        MediaType::Video
+    } else if AUDIO_EXTS.contains(&ext) {
+        MediaType::Audio
+    } else if IMAGE_EXTS.contains(&ext) {
+        MediaType::Image
+    } else {
+        MediaType::Unknown
     }
 }
 

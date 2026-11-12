@@ -164,8 +164,11 @@ pub struct TransportState<'a> {
 pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<TransportAction> {
     let t = theme::get();
     let v23 = t.look() == UiLook::Vegas23;
-    let mut row = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(1.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
-    row.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let boxes = ui.painter_at(rect);
+    // The length boxes keep the right end: buttons that do not fit before them are cut off, and take no clicks.
+    let buttons = rect.shrink2(vec2(1.0, 0.0)).with_max_x(rect.max.x - BOXES_W);
+    let mut row = ui.new_child(UiBuilder::new().max_rect(buttons).layout(Layout::left_to_right(Align::Center)));
+    row.set_clip_rect(buttons.intersect(ui.clip_rect()));
     let ui = &mut row;
     ui.spacing_mut().item_spacing.x = 0.0;
     let mut action = None;
@@ -241,7 +244,7 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
         tool_button(ui, Icon::OpenNested, "Open Nested Timeline (Alt+N) (not available yet)", false, false);
         tool_button(ui, Icon::CreateNested, "Create Nested Timeline (Alt+C) (not available yet)", false, false);
     }
-    length_boxes(ui, rect, s.project);
+    length_boxes(&boxes, rect, s.project);
     action
 }
 
@@ -254,11 +257,14 @@ pub fn add_region(project: &mut Project, history: &mut History) {
     project.mark_modified();
 }
 
+const BOX_W: f32 = 95.0;
+/// What the length boxes take at the right end of the bar.
+const BOXES_W: f32 = 8.0 + 3.0 * BOX_W + 2.0;
+
 /// Cursor-or-selection-start / Selection End / Selection Length boxes at the right end: 14 px icon + timecode.
 /// End and Length are blank without a time selection (§5.10).
-fn length_boxes(ui: &Ui, rect: Rect, project: &Project) {
+fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
     let t = theme::get();
-    let p = ui.painter();
     let font = t.font(t.font.transport_time);
     let fps = project.settings.frame_rate;
     let tc = |s: f64| format_timecode(s, fps);
@@ -267,7 +273,7 @@ fn length_boxes(ui: &Ui, rect: Rect, project: &Project) {
         Some((a, b)) => [tc(a), tc(b), tc(b - a)],
         None => [tc(tl.cursor_position), String::new(), String::new()],
     };
-    let w = 95.0;
+    let w = BOX_W;
     let boxes = [Icon::LengthCursor, Icon::LengthSelEnd, Icon::LengthLength];
     for (k, (icon, text)) in boxes.into_iter().zip(texts).enumerate() {
         let x = rect.max.x - 8.0 - w * (3 - k) as f32;

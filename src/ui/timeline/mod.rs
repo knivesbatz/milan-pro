@@ -503,7 +503,7 @@ pub fn draw_timeline(
                 // A move along its tracks ripples from where the events were; one to other tracks does not.
                 let moved = project.clip(&ds.id).map_or(0.0, |c| c.position - o.position);
                 if !hopped && moved != 0.0 {
-                    op = vec![edit::RippleOp { from: ds.from, delta: moved, tracks, exclude: ds.ids.clone() }];
+                    op = vec![edit::RippleOp { from: ds.from, delta: moved, tracks, exclude: ds.ids.clone(), keys_from: None }];
                 }
             } else {
                 use DragMode::*;

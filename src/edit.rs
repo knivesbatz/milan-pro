@@ -234,6 +234,7 @@ pub fn split_clip(clip: &Clip, at: f64) -> Option<(Clip, Clip)> {
     second.position = at;
     second.duration -= first_dur;
     second.fade_in = 0.0;
+    second.transition = None; // the transition belongs to the event's start
     shift_clip_keys(&mut second, -first_dur);
     // The half that plays first in source order starts at in_point; reversed, that is the second half.
     if clip.reverse {
@@ -434,7 +435,7 @@ pub fn auto_crossfade(project: &mut Project, before: &Project, ids: &[String]) -
         for w in sorted(t).windows(2) {
             let (a, b) = (&t.clips[w[0]], &t.clips[w[1]]);
             let o = overlap(a, b);
-            if !(touched(a) || touched(b)) || o <= EPS || (a.fade_out - o).abs() > EPS || (b.fade_in - o).abs() > EPS {
+            if t.locked || a.locked || b.locked || !(touched(a) || touched(b)) || o <= EPS || (a.fade_out - o).abs() > EPS || (b.fade_in - o).abs() > EPS {
                 continue;
             }
             let (ra, rb) = (project.find_clip(&a.id), project.find_clip(&b.id));
@@ -455,12 +456,22 @@ pub fn auto_crossfade(project: &mut Project, before: &Project, ids: &[String]) -
             done = true;
         }
     }
-    for t in tracks_mut(&mut project.timeline).filter(|t| t.clips.iter().any(touched)) {
+    // The pair's overlap before the edit, when it was a pair on one track then.
+    let was = |a: &Clip, b: &Clip| -> Option<f64> {
+        let (ra, rb) = (before.find_clip(&a.id)?, before.find_clip(&b.id)?);
+        if (ra.is_video, ra.track_idx) != (rb.is_video, rb.track_idx) {
+            return None;
+        }
+        Some(overlap(before.clip(&a.id)?, before.clip(&b.id)?))
+    };
+    for t in tracks_mut(&mut project.timeline).filter(|t| !t.locked && t.clips.iter().any(touched)) {
         for w in sorted(t).windows(2) {
             let (a, b) = (&t.clips[w[0]], &t.clips[w[1]]);
             let o = overlap(a, b);
             let covered = b.position + b.duration <= a.position + a.duration + EPS || o >= a.duration - EPS;
-            if !(touched(a) || touched(b)) || o <= EPS || covered || (a.fade_out == o && b.fade_in == o) {
+            // An overlap the edit left as it was keeps the fades it has (hand-set ones too).
+            let unchanged = (a.fade_out > EPS || b.fade_in > EPS) && was(a, b).is_some_and(|w| (w - o).abs() <= EPS);
+            if a.locked || b.locked || unchanged || !(touched(a) || touched(b)) || o <= EPS || covered || (a.fade_out == o && b.fade_in == o) {
                 continue;
             }
             for (k, out) in [(w[0], true), (w[1], false)] {
@@ -484,13 +495,10 @@ pub fn crossfade_moved(project: &mut Project, before: &Project) -> bool {
 
 /// Fade Type of the crossfade between `a` (outgoing, curve `out`) and `b` (incoming, curve `inc`).
 pub fn set_crossfade_curve(project: &mut Project, a: &str, b: &str, out: Curve, inc: Curve) -> bool {
-    let mut done = false;
-    for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips) {
-        let (f, curve) = if c.id == a { (&mut c.fade_out_curve, out) } else if c.id == b { (&mut c.fade_in_curve, inc) } else { continue };
-        done |= *f != curve;
-        *f = curve;
-    }
-    changed(project, done)
+    edit_clips(project, &[a.to_string(), b.to_string()], |c| {
+        let (f, curve) = if c.id == a { (&mut c.fade_out_curve, out) } else { (&mut c.fade_in_curve, inc) };
+        std::mem::replace(f, curve) != curve
+    })
 }
 
 // ---- Ripple ----
@@ -512,11 +520,14 @@ pub struct RippleOp {
     pub delta: f64,
     pub tracks: Vec<String>,
     pub exclude: Vec<String>,
+    /// Where the time actually opens or closes, for envelope keys, markers and regions, when that is not `from`
+    /// (a deleted gap's end, a trimmed edge): a closing ripple deletes keys in `keys_from + delta .. keys_from`.
+    pub keys_from: Option<f64>,
 }
 
 /// Ripple: unlocked events at or after `from` move by `delta` (clamped so none goes before 0), with their tracks'
-/// envelope keys (keys in a gap being closed are deleted). Modes other than Affected also move markers, regions and
-/// the time selection (one that straddles `from` stretches); All moves every track.
+/// envelope keys at or after `keys_from` (keys in a gap being closed are deleted). Modes other than Affected also move
+/// markers, regions and the time selection (one that straddles `keys_from` stretches); All moves every track.
 pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
     const EPS: f64 = 1e-9;
     let all = mode == RippleMode::All;
@@ -529,7 +540,8 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
     if d == 0.0 {
         return false;
     }
-    let (from, at_or_after) = (op.from, |t: f64| t >= op.from - EPS);
+    let from = op.keys_from.unwrap_or(op.from);
+    let at_or_after = |t: f64| t >= from - EPS;
     let mut done = false;
     for t in tracks_mut(tl).filter(|t| hit(t)) {
         for c in t.clips.iter_mut().filter(|c| moves(c)) {
@@ -616,7 +628,7 @@ pub fn gaps(project: &Project, ids: &[String]) -> Vec<RippleOp> {
     for (a, b, track) in spans {
         match ops.iter_mut().find(|o| o.from == a && o.delta == a - b) {
             Some(o) => o.tracks.push(track),
-            None => ops.push(RippleOp { from: a, delta: a - b, tracks: vec![track], exclude: Vec::new() }),
+            None => ops.push(RippleOp { from: a, delta: a - b, tracks: vec![track], exclude: Vec::new(), keys_from: Some(b) }),
         }
     }
     ops.sort_by(|x, y| y.from.total_cmp(&x.from));
@@ -638,7 +650,7 @@ pub fn delete_range(project: &mut Project, a: f64, b: f64, tracks: &[String], mo
     }
     dissolve_lone_groups(&mut project.timeline);
     let ids: Vec<String> = project.timeline.video_tracks.iter().chain(&project.timeline.audio_tracks).filter(|t| on(t)).map(|t| t.id.clone()).collect();
-    done |= ripple(project, &RippleOp { from: b, delta: a - b, tracks: ids, exclude: Vec::new() }, mode);
+    done |= ripple(project, &RippleOp { from: b, delta: a - b, tracks: ids, ..Default::default() }, mode);
     changed(project, done)
 }
 
@@ -653,7 +665,7 @@ pub fn paste_ripple(project: &Project, clips: &[(bool, usize, Clip)], at: f64, f
         }
     }
     let len = clips.iter().map(|(_, _, c)| c.position + c.duration).fold(0.0, f64::max);
-    RippleOp { from: at, delta: len, tracks, exclude: Vec::new() }
+    RippleOp { from: at, delta: len, tracks, ..Default::default() }
 }
 
 /// The ripple of trimming event `o` to `c` (with its trimmed group mates, all in `ids`) on `tracks`, `before`
@@ -664,14 +676,16 @@ pub fn trim_ripple(before: &Project, o: &Clip, c: &Clip, ids: &[String], tracks:
     let mut ops = Vec::new();
     let end = (c.position + c.duration) - (o.position + o.duration);
     if end.abs() > EPS {
-        ops.push(RippleOp { from: o.position, delta: end, tracks: tracks.to_vec(), exclude: ids.to_vec() });
+        ops.push(RippleOp { from: o.position, delta: end, tracks: tracks.to_vec(), exclude: ids.to_vec(), keys_from: Some(o.position + o.duration) });
     }
     let start = o.position - c.position;
     if start.abs() > EPS {
         let from = c.position.min(o.position);
         // An extended left edge leaves alone what starts between its new and its old start.
         let between = all_clips(&before.timeline).filter(|k| k.position >= from - EPS && k.position < o.position - EPS && !ids.contains(&k.id));
-        ops.push(RippleOp { from, delta: start, tracks: tracks.to_vec(), exclude: between.map(|k| k.id.clone()).collect() });
+        // Keys: a shrunk left edge closes old start..new start; an extended one opens at the old start.
+        let keys_from = Some(c.position.max(o.position));
+        ops.push(RippleOp { from, delta: start, tracks: tracks.to_vec(), exclude: between.map(|k| k.id.clone()).collect(), keys_from });
     }
     ops
 }
@@ -899,6 +913,9 @@ pub fn plan_drop_as(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], t
             MediaType::Image => (0.0, still_len),
             _ => range.filter(|(a, b)| b > a).unwrap_or((0.0, m.duration)),
         };
+        if b <= a {
+            continue; // offline media of unknown length: an event would be invisible
+        }
         spans.push((m, a, b, t));
         if mode == DropMode::AcrossTime {
             t += b - a;
@@ -1010,12 +1027,10 @@ pub fn drop_media_as(project: &mut Project, idxs: &[usize], range: Option<(f64, 
 
 /// Fade In ▸ / Fade Out ▸ curve of event `id`.
 pub fn set_fade_curve(project: &mut Project, id: &str, is_in: bool, curve: Curve) -> bool {
-    let Some(r) = project.find_clip(id) else { return false };
-    let c = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx];
-    let f = if is_in { &mut c.fade_in_curve } else { &mut c.fade_out_curve };
-    let done = *f != curve;
-    *f = curve;
-    changed(project, done)
+    edit_clips(project, &[id.to_string()], |c| {
+        let f = if is_in { &mut c.fade_in_curve } else { &mut c.fade_out_curve };
+        std::mem::replace(f, curve) != curve
+    })
 }
 
 // ---- Takes ----
@@ -1996,6 +2011,14 @@ mod tests {
     }
 
     #[test]
+    fn split_keeps_the_transition_on_the_first_half_only() {
+        let mut c = clip(10.0, 6.0, 1.0);
+        (c.fade_in, c.transition) = (1.0, Some(Transition { plugin: "dissolve".into(), params: Default::default() }));
+        let (a, b) = split_clip(&c, 12.0).unwrap();
+        assert!(a.transition.is_some() && b.transition.is_none());
+    }
+
+    #[test]
     fn trims_keep_fades_inside_the_clip() {
         let mut o = clip(10.0, 6.0, 0.0);
         (o.fade_in, o.fade_out) = (2.0, 3.0);
@@ -2354,6 +2377,26 @@ mod tests {
         p
     }
 
+    /// Locked events and an overlap the edit did not change keep their fades.
+    #[test]
+    fn auto_crossfade_leaves_locked_and_unchanged_pairs() {
+        let mut p = two_on_a_track();
+        p.timeline.video_tracks[0].clips[1].position = 4.0; // 1 s overlap, no fades
+        p.timeline.video_tracks[0].locked = true;
+        let before = p.clone();
+        assert!(!auto_crossfade(&mut p, &before, &["a".into(), "b".into()]));
+        assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0)]);
+        // Fade types refuse locked tracks too.
+        assert!(!set_fade_curve(&mut p, "a", true, Curve::Fast) && !set_crossfade_curve(&mut p, "a", "b", Curve::Fast, Curve::Slow));
+        // A hand-set 0.5 s crossfade fade, both events moved together.
+        p.timeline.video_tracks[0].locked = false;
+        (p.timeline.video_tracks[0].clips[0].fade_out, p.timeline.video_tracks[0].clips[1].fade_in) = (0.5, 0.5);
+        let (before, ids) = (p.clone(), vec!["a".to_string(), "b".to_string()]);
+        move_clips(&mut p, &ids, 2.0, 0, false);
+        auto_crossfade(&mut p, &before, &ids);
+        assert_eq!(fades(&p), [(0.0, 0.5), (0.5, 0.0)]);
+    }
+
     fn xfade_move(p: &mut Project, id: &str, dt: f64) {
         let (before, ids) = (p.clone(), vec![id.to_string()]);
         move_clips(p, &ids, dt, 0, false);
@@ -2429,7 +2472,7 @@ mod tests {
     #[test]
     fn ripple_modes() {
         let (mut p, tr) = ripple_project();
-        let op = RippleOp { from: 3.0, delta: 2.0, tracks: vec![tr[0].clone()], exclude: Vec::new() };
+        let op = RippleOp { from: 3.0, delta: 2.0, tracks: vec![tr[0].clone()], ..Default::default() };
         assert!(ripple(&mut p, &op, RippleMode::Affected));
         let tl = &p.timeline;
         assert_eq!((starts(&tl.video_tracks[0]), starts(&tl.video_tracks[1]), starts(&tl.audio_tracks[0])), (vec![0.0, 5.0, 10.0], vec![4.0], vec![5.0]));
@@ -2450,7 +2493,7 @@ mod tests {
         // A negative delta stops where the first moved event reaches 0; excluded events stay.
         let (mut p, tr) = ripple_project();
         let id = p.timeline.video_tracks[0].clips[2].id.clone();
-        ripple(&mut p, &RippleOp { from: 3.0, delta: -10.0, tracks: vec![tr[0].clone()], exclude: vec![id] }, RippleMode::Affected);
+        ripple(&mut p, &RippleOp { from: 3.0, delta: -10.0, tracks: vec![tr[0].clone()], exclude: vec![id], ..Default::default() }, RippleMode::Affected);
         assert_eq!(starts(&p.timeline.video_tracks[0]), [0.0, 0.0, 8.0]);
     }
 
@@ -2459,7 +2502,7 @@ mod tests {
         let (mut p, tr) = ripple_project();
         let keys = [1.0, 2.0, 2.5, 3.0, 4.0].map(|t| Keyframe { t, v: 0.0_f32, curve: Curve::Linear }).to_vec();
         p.timeline.video_tracks[0].envelopes.push(Envelope { kind: EnvKind::Volume, points: Keyframes { keys } });
-        ripple(&mut p, &RippleOp { from: 3.0, delta: -1.0, tracks: vec![tr[0].clone()], exclude: Vec::new() }, RippleMode::Affected);
+        ripple(&mut p, &RippleOp { from: 3.0, delta: -1.0, tracks: vec![tr[0].clone()], ..Default::default() }, RippleMode::Affected);
         let t: Vec<f64> = p.timeline.video_tracks[0].envelopes[0].points.keys.iter().map(|k| k.t).collect();
         assert_eq!(t, [1.0, 2.0, 3.0]);
     }
@@ -2545,12 +2588,55 @@ mod tests {
         assert_eq!((starts(t), t.clips[1].duration), (vec![3.0, 4.0], 5.5));
     }
 
+    /// A ripple delete or trim deletes only the keys under the closed time and moves only what follows it; markers
+    /// before the gap's end stay.
+    #[test]
+    fn ripple_delete_and_trim_keep_keys_before_the_gap() {
+        let keys = |p: &Project| p.timeline.video_tracks[0].envelopes[0].points.keys.iter().map(|k| (k.t, k.v)).collect::<Vec<_>>();
+        let mut p = Project::new("t");
+        for (id, pos) in [("a", 0.0), ("b", 5.0), ("c", 10.0)] {
+            let mut c = clip(pos, 5.0, 0.0);
+            c.id = id.into();
+            p.timeline.video_tracks[0].clips.push(c);
+        }
+        let ks = [(0.0, 0.0), (3.0, -10.0), (7.0, -30.0), (12.0, 0.0)].map(|(t, v)| Keyframe { t, v, curve: Curve::Linear }).to_vec();
+        p.timeline.video_tracks[0].envelopes.push(Envelope { kind: EnvKind::Volume, points: Keyframes { keys: ks } });
+        p.timeline.markers.push(Marker { position: 7.0, name: String::new(), color: [0; 3] });
+        let tr = vec![p.timeline.video_tracks[0].id.clone()];
+
+        let mut d = p.clone();
+        let ids = vec!["b".to_string()];
+        let ops = gaps(&d, &ids);
+        delete_clips(&mut d, &ids);
+        ripple_all(&mut d, &ops, RippleMode::AffectedMarkers);
+        assert_eq!(keys(&d), [(0.0, 0.0), (3.0, -10.0), (7.0, 0.0)]);
+        assert_eq!(d.timeline.markers[0].position, 7.0);
+
+        // Right-trim c 10..15 to 13: the key at 12 is on the kept part.
+        let mut t = p.clone();
+        let o = t.timeline.video_tracks[0].clips[2].clone();
+        trim_right(&mut t.timeline.video_tracks[0].clips[2], &o, 13.0, F, None);
+        let c = t.timeline.video_tracks[0].clips[2].clone();
+        let ops = trim_ripple(&p, &o, &c, &["c".into()], &tr);
+        ripple_all(&mut t, &ops, RippleMode::Affected);
+        assert_eq!(keys(&t), keys(&p));
+
+        // Left-trim b 5..10 to start at 6: the key at 7 is past the cut second and moves to 6.
+        let mut t = p.clone();
+        let o = t.timeline.video_tracks[0].clips[1].clone();
+        trim_left(&mut t.timeline.video_tracks[0].clips[1], &o, 6.0, F, None);
+        let c = t.timeline.video_tracks[0].clips[1].clone();
+        let ops = trim_ripple(&p, &o, &c, &["b".into()], &tr);
+        ripple_all(&mut t, &ops, RippleMode::Affected);
+        assert_eq!(keys(&t), [(0.0, 0.0), (3.0, -10.0), (6.0, -30.0), (11.0, 0.0)]);
+    }
+
     /// After a ripple, crossfades it pulled apart lose their fades.
     #[test]
     fn crossfade_moved_follows_the_ripple() {
         let (mut p, tr) = crossfaded();
         let before = p.clone();
-        ripple(&mut p, &RippleOp { from: 4.0, delta: 1.0, tracks: tr, exclude: Vec::new() }, RippleMode::Affected);
+        ripple(&mut p, &RippleOp { from: 4.0, delta: 1.0, tracks: tr, ..Default::default() }, RippleMode::Affected);
         assert!(crossfade_moved(&mut p, &before));
         assert_eq!(fades(&p), [(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
     }

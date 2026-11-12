@@ -26,7 +26,6 @@ pub enum MenuAction {
     New,
     Open,
     Exit,
-    About,
     /// Replace the project with an imported VEGAS project (after the save prompt).
     ImportVegas,
 }
@@ -39,7 +38,6 @@ impl From<MenuAction> for Command {
             MenuAction::New => NewEmpty,
             MenuAction::Open => Open,
             MenuAction::Exit => Exit,
-            MenuAction::About => About,
             MenuAction::ImportVegas => ImportVegas,
         }
     }
@@ -160,7 +158,7 @@ impl CmdState {
             SetSelStart | SetSelEnd | SelectionToView | SelectionToProject | InsertMarker | InsertAudioTrack
             | InsertVideoTrack | Snapping | AutoCrossfade | ZoomIn | ZoomOut | ZoomOutLarge | TracksTaller
             | TracksShorter | DefaultTrackHeights | PreviewQuality(_) => true,
-            Window(p) => p.in_look(self.look),
+            Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
     }
@@ -715,7 +713,7 @@ pub const INSERT: &[M] = &[
     S,
     X("&Empty Event"),
     V23(&X("Adjustment Event")),
-    C("&Generated Media...", Window(Panel::MediaGenerators)),
+    C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
     V23(&X("&Slideshow...")),
     V23(&X("Insert Subtitles from Files...")),
     V23(&X("Insert Subtitles from Regions...")),
@@ -1071,20 +1069,15 @@ pub fn add_marker(project: &mut Project, history: &mut History) {
     project.mark_modified();
 }
 
-/// File extensions Milan Pro imports (lower case).
-pub const MEDIA_EXTS: &[&str] = &[
-    "mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "mxf", "mpg", "mpeg", "ts",
-    "mp3", "wav", "flac", "aac", "ogg", "wma", "aiff", "opus",
-    "png", "jpg", "jpeg", "tiff", "bmp", "webp", "gif", "exr",
-];
-
 /// Pick files and probe them in the background; the app adds the results when they arrive.
 pub fn import_media(ctx: &Context, importer: &Importer) {
+    use crate::media::{AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS};
     if let Some(paths) = rfd::FileDialog::new()
-        .add_filter("All Media", MEDIA_EXTS)
-        .add_filter("Video", &["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "mxf"])
-        .add_filter("Audio", &["mp3", "wav", "flac", "aac", "ogg", "wma", "aiff", "opus"])
-        .add_filter("Images", &["png", "jpg", "jpeg", "tiff", "bmp", "webp", "gif", "exr"])
+        .add_filter("All Media", &[VIDEO_EXTS, AUDIO_EXTS, IMAGE_EXTS].concat())
+        .add_filter("Video", VIDEO_EXTS)
+        .add_filter("Audio", AUDIO_EXTS)
+        .add_filter("Images", IMAGE_EXTS)
+        .add_filter("All files", &["*"])
         .pick_files()
     {
         importer.import(ctx, paths);
