@@ -55,6 +55,11 @@ pub struct MeridianApp {
     /// Cursor as set by the playback clock this frame; any other change while playing is a seek.
     clock_pos: f64,
     importer: Importer,
+    /// File › Import › VEGAS Project: the import running, the project it made (waiting on the save prompt) and the
+    /// report shown after it (intro, lines).
+    vegas: crate::interchange::VegasImport,
+    pending_import: Option<(Project, Vec<String>)>,
+    vegas_report: Option<(String, Vec<String>)>,
     /// Files dragged to the timeline: probed while they hover, placed when dropped (cancelled by New/Open).
     file_drop: drop::FileDrop,
     /// MILAN_DROP (demo): window point where the demo media pretends to be dragged from Windows, for the screenshot.
@@ -192,6 +197,9 @@ impl MeridianApp {
             was_playing: false,
             clock_pos: 0.0,
             importer: Importer::new(),
+            vegas: Default::default(),
+            pending_import: None,
+            vegas_report: None,
             file_drop: drop::FileDrop::new(),
             fake_drop: launch.drop_at.filter(|_| launch.demo),
             message,
@@ -540,6 +548,8 @@ impl eframe::App for MeridianApp {
             Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
             None => {}
         }
+        // Before the media added below is offered for auto proxies: an imported project is opened, not imported media.
+        self.poll_vegas(ctx);
         self.show_dialogs(ctx);
         // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
         // (§5.4). Both reuse the probes started while the files hovered.

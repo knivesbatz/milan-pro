@@ -93,10 +93,10 @@ pub fn merge_new(pool: &mut Vec<MediaItem>, items: Vec<MediaItem>) -> bool {
     pool.len() != n
 }
 
-fn classify_extension(ext: &str) -> MediaType {
+pub(crate) fn classify_extension(ext: &str) -> MediaType {
     match ext {
         "mp4" | "mov" | "avi" | "mkv" | "wmv" | "flv" | "webm" | "mxf" | "mpg" | "mpeg"
-        | "ts" | "m2ts" | "vob" | "3gp" | "m4v" => MediaType::Video,
+        | "ts" | "m2ts" | "mts" | "m2t" | "vob" | "3gp" | "m4v" => MediaType::Video,
         "mp3" | "wav" | "flac" | "aac" | "ogg" | "wma" | "aiff" | "opus" | "m4a" | "ac3"
         | "dts" | "pcm" => MediaType::Audio,
         "png" | "jpg" | "jpeg" | "tiff" | "tif" | "bmp" | "webp" | "gif" | "exr" | "tga"

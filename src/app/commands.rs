@@ -2,6 +2,7 @@
 //! `MeridianApp::exec`. Also the modal dialogs and the save prompt.
 use eframe::egui;
 use crate::edit;
+use crate::interchange::Imported;
 use crate::project::{Project, TrackKind};
 use crate::render::content_end;
 use crate::settings::layout_key;
@@ -12,6 +13,9 @@ use crate::ui::menus::{self, CmdState};
 use crate::ui::theme::{self, UiLook};
 use crate::ui::{self, MenuAction, Playback};
 use super::MeridianApp;
+
+/// Heads the report of what an imported VEGAS project lost.
+const IMPORTED_VEGAS: &str = "The VEGAS project is open as a new, unsaved project. These parts of it did not carry over:";
 
 impl MeridianApp {
     /// A modal dialog is up: shortcuts and drops wait.
@@ -26,6 +30,7 @@ impl MeridianApp {
             || self.event_props.is_some()
             || self.take_chooser.is_some()
             || self.layout_as.is_some()
+            || self.vegas_report.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -292,6 +297,13 @@ impl MeridianApp {
             }
             RenderAs => self.render.open = true,
             ImportMedia => ui::import_media(ctx, &self.importer),
+            ImportVegas => {
+                let picked = rfd::FileDialog::new().add_filter("VEGAS Project (Milan Pro export, .veg)", &["json", "veg"]).pick_file();
+                if let Some(path) = picked {
+                    self.vegas.start(ctx, path);
+                    self.message = Some("Importing VEGAS project...".into());
+                }
+            }
             Properties => self.settings.open(&self.project),
             Welcome => self.welcome = Some(Default::default()),
             Exit => self.request(ctx, MenuAction::Exit),
@@ -763,6 +775,13 @@ impl MeridianApp {
                     Err(e) => return self.message = Some(format!("Could not open {}: {e}", path.display())),
                 }
             }
+            MenuAction::ImportVegas => {
+                let Some((p, warnings)) = self.pending_import.take() else { return };
+                if !warnings.is_empty() {
+                    self.vegas_report = Some((IMPORTED_VEGAS.into(), warnings));
+                }
+                p
+            }
             _ => {
                 if let Some((exe, sha)) = self.install_on_exit.take() {
                     if let Err(e) = crate::updater::launch_installer(&exe, &sha, self.updater.auto) {
@@ -785,6 +804,9 @@ impl MeridianApp {
         self.clipboard.clear();
         // A probe batch still running for the old project is dropped (its send fails).
         self.importer = crate::media::Importer::new();
+        if action != MenuAction::ImportVegas {
+            self.vegas = Default::default(); // New/Open after starting an import: the newer choice wins
+        }
         // Files dropped on the old project's timeline are not placed in this one.
         self.file_drop.reset();
         self.drag_state = None;
@@ -799,6 +821,39 @@ impl MeridianApp {
         }
         if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
             self.settings.open(&self.project);
+        }
+    }
+
+    /// A finished VEGAS import: a project replaces this one through the save prompt, as Open does; the media a .veg
+    /// scan found are imported into Project Media.
+    pub(super) fn poll_vegas(&mut self, ctx: &egui::Context) {
+        // The result waits while a dialog is up: replacing the project under Project Properties or a pending save
+        // prompt (New/Open/Exit) would apply that dialog's answer to the wrong project.
+        if self.modal_open() {
+            if self.vegas.busy() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250)); // look again once the dialog closes
+            }
+            return;
+        }
+        let Some(r) = self.vegas.poll() else { return };
+        self.message = None;
+        match r {
+            Ok(Imported::Project(p, warnings)) => {
+                self.pending_import = Some((p, warnings));
+                self.request(ctx, MenuAction::ImportVegas);
+            }
+            Ok(Imported::Media(paths, missing)) => {
+                let n = paths.len();
+                self.import_new(ctx, paths);
+                let dir = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("vegas"))).filter(|d| d.is_dir());
+                let from = dir.map_or("the vegas folder next to MilanPro.exe".into(), |d| d.display().to_string());
+                let intro = format!(
+                    "{n} media file(s) named in the .veg are added to Project Media. Tracks and events need VEGAS: choose Tools › \
+                     Scripting › Run Script... there, pick \"Export to Milan Pro.cs\" from {from}, then import the .milan.json it writes."
+                );
+                self.vegas_report = Some((intro, missing));
+            }
+            Err(e) => self.message = Some(format!("VEGAS import failed: {e}")),
         }
     }
 
@@ -830,7 +885,7 @@ impl MeridianApp {
                 self.run(ctx, action);
             } else if hit.is_some() || close {
                 // Forget what the New/Open/Exit was going to use, so a later one doesn't pick it up.
-                (self.pending_open, self.new_settings, self.props_after_new) = (None, None, false);
+                (self.pending_open, self.new_settings, self.props_after_new, self.pending_import) = (None, None, false, None);
                 self.install_on_exit = None; // the update waits for the next "Install and restart"
             }
         }
@@ -851,6 +906,9 @@ impl MeridianApp {
             self.look = new.look;
             self.prefs = new;
             self.save_prefs();
+        }
+        if self.vegas_report.as_ref().is_some_and(|(intro, lines)| dialogs::report(ctx, "Import VEGAS Project", intro, lines)) {
+            self.vegas_report = None;
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         self.show_layout_as(ctx);
@@ -1009,6 +1067,10 @@ impl MeridianApp {
             }
             "about" => self.about = true,
             "layout-as" => self.exec(ctx, SaveLayoutAs),
+            "vegas-report" => {
+                let lines = ["Track 1, event at 00:00:01;00: event FX (VEGAS Gaussian Blur)", r"Media offline: D:\Footage\interview.mxf (file not found)"];
+                self.vegas_report = Some((IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
+            }
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {
                 if let Some(k) = m.strip_prefix("menu:").and_then(|k| k.parse::<usize>().ok()) {

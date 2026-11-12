@@ -152,6 +152,22 @@ fn framed<R>(ui: &mut Ui, id: &str, title: &str, size: Vec2, body: impl FnOnce(&
     (inner.inner, close)
 }
 
+/// A report with an OK button: `intro`, then `lines` in a scrolling list. True when closed.
+pub fn report(ctx: &Context, title: &str, intro: &str, lines: &[String]) -> bool {
+    let (ok, close) = modal(ctx, "report", title, vec2(560.0, 340.0), |ui| {
+        ui.label(intro);
+        ui.add_space(4.0);
+        ScrollArea::vertical().max_height(220.0).auto_shrink([false, false]).show(ui, |ui| {
+            for l in lines {
+                ui.label(l);
+            }
+        });
+        ui.add_space(10.0);
+        button_row(ui, &[("OK", true)]).is_some()
+    });
+    ok || close
+}
+
 /// Native tab control; `rows` front row first. The row holding the selected tab is drawn next to the page,
 /// as Win32 multi-row tabs do.
 pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {

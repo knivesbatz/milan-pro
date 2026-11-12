@@ -27,6 +27,8 @@ pub enum MenuAction {
     Open,
     Exit,
     About,
+    /// Replace the project with an imported VEGAS project (after the save prompt).
+    ImportVegas,
 }
 
 impl From<MenuAction> for Command {
@@ -38,6 +40,7 @@ impl From<MenuAction> for Command {
             MenuAction::Open => Open,
             MenuAction::Exit => Exit,
             MenuAction::About => About,
+            MenuAction::ImportVegas => ImportVegas,
         }
     }
 }
@@ -102,7 +105,7 @@ impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
         let v23 = self.look == UiLook::Vegas23;
         match c {
-            New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | Properties | Exit | RenderAs | Preferences
+            New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | About | KeyboardShortcuts | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
@@ -381,6 +384,7 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
 
 const IMPORT: &[M] = &[
     C("&Media...", ImportMedia),
+    C("&VEGAS Project...", ImportVegas),
     X("Media from &Project..."),
     V16(&X("&AAF...")),
     X("P&remiere/After Effects (*.prproj)..."),

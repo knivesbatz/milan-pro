@@ -44,6 +44,8 @@ Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "MilanPro.exe"; Flags: ignor
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 ; FFmpeg sits beside MilanPro.exe because Rust's Command searches the app's own folder before PATH.
 Source: "ffmpeg\*"; DestDir: "{app}"; Flags: ignoreversion
+; VEGAS scripts for File > Import > VEGAS Project (run from VEGAS's Tools > Scripting > Run Script...).
+Source: "..\tools\vegas\*.cs"; DestDir: "{app}\vegas"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Milan Pro"; Filename: "{app}\MilanPro.exe"
