@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use crate::project::*;
 
-/// Source length a clip may not exceed; None = unlimited (images, unknown or unprobed media).
+/// Source length a clip may not exceed; None = unlimited (images, generated, unknown or unprobed media).
 pub fn media_limit(project: &Project, clip: &Clip) -> Option<f64> {
     let id = clip.media_id.as_deref()?;
     let m = project.media_pool.iter().find(|m| m.id == id)?;
-    matches!(m.media_type, MediaType::Video | MediaType::Audio)
+    (m.generator.is_none() && matches!(m.media_type, MediaType::Video | MediaType::Audio))
         .then_some(m.duration)
         .filter(|d| *d > 0.0)
 }
@@ -1586,6 +1586,18 @@ fn carry_spans(tl: &mut Timeline, mut spans: Vec<(bool, usize, usize, f64, f64)>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_limit_is_unlimited_for_generated_media() {
+        let mut p = Project::new("t");
+        let mut m = MediaItem { id: "v".into(), media_type: MediaType::Video, duration: 8.0, ..Default::default() };
+        p.media_pool.push(m.clone());
+        let c = Clip::from_media(&m, 0.0);
+        assert_eq!(media_limit(&p, &c), Some(8.0));
+        m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default() });
+        p.media_pool[0] = m;
+        assert_eq!(media_limit(&p, &c), None);
+    }
 
     const F: f64 = 1.0 / 30.0;
 

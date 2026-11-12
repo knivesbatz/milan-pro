@@ -2,6 +2,7 @@
 use eframe::egui::{Color32, ColorImage};
 use std::sync::Arc;
 use crate::engine::plan::{EventPlan, FramePlan, Item, SrcAt, TrackPlan};
+use crate::engine::{transition, vfx};
 use crate::project::Composite;
 
 /// x' = a x + b y + tx, y' = c x + d y + ty.
@@ -74,7 +75,7 @@ pub fn stripes() -> usize {
 }
 
 /// Run `f(y, row)` over the rows of `px` (`w` wide), on up to `k` scoped threads.
-fn par_rows(px: &mut [Color32], w: usize, k: usize, f: impl Fn(usize, &mut [Color32]) + Sync) {
+pub(crate) fn par_rows(px: &mut [Color32], w: usize, k: usize, f: impl Fn(usize, &mut [Color32]) + Sync) {
     let rows = px.len() / w.max(1);
     if k <= 1 || rows < 2 * k || px.len() < 32_768 {
         px.chunks_mut(w).enumerate().for_each(|(y, r)| f(y, r));
@@ -91,7 +92,7 @@ fn par_rows(px: &mut [Color32], w: usize, k: usize, f: impl Fn(usize, &mut [Colo
 
 /// Premultiplied source-over of `s` scaled by `a8` onto `d`.
 #[inline]
-fn over(d: Color32, s: Color32, a8: u32) -> Color32 {
+pub(crate) fn over(d: Color32, s: Color32, a8: u32) -> Color32 {
     let s = if a8 == 255 { s.to_array() } else { s.to_array().map(|c| mul255(c as u32, a8) as u8) };
     if s[3] == 255 {
         return Color32::from_rgba_premultiplied(s[0], s[1], s[2], 255);
@@ -253,39 +254,88 @@ fn events(i: &Item) -> Vec<&EventPlan> {
     }
 }
 
-fn draw_items(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, gain: f32, bilinear: bool, k: usize) {
+/// One event's source, through its event FX (on a copy), drawn at `alpha`. `to_out` (with Track Motion) sets the
+/// decode size; `place_out` is where it lands (without Track Motion when track FX come first).
+#[allow(clippy::too_many_arguments)]
+fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out: Affine, place_out: Affine, alpha: f32, bilinear: bool, k: usize) {
+    if alpha <= 0.0 {
+        return;
+    }
+    let (dw, dh) = decode_size(e, to_out);
+    let Some(mut img) = src.get(&e.src, dw, dh) else { return };
+    for f in &e.fx {
+        vfx::apply(Arc::make_mut(&mut img), f, k);
+    }
+    let m = Affine::scale(1.0 / img.size[0] as f64, 1.0 / img.size[1] as f64).then(e.place).then(place_out);
+    draw(dst, &img, m, alpha, bilinear, k);
+}
+
+fn draw_items(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, gain: f32, bilinear: bool, k: usize, with_motion: bool) {
     let [w, h] = dst.size;
     let to_out = layer_to_out(l, w, h);
+    let place_out = if with_motion { to_out } else { Affine::scale(w as f64, h as f64) };
     for item in &l.items {
-        // shortcut: every transition draws as a dissolve (A, then B at alpha p) until batch 14 registers transition kinds.
-        let p = if let Item::Mix { p, .. } = item { *p } else { 1.0 };
-        let evs = events(item);
-        let last = evs.len() - 1;
-        for (i, e) in evs.into_iter().enumerate() {
-            let alpha = e.alpha * gain * if i == last { p } else { 1.0 };
-            if alpha <= 0.0 {
-                continue;
+        match item {
+            Item::Mix { a, b, p, kind: Some(kind) } => {
+                // Both sides as whole frames without Track Motion, mixed, then moved as one picture: a wipe or push
+                // stays inside a picture-in-picture, as in VEGAS, whichever path the track takes.
+                let frame = Affine::scale(w as f64, h as f64);
+                let mut side = |e: Option<&EventPlan>| {
+                    let mut img = ColorImage::new([w, h], Color32::TRANSPARENT);
+                    if let Some(e) = e {
+                        draw_event(&mut img, src, e, to_out, frame, e.alpha, bilinear, k);
+                    }
+                    img
+                };
+                let (ia, ib) = (side(a.as_ref()), side(Some(b)));
+                let m = if with_motion { Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(to_out) } else { Affine::translate(0.0, 0.0) };
+                draw(dst, &transition::mix(kind, &ia, &ib, *p, k), m, gain, bilinear, k);
             }
-            let (dw, dh) = decode_size(e, to_out);
-            let Some(img) = src.get(&e.src, dw, dh) else { continue };
-            let m = Affine::scale(1.0 / img.size[0] as f64, 1.0 / img.size[1] as f64).then(e.place).then(to_out);
-            draw(dst, &img, m, alpha, bilinear, k);
+            _ => {
+                // An unknown transition draws as a dissolve: A, then B at alpha p.
+                let p = if let Item::Mix { p, .. } = item { *p } else { 1.0 };
+                let evs = events(item);
+                let last = evs.len() - 1;
+                for (i, e) in evs.into_iter().enumerate() {
+                    draw_event(dst, src, e, to_out, place_out, e.alpha * gain * if i == last { p } else { 1.0 }, bilinear, k);
+                }
+            }
         }
     }
 }
 
-/// Compose one frame `w` x `h`: opaque black, then each track bottom to top.
+/// Compose one frame `w` x `h`: opaque black, then each track bottom to top, then the Video Output FX.
 pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> ColorImage {
     let mut acc = ColorImage::new([w, h], Color32::BLACK);
     for l in &fp.layers {
         let draws: usize = l.items.iter().map(|i| events(i).len()).sum();
         // Fast path: draw straight into the accumulator, sampling each pixel once.
-        if l.mode == Composite::SourceAlpha && (l.opacity >= 1.0 || draws <= 1) {
-            draw_items(&mut acc, src, l, l.opacity, bilinear, k);
-        } else {
+        if l.fx.is_empty() && l.mode == Composite::SourceAlpha && (l.opacity >= 1.0 || draws <= 1) {
+            draw_items(&mut acc, src, l, l.opacity, bilinear, k, true);
+        } else if l.fx.is_empty() {
             let mut layer = ColorImage::new([w, h], Color32::TRANSPARENT);
-            draw_items(&mut layer, src, l, 1.0, bilinear, k);
+            draw_items(&mut layer, src, l, 1.0, bilinear, k, true);
             blend(&mut acc, &layer, l.mode, l.opacity, k);
+        } else {
+            // Track FX on the track's own frame, then Track Motion moves the result.
+            let mut layer = ColorImage::new([w, h], Color32::TRANSPARENT);
+            draw_items(&mut layer, src, l, 1.0, bilinear, k, false);
+            for f in &l.fx {
+                vfx::apply(&mut layer, f, k);
+            }
+            let mut moved = ColorImage::new([w, h], Color32::TRANSPARENT);
+            draw(&mut moved, &layer, Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(layer_to_out(l, w, h)), 1.0, bilinear, k);
+            blend(&mut acc, &moved, l.mode, l.opacity, k);
+        }
+    }
+    if !fp.out_fx.is_empty() {
+        for f in &fp.out_fx {
+            vfx::apply(&mut acc, f, k);
+        }
+        // The output is opaque: whatever an output FX made transparent shows black.
+        for p in &mut acc.pixels {
+            let [r, g, b, _] = p.to_array();
+            *p = Color32::from_rgb(r, g, b);
         }
     }
     acc
@@ -324,11 +374,11 @@ mod tests {
     }
 
     fn event(m: &Arc<MediaRef>, pc: PanCrop, alpha: f32) -> EventPlan {
-        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0) }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0)), alpha }
+        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0)), alpha, fx: Vec::new() }
     }
 
     fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
-        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), items }
+        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), fx: Vec::new(), items }
     }
 
     const W: usize = 192;
@@ -383,12 +433,12 @@ mod tests {
     #[test]
     fn fast_path_equals_general_path() {
         let m = media(1920, 1080);
-        let fp = |mode| FramePlan { layers: vec![layer(vec![Item::Event(event(&m, PanCrop::default(), 0.8))], mode, 0.5, Motion::default())] };
+        let fp = |mode| FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, PanCrop::default(), 0.8))], mode, 0.5, Motion::default())] };
         let fast = compose(&fp(Composite::SourceAlpha), &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         // Normal through the scratch layer: blending a layer with the general formula at opacity 0.5.
         let mut general = ColorImage::new([W, H], Color32::BLACK);
         let mut scratch = ColorImage::new([W, H], Color32::TRANSPARENT);
-        draw_items(&mut scratch, &mut Halves(Color32::RED, Color32::BLUE), &fp(Composite::SourceAlpha).layers[0], 1.0, true, 1);
+        draw_items(&mut scratch, &mut Halves(Color32::RED, Color32::BLUE), &fp(Composite::SourceAlpha).layers[0], 1.0, true, 1, true);
         blend(&mut general, &scratch, Composite::SourceAlpha, 0.5, 1);
         for (a, b) in fast.pixels.iter().zip(&general.pixels) {
             for (x, y) in a.to_array().into_iter().zip(b.to_array()) {
@@ -442,7 +492,7 @@ mod tests {
         let m = media(640, 480);
         let l = layer(vec![Item::Event(event(&m, PanCrop::default(), 1.0))], Composite::SourceAlpha, 1.0, Motion::default());
         let mut scratch = ColorImage::new([W, H], Color32::TRANSPARENT);
-        draw_items(&mut scratch, &mut Halves(Color32::RED, Color32::RED), &l, 1.0, true, 1);
+        draw_items(&mut scratch, &mut Halves(Color32::RED, Color32::RED), &l, 1.0, true, 1, true);
         for y in [0, H / 2, H - 1] {
             assert_eq!(px(&scratch, 23, y)[3], 0);
             assert_eq!(px(&scratch, 24, y), [255, 0, 0, 255]);
@@ -458,10 +508,10 @@ mod tests {
         let (bottom, top) = (l(Color32::from_gray(200)), l(Color32::from_gray(100)));
         let mut acc = ColorImage::new([W, H], Color32::BLACK);
         for (layer, c) in [bottom, top] {
-            let fp = FramePlan { layers: vec![layer] };
+            let fp = FramePlan { out_fx: Vec::new(), layers: vec![layer] };
             let mut s = Halves(c, c);
             for l in &fp.layers {
-                draw_items(&mut acc, &mut s, l, l.opacity, true, 1);
+                draw_items(&mut acc, &mut s, l, l.opacity, true, 1, true);
             }
         }
         // 0.5 * 100 + 0.5 * (0.5 * 200) = 100
@@ -480,7 +530,7 @@ mod tests {
         let (x, _) = p.apply(0.75, 0.5);
         assert!((x - 1.0).abs() < 1e-9);
         let flip = PanCrop { w: -1.0, ..Default::default() };
-        let fp = FramePlan { layers: vec![layer(vec![Item::Event(event(&m, flip, 1.0))], Composite::SourceAlpha, 1.0, Motion::default())] };
+        let fp = FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, flip, 1.0))], Composite::SourceAlpha, 1.0, Motion::default())] };
         let out = compose(&fp, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         assert_eq!(px(&out, 5, 50), [0, 0, 255, 255]); // the source's right half is now on the left
         assert_eq!(px(&out, W - 5, 50), [255, 0, 0, 255]);
@@ -508,5 +558,49 @@ mod tests {
         assert_eq!(decode_size(&e, to(200)), (240, 136));
         let z = event(&m, PanCrop { w: 0.5, h: 0.5, ..Default::default() }, 1.0);
         assert_eq!(decode_size(&z, to(960)), (1920, 1080)); // 2x zoom needs the full source
+    }
+
+    /// A push on a picture-in-picture track stays inside the PiP, and adding a track FX does not change that.
+    #[test]
+    fn transitions_run_before_track_motion() {
+        use crate::engine::plugins::{find, preset_eval};
+        let m = media(1920, 1080);
+        let push = preset_eval(find("milan.tr.push").unwrap(), None);
+        let pip = Motion { w: 0.5, h: 0.5, ..Default::default() };
+        let mix = || Item::Mix { a: Some(event(&m, PanCrop::default(), 1.0)), b: event(&m, PanCrop::default(), 1.0), p: 0.5, kind: Some(push.clone()) };
+        let fast = compose(&FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![mix()], Composite::SourceAlpha, 1.0, pip)] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        for y in 0..H {
+            for x in 0..W {
+                let inside = (W / 4..3 * W / 4).contains(&x) && (H / 4..3 * H / 4).contains(&y);
+                assert!(inside || px(&fast, x, y) == [0, 0, 0, 255], "{x},{y}: {:?}", px(&fast, x, y));
+            }
+        }
+        assert_ne!(px(&fast, W / 2, H / 2), [0, 0, 0, 255]);
+        let mut l = layer(vec![mix()], Composite::SourceAlpha, 1.0, pip);
+        l.fx = vec![preset_eval(find("milan.fx.brightness_contrast").unwrap(), None)]; // identity
+        let with_fx = compose(&FramePlan { out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        for (a, b) in fast.pixels.iter().zip(&with_fx.pixels) {
+            assert!(a.to_array().into_iter().zip(b.to_array()).all(|(x, y)| x.abs_diff(y) <= 1), "{a:?} {b:?}");
+        }
+    }
+
+    #[test]
+    fn event_track_and_output_fx() {
+        use crate::engine::plugins::{find, preset_eval};
+        let m = media(1920, 1080);
+        let inv = preset_eval(find("milan.fx.invert").unwrap(), None);
+        let mut e = event(&m, PanCrop::default(), 1.0);
+        e.fx = vec![inv.clone()];
+        let fp = FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] };
+        let out = compose(&fp, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        assert_eq!((px(&out, 5, 50), px(&out, W - 5, 50)), ([0, 255, 255, 255], [255, 255, 0, 255]));
+        // The same effect as a track FX, through the scratch layer.
+        let mut l = layer(vec![Item::Event(event(&m, PanCrop::default(), 1.0))], Composite::SourceAlpha, 1.0, Motion::default());
+        l.fx = vec![inv.clone()];
+        let track = compose(&FramePlan { out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        assert!(track.pixels == out.pixels);
+        // Video Output FX run on the finished frame, black background included.
+        let white = compose(&FramePlan { out_fx: vec![inv], layers: Vec::new() }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        assert!(white.pixels.iter().all(|p| *p == Color32::WHITE));
     }
 }

@@ -8,7 +8,9 @@ use std::sync::Arc;
 use crate::decode::Quality;
 use crate::edit::src_time;
 use crate::engine::composite::Affine;
-use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
+use crate::engine::{generate, lut};
+use crate::engine::plugins::{self, FxEval, PluginKind};
+use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Fx, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
 
 /// A picture source as the decoders need it.
 #[derive(Debug)]
@@ -46,6 +48,8 @@ pub struct VideoPlan {
     pub fps_str: String,
     /// Bottom track first.
     pub tracks: Vec<VTrack>,
+    /// Video Output FX.
+    out_fx: Vec<Fx>,
     /// Content end (seconds).
     pub end: f64,
 }
@@ -56,6 +60,7 @@ pub struct VTrack {
     level: f32,
     level_env: Option<Envelope>,
     motion: Keyframes<Motion>,
+    fx: Vec<Fx>,
     /// Stable-sorted by position: on ties the later Vec entry is on top.
     events: Vec<VEvent>,
 }
@@ -64,12 +69,15 @@ pub struct VTrack {
 struct VEvent {
     c: Clip,
     m: Arc<MediaRef>,
+    /// The media's generator (generated media only).
+    generator: Option<Fx>,
 }
 
 /// One frame, resolved: tracks bottom to top.
 #[derive(Debug)]
 pub struct FramePlan {
     pub layers: Vec<TrackPlan>,
+    pub out_fx: Vec<FxEval>,
 }
 
 #[derive(Debug)]
@@ -78,14 +86,16 @@ pub struct TrackPlan {
     pub opacity: f32,
     /// Track Motion in normalised frame coordinates.
     pub motion: Affine,
+    /// Track FX, applied before Track Motion.
+    pub fx: Vec<FxEval>,
     pub items: Vec<Item>,
 }
 
 #[derive(Debug)]
 pub enum Item {
     Event(EventPlan),
-    /// A transition from `a` (None = transparent) into `b` at progress `p`.
-    Mix { a: Option<EventPlan>, b: EventPlan, p: f32 },
+    /// A transition from `a` (None = transparent) into `b` at progress `p`; `kind` None (an unknown plug-in) dissolves.
+    Mix { a: Option<EventPlan>, b: EventPlan, p: f32, kind: Option<FxEval> },
 }
 
 #[derive(Debug)]
@@ -94,6 +104,8 @@ pub struct EventPlan {
     /// Normalised source (0..1) to normalised frame (0..1): Pan/Crop, then fit to the project frame.
     pub place: Affine,
     pub alpha: f32,
+    /// Event FX, applied to the source before Pan/Crop.
+    pub fx: Vec<FxEval>,
 }
 
 #[derive(Debug)]
@@ -101,6 +113,8 @@ pub struct SrcAt {
     pub m: Arc<MediaRef>,
     /// Source frame on the project-fps grid; None for a still.
     pub sf: Option<i64>,
+    /// Generated media: the generator and its time (0 unless it animates, so a static one renders once).
+    pub generator: Option<(FxEval, f64)>,
 }
 
 impl FramePlan {
@@ -109,7 +123,26 @@ impl FramePlan {
     pub fn key(&self) -> u64 {
         let mut h = DefaultHasher::new();
         format!("{self:?}").hash(&mut h);
+        // A LUT re-exported or edited in place changes the picture but not the plan.
+        for p in self.fx().into_iter().flat_map(lut::paths) {
+            std::fs::metadata(p).and_then(|m| m.modified()).ok().hash(&mut h);
+        }
         h.finish()
+    }
+
+    /// Every effect this frame runs: Video Output, track and event FX.
+    pub fn fx(&self) -> Vec<&FxEval> {
+        let mut v: Vec<&FxEval> = self.out_fx.iter().collect();
+        for l in &self.layers {
+            v.extend(&l.fx);
+            for i in &l.items {
+                match i {
+                    Item::Event(e) => v.extend(&e.fx),
+                    Item::Mix { a, b, .. } => v.extend(a.iter().chain([b]).flat_map(|e| &e.fx)),
+                }
+            }
+        }
+        v
     }
 }
 
@@ -128,12 +161,17 @@ pub fn matrix(m: &MediaItem) -> Option<&'static str> {
     }
 }
 
-fn media_ref(m: &MediaItem) -> Option<MediaRef> {
-    // shortcut: generated media draws nothing until batch 14 registers generators.
-    if m.generator.is_some() || !matches!(m.media_type, MediaType::Video | MediaType::Image) {
-        return None;
+/// `project` is the project frame size, which generated media render at.
+fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
+    let generator = m.generator.as_ref();
+    match generator {
+        // A generator this build does not know draws nothing.
+        Some(g) if plugins::find(&g.plugin).is_none_or(|i| i.kind != PluginKind::Generator) => return None,
+        None if !matches!(m.media_type, MediaType::Video | MediaType::Image) => return None,
+        _ => {}
     }
     let (w, h) = match (m.width, m.height) {
+        _ if generator.is_some() => project,
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
         _ => (1920, 1080),
     };
@@ -144,8 +182,8 @@ fn media_ref(m: &MediaItem) -> Option<MediaRef> {
         h,
         duration: m.duration,
         fps: m.frame_rate.unwrap_or(0.0),
-        still: m.media_type == MediaType::Image,
-        has_alpha: m.has_alpha,
+        still: m.media_type == MediaType::Image || generator.is_some(),
+        has_alpha: m.has_alpha || generator.is_some(),
         matrix: matrix(m),
         codec: m.codec.clone(),
         interlaced: m.interlaced,
@@ -155,7 +193,8 @@ fn media_ref(m: &MediaItem) -> Option<MediaRef> {
 
 pub fn compile(p: &Project) -> VideoPlan {
     let s = &p.settings;
-    let refs: HashMap<&str, Arc<MediaRef>> = p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), Arc::new(media_ref(m)?)))).collect();
+    let refs: HashMap<&str, (Arc<MediaRef>, &Option<Fx>)> =
+        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (s.width.max(2), s.height.max(2)))?), &m.generator)))).collect();
     let tracks = p
         .timeline
         .shown_video_tracks()
@@ -165,7 +204,10 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .clips
                 .iter()
                 .filter(|c| !c.muted && c.duration > 0.0)
-                .filter_map(|c| Some(VEvent { m: refs.get(c.media_id.as_deref()?)?.clone(), c: c.clone() }))
+                .filter_map(|c| {
+                    let (m, generator) = refs.get(c.media_id.as_deref()?)?;
+                    Some(VEvent { m: m.clone(), generator: (*generator).clone(), c: c.clone() })
+                })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
             VTrack {
@@ -173,6 +215,7 @@ pub fn compile(p: &Project) -> VideoPlan {
                 level: t.volume.clamp(0.0, 1.0),
                 level_env: t.envelopes.iter().find(|e| e.kind == EnvKind::CompositeLevel).cloned(),
                 motion: t.motion.clone(),
+                fx: t.fx.clone(),
                 events,
             }
         })
@@ -184,8 +227,14 @@ pub fn compile(p: &Project) -> VideoPlan {
         fps,
         fps_str: crate::render::fps_str(fps),
         tracks,
+        out_fx: p.timeline.master.video_fx.clone(),
         end: crate::render::content_end(p),
     }
+}
+
+/// The enabled, known plug-ins of a chain at `t`.
+fn evals(chain: &[Fx], t: f64) -> Vec<FxEval> {
+    chain.iter().filter(|f| f.enabled).filter_map(|f| plugins::eval(f, t)).collect()
 }
 
 /// Frame shown at time `t` (the cursor's frame).
@@ -261,11 +310,19 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                     st = st.clamp(0.0, (e.m.duration - 0.5 / p.fps).max(0.0));
                 }
                 let sf = (!e.m.still).then(|| (st * p.fps).round() as i64);
+                // A generator is evaluated at its media time; one that does not animate always at 0.
+                let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
+                    let gt = if generate::animated(&g) { st } else { 0.0 };
+                    (g, gt)
+                });
+                let fx = evals(&c.fx, local);
                 let plan = |alpha| EventPlan {
-                    src: SrcAt { m: e.m.clone(), sf },
+                    src: SrcAt { m: e.m.clone(), sf, generator: generator.clone() },
                     place: place(c.pan_crop.at(local), (e.m.w as f64, e.m.h as f64), size),
                     alpha,
+                    fx: fx.clone(),
                 };
+                let kind = c.transition.as_ref().and_then(plugins::eval_transition);
                 match &c.transition {
                     Some(_) if i > 0 => {
                         let prev = &live[i - 1].c;
@@ -277,16 +334,16 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                                 None
                             }
                         };
-                        items.push(Item::Mix { a, b: plan(alpha), p: (local / len.max(1e-9)).clamp(0.0, 1.0) as f32 });
+                        items.push(Item::Mix { a, b: plan(alpha), p: (local / len.max(1e-9)).clamp(0.0, 1.0) as f32, kind });
                     }
-                    Some(_) if local < c.fade_in => items.push(Item::Mix { a: None, b: plan(alpha), p: (local / c.fade_in) as f32 }),
+                    Some(_) if local < c.fade_in => items.push(Item::Mix { a: None, b: plan(alpha), p: (local / c.fade_in) as f32, kind }),
                     _ => items.push(Item::Event(plan(alpha * fade(c.fade_in_curve, local, c.fade_in)))),
                 }
             }
-            Some(TrackPlan { mode: tr.composite, opacity, motion: motion(tr.motion.at(t), size), items })
+            Some(TrackPlan { mode: tr.composite, opacity, motion: motion(tr.motion.at(t), size), fx: evals(&tr.fx, t), items })
         })
         .collect();
-    FramePlan { layers }
+    FramePlan { layers, out_fx: evals(&p.out_fx, t) }
 }
 
 /// First frames of events that start in (n0, n1], for decoder pre-warming.
@@ -401,6 +458,7 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
 mod tests {
     use super::*;
     use crate::project::{Keyframe, Track, TrackKind, Transition};
+    use crate::engine::plugins;
 
     fn media(id: &str, kind: MediaType) -> MediaItem {
         MediaItem {
@@ -568,7 +626,7 @@ mod tests {
         p.timeline.video_tracks[0].clips[1].transition = Some(Transition { plugin: "milan.tr.dissolve".into(), params: Default::default() });
         let vp = compile(&p);
         let mix_p = |n| match &frame_plan(&vp, n).layers[0].items[..] {
-            [Item::Mix { a: Some(_), b, p }] => (*p, b.alpha),
+            [Item::Mix { a: Some(_), b, p, kind: Some(k) }] if k.id == "milan.tr.dissolve" => (*p, b.alpha),
             other => panic!("{other:?}"),
         };
         assert_eq!(mix_p(390), (0.0, 1.0)); // 13.0 s: start of the overlap
@@ -640,6 +698,40 @@ mod tests {
         assert!(r("b").proxy.is_none());
         // A frame that now decodes from the proxy is a different cached picture.
         assert_ne!(frame_plan(&vp, 345).key(), before);
+    }
+
+    #[test]
+    fn fx_chains_and_generated_media() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        let fx = |id: &str, enabled| Fx { enabled, ..plugins::new_fx(plugins::find(id).unwrap(), None) };
+        let mut blur = fx("milan.fx.gaussian_blur", true);
+        let ramp = vec![Keyframe { t: 0.0, v: 0.0, curve: Curve::Linear }, Keyframe { t: 2.0, v: 0.02, curve: Curve::Linear }];
+        blur.params.insert("h_range".into(), Keyframes { keys: ramp });
+        let unknown = Fx { plugin: "ofx:someone.else".into(), ..fx("milan.fx.invert", true) };
+        p.timeline.video_tracks[0].clips[0].fx = vec![blur, fx("milan.fx.invert", false), unknown];
+        p.timeline.video_tracks[0].fx = vec![fx("milan.fx.sepia", true)];
+        p.timeline.master.video_fx = vec![fx("milan.fx.vignette", true)];
+        let fp = frame_plan(&compile(&p), 330); // 11 s: 1 s into event a
+        let Item::Event(e) = &fp.layers[0].items[0] else { panic!("{fp:?}") };
+        assert_eq!(e.fx.len(), 1, "disabled and unknown plug-ins are bypassed");
+        assert!((e.fx[0].f("h_range") - 0.01).abs() < 1e-6, "event FX keys are event-relative");
+        assert_eq!((fp.layers[0].fx[0].id, fp.out_fx[0].id), ("milan.fx.sepia", "milan.fx.vignette"));
+
+        // Generated media draws at the project size; one whose generator is unknown draws nothing.
+        let mut g = MediaItem { id: "g".into(), media_type: MediaType::Image, duration: 86400.0, generator: Some(fx("milan.gen.solid", true)), ..Default::default() };
+        p.media_pool.push(g.clone());
+        p.timeline.video_tracks[0].clips.push(clip(&g, 20.0, 5.0, 0.0));
+        (g.id, g.generator) = ("u".into(), Some(Fx { plugin: "milan.gen.future".into(), ..fx("milan.gen.solid", true) }));
+        p.media_pool.push(g.clone());
+        p.timeline.video_tracks[0].clips.push(clip(&g, 30.0, 5.0, 0.0));
+        let vp = compile(&p);
+        let fp = frame_plan(&vp, 660);
+        let Item::Event(e) = &fp.layers[0].items[0] else { panic!("{fp:?}") };
+        assert_eq!((&*e.src.m.id, e.src.m.w, e.src.m.h, e.src.sf), ("g", 1920, 1080, None));
+        let (ev, t) = e.src.generator.as_ref().unwrap();
+        assert_eq!((ev.id, *t), ("milan.gen.solid", 0.0)); // static: always time 0, so it renders once
+        assert!(frame_plan(&vp, 960).layers.is_empty());
     }
 
     #[test]

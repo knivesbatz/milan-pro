@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use crate::engine::VideoEngine;
-use crate::project::{MediaItem, MediaType, Project};
+use crate::project::{Fx, MediaItem, MediaType, Project};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Quality {
@@ -68,6 +68,8 @@ struct FrameRequest {
     matrix: Option<&'static str>,
     /// A video proxy of `path`, read instead; if it fails, `path` is read (and the proxy forgotten if that works).
     proxy: Option<PathBuf>,
+    /// Generated media: rendered by this generator at `time` instead of decoded.
+    generator: Option<Fx>,
 }
 
 struct FrameResult {
@@ -87,6 +89,10 @@ fn decode_size(m: &MediaItem, max_w: u32) -> (u32, u32) {
 }
 
 fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
+    if let Some(g) = &req.generator {
+        let e = crate::engine::plugins::eval(g, req.time).ok_or_else(|| format!("Unknown generator {}", g.plugin))?;
+        return Ok(crate::engine::generate::render(&e, req.width, req.height, req.time));
+    }
     let proxied = req.proxy.as_ref().map(|p| decode_file(req, p));
     if let Some(Ok(img)) = proxied {
         return Ok(img);
@@ -126,7 +132,7 @@ fn decode_file(req: &FrameRequest, path: &Path) -> Result<ColorImage, String> {
 
 /// The first frame of `path` (a still) at `w` x `h`, premultiplied.
 pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
-    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None })
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -250,7 +256,7 @@ impl Preview {
         let max_w = self.width(full_w);
         let key = src.map(|(m, t)| {
             let fps = m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps.max(1.0));
-            (m.path.clone(), (t * fps).floor() as i64, max_w, self.quality)
+            (key_path(m), (t * fps).floor() as i64, max_w, self.quality)
         });
         if key != self.key {
             self.key = key;
@@ -268,6 +274,7 @@ impl Preview {
                         scaler: self.quality.scaler(),
                         matrix: crate::engine::plan::matrix(m),
                         proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(),
+                        generator: m.generator.clone(),
                     };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
@@ -308,8 +315,20 @@ impl Preview {
     }
 }
 
-/// (media path, source time in ms)
+/// (`key_path` of the media, source time in ms)
 type ThumbKey = (PathBuf, i64);
+
+/// What a picture of `m` is cached under: its file, or for generated media its generator's settings (an edit is a new picture).
+fn key_path(m: &MediaItem) -> PathBuf {
+    match &m.generator {
+        Some(g) => {
+            let mut h = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&format!("{g:?}"), &mut h);
+            format!("<generated {:016x}>", std::hash::Hasher::finish(&h)).into()
+        }
+        None => m.path.clone(),
+    }
+}
 
 enum Thumb {
     Pending,
@@ -393,14 +412,14 @@ impl Thumbs {
     pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
         self.receive();
         let time = if m.media_type == MediaType::Image { 0.0 } else { time.max(0.0) };
-        let key = (m.path.clone(), (time * 1000.0).round() as i64);
+        let key = (key_path(m), (time * 1000.0).round() as i64);
         if !self.cache.contains_key(&key) {
             if self.cache.len() >= THUMB_CACHE {
                 self.cache.retain(|_, v| matches!(v, Thumb::Pending));
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
             // Keyed by the source, so thumbnails made before its proxy was ready stay; new ones read the proxy.
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None };
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone() };
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
             q.push((key.clone(), req, crate::proxy::is_video(m)));

@@ -5,13 +5,26 @@
 //! Render: `render` runs both into one ffmpeg encoder.
 pub mod cache;
 pub mod composite;
+// shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the
+// batch-15 plug-in UI; drop these allows when it lands.
+#[allow(dead_code)]
+pub mod fonts;
+pub mod generate;
 // shortcut: key editing is used from batch 10 (keyframe UI) on.
 #[allow(dead_code)]
 pub mod keyframes;
+#[allow(dead_code)]
+pub mod lut;
 pub mod mix;
 pub mod plan;
+#[allow(dead_code)]
+pub mod plugins;
 pub mod render;
+#[allow(dead_code)]
+pub mod thumbs;
+pub mod transition;
 pub mod vdecode;
+pub mod vfx;
 mod worker;
 
 use eframe::egui::{self, ColorImage};

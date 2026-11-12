@@ -20,6 +20,8 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
 # src/engine/vdecode.rs: decoder pipes read straight into Color32 frames. Already in Cargo.lock (via egui).
 bytemuck = "1"
+# src/engine/generate.rs: Titles & Text glyph outlines. Already in Cargo.lock (via epaint).
+ab_glyph = "0.2"
 
 # src/proc.rs: Job Object that kills ffmpeg children with Milan; src/app/drop.rs: cursor during a drag from Windows.
 # Already in Cargo.lock (via other crates).

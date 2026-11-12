@@ -1,6 +1,7 @@
 //! The "milan-video" thread: owns the plan, the decoder pool and both caches; answers Show and streams Play.
 use eframe::egui::{self, ColorImage};
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
@@ -9,6 +10,7 @@ use std::time::{Duration, Instant};
 use crate::decode::Quality;
 use crate::engine::cache::ByteLru;
 use crate::engine::composite::{self, Sources};
+use crate::engine::{generate, lut};
 use crate::engine::plan::{self, SrcAt, VideoPlan};
 use crate::engine::vdecode::{DecoderPool, Pull};
 use crate::engine::{Played, Shown, Stats, VCmd};
@@ -58,7 +60,18 @@ pub struct Worker {
 }
 
 fn src_key(pool: &DecoderPool, s: &SrcAt, w: u32, q: Quality) -> SrcKey {
-    (s.m.id.clone(), s.sf.map_or(-1, |sf| pool.clamp(&s.m, sf, q)), w, q.scaler(), s.m.proxy_for(q).is_some())
+    let n = match (&s.generator, s.sf) {
+        // Generated media: keyed by its settings (and time, when it animates) and its height, which follows the
+        // project's aspect rather than the decode width.
+        (Some((e, t)), _) => {
+            let mut h = DefaultHasher::new();
+            (e, t.to_bits(), s.m.h).hash(&mut h);
+            h.finish() as i64
+        }
+        (None, Some(sf)) => pool.clamp(&s.m, sf, q),
+        (None, None) => -1,
+    };
+    (s.m.id.clone(), n, w, q.scaler(), s.m.proxy_for(q).is_some())
 }
 
 /// The real `Sources`: source cache, then stills or the decoder pool.
@@ -87,15 +100,16 @@ impl Live<'_> {
             self.err.get_or_insert_with(|| e.clone());
             return None;
         }
-        let got = match s.sf {
+        let got = match (&s.generator, s.sf) {
+            (Some((e, t)), _) => Ok(Arc::new(generate::render(e, w, h, *t))),
             // Playing, a still not decoded yet (pre-warm missed it) loads in the background.
-            None if self.deadline.is_some() => {
+            (None, None) if self.deadline.is_some() => {
                 self.stills.start(key, &s.m.path, w, h);
                 self.exact = false;
                 return None;
             }
-            None => crate::decode::still(&s.m.path, w, h, self.q.scaler()).map(Arc::new),
-            Some(sf) => match self.pool.frame(&s.m, sf, w, h, self.q, self.deadline) {
+            (None, None) => crate::decode::still(&s.m.path, w, h, self.q.scaler()).map(Arc::new),
+            (None, Some(sf)) => match self.pool.frame(&s.m, sf, w, h, self.q, self.deadline) {
                 Pull::Exact(img) => Ok(img),
                 Pull::Held(img) => {
                     self.exact = false;
@@ -185,7 +199,8 @@ impl Worker {
     fn warm(&mut self, fp: &plan::FramePlan, w: u32, h: u32, q: Quality, play: bool) {
         for (src, dw, dh) in composite::requests(fp, w as usize, h as usize) {
             let key = src_key(&self.pool, src, dw, q);
-            if self.sources.get(&key).is_some() || self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
+            // Generated media render when drawn; there is nothing to open ahead.
+            if src.generator.is_some() || self.sources.get(&key).is_some() || self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
                 continue;
             }
             match src.sf {
@@ -221,7 +236,9 @@ impl Worker {
             err: None,
         };
         let img = Arc::new(composite::compose(&fp, &mut live, w as usize, h as usize, q != Quality::Draft, self.k));
-        let (exact, err, shown) = (live.exact, live.err, live.shown);
+        let (exact, mut err, shown) = (live.exact, live.err, live.shown);
+        // A LUT that cannot load draws ungraded: say so in the preview, and fail a render like a missing file.
+        err = err.or_else(|| fp.fx().into_iter().find_map(lut::error));
         self.held = shown;
         if exact && err.is_none() {
             self.composites.insert(key, img.clone(), w as usize * h as usize * 4);
@@ -341,6 +358,87 @@ mod tests {
     use super::*;
     use crate::project::{Clip, Track, TrackKind};
     use std::sync::mpsc;
+
+    /// A project with one 5 s event of generated media.
+    fn generated(generator: crate::project::Fx) -> Project {
+        use crate::project::{MediaItem, MediaType};
+        let m = MediaItem { id: "g".into(), media_type: MediaType::Image, duration: 86400.0, generator: Some(generator), ..Default::default() };
+        let mut p = Project::new("g");
+        let mut c = Clip::from_media(&m, 0.0);
+        c.duration = 5.0;
+        p.timeline.video_tracks[0].clips.push(c);
+        p.media_pool.push(m);
+        p
+    }
+
+    fn red() -> crate::project::Fx {
+        use crate::engine::plugins::{find, new_fx};
+        let solid = find("milan.gen.solid").unwrap();
+        new_fx(solid, solid.presets.iter().find(|p| p.name == "Red"))
+    }
+
+    /// No ffmpeg: generated media render in the worker, and the Video Output FX apply to the frame.
+    #[test]
+    fn generated_media_and_output_fx() {
+        use crate::engine::plugins::{find, new_fx};
+        let mut p = generated(red());
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let (img, err) = wk.frame(30, 320, 180, Quality::Good, None);
+        assert!(err.is_none() && img.size == [320, 180] && img.pixels.iter().all(|p| *p == eframe::egui::Color32::RED));
+        p.timeline.master.video_fx.push(new_fx(find("milan.fx.invert").unwrap(), None));
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let (img, _) = wk.frame(30, 320, 180, Quality::Good, None);
+        assert!(img.pixels.iter().all(|p| *p == eframe::egui::Color32::from_rgb(0, 255, 255)));
+    }
+
+    /// Generated media render at the project size: a new aspect must not reuse the old picture from the source cache.
+    #[test]
+    fn generated_media_follow_a_project_aspect_change() {
+        use crate::engine::plugins::{find, new_fx};
+        let mut p = generated(new_fx(find("milan.gen.checkerboard").unwrap(), None));
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        wk.frame(30, 320, 180, Quality::Good, None);
+        p.settings.height = 800;
+        let fresh = |p: &Project| {
+            let mut wk = Worker::new();
+            wk.set_plan(Arc::new(plan::compile(p)));
+            wk.frame(30, 320, 134, Quality::Good, None).0
+        };
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert!(wk.frame(30, 320, 134, Quality::Good, None).0.pixels == fresh(&p).pixels);
+    }
+
+    /// A LUT that cannot load is reported (the frame draws ungraded), and a LUT rewritten in place shows at once.
+    #[test]
+    fn lut_errors_are_reported_and_an_edited_lut_shows() {
+        use crate::engine::plugins::{find, new_fx, GRADING};
+        use eframe::egui::Color32;
+        let dir = std::env::temp_dir().join(format!("milan-lut-worker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("look.cube");
+        let mut p = generated(red());
+        let mut g = new_fx(find(GRADING).unwrap(), None);
+        g.text.insert("look_lut".into(), path.display().to_string());
+        p.timeline.master.video_fx.push(g);
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let mut frame = |want: Color32| {
+            let (img, err) = wk.frame(30, 64, 36, Quality::Good, None);
+            assert!(img.pixels.iter().all(|p| *p == want), "{:?}", img.pixels[0]);
+            err
+        };
+        assert!(frame(Color32::RED).is_some_and(|e| e.contains("look.cube")), "a missing LUT is an error");
+        std::fs::write(&path, "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").unwrap();
+        assert_eq!(frame(Color32::RED), None);
+        // The same path, now inverting: the cached frame is stale.
+        std::fs::write(&path, "LUT_1D_SIZE 2\n1 1 1\n0 0 0\n").unwrap();
+        let later = std::time::SystemTime::now() + Duration::from_secs(10);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
+        assert_eq!(frame(Color32::from_rgb(0, 255, 255)), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// `n` 1080p H.264 clips of `secs` seconds (cached between runs), on `n` tracks at Level 0.5 so every layer blends.
     fn bench_project(n: usize, secs: u32) -> Project {
