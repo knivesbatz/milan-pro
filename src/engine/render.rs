@@ -39,6 +39,19 @@ fn temp_audio() -> PathBuf {
     std::env::temp_dir().join(format!("milan-render-{}-{}.f32", std::process::id(), N.fetch_add(1, Relaxed)))
 }
 
+/// Delete render temp audio in `dir` untouched for a day: left by a render that crashed or was killed (Job::drop
+/// never ran). A running render's file is newer, or held open by its encoder.
+pub fn clean_temp(dir: &Path) {
+    let day = std::time::Duration::from_secs(24 * 3600);
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > day));
+        if name.starts_with("milan-render-") && name.ends_with(".f32") && old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// ffmpeg arguments (after `-nostdin`). Video presets: RGBA frames on stdin plus the mixed audio from `audio`;
 /// audio-only presets: the mix on stdin. Output in `muxer` format to `out`.
 pub fn encoder_args(preset: &Preset, (w, h): (u32, u32), fps: &str, sample_rate: u32, audio: &Path, out: &Path) -> Vec<String> {
@@ -60,7 +73,7 @@ pub fn encoder_args(preset: &Preset, (w, h): (u32, u32), fps: &str, sample_rate:
         }
     }
     a.extend(s(preset.audio));
-    a.extend(s(&["-ar", &sample_rate.to_string(), "-f", preset.muxer]));
+    a.extend(s(&["-ar", &preset.sample_rate(sample_rate).to_string(), "-f", preset.muxer]));
     a.push(out.to_string_lossy().into_owned());
     a
 }
@@ -103,10 +116,7 @@ fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &P
     let (mut stdin, stderr) = (child.stdin.take().expect("piped stdin"), child.stderr.take().expect("piped stderr"));
     ctl.set_child(child);
     // stderr drained on its own thread so a chatty ffmpeg never blocks on a full pipe.
-    let tail = std::thread::spawn(move || {
-        let lines: Vec<String> = BufReader::new(stderr).lines().map_while(Result::ok).collect();
-        lines[lines.len().saturating_sub(12)..].join("\n")
-    });
+    let tail = std::thread::spawn(move || summary(&BufReader::new(stderr).lines().map_while(Result::ok).collect::<Vec<_>>()));
     let fed = match (vp, frames) {
         (Some(vp), Some(n)) => feed_video(vp, n, stdin, ctl),
         // `move`: stdin closes when the mix ends, which tells the encoder to finish.
@@ -125,6 +135,14 @@ fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &P
         Some(Err(e)) => Err(format!("ffmpeg wait failed: {e}")),
         None => Err("ffmpeg process lost".into()),
     }
+}
+
+/// What a failed ffmpeg said, at most 12 lines. The first lines name the cause; ffmpeg 9 ends an encoder failure with
+/// about seven lines of thread shutdown, which are left out.
+fn summary(lines: &[String]) -> String {
+    const NOISE: [&str; 3] = ["Task finished", "Terminating thread", "Error sending frames"];
+    let v: Vec<&str> = lines.iter().map(String::as_str).filter(|l| !l.trim().is_empty() && !NOISE.iter().any(|n| l.contains(n))).collect();
+    if v.len() <= 12 { v.join("\n") } else { [&v[..6], &["..."][..], &v[v.len() - 5..]].concat().join("\n") }
 }
 
 /// Mix seconds `a..b` at RATE through the master FX (Bypass All Audio FX never applies to a render), then the master
@@ -223,6 +241,51 @@ mod tests {
                 assert!(joined.contains("-f f32le -ar 48000 -ac 2 -i - "));
             }
         }
+    }
+
+    /// MP3 stops at 48 kHz and AAC at 96 kHz; a 96 or 192 kHz project renders at the codec's highest rate.
+    #[test]
+    fn sample_rate_is_capped_per_codec() {
+        let ar = |k: usize, rate| {
+            let a = encoder_args(&PRESETS[k], (1920, 1080), "30", rate, Path::new("a.f32"), Path::new("o"));
+            a.windows(2).filter(|w| w[0] == "-ar").map(|w| w[1].clone()).last().unwrap()
+        };
+        assert_eq!(ar(4, 96_000), "48000");
+        assert_eq!(ar(4, 44_100), "44100");
+        assert_eq!(ar(0, 192_000), "96000");
+        assert_eq!(ar(1, 88_200), "88200");
+        assert_eq!(ar(3, 192_000), "192000");
+    }
+
+    /// The cause (first line) survives ffmpeg 9's list of supported rates and its thread-shutdown lines.
+    #[test]
+    fn failure_message_keeps_the_cause() {
+        let mut lines = vec!["[aac @ 0x1] Specified sample rate 192000 is not supported by the aac encoder".to_string()];
+        lines.extend(["[aac @ 0x1] Supported sample rates are:", "96000", "88200", "64000", "48000", "44100", "32000", "24000", "22050", "16000", "12000", "11025", "8000", "7350"].map(String::from));
+        lines.push("[aost#0:0/aac @ 0x2] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.".into());
+        lines.extend(["[af#0:0 @ 0x3] Error sending frames to consumers: Invalid argument", "[af#0:0 @ 0x3] Task finished with error code: -22 (Invalid argument)", "[af#0:0 @ 0x3] Terminating thread with return code -22 (Invalid argument)"].map(String::from));
+        lines.push("[out#0/mp4 @ 0x4] Nothing was written into output file, because at least one of its streams received no packets.".into());
+        let s = summary(&lines);
+        assert!(s.starts_with("[aac @ 0x1] Specified sample rate 192000"), "{s}");
+        assert!(s.lines().count() <= 12 && s.contains("Error while opening encoder") && !s.contains("Terminating thread"), "{s}");
+        assert_eq!(summary(&["a".into(), "".into(), "b".into()]), "a\nb");
+    }
+
+    /// Temp audio of a render that crashed (a day old) is swept at start-up; a running render's is left alone.
+    #[test]
+    fn old_render_temp_audio_is_swept() {
+        let dir = std::env::temp_dir().join(format!("milan-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, age_h: u64| {
+            let p = dir.join(name);
+            std::fs::write(&p, b"x").unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(age_h * 3600)).unwrap();
+            p
+        };
+        let (old, fresh, other) = (file("milan-render-1-0.f32", 30), file("milan-render-2-0.f32", 0), file("other-0.f32", 30));
+        clean_temp(&dir);
+        assert!(!old.exists() && fresh.exists() && other.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

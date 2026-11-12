@@ -163,8 +163,12 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
             let op = ColorOp::tone(|_, x| ((x + off) * gain).clamp(0.0, 1.0).powf(1.0 / g));
             color_op(img, &ColorOp { m: (s != 1.0).then(|| saturation(s)), ..op }, k);
         }
-        "milan.fx.gaussian_blur" => blur(img, px(e.f("h_range")), px(e.f("v_range")), k),
-        "milan.fx.sharpen" => sharpen(img, e.f("amount"), px(e.f("radius")), e.f("threshold"), k),
+        "milan.fx.gaussian_blur" => soft_blur(img, e.f("h_range") * hf, e.f("v_range") * hf, k),
+        "milan.fx.sharpen" => {
+            // Under a pixel (a small radius in a small preview): a 1 px unsharp mask at that share of the amount.
+            let r = e.f("radius") * hf;
+            sharpen(img, e.f("amount") * r.min(1.0), if r > 0.0 { px(e.f("radius")).max(1) } else { 0 }, e.f("threshold"), k)
+        }
         "milan.fx.vignette" => vignette(img, e, k),
         "milan.fx.mirror" => mirror(img, e.i("direction"), e.f("position"), k),
         "milan.fx.crop" => crop(img, e, k),
@@ -228,6 +232,22 @@ pub fn blur(img: &mut ColorImage, rx: usize, ry: usize, k: usize) {
         let mut t = transpose(img);
         box3_rows(&mut t, ry, k);
         *img = transpose(&t);
+    }
+}
+
+/// `blur` with radii in (fractional) pixels. One under a pixel blurs 1 px and mixes back to the source by that share,
+/// so a small radius in a small preview (an event decoded at 1/4 or 1/8 size) still shows about as it renders.
+fn soft_blur(img: &mut ColorImage, fx: f32, fy: f32, k: usize) {
+    for (f, along_x) in [(fx, true), (fy, false)] {
+        if f <= 0.0 {
+            continue;
+        }
+        let r = (f.round() as usize).max(1);
+        let before = (f < 1.0).then(|| img.clone());
+        if along_x { blur(img, r, 0, k) } else { blur(img, 0, r, k) }
+        if let Some(b) = before {
+            img.pixels.iter_mut().zip(&b.pixels).for_each(|(p, q)| *p = lerp_px(*q, *p, f));
+        }
     }
 }
 
@@ -503,6 +523,20 @@ mod tests {
         let mut out = img.clone();
         apply(&mut out, &fx(id, vals), 1);
         out
+    }
+
+    /// A Quarter preview decodes a 1080p event about 135 px tall: the default 0.002 radius (0.27 px) must still act,
+    /// at about its share of a 1 px effect, as the render's 2 px one does.
+    #[test]
+    fn small_radii_still_act_at_preview_sizes() {
+        let img = picture(64, 135);
+        let diff = |a: &ColorImage| a.pixels.iter().zip(&img.pixels).map(|(p, q)| p.to_array().iter().zip(q.to_array()).map(|(x, y)| x.abs_diff(y) as u32).sum::<u32>()).sum::<u32>();
+        for (id, vals) in [("milan.fx.sharpen", &[("radius", 0.002)][..]), ("milan.fx.gaussian_blur", &[("h_range", 0.002), ("v_range", 0.002)])] {
+            let small = diff(&run(id, vals, &img));
+            let one_px: Vec<(&str, f32)> = vals.iter().map(|&(k, _)| (k, 1.0 / 135.0)).collect();
+            let full = diff(&run(id, &one_px, &img));
+            assert!(small > 0 && small < full, "{id}: {small} vs {full} at 1 px");
+        }
     }
 
     #[test]

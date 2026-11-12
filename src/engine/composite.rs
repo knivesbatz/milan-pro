@@ -361,6 +361,7 @@ mod tests {
             codec: None,
             interlaced: false,
             proxy: None,
+            grid: 0.0,
         })
     }
 

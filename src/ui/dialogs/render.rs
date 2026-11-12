@@ -41,6 +41,8 @@ pub struct RenderDialog {
     loop_only: bool,
     folder: String,
     name: String,
+    /// The project (path, name) Name and Folder were filled from.
+    seeded: Option<(Option<PathBuf>, String)>,
     search: String,
     favorites: [bool; 5],
     node: usize,
@@ -59,6 +61,7 @@ impl Default for RenderDialog {
             loop_only: true,
             folder: folder.display().to_string(),
             name: String::new(),
+            seeded: None,
             search: String::new(),
             favorites: [false; 5],
             node: 2,
@@ -72,12 +75,7 @@ impl RenderDialog {
         if !self.open {
             return;
         }
-        if self.name.is_empty() {
-            self.name = project.name.clone();
-            if let Some(dir) = project.path.as_ref().and_then(|p| p.parent()) {
-                self.folder = dir.display().to_string();
-            }
-        }
+        self.seed(project);
         let v16 = theme::get().look() == UiLook::Vegas16;
         let (title, size) = if v16 { ("Render As", vec2(640.0, 640.0)) } else { ("Render", vec2(960.0, 470.0)) };
         let (render, close) = super::modal(ctx, "render_as", title, size, |ui| if v16 { self.body16(ui, project) } else { self.body23(ui, project) });
@@ -102,8 +100,37 @@ impl RenderDialog {
         project.timeline.loop_region.filter(|&(a, b)| self.loop_only && b > a).unwrap_or((0.0, content_end(project)))
     }
 
+    /// Name and Folder from `project` the first time the dialog shows it (and again for another project), never while
+    /// they are being edited.
+    fn seed(&mut self, project: &Project) {
+        let id = (project.path.clone(), project.name.clone());
+        if self.seeded.as_ref() != Some(&id) {
+            self.name = project.name.clone();
+            if let Some(dir) = project.path.as_ref().and_then(|p| p.parent()) {
+                self.folder = dir.display().to_string();
+            }
+            self.seeded = Some(id);
+        }
+    }
+
     fn out_path(&self) -> PathBuf {
         Path::new(&self.folder).join(format!("{}.{}", self.name, PRESETS[self.preset].ext))
+    }
+
+    /// Why Name and Folder as typed cannot be rendered to, if they cannot. A ':' would write into an NTFS stream of
+    /// another file; a relative folder would land in Milan's working directory.
+    fn out_error(&self) -> Option<&'static str> {
+        if self.name.trim().is_empty() {
+            return Some("Type a name for the file.");
+        }
+        if self.name.contains(['<', '>', ':', '"', '/', '\\', '|', '?', '*']) || self.name.chars().any(char::is_control) {
+            return Some("A file name cannot contain < > : \" / \\ | ? *");
+        }
+        let dir = Path::new(&self.folder);
+        if !dir.is_absolute() || !dir.is_dir() {
+            return Some("Choose a folder that exists, as a full path (C:\\...).");
+        }
+        None
     }
 
     fn output_fields(&mut self, ui: &mut Ui) {
@@ -130,7 +157,7 @@ impl RenderDialog {
         if p.video.is_some() {
             ui.label(format!("Video:  {:.3} fps; {}x{}; Progressive", s.frame_rate, s.width, s.height));
         }
-        ui.label(format!("Audio:  {} Hz; Stereo", s.sample_rate));
+        ui.label(format!("Audio:  {} Hz; Stereo", p.sample_rate(s.sample_rate)));
         let (a, b) = self.range(project);
         let what = if (a, b) == (0.0, content_end(project)) { "whole timeline" } else { "loop region" };
         ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
@@ -165,6 +192,10 @@ impl RenderDialog {
         let empty = b <= a;
         let has_loop = project.timeline.loop_region.is_some_and(|(a, b)| b > a);
         let running = self.running();
+        let bad = self.out_error();
+        if let (Some(e), false) = (bad, running) {
+            ui.colored_label(theme::get().warning_text, e);
+        }
         let mut render = false;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -177,7 +208,7 @@ impl RenderDialog {
                     (self.open, self.job) = (false, None);
                 }
             }
-            render = super::button(ui, render_label, !empty && !running && !self.name.trim().is_empty(), true).clicked();
+            render = super::button(ui, render_label, !empty && !running && bad.is_none(), true).clicked();
             let mut on = self.loop_only && has_loop;
             if ui.add_enabled(has_loop && !running, Checkbox::new(&mut on, "Render loop region only")).changed() {
                 self.loop_only = on;
@@ -370,6 +401,44 @@ fn star(ui: &mut Ui, on: &mut bool) -> bool {
         *on = !*on;
     }
     r.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_and_folder_are_checked_before_rendering() {
+        let mut d = RenderDialog { folder: std::env::temp_dir().display().to_string(), name: "Episode 1 - Pilot".into(), ..Default::default() };
+        assert_eq!(d.out_error(), None);
+        for bad in ["Episode 1: Pilot", "a/b", "what?", "  ", ""] {
+            d.name = bad.into();
+            assert!(d.out_error().is_some(), "{bad:?}");
+        }
+        d.name = "ok".into();
+        for bad in ["", "renders", r"C:\no\such\folder\milan"] {
+            d.folder = bad.into();
+            assert!(d.out_error().is_some(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn name_and_folder_follow_the_project_not_the_typing() {
+        let mut a = Project::new("a");
+        a.path = Some(r"C:\A\a.mnle".into());
+        let mut d = RenderDialog::default();
+        d.seed(&a);
+        assert_eq!((d.name.as_str(), d.folder.as_str()), ("a", r"C:\A"));
+        // Clearing Name to type a new one keeps it empty and keeps a browsed folder.
+        (d.name, d.folder) = (String::new(), r"D:\Exports".into());
+        d.seed(&a);
+        assert_eq!((d.name.as_str(), d.folder.as_str()), ("", r"D:\Exports"));
+        // Another project opened: its own name and folder.
+        let mut b = Project::new("b");
+        b.path = Some(r"D:\B\b.mnle".into());
+        d.seed(&b);
+        assert_eq!((d.name.as_str(), d.folder.as_str()), ("b", r"D:\B"));
+    }
 }
 
 /// Show `path` selected in Explorer.

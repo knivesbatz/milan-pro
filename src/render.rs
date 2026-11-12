@@ -15,6 +15,15 @@ pub struct Preset {
     /// None = audio only.
     pub video: Option<&'static [&'static str]>,
     pub audio: &'static [&'static str],
+    /// The audio codec's highest sample rate: a faster project renders at this.
+    pub max_rate: u32,
+}
+
+impl Preset {
+    /// The sample rate rendered for a project at `rate`.
+    pub fn sample_rate(&self, rate: u32) -> u32 {
+        rate.min(self.max_rate)
+    }
 }
 
 pub static PRESETS: [Preset; 5] = [
@@ -24,6 +33,7 @@ pub static PRESETS: [Preset; 5] = [
         muxer: "mp4",
         video: Some(&["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]),
         audio: &["-c:a", "aac", "-b:a", "320k"],
+        max_rate: 96_000,
     },
     Preset {
         name: "MP4 H.265 (HEVC)",
@@ -31,6 +41,7 @@ pub static PRESETS: [Preset; 5] = [
         muxer: "mp4",
         video: Some(&["-c:v", "libx265", "-crf", "22", "-preset", "medium", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"]),
         audio: &["-c:a", "aac", "-b:a", "320k"],
+        max_rate: 96_000,
     },
     Preset {
         name: "MOV ProRes 422",
@@ -38,9 +49,10 @@ pub static PRESETS: [Preset; 5] = [
         muxer: "mov",
         video: Some(&["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le"]),
         audio: &["-c:a", "pcm_s16le"],
+        max_rate: u32::MAX,
     },
-    Preset { name: "WAV audio only", ext: "wav", muxer: "wav", video: None, audio: &["-c:a", "pcm_s16le"] },
-    Preset { name: "MP3 audio only", ext: "mp3", muxer: "mp3", video: None, audio: &["-c:a", "libmp3lame", "-b:a", "320k"] },
+    Preset { name: "WAV audio only", ext: "wav", muxer: "wav", video: None, audio: &["-c:a", "pcm_s16le"], max_rate: u32::MAX },
+    Preset { name: "MP3 audio only", ext: "mp3", muxer: "mp3", video: None, audio: &["-c:a", "libmp3lame", "-b:a", "320k"], max_rate: 48_000 },
 ];
 
 /// NTSC rates as exact rationals so 29.97 renders as 30000/1001, not 2997/100.

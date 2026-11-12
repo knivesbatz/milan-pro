@@ -70,6 +70,17 @@ struct FrameRequest {
     proxy: Option<PathBuf>,
     /// Generated media: rendered by this generator at `time` instead of decoded.
     generator: Option<Fx>,
+    /// The media's frame rate, if known: `time` then shows the frame on screen at it, as the timeline does.
+    fps: Option<f64>,
+}
+
+/// The `-ss` that gives the frame on screen at `t` (the latest at or before it). ffmpeg returns the first frame at or
+/// after its seek time, so seek half a frame before that frame's start.
+fn seek_time(t: f64, fps: Option<f64>) -> f64 {
+    match fps.filter(|f| *f > 0.0) {
+        Some(f) => ((crate::engine::plan::frame_at(t.max(0.0), f) as f64 - 0.5) / f).max(0.0),
+        None => t.max(0.0),
+    }
 }
 
 struct FrameResult {
@@ -107,7 +118,7 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
 
 fn decode_file(req: &FrameRequest, path: &Path) -> Result<ColorImage, String> {
     let mut cmd = crate::proc::ffmpeg();
-    cmd.args(["-v", "error", "-ss", &format!("{:.3}", req.time.max(0.0)), "-i"])
+    cmd.args(["-v", "error", "-ss", &format!("{:.6}", seek_time(req.time, req.fps)), "-i"])
         .arg(path)
         .args(["-frames:v", "1", "-vf"])
         .arg(format!(
@@ -124,15 +135,26 @@ fn decode_file(req: &FrameRequest, path: &Path) -> Result<ColorImage, String> {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(err.lines().next().unwrap_or("no frame at this time").to_string());
     }
-    Ok(ColorImage::from_rgba_unmultiplied(
-        [req.width as usize, req.height as usize],
-        &out.stdout[..need],
-    ))
+    let mut pixels: Vec<egui::Color32> = bytemuck::cast_slice(&out.stdout[..need]).to_vec();
+    premultiply(&mut pixels);
+    Ok(ColorImage { size: [req.width as usize, req.height as usize], pixels })
+}
+
+/// Straight RGBA to premultiplied in gamma space, as the compositor blends (egui's `from_rgba_unmultiplied` works in
+/// linear light, which makes soft edges too bright and RGB larger than alpha).
+pub(crate) fn premultiply(px: &mut [egui::Color32]) {
+    for p in px {
+        let [r, g, b, a] = p.to_array();
+        if a < 255 {
+            let m = |c: u8| crate::engine::composite::mul255(c as u32, a as u32) as u8;
+            *p = egui::Color32::from_rgba_premultiplied(m(r), m(g), m(b), a);
+        }
+    }
 }
 
 /// The first frame of `path` (a still) at `w` x `h`, premultiplied.
 pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
-    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None })
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -254,10 +276,8 @@ impl Preview {
     /// `fps` is the fallback frame rate; `full_w` the width that Size::Full means.
     pub fn show(&mut self, ctx: &egui::Context, src: Option<(&MediaItem, f64)>, fps: f64, full_w: u32) {
         let max_w = self.width(full_w);
-        let key = src.map(|(m, t)| {
-            let fps = m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps.max(1.0));
-            (key_path(m), (t * fps).floor() as i64, max_w, self.quality)
-        });
+        let rate = |m: &MediaItem| m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps.max(1.0));
+        let key = src.map(|(m, t)| (key_path(m), crate::engine::plan::frame_at(t, rate(m)), max_w, self.quality));
         if key != self.key {
             self.key = key;
             match src {
@@ -275,6 +295,7 @@ impl Preview {
                         matrix: crate::engine::plan::matrix(m),
                         proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(),
                         generator: m.generator.clone(),
+                        fps: Some(rate(m)),
                     };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
@@ -419,7 +440,7 @@ impl Thumbs {
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
             // Keyed by the source, so thumbnails made before its proxy was ready stay; new ones read the proxy.
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone() };
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone(), fps: m.frame_rate };
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
             q.push((key.clone(), req, crate::proxy::is_video(m)));
@@ -465,6 +486,28 @@ mod tests {
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 748), 480);
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 1000), 960);
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 2000), 1920);
+    }
+
+    /// ffmpeg's -ss gives the first frame at or after it: the seek must land inside the frame before the one on screen
+    /// (0.050 s at 29.97 shows frame 1, -ss 0.050 gave frame 2; exactly on frame 2, "0.067" gave frame 3).
+    #[test]
+    fn trimmer_seeks_to_the_frame_on_screen() {
+        let fps = 30000.0 / 1001.0;
+        for (t, k) in [(0.0, 0), (0.050, 1), (2.0 / fps, 2), (2.0 / fps - 1e-4, 1), (10.0, 299)] {
+            let s = seek_time(t, Some(fps));
+            assert!(s > (k as f64 - 1.0) / fps && s <= k as f64 / fps, "{t}: {s}");
+            assert_eq!(crate::engine::plan::frame_at(t, fps), k);
+        }
+        assert_eq!(seek_time(1.25, None), 1.25);
+    }
+
+    /// A 50% white pixel over black must show as 128, the compositor's gamma-space premultiplication (egui's gives 188).
+    #[test]
+    fn decoded_alpha_is_premultiplied_in_gamma_space() {
+        use egui::Color32;
+        let mut px = [[255, 255, 255, 128], [200, 100, 0, 255], [90, 90, 90, 0], [255, 0, 64, 64]].map(|[r, g, b, a]| Color32::from_rgba_premultiplied(r, g, b, a));
+        premultiply(&mut px);
+        assert_eq!(px.map(|p| p.to_array()), [[128, 128, 128, 128], [200, 100, 0, 255], [0, 0, 0, 0], [64, 0, 16, 64]]);
     }
 
     #[test]

@@ -2,12 +2,13 @@
 //! `run` is the "milan-mix" thread body for playback; it loops inside the mixer, so a loop wrap is seamless.
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use crate::audio::RATE;
 use crate::engine::afx::Chain;
 use crate::engine::keyframes::{db_to_gain, ramp};
@@ -50,9 +51,10 @@ fn src_time(src: &ASrc, at: i64) -> f64 {
 
 /// ffmpeg arguments (after `-nostdin`) streaming `src` from `at` frames into its event, in timeline order.
 /// Forward, it reads on to the media end, so a trim or a split keeps the decoder. Reversed, the span still to play
-/// is read and turned round (`areverse` holds it all in memory).
+/// is read and turned round (`areverse` holds it all in memory). A `mono` source goes to both sides at unity, as a
+/// mono recording does (`-ac 2` would put it 3 dB down).
 // shortcut: areverse buffers the whole span (about 23 MB per stereo minute); render a reversed temp file past ~10 min.
-pub fn args(src: &ASrc, at: i64) -> Vec<String> {
+pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
     let mut a: Vec<String> = ["-v", "error", "-ss"].map(String::from).to_vec();
     if src.reverse {
         let len = (src.dur - at as f64 / RATE as f64).max(0.0) * src.rate;
@@ -61,11 +63,17 @@ pub fn args(src: &ASrc, at: i64) -> Vec<String> {
         a.push(format!("{:.6}", src_time(src, at)));
     }
     a.extend(["-i".into(), src.path.to_string_lossy().into_owned()]);
-    a.extend(["-vn", "-map", "0:a:0", "-ac", "2", "-ar"].map(String::from));
-    a.push(RATE.to_string());
+    a.extend(["-vn", "-map", "0:a:0"].map(String::from));
+    if !mono {
+        a.extend(["-ac", "2"].map(String::from));
+    }
+    a.extend(["-ar".into(), RATE.to_string()]);
     let mut af = atempo(src.rate);
     if src.reverse {
         af.insert(0, "areverse".into());
+    }
+    if mono {
+        af.insert(0, "pan=stereo|c0=c0|c1=c0".into());
     }
     if !af.is_empty() {
         a.extend(["-af".into(), af.join(",")]);
@@ -74,13 +82,16 @@ pub fn args(src: &ASrc, at: i64) -> Vec<String> {
     a
 }
 
+/// A decoder process, shared by the thread that starts and reads it and its `Stream`: (the Stream is gone, process).
+type Proc = Arc<Mutex<(bool, Option<Child>)>>;
+
 /// One event's decoder: interleaved stereo chunks, read forward.
 struct Stream {
     rx: Receiver<Vec<f32>>,
     buf: Vec<f32>,
     pos: usize,
-    child: Option<Child>,
-    /// Last stderr line, once ffmpeg has exited.
+    proc: Option<Proc>,
+    /// The decoder's error (empty if none), once ffmpeg has exited.
     err: Option<JoinHandle<String>>,
     /// A chunk has arrived.
     started: bool,
@@ -89,17 +100,26 @@ struct Stream {
 }
 
 impl Drop for Stream {
+    /// Killed and reaped on a thread of its own: the mix thread never waits on a process.
     fn drop(&mut self) {
-        if let Some(c) = &mut self.child {
-            let _ = c.kill();
-            let _ = c.wait();
+        let Some(p) = &self.proc else { return };
+        let child = {
+            let mut g = p.lock().unwrap_or_else(|e| e.into_inner());
+            g.0 = true;
+            g.1.take()
+        };
+        if let Some(mut c) = child {
+            std::thread::spawn(move || {
+                let _ = c.kill();
+                let _ = c.wait();
+            });
         }
     }
 }
 
 impl Stream {
     fn from_rx(rx: Receiver<Vec<f32>>) -> Self {
-        Self { rx, buf: Vec::new(), pos: 0, child: None, err: None, started: false, skip: 0 }
+        Self { rx, buf: Vec::new(), pos: 0, proc: None, err: None, started: false, skip: 0 }
     }
 
     /// A stream that has already ended: silence.
@@ -137,8 +157,10 @@ impl Stream {
                         out[k..].fill(0.0);
                         if e == RecvTimeoutError::Timeout {
                             // Started, then stalled. Killing ffmpeg ends its reader, so later reads are silent instead of waiting again.
-                            if let Some(c) = &mut self.child {
-                                let _ = c.kill();
+                            if let Some(p) = &self.proc {
+                                if let Some(c) = p.lock().unwrap_or_else(|e| e.into_inner()).1.as_mut() {
+                                    let _ = c.kill();
+                                }
                             }
                             return Some("Audio decoding stopped responding: an event is silent".into());
                         }
@@ -164,14 +186,48 @@ fn recv_until<T>(rx: &Receiver<T>, stop: &AtomicBool) -> Result<T, RecvTimeoutEr
     }
 }
 
+/// f32le bytes as samples; NaN and infinity (a broken float file) become silence, or they would stick in the FX state.
+fn samples(bytes: &[u8]) -> Vec<f32> {
+    bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).map(|v| if v.is_finite() { v } else { 0.0 }).collect()
+}
+
+/// Channel count of `path`'s first audio stream, probed once per file version.
+fn channels(path: &Path) -> Option<usize> {
+    type Probed = HashMap<(PathBuf, Option<SystemTime>), Option<usize>>;
+    static CACHE: OnceLock<Mutex<Probed>> = OnceLock::new();
+    let key = (path.to_path_buf(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    if let Some(&c) = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return c;
+    }
+    let c = crate::audio::channel_count(path);
+    CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(key, c);
+    c
+}
+
+/// A decoder for `src` from `at` frames in. The process is started (about 15 ms on Windows) by the reader thread,
+/// so the mix thread returns at once and the stream plays silence until it delivers.
 fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
-    let mut cmd = crate::proc::ffmpeg();
-    cmd.args(args(src, at)).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = crate::proc::spawn(&mut cmd).map_err(|e| format!("{}: audio is silent", crate::proc::tool_error(&e, "ffmpeg")))?;
-    let (mut out, err) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
     let (tx, rx) = mpsc::sync_channel(8);
-    std::thread::spawn(move || {
+    let proc: Proc = Arc::default();
+    let (shared, src) = (proc.clone(), src.clone());
+    let err = std::thread::spawn(move || {
+        let mut cmd = crate::proc::ffmpeg();
+        cmd.args(args(&src, at, channels(&src.path) == Some(1))).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = match crate::proc::spawn(&mut cmd) {
+            Ok(c) => c,
+            Err(e) => return format!("{}: audio is silent", crate::proc::tool_error(&e, "ffmpeg")),
+        };
+        let (mut out, err) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
+        let last = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
+        {
+            let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+            if g.0 {
+                let _ = child.kill(); // the Stream is already gone
+            }
+            g.1 = Some(child);
+        }
         let mut bytes = vec![0u8; CHUNK * 8];
+        let mut cut = false;
         loop {
             let mut n = 0;
             while n < bytes.len() {
@@ -180,15 +236,36 @@ fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
                     Ok(k) => n += k,
                 }
             }
-            let pcm: Vec<f32> = bytes[..n - n % 8].chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
-            if pcm.is_empty() || tx.send(pcm).is_err() || n < bytes.len() {
+            let pcm = samples(&bytes[..n - n % 8]);
+            if pcm.is_empty() {
+                break;
+            }
+            if tx.send(pcm).is_err() {
+                cut = true; // the Stream is gone
+                break;
+            }
+            if n < bytes.len() {
                 break;
             }
         }
+        drop(out);
+        // Reaped here, unless the Stream took it to kill. `tx` is still held, so the Stream sees the end only once
+        // this result is ready.
+        let child = shared.lock().unwrap_or_else(|e| e.into_inner()).1.take();
+        let ok = child.is_none_or(|mut c| {
+            if cut {
+                let _ = c.kill();
+            }
+            c.wait().is_ok_and(|s| s.success()) || cut
+        });
+        let line = last.join().unwrap_or_default();
+        drop(tx);
+        // ffmpeg logs a damaged packet at error level and decodes on: only a failed exit is an error (the missing
+        // tail is silence).
+        if ok { String::new() } else { line }
     });
-    let err = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
     let mut s = Stream::from_rx(rx);
-    (s.child, s.err) = (Some(child), Some(err));
+    (s.proc, s.err) = (Some(proc), Some(err));
     Ok(s)
 }
 
@@ -238,6 +315,9 @@ pub struct Mixer {
     master_fx: Chain,
     /// The last block had Bypass All Audio FX on: turning it off starts the chains fresh.
     bypassed: bool,
+    /// Volume and Pan by track id, and gain by clip id, in the last block: a change ramps across the next block.
+    tr_last: HashMap<String, (f32, f32)>,
+    ev_last: HashMap<String, f32>,
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -268,6 +348,8 @@ impl Mixer {
             tr_fx: HashMap::new(),
             master_fx: Chain::default(),
             bypassed: false,
+            tr_last: HashMap::new(),
+            ev_last: HashMap::new(),
         }
     }
 
@@ -323,10 +405,14 @@ impl Mixer {
         }
         // Chains of events and tracks no longer playing are dropped with these.
         let (mut ev_old, mut tr_old) = (std::mem::take(&mut self.ev_fx), std::mem::take(&mut self.tr_fx));
+        let (mut tr_last, mut ev_last) = (std::mem::take(&mut self.tr_last), std::mem::take(&mut self.ev_last));
         for tr in &plan.tracks {
             track.clear();
             track.resize(out.len(), 0.0);
             let mut heard = false;
+            // A fader moved since the last block glides to its new value (a step is a click).
+            let (vol0, pan0) = tr_last.remove(&tr.id).unwrap_or((tr.volume, tr.pan));
+            self.tr_last.insert(tr.id.clone(), (tr.volume, tr.pan));
             for e in &tr.events {
                 let (ps, pe) = (frame(e.src.pos), frame(e.src.pos + e.src.dur));
                 let (a, b) = (f0.max(ps), f1.min(pe));
@@ -348,10 +434,13 @@ impl Mixer {
                     self.ev_fx.insert(e.id.clone(), ch);
                 }
                 let (v0, v1) = env_gain(&e.vol_env, (a - ps) as f64 / r, (b - ps) as f64 / r);
+                let g0 = ev_last.remove(&e.id).unwrap_or(e.gain);
+                self.ev_last.insert(e.id.clone(), e.gain);
                 let len = (b - a) as f32;
                 for (i, (o, x)) in track[(a - f0) as usize * 2..].chunks_exact_mut(2).zip(pcm.chunks_exact(2)).enumerate() {
                     let local = (a - ps + i as i64) as f64 / r;
-                    let mut g = e.gain * (v0 + (v1 - v0) * i as f32 / len);
+                    let s = i as f32 / len;
+                    let mut g = (g0 + (e.gain - g0) * s) * (v0 + (v1 - v0) * s);
                     if local < e.fade_in {
                         g *= fade(e.fade_in_curve, local, e.fade_in);
                     }
@@ -376,9 +465,9 @@ impl Mixer {
             for (i, (o, x)) in out.chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
                 let s = i as f32 / n as f32;
                 let lerp = |a: f32, b: f32| a + (b - a) * s;
-                let g = tr.volume * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
+                let g = lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
                 // Pan trims the pan envelope (VEGAS); one balance law, the same as audio::track_gain.
-                let p = (tr.pan + lerp(p0, p1)).clamp(-1.0, 1.0);
+                let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
                 o[0] += x[0] * g * (1.0 - p).min(1.0);
                 o[1] += x[1] * g * (1.0 + p).min(1.0);
             }
@@ -641,8 +730,17 @@ mod tests {
         assert_eq!(out[0], 1.0);
         p.timeline.audio_tracks[0].volume = 0.25;
         *slot.lock().unwrap() = Arc::new(compile_audio(&p));
+        // The next block ramps from the old volume (no zipper or click), and the one after it is at the new one.
         m.block(&slot.lock().unwrap().clone(), 4, &mut out);
+        assert_eq!(left(&out), [1.0, 0.8125, 0.625, 0.4375]);
+        m.block(&slot.lock().unwrap().clone(), 8, &mut out);
         assert_eq!(out, [0.25; 8]);
+        // Pan and event gain glide the same way.
+        p.timeline.audio_tracks[0].pan = 1.0;
+        p.timeline.audio_tracks[0].clips[0].gain_db = -6.0206;
+        m.block(&compile_audio(&p), 12, &mut out);
+        assert_eq!(out[0..2], [0.25, 0.25]);
+        assert!(out[6] < 0.25 && out[7] > out[6], "{out:?}");
     }
 
     use crate::engine::afx::test_fx as afx;
@@ -876,13 +974,24 @@ mod tests {
     fn decoder_argv() {
         let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false };
         assert_eq!(
-            args(&src, frame(1.0)).join(" "),
+            args(&src, frame(1.0), false).join(" "),
             r"-v error -ss 3.000000 -i C:\a b.wav -vn -map 0:a:0 -ac 2 -ar 48000 -f f32le -"
         );
         // Rate 2, reversed, 1 s in: the source span still to play is 2 .. 2 + 3 s x 2, read backwards at double speed.
-        let a = args(&ASrc { rate: 2.0, reverse: true, ..src }, frame(1.0));
+        let a = args(&ASrc { rate: 2.0, reverse: true, ..src.clone() }, frame(1.0), false);
         assert_eq!(a[2..6], ["-ss", "2.000000", "-t", "6.000000"]);
         assert!(a.windows(2).any(|w| w == ["-af", "areverse,atempo=2"]));
+        // Mono goes to both sides at unity.
+        assert_eq!(
+            args(&src, 0, true).join(" "),
+            r"-v error -ss 2.000000 -i C:\a b.wav -vn -map 0:a:0 -ar 48000 -af pan=stereo|c0=c0|c1=c0 -f f32le -"
+        );
+    }
+
+    #[test]
+    fn decoded_nan_and_infinity_are_silence() {
+        let bytes: Vec<u8> = [0.5, f32::NAN, f32::INFINITY, -0.25].iter().flat_map(|v: &f32| v.to_le_bytes()).collect();
+        assert_eq!(samples(&bytes), [0.5, 0.0, 0.0, -0.25]);
     }
 
     #[test]
@@ -903,6 +1012,48 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel::<u8>(0);
         drop(rx);
         assert!(!send_or_quit(&tx, 1, &AtomicBool::new(false)));
+    }
+
+    /// Remove a test folder once the dropped decoders, reaped on their own threads, have let go of its files.
+    fn remove_dir(dir: &Path) {
+        let until = Instant::now() + Duration::from_secs(5);
+        while let Err(e) = std::fs::remove_dir_all(dir) {
+            assert!(Instant::now() < until, "{e}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored ffmpeg_stream_levels_and_damage`
+    /// A mono file plays at unity on both sides (as recorded mono does), and a damaged MP3 that ffmpeg decodes with an
+    /// error line but a clean exit plays its tail as silence instead of failing the render.
+    #[test]
+    #[ignore]
+    fn ffmpeg_stream_levels_and_damage() {
+        let dir = std::env::temp_dir().join(format!("milan-mixlvl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, src: &str, codec: &[&str]| {
+            let path = dir.join(name);
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", src]).args(codec).arg(&path).status().unwrap().success());
+            path
+        };
+        let mono = make("mono.wav", "aevalsrc=0.5:s=48000:d=1", &["-c:a", "pcm_s16le"]);
+        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false };
+        let mut s = spawn(&src(&mono, 1.0), 0).unwrap();
+        let mut out = vec![0.0; 2 * 4800];
+        assert_eq!(s.read(&mut out, true, None), None);
+        assert!(out.iter().all(|v| (v - 0.5).abs() < 1e-3), "{} {}", out[0], out[1]);
+        drop(s);
+        // 3 s of MP3 with 400 bytes broken in the middle: ffprobe still says 3 s, ffmpeg decodes less.
+        let mp3 = make("damaged.mp3", "sine=f=440:d=3:sample_rate=48000", &["-c:a", "libmp3lame", "-b:a", "128k"]);
+        let mut bytes = std::fs::read(&mp3).unwrap();
+        let mid = bytes.len() / 2;
+        bytes[mid..mid + 400].iter_mut().enumerate().for_each(|(i, b)| *b = (i * 37 % 251) as u8);
+        std::fs::write(&mp3, bytes).unwrap();
+        let mut s = spawn(&src(&mp3, 3.0), 0).unwrap();
+        let mut out = vec![0.0; 2 * 3 * 48_000];
+        assert_eq!(s.read(&mut out, true, None), None, "a damaged frame is not a failed decode");
+        drop(s);
+        remove_dir(&dir);
     }
 
     /// Needs ffmpeg. A real decoder: a reversed 2x event plays the source backwards in half the time.
@@ -934,6 +1085,6 @@ mod tests {
         assert!((out[0] - 0.15).abs() < 0.01, "{}", out[0]);
         assert!((out[2 * 47_999] - 0.25).abs() < 0.01, "{}", out[2 * 47_999]);
         drop(s);
-        std::fs::remove_dir_all(&dir).unwrap();
+        remove_dir(&dir);
     }
 }

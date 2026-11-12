@@ -89,6 +89,15 @@ struct Feed {
     calls: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     master: Arc<Master>,
+    /// The master gain applied, gliding to the fader's (about 2 ms), so a move never steps on one sample.
+    gain: [f32; 2],
+}
+
+impl Feed {
+    fn new(rx: Receiver<(i64, Vec<f32>)>, clock: Arc<AtomicI64>, calls: Arc<AtomicU64>, stop: Arc<AtomicBool>, master: Arc<Master>) -> Self {
+        let gain = [master.gain(0), master.gain(1)];
+        Self { rx, buf: Vec::new(), pos: 0, odd: false, clock, calls, stop, master, gain }
+    }
 }
 
 impl Iterator for Feed {
@@ -109,7 +118,10 @@ impl Iterator for Feed {
             let ch = self.pos % 2;
             self.pos += 1;
             self.clock.fetch_add(1, Relaxed);
-            let v = s * self.master.gain(ch);
+            let g = &mut self.gain[ch];
+            let to = self.master.gain(ch);
+            *g = if (to - *g).abs() < 1e-6 { to } else { *g + (to - *g) / 96.0 };
+            let v = s * *g;
             self.master.tap(ch, v);
             return Some(v);
         }
@@ -252,7 +264,7 @@ impl Player {
         let (tx, rx) = mpsc::sync_channel(QUEUE);
         let clock = Arc::new(AtomicI64::new(from * 2));
         let (calls, stop) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
-        let feed = Feed { rx, buf: Vec::new(), pos: 0, odd: false, clock: clock.clone(), calls: calls.clone(), stop: stop.clone(), master: self.master.clone() };
+        let feed = Feed::new(rx, clock.clone(), calls.clone(), stop.clone(), self.master.clone());
         if let Err(e) = handle.play_raw(feed) {
             *self.error.lock().unwrap() = Some(format!("Audio output failed: {e}"));
             self.reopen();
@@ -327,17 +339,17 @@ impl Player {
 
 // ---- Waveforms ----
 
-/// Audio channels of the first audio stream (1 when unknown).
-fn channel_count(path: &Path) -> usize {
+/// Audio channels of the first audio stream, if ffprobe can tell.
+pub(crate) fn channel_count(path: &Path) -> Option<usize> {
     let mut cmd = crate::proc::ffprobe();
     cmd.args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(path);
-    crate::proc::output(&mut cmd).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok()).unwrap_or(1)
+    crate::proc::output(&mut cmd).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
 }
 
 /// Peaks per 1/PEAKS_PER_SEC s of the source, 0..=1, one list per channel: stereo (or more, folded to 2) gives
 /// L and R, as VEGAS draws two stacked waveforms; mono gives one.
 fn peaks(path: &Path) -> Vec<Vec<f32>> {
-    let ch = channel_count(path).clamp(1, 2);
+    let ch = channel_count(path).unwrap_or(1).clamp(1, 2);
     let child = crate::proc::spawn(
         ffmpeg()
             .arg("-i")
@@ -448,7 +460,7 @@ mod tests {
     fn feed(master: Arc<Master>) -> (mpsc::SyncSender<(i64, Vec<f32>)>, Feed) {
         let (tx, rx) = mpsc::sync_channel(4);
         let (clock, calls, stop) = (Arc::new(AtomicI64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
-        (tx, Feed { rx, buf: Vec::new(), pos: 0, odd: false, clock, calls, stop, master })
+        (tx, Feed::new(rx, clock, calls, stop, master))
     }
 
     #[test]
@@ -476,6 +488,20 @@ mod tests {
         assert_eq!(out, [0.4, 0.0, -0.5, 0.0]);
         assert_eq!(master.take_peaks(), [0.5, 0.0]);
         assert_eq!(master.take_peaks(), [0.0, 0.0]); // reading resets
+    }
+
+    /// A master fader move glides over a few milliseconds instead of stepping on one sample (a click).
+    #[test]
+    fn master_gain_changes_glide() {
+        let master = Arc::new(Master::new());
+        let (tx, mut feed) = feed(master.clone());
+        tx.send((0, vec![1.0; 2 * RATE as usize / 50])).unwrap();
+        assert_eq!((feed.next(), feed.next()), (Some(1.0), Some(1.0)));
+        master.set_gain([0.0, 0.0]);
+        let out: Vec<f32> = (0..2 * RATE as usize / 50 - 2).map(|_| feed.next().unwrap()).collect();
+        assert!(out[0] > 0.9, "stepped: {}", out[0]);
+        assert!(out.windows(2).all(|w| w[1] <= w[0]));
+        assert!(*out.last().unwrap() < 1e-3, "{}", out.last().unwrap());
     }
 
     #[test]

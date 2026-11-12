@@ -29,6 +29,8 @@ fn floats<const N: usize>(words: &[&str]) -> Option<[f32; N]> {
 }
 
 pub fn parse(text: &str) -> Result<Cube, String> {
+    // Notepad and other Windows tools save UTF-8 with a byte order mark.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let (mut title, mut size1, mut size3, mut data) = (String::new(), None, None, Vec::new());
     let (mut domain, mut range1, mut range3) = (([0.0; 3], [1.0; 3]), None, None);
     for (i, raw) in text.lines().enumerate() {
@@ -161,6 +163,13 @@ mod tests {
             }
         }
         s
+    }
+
+    #[test]
+    fn a_utf8_bom_is_ignored() {
+        // Notepad saves UTF-8 with a BOM, which read_to_string keeps.
+        assert!(parse(&format!("\u{feff}{}", identity(2))).is_ok());
+        assert!(parse("\u{feff}LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").is_ok());
     }
 
     fn within_lsb(c: &Cube) {

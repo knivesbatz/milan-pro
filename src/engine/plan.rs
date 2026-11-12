@@ -13,7 +13,7 @@ use crate::engine::plugins::{self, FxEval, PluginKind};
 use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Fx, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
 
 /// A picture source as the decoders need it.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MediaRef {
     pub id: Arc<str>,
     pub path: PathBuf,
@@ -31,6 +31,9 @@ pub struct MediaRef {
     pub interlaced: bool,
     /// A ready video proxy (`proxy::ready`), decoded instead of `path` at Draft and Preview quality.
     pub proxy: Option<PathBuf>,
+    /// The frame rate `SrcAt::sf` counts in: 0 for the project's; the source's own when a higher-rate source plays
+    /// slower or faster, so slow motion reaches every source frame.
+    pub grid: f64,
 }
 
 impl MediaRef {
@@ -111,7 +114,7 @@ pub struct EventPlan {
 #[derive(Debug)]
 pub struct SrcAt {
     pub m: Arc<MediaRef>,
-    /// Source frame on the project-fps grid; None for a still.
+    /// Source frame on the project-fps grid (or `m.grid`); None for a still.
     pub sf: Option<i64>,
     /// Generated media: the generator and its time (0 unless it animates, so a static one renders once).
     pub generator: Option<(FxEval, f64)>,
@@ -188,13 +191,17 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
         codec: m.codec.clone(),
         interlaced: m.interlaced,
         proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
+        grid: 0.0,
     })
 }
 
 pub fn compile(p: &Project) -> VideoPlan {
     let s = &p.settings;
+    let fps = s.frame_rate.max(1.0);
+    // Even: an odd size (an imported VEGAS project) cannot be encoded 4:2:0.
+    let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
     let refs: HashMap<&str, (Arc<MediaRef>, &Option<Fx>)> =
-        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (s.width.max(2), s.height.max(2)))?), &m.generator)))).collect();
+        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h))?), &m.generator)))).collect();
     let tracks = p
         .timeline
         .shown_video_tracks()
@@ -206,7 +213,10 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .filter(|c| !c.muted && c.duration > 0.0)
                 .filter_map(|c| {
                     let (m, generator) = refs.get(c.media_id.as_deref()?)?;
-                    Some(VEvent { m: m.clone(), generator: (*generator).clone(), c: c.clone() })
+                    // Off normal speed, a source with more frames than the project is read on its own frame grid.
+                    let fine = !m.still && m.fps > fps * 1.001 && (c.rate - 1.0).abs() > 1e-9;
+                    let m = if fine { Arc::new(MediaRef { grid: m.fps, ..(**m).clone() }) } else { m.clone() };
+                    Some(VEvent { m, generator: (*generator).clone(), c: c.clone() })
                 })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
@@ -220,10 +230,9 @@ pub fn compile(p: &Project) -> VideoPlan {
             }
         })
         .collect();
-    let fps = s.frame_rate.max(1.0);
     VideoPlan {
-        w: s.width.max(2),
-        h: s.height.max(2),
+        w,
+        h,
         fps,
         fps_str: crate::render::fps_str(fps),
         tracks,
@@ -309,7 +318,7 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 if e.m.duration > 0.0 {
                     st = st.clamp(0.0, (e.m.duration - 0.5 / p.fps).max(0.0));
                 }
-                let sf = (!e.m.still).then(|| (st * p.fps).round() as i64);
+                let sf = (!e.m.still).then(|| if e.m.grid > 0.0 { (st * e.m.grid + 1e-6).floor() as i64 } else { (st * p.fps).round() as i64 });
                 // A generator is evaluated at its media time; one that does not animate always at 0.
                 let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
                     let gt = if generate::animated(&g) { st } else { 0.0 };
@@ -592,6 +601,31 @@ mod tests {
         for k in 0..150 {
             assert_eq!(drawn(&p, (300 + k) as f64 / 30.0)[1].1, Some(fwd[149 - k]), "frame {k}");
         }
+    }
+
+    /// 60p in a 30p project at half speed (shoot 60, conform to 30): every output frame is the next source frame.
+    #[test]
+    fn slow_motion_reaches_every_source_frame() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        let m = &mut p.media_pool[0];
+        m.frame_rate = Some(60.0);
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.in_point, c.rate) = (0.0, 0.5);
+        let sfs: Vec<i64> = (300..306).map(|n| drawn(&p, n as f64 / 30.0)[0].1.unwrap()).collect();
+        assert_eq!(sfs, [0, 1, 2, 3, 4, 5]);
+        // At normal speed the project grid is exact and stays (no extra frames read).
+        p.timeline.video_tracks[0].clips[0].rate = 1.0;
+        assert_eq!(drawn(&p, 301.0 / 30.0)[0].1, Some(1));
+    }
+
+    /// An odd size (an imported VEGAS project) is composed one pixel smaller, as 4:2:0 encoders need.
+    #[test]
+    fn odd_frame_sizes_compose_even() {
+        let mut p = project();
+        (p.settings.width, p.settings.height) = (1279, 719);
+        let vp = compile(&p);
+        assert_eq!((vp.w, vp.h), (1278, 718));
     }
 
     #[test]

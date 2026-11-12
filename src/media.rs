@@ -135,6 +135,12 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
 
     if let Some(s) = video {
         let (w, h) = (s["width"].as_u64().map(|v| v as u32), s["height"].as_u64().map(|v| v as u32));
+        // Anamorphic video (HDV, XDCAM HD, DV): the display width, in square pixels, which every decode scales to.
+        let sar = s["sample_aspect_ratio"].as_str().and_then(|r| r.split_once(':')).and_then(|(n, d)| Some((n.parse::<f64>().ok()?, d.parse::<f64>().ok()?)));
+        let w = match (w, sar) {
+            (Some(w), Some((n, d))) if n > 0.0 && d > 0.0 => Some(((w as f64 * n / d / 2.0).round() as u32 * 2).max(2)),
+            _ => w,
+        };
         let rotation = s["side_data_list"]
             .as_array()
             .and_then(|l| l.iter().find_map(|d| d["rotation"].as_f64()))
@@ -204,6 +210,23 @@ mod tests {
             {"codec_type":"video","codec_name":"mjpeg","width":600,"height":600,"disposition":{"attached_pic":1}}]}"#);
         assert_eq!((m.media_type, m.width, m.codec.as_deref(), m.sample_rate), (MediaType::Audio, None, Some("mp3"), Some(44100)));
         assert_eq!(m.duration, 12.5);
+    }
+
+    #[test]
+    fn anamorphic_sources_get_their_display_width() {
+        let size = |w: u32, h: u32, sar: &str| {
+            let m = parse("m2t", &format!(r#"{{"streams":[{{"codec_type":"video","width":{w},"height":{h},"sample_aspect_ratio":"{sar}"}}]}}"#));
+            (m.width.unwrap(), m.height.unwrap())
+        };
+        assert_eq!(size(1440, 1080, "4:3"), (1920, 1080)); // HDV, XDCAM HD
+        assert_eq!(size(720, 480, "40:33"), (872, 480)); // widescreen DV
+        assert_eq!(size(720, 480, "10:11"), (654, 480)); // 4:3 DV
+        assert_eq!(size(1920, 1080, "1:1"), (1920, 1080));
+        assert_eq!(size(1920, 1080, "0:1"), (1920, 1080)); // unknown
+        // Rotated: the display width is still the coded width, before the swap.
+        let m = parse("mp4", r#"{"streams":[{"codec_type":"video","width":1440,"height":1080,"sample_aspect_ratio":"4:3",
+            "side_data_list":[{"rotation":-90}]}]}"#);
+        assert_eq!((m.width, m.height), (Some(1080), Some(1920)));
     }
 
     #[test]

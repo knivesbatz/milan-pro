@@ -1,0 +1,4 @@
+# Link the C runtime into MilanPro.exe: the installer ships no VC++ redistributable, so a clean Windows
+# (Windows Sandbox, a fresh install) would fail to start it with "VCRUNTIME140.dll was not found".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

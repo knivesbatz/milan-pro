@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use crate::decode::Quality;
 use crate::engine::cache::ByteLru;
 use crate::engine::composite::{self, Sources};
@@ -16,10 +16,11 @@ use crate::engine::vdecode::{DecoderPool, Pull};
 use crate::engine::{Played, Shown, Stats, VCmd};
 use crate::project::Project;
 
-/// (media, source frame or -1 for a still, decode width, scaler, read from the proxy)
-type SrcKey = (Arc<str>, i64, u32, &'static str, bool);
-/// (media, decode width, height): one layer's picture, held while its decoder is late.
-type HeldKey = (Arc<str>, u32, u32);
+/// (media, source frame or -1 for a still, decode width, scaler, read from the proxy, frame grid bits)
+type SrcKey = (Arc<str>, i64, u32, &'static str, bool, u64);
+/// (media, decode width, height, how many layers of it at that size were drawn before this one in the frame): one
+/// layer's picture, held while its decoder is late. Two layers of one file each hold their own.
+type HeldKey = (Arc<str>, u32, u32, usize);
 type StillDone = (SrcKey, Result<ColorImage, String>);
 
 /// Media that failed to decode are not retried for this long (no ffmpeg spawn per frame for a missing file).
@@ -57,6 +58,8 @@ pub struct Worker {
     held: HashMap<HeldKey, Arc<ColorImage>>,
     stills: Stills,
     k: usize,
+    /// Modified time of each media file when last drawn: a file rewritten on disk is decoded again.
+    mtimes: HashMap<Arc<str>, Option<SystemTime>>,
 }
 
 fn src_key(pool: &DecoderPool, s: &SrcAt, w: u32, q: Quality) -> SrcKey {
@@ -71,7 +74,7 @@ fn src_key(pool: &DecoderPool, s: &SrcAt, w: u32, q: Quality) -> SrcKey {
         (None, Some(sf)) => pool.clamp(&s.m, sf, q),
         (None, None) => -1,
     };
-    (s.m.id.clone(), n, w, q.scaler(), s.m.proxy_for(q).is_some())
+    (s.m.id.clone(), n, w, q.scaler(), s.m.proxy_for(q).is_some(), s.m.grid.to_bits())
 }
 
 /// The real `Sources`: source cache, then stills or the decoder pool.
@@ -83,6 +86,8 @@ struct Live<'a> {
     stills: &'a mut Stills,
     /// This frame's layers, to hold in the next one.
     shown: HashMap<HeldKey, Arc<ColorImage>>,
+    /// Layers drawn so far in this frame per (media, width, height).
+    drawn: HashMap<(Arc<str>, u32, u32), usize>,
     q: Quality,
     deadline: Option<Instant>,
     /// Every layer is the frame asked for (none late): the result may be cached.
@@ -134,7 +139,9 @@ impl Live<'_> {
 
 impl Sources for Live<'_> {
     fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
-        let k = (s.m.id.clone(), w, h);
+        let n = self.drawn.entry((s.m.id.clone(), w, h)).or_default();
+        let k = (s.m.id.clone(), w, h, *n);
+        *n += 1;
         let mut img = self.fetch(s, w, h);
         if img.is_none() && self.deadline.is_some() {
             // Plan 1.3: a late layer holds its last frame, even when its stream is new (reverse, loop wrap, slip).
@@ -159,6 +166,7 @@ impl Worker {
             held: HashMap::new(),
             stills: Stills { tx, rx, pending: HashSet::new() },
             k: composite::stripes(),
+            mtimes: HashMap::new(),
         };
         w.pool.set_rate(w.plan.fps, &w.plan.fps_str);
         w
@@ -195,6 +203,27 @@ impl Worker {
         }
     }
 
+    /// A media file rewritten on disk (a re-exported graphic) since it was last drawn: its streams and every cached
+    /// frame go, so preview shows what a render would.
+    fn check_files(&mut self, fp: &plan::FramePlan, w: u32, h: u32) {
+        let mut changed = false;
+        for (src, ..) in composite::requests(fp, w as usize, h as usize) {
+            if src.generator.is_some() {
+                continue;
+            }
+            let t = std::fs::metadata(&src.m.path).and_then(|m| m.modified()).ok();
+            if self.mtimes.insert(src.m.id.clone(), t).is_some_and(|old| old != t) {
+                self.pool.forget(&src.m.id);
+                self.failed.remove(&src.m.id);
+                changed = true;
+            }
+        }
+        if changed {
+            self.sources.clear();
+            self.composites.clear();
+        }
+    }
+
     /// Start every decoder frame `fp` needs (and background still decodes when playing), so they open in parallel.
     fn warm(&mut self, fp: &plan::FramePlan, w: u32, h: u32, q: Quality, play: bool) {
         for (src, dw, dh) in composite::requests(fp, w as usize, h as usize) {
@@ -215,6 +244,7 @@ impl Worker {
     pub fn frame(&mut self, n: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> (Arc<ColorImage>, Option<String>) {
         self.take_stills();
         let fp = plan::frame_plan(&self.plan, n);
+        self.check_files(&fp, w, h);
         let key = (fp.key(), w, h, q);
         if let Some(img) = self.composites.get(&key) {
             return (img, None);
@@ -230,6 +260,7 @@ impl Worker {
             held: &self.held,
             stills: &mut self.stills,
             shown: HashMap::new(),
+            drawn: HashMap::new(),
             q,
             deadline,
             exact: true,
@@ -437,6 +468,80 @@ mod tests {
         let later = std::time::SystemTime::now() + Duration::from_secs(10);
         std::fs::File::options().write(true).open(&path).unwrap().set_modified(later).unwrap();
         assert_eq!(frame(Color32::from_rgb(0, 255, 255)), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two late layers of one file (a dissolve inside one recording) each hold their own last picture, not the other's.
+    #[test]
+    fn late_layers_of_one_file_hold_their_own_picture() {
+        use eframe::egui::Color32;
+        let m = Arc::new(plan::MediaRef {
+            id: "s".into(),
+            path: "s.png".into(),
+            w: 4,
+            h: 4,
+            duration: 5.0,
+            fps: 0.0,
+            still: true,
+            has_alpha: false,
+            matrix: None,
+            codec: None,
+            interlaced: false,
+            proxy: None,
+            grid: 0.0,
+        });
+        let at = SrcAt { m: m.clone(), sf: None, generator: None };
+        let solid = |c| Arc::new(ColorImage { size: [4, 4], pixels: vec![c; 16] });
+        let held: HashMap<HeldKey, Arc<ColorImage>> = [((m.id.clone(), 4, 4, 0), solid(Color32::RED)), ((m.id.clone(), 4, 4, 1), solid(Color32::BLUE))].into();
+        let (mut pool, mut sources, mut failed) = (DecoderPool::default(), ByteLru::new(1 << 20), HashMap::new());
+        let (tx, rx) = mpsc::channel();
+        // The still is already loading in the background: the layers are late.
+        let mut stills = Stills { tx, rx, pending: HashSet::from([src_key(&pool, &at, 4, Quality::Good)]) };
+        let mut live = Live {
+            pool: &mut pool,
+            sources: &mut sources,
+            failed: &mut failed,
+            held: &held,
+            stills: &mut stills,
+            shown: HashMap::new(),
+            drawn: HashMap::new(),
+            q: Quality::Good,
+            deadline: Some(Instant::now() + LATE),
+            exact: true,
+            err: None,
+        };
+        let first = live.get(&at, 4, 4).unwrap().pixels[0];
+        let second = live.get(&at, 4, 4).unwrap().pixels[0];
+        assert_eq!((first, second), (Color32::RED, Color32::BLUE));
+    }
+
+    /// Needs ffmpeg. A still re-exported to the same path shows at once in preview, as it does in a render.
+    #[test]
+    #[ignore]
+    fn a_still_rewritten_on_disk_shows_the_new_picture() {
+        use crate::project::{MediaItem, MediaType};
+        use eframe::egui::Color32;
+        let dir = std::env::temp_dir().join(format!("milan-rewrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("lower-third.png");
+        let write = |rgb: [u8; 3], later: u64| {
+            let mut e = png::Encoder::new(std::io::BufWriter::new(std::fs::File::create(&path).unwrap()), 8, 8);
+            e.set_color(png::ColorType::Rgb);
+            e.write_header().unwrap().write_image_data(&rgb.repeat(64)).unwrap();
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(std::time::SystemTime::now() + Duration::from_secs(later)).unwrap();
+        };
+        write([255, 0, 0], 0);
+        let m = MediaItem { id: "png".into(), path: path.clone(), media_type: MediaType::Image, duration: 5.0, width: Some(8), height: Some(8), ..Default::default() };
+        let mut p = Project::new("r");
+        p.timeline.video_tracks[0].clips.push(Clip::from_media(&m, 0.0));
+        p.media_pool.push(m);
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let centre = |wk: &mut Worker| wk.frame(10, 64, 36, Quality::Good, None).0.pixels[18 * 64 + 32];
+        assert_eq!(centre(&mut wk), Color32::RED);
+        write([0, 0, 255], 10);
+        assert_eq!(centre(&mut wk), Color32::BLUE);
+        drop(wk);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

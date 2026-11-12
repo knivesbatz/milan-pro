@@ -39,6 +39,9 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLower()
           $sha = "$($setup.FullName).sha256"
           [IO.File]::WriteAllText($sha, "$hash  $($setup.Name)`n")
+          # A draft until both files are up: a published release without its Setup.exe is what update checks see.
           gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Milan Pro ${{ github.ref_name }}" --generate-notes }
+          if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --draft --title "Milan Pro ${{ github.ref_name }}" --generate-notes }
           gh release upload "${{ github.ref_name }}" $setup.FullName $sha --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Upload failed: the release stays a draft" }
+          gh release edit "${{ github.ref_name }}" --draft=false
