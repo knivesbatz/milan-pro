@@ -20,6 +20,10 @@ Download `MilanPro-<version>-Setup.exe` from [Releases](../../releases) and run 
 
 The installer bundles [FFmpeg](https://ffmpeg.org/) 9.0.2 (GPL v3, build by Gyan Doshi), installed next to `MilanPro.exe`. Source links are in `FFMPEG-SOURCE.txt` in the install folder. When building from source, run `installer/fetch-ffmpeg.ps1` or have FFmpeg on `PATH`.
 
+## Updates
+
+A few seconds after startup Milan Pro asks GitHub for the latest release (it sends only a `MilanPro-Updater/<version>` user agent). When a newer version exists it shows the release notes with **Download and install**, **Remind me later** and **Skip this version**. The installer is downloaded over HTTPS, checked against its SHA-256 (the release's asset digest or `MilanPro-<version>-Setup.exe.sha256`), and run silently; Milan Pro asks to save your project, closes, updates and starts again. Check by hand with **Help > Check for Updates...**, or turn the startup check off in **Options > Preferences > General**.
+
 ## Build from source
 
 ```bash
@@ -45,7 +49,6 @@ Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/mil
 - Render / export via FFmpeg
 - Effects and transitions, OFX plugin hosting
 - VEGAS project (`.veg`) import, EDL / OTIO interchange
-- Auto-updater
 
 ## License
 

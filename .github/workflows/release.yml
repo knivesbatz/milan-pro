@@ -14,6 +14,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Check the tag matches Cargo.toml
+        shell: pwsh
+        run: |
+          # The app compares releases with its own Cargo version; a mismatch would offer the same update forever.
+          $cargo = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$cargo" -ne '${{ github.ref_name }}') { throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $cargo" }
       - run: cargo build --release
       - run: choco install innosetup -y --no-progress
       - run: ./installer/fetch-ffmpeg.ps1
@@ -29,6 +35,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $setup = Get-ChildItem release\MilanPro-*-Setup.exe
+          # Checksum the in-app updater falls back to when the API gives no asset digest (sha256sum format, LF).
+          $hash = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLower()
+          $sha = "$($setup.FullName).sha256"
+          [IO.File]::WriteAllText($sha, "$hash  $($setup.Name)`n")
           gh release view "${{ github.ref_name }}" *> $null
           if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --title "Milan Pro ${{ github.ref_name }}" --generate-notes }
-          gh release upload "${{ github.ref_name }}" $setup.FullName --clobber
+          gh release upload "${{ github.ref_name }}" $setup.FullName $sha --clobber

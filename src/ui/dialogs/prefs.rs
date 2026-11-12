@@ -81,6 +81,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
             d.space_pauses = pause;
         }
         ui.add_enabled(!v16, Checkbox::new(&mut d.show_welcome, "Show Welcome Screen on startup"));
+        ui.checkbox(&mut d.auto_update, "Check for updates automatically");
     });
     ui.horizontal(|ui| {
         let mut on = true;
@@ -95,7 +96,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         });
     });
     if default_all(ui) {
-        (d.space_pauses, d.show_welcome, d.recent_max) = (false, true, 4);
+        (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update) = (false, true, 4, true);
     }
 }
 

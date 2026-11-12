@@ -12,6 +12,7 @@ mod project;
 mod render;
 mod settings;
 mod ui;
+mod updater;
 
 use eframe::egui;
 
@@ -25,7 +26,7 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1600.0, 900.0])
         .with_min_inner_size([960.0, 540.0])
         .with_decorations(look.look == ui::theme::UiLook::Vegas16);
-    if launch.screenshot.is_some() {
+    if launch.screenshot.is_some() || std::env::var_os("MILAN_UPDATE_AUTO").is_some() {
         // Never steal focus from the user; the app resizes to 1920x1080 px on its first frame.
         viewport = viewport.with_active(false).with_position([0.0, 0.0]).with_min_inner_size([100.0, 100.0]);
     }

@@ -15,6 +15,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
 rodio = { version = "0.20.1", default-features = false }
 png = "0.18"  # screenshot harness (already in the tree via eframe)
+# Updater (src/updater.rs): small blocking HTTPS client (rustls, no OpenSSL) and SHA-256 of the installer.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

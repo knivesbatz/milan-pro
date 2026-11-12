@@ -53,7 +53,7 @@ pub enum Command {
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
-    KeyboardShortcuts, About,
+    KeyboardShortcuts, CheckForUpdates, About,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause,
 }

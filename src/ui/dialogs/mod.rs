@@ -3,11 +3,13 @@
 mod prefs;
 mod render;
 mod shortcuts;
+mod update;
 mod welcome;
 
 pub use prefs::PrefsDialog;
 pub use render::{RenderDialog, open_folder};
 pub use shortcuts::shortcuts_window;
+pub use update::{UpdateResult, update_window};
 pub use welcome::{Welcome, WelcomeResult};
 
 use eframe::egui::*;
@@ -75,54 +77,63 @@ pub fn with_style<R>(ctx: &Context, f: impl FnOnce() -> R) -> R {
 /// A modal, movable dialog of `size` (title row included) with a native-style title row: title text, a greyed
 /// "?" and ×. Returns the body's result and whether × or Esc asked to close.
 pub fn modal<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
-    let t = theme::get();
-    let d = t.dialog();
-    let screen = ctx.screen_rect();
     with_style(ctx, || {
-        let area = Area::new(Id::new(id))
-            .kind(UiKind::Modal)
-            .order(Order::Foreground)
-            .interactable(true)
-            .movable(true)
-            .default_pos(screen.center() - size * 0.5)
-            .constrain(true);
-        let frame = Frame::NONE.fill(d.body).stroke(Stroke::new(1.0_f32, d.border));
-        let resp = Modal::new(Id::new(id)).area(area).frame(frame).backdrop_color(Color32::TRANSPARENT).show(ctx, |ui| {
-            ui.set_min_size(size);
-            ui.set_max_size(size);
-            let top = ui.min_rect().min;
-            let title_r = Rect::from_min_size(top, vec2(size.x, TITLE_H));
-            ui.painter().rect_filled(title_r, 0.0, d.title_bg);
-            ui.painter().text(
-                title_r.left_center() + vec2(12.0, 0.0),
-                Align2::LEFT_CENTER,
-                title,
-                t.font(12.0),
-                d.title_text,
-            );
-            let mut close = false;
-            for (k, glyph) in ["?", "×"].into_iter().enumerate() {
-                let r = Rect::from_min_size(pos2(title_r.max.x - 46.0 * (2 - k) as f32, title_r.min.y), vec2(46.0, TITLE_H));
-                let hit = ui.interact(r, Id::new(id).with(("cap", k)), Sense::click());
-                if k == 1 && hit.hovered() {
-                    ui.painter().rect_filled(r, 0.0, t.caption_close_hover);
-                }
-                let ink = if k == 0 { d.text_disabled } else if hit.hovered() { Color32::WHITE } else { d.title_text };
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, glyph, t.font(if k == 0 { 12.0 } else { 16.0 }), ink);
-                close |= k == 1 && hit.clicked();
-            }
-            ui.allocate_space(vec2(size.x, TITLE_H));
-            let inner = Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 6, bottom: 10 }).show(ui, |ui| {
-                ui.set_width(size.x - 20.0);
-                ui.set_min_height(size.y - TITLE_H - 16.0);
-                body(ui)
-            });
-            (inner.inner, close)
-        });
+        let (area, frame) = (area(ctx, id, size, UiKind::Modal), dialog_frame());
+        let resp = Modal::new(Id::new(id)).area(area).frame(frame).backdrop_color(Color32::TRANSPARENT).show(ctx, |ui| framed(ui, id, title, size, body));
         let esc = ctx.input(|i| i.key_pressed(Key::Escape));
         let (r, close) = resp.inner;
         (r, close || esc)
     })
+}
+
+/// `modal` without the modality: the app stays usable behind it, and Esc does not close it.
+pub fn window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    with_style(ctx, || area(ctx, id, size, UiKind::Window).show(ctx, |ui| dialog_frame().show(ui, |ui| framed(ui, id, title, size, body)).inner).inner)
+}
+
+fn area(ctx: &Context, id: &str, size: Vec2, kind: UiKind) -> Area {
+    Area::new(Id::new(id))
+        .kind(kind)
+        .order(Order::Foreground)
+        .interactable(true)
+        .movable(true)
+        .default_pos(ctx.screen_rect().center() - size * 0.5)
+        .constrain(true)
+}
+
+fn dialog_frame() -> Frame {
+    let d = theme::get().dialog();
+    Frame::NONE.fill(d.body).stroke(Stroke::new(1.0_f32, d.border))
+}
+
+/// Title row with "?" and × above `body`; whether × was clicked.
+fn framed<R>(ui: &mut Ui, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let t = theme::get();
+    let d = t.dialog();
+    ui.set_min_size(size);
+    ui.set_max_size(size);
+    let top = ui.min_rect().min;
+    let title_r = Rect::from_min_size(top, vec2(size.x, TITLE_H));
+    ui.painter().rect_filled(title_r, 0.0, d.title_bg);
+    ui.painter().text(title_r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, title, t.font(12.0), d.title_text);
+    let mut close = false;
+    for (k, glyph) in ["?", "×"].into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(title_r.max.x - 46.0 * (2 - k) as f32, title_r.min.y), vec2(46.0, TITLE_H));
+        let hit = ui.interact(r, Id::new(id).with(("cap", k)), Sense::click());
+        if k == 1 && hit.hovered() {
+            ui.painter().rect_filled(r, 0.0, t.caption_close_hover);
+        }
+        let ink = if k == 0 { d.text_disabled } else if hit.hovered() { Color32::WHITE } else { d.title_text };
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, glyph, t.font(if k == 0 { 12.0 } else { 16.0 }), ink);
+        close |= k == 1 && hit.clicked();
+    }
+    ui.allocate_space(vec2(size.x, TITLE_H));
+    let inner = Frame::NONE.inner_margin(Margin { left: 10, right: 10, top: 6, bottom: 10 }).show(ui, |ui| {
+        ui.set_width(size.x - 20.0);
+        ui.set_min_height(size.y - TITLE_H - 16.0);
+        body(ui)
+    });
+    (inner.inner, close)
 }
 
 /// Native tab control; `rows` front row first. The row holding the selected tab is drawn next to the page,

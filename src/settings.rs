@@ -22,11 +22,24 @@ pub struct Prefs {
     /// Recently used project list (most recent first) and its length.
     pub recent: Vec<String>,
     pub recent_max: usize,
+    /// Preferences › General: "Check for updates automatically" (on startup).
+    pub auto_update: bool,
+    /// Version the user chose "Skip this version" for; the automatic check ignores it.
+    pub skipped_update: Option<String>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { look: LookChoice::default(), track_colors: None, space_pauses: false, show_welcome: true, recent: Vec::new(), recent_max: 4 }
+        Self {
+            look: LookChoice::default(),
+            track_colors: None,
+            space_pauses: false,
+            show_welcome: true,
+            recent: Vec::new(),
+            recent_max: 4,
+            auto_update: true,
+            skipped_update: None,
+        }
     }
 }
 
@@ -236,7 +249,7 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        assert_eq!((d.look, d.show_welcome, d.recent_max), (LookChoice::VEGAS16, true, 4));
+        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update), (LookChoice::VEGAS16, true, 4, true));
         let mut r = Prefs { recent_max: 2, ..Default::default() };
         for p in ["a", "b", "a", "c"] {
             r.add_recent(std::path::Path::new(p));

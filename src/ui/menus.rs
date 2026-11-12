@@ -68,7 +68,7 @@ impl CmdState {
         let v23 = self.look == UiLook::Vegas23;
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | Properties | Exit | RenderAs | Preferences
-            | About | KeyboardShortcuts | NormalTool | LayoutDefault => true,
+            | About | KeyboardShortcuts | CheckForUpdates | NormalTool | LayoutDefault => true,
             Welcome => v23,
             OpenRecent(i) => i < self.recent.len(),
             Undo | UndoAll => self.can_undo,
@@ -821,7 +821,7 @@ pub const HELP: &[M] = &[
     V16(&X("Interactive Tutorial&s...")),
     V16(&X("&Welcome...")),
     S,
-    X("Check for Updates..."),
+    C("Check for &Updates...", CheckForUpdates),
     V23(&X("Download User Manual")),
     S,
     C("About Milan Pro...", About),

@@ -4,7 +4,7 @@ use eframe::egui;
 use crate::edit;
 use crate::project::{Project, TrackKind};
 use crate::render::content_end;
-use crate::ui::dialogs::{self, WelcomeResult};
+use crate::ui::dialogs::{self, UpdateResult, WelcomeResult};
 use crate::ui::dock::{Dock, Panel};
 use crate::ui::keymap::{Command, Command::*, Scope};
 use crate::ui::menus::{self, CmdState};
@@ -90,6 +90,15 @@ impl MeridianApp {
 
     fn save_prefs(&mut self) {
         if !self.demo {
+            // Another window may have changed the update choices since; keep its values unless this one changed them.
+            let disk = crate::settings::Prefs::load();
+            if self.prefs.auto_update == self.update_prefs_seen.0 {
+                self.prefs.auto_update = disk.auto_update;
+            }
+            if self.prefs.skipped_update == self.update_prefs_seen.1 {
+                self.prefs.skipped_update = disk.skipped_update;
+            }
+            self.update_prefs_seen = (self.prefs.auto_update, self.prefs.skipped_update.clone());
             if let Err(e) = self.prefs.save() {
                 self.message = Some(format!("Could not save preferences: {e}"));
             }
@@ -140,6 +149,7 @@ impl MeridianApp {
             Preferences => self.prefs_dlg.open(&self.prefs),
             KeyboardShortcuts => self.shortcuts_open = true,
             About => self.about = true,
+            CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
             // Edit
             Undo | Redo | UndoAll => {
                 let mut done = false;
@@ -403,6 +413,11 @@ impl MeridianApp {
                 }
             }
             _ => {
+                if let Some((exe, sha)) = self.install_on_exit.take() {
+                    if let Err(e) = crate::updater::launch_installer(&exe, &sha, self.updater.auto) {
+                        return self.message = Some(format!("Could not start the update installer: {e}"));
+                    }
+                }
                 // Close (not process::exit) so the app is dropped and a running render's ffmpeg is killed.
                 self.project.modified = false; // changes were saved or discarded; don't prompt again
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -453,8 +468,11 @@ impl MeridianApp {
             // A cancelled or failed save leaves the project modified, so nothing is discarded.
             if discard || (save && !self.project.modified) {
                 self.run(ctx, action);
+            } else if hit.is_some() || close {
+                self.install_on_exit = None; // the update waits for the next "Install and restart"
             }
         }
+        self.show_update(ctx);
         if self.about {
             let (ok, close) = dialogs::modal(ctx, "about", "About Milan Pro", egui::vec2(360.0, 170.0), |ui| {
                 ui.label(egui::RichText::new(format!("Milan Pro v{}", env!("CARGO_PKG_VERSION"))).strong());
@@ -500,6 +518,46 @@ impl MeridianApp {
         }
     }
 
+    /// The update window; "Skip this version" and the auto-check box go to prefs, "Install and restart" exits
+    /// through the save prompt and starts the installer.
+    fn show_update(&mut self, ctx: &egui::Context) {
+        use crate::updater::State;
+        self.updater.poll(ctx, self.prefs.skipped_update.as_deref());
+        let mut auto_check = self.prefs.auto_update;
+        let mut res = dialogs::update_window(ctx, &mut self.updater, &mut auto_check);
+        if self.updater.auto {
+            // MILAN_UPDATE_AUTO (end-to-end test): install without clicks; any other outcome ends the run.
+            match &self.updater.state {
+                State::Ready(r, exe) => {
+                    res = Some(UpdateResult::Install(exe.clone(), r.digest.clone().unwrap_or_default()));
+                    self.updater.dismiss();
+                }
+                // With MILAN_SCREENSHOT the message stays up for the screenshot, which then closes the app.
+                State::Message(m) if self.shot.is_none() => {
+                    eprintln!("update: {m}");
+                    self.updater.dismiss();
+                    self.request(ctx, MenuAction::Exit);
+                }
+                _ => {}
+            }
+        }
+        if auto_check != self.prefs.auto_update {
+            self.prefs.auto_update = auto_check;
+            self.save_prefs();
+        }
+        match res {
+            Some(UpdateResult::Skip(v)) => {
+                self.prefs.skipped_update = Some(v);
+                self.save_prefs();
+            }
+            Some(UpdateResult::Install(exe, sha)) => {
+                self.install_on_exit = Some((exe, sha));
+                self.request(ctx, MenuAction::Exit);
+            }
+            None => {}
+        }
+    }
+
     /// J / L shuttle at rates other than normal playback: the cursor moves silently.
     pub(super) fn tick_shuttle(&mut self, ctx: &egui::Context) {
         if self.shuttle == 0.0 || self.shuttle == 1.0 {
@@ -526,6 +584,7 @@ impl MeridianApp {
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,
             "about" => self.about = true,
+            "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {
                 if let Some(k) = m.strip_prefix("menu:").and_then(|k| k.parse::<usize>().ok()) {
                     menus::request_open(ctx, k);

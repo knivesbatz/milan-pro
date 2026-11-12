@@ -33,6 +33,8 @@ PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\MilanPro.exe
 UninstallDisplayName=Milan Pro
 CloseApplications=yes
+; The updater relaunches Milan Pro itself (/RELAUNCH below); Restart Manager restarting it too would open two.
+RestartApplications=no
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
@@ -49,3 +51,28 @@ Name: "{autodesktop}\Milan Pro"; Filename: "{app}\MilanPro.exe"; Tasks: desktopi
 
 [Run]
 Filename: "{app}\MilanPro.exe"; Description: "{cm:LaunchProgram,Milan Pro}"; Flags: nowait postinstall skipifsilent
+; In-app updater: "Setup.exe /SILENT ... /RELAUNCH=<running MilanPro.exe>" starts the updated app when done.
+Filename: "{app}\MilanPro.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested; AfterInstall: Relaunched
+
+[Code]
+var
+  DidRelaunch: Boolean;
+
+function RelaunchRequested: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|}') <> '');
+end;
+
+procedure Relaunched;
+begin
+  DidRelaunch := True;
+end;
+
+// A failed or aborted silent update brings back the Milan Pro that started it.
+procedure DeinitializeSetup;
+var
+  Code: Integer;
+begin
+  if RelaunchRequested and not DidRelaunch then
+    ExecAsOriginalUser(ExpandConstant('{param:RELAUNCH|}'), '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;

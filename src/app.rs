@@ -84,6 +84,11 @@ pub struct MeridianApp {
     dock_rect: egui::Rect,
     /// Copied or cut event and whether it came from a video track (Edit › Cut/Copy/Paste).
     clipboard: Option<(bool, crate::project::Clip)>,
+    updater: crate::updater::Updater,
+    /// Verified installer and its SHA-256, to start when the app exits ("Install and restart", after the save prompt).
+    install_on_exit: Option<(std::path::PathBuf, String)>,
+    /// `prefs.auto_update` and `skipped_update` as last read or written, to tell this window's changes from another's.
+    update_prefs_seen: (bool, Option<String>),
 }
 
 impl MeridianApp {
@@ -96,6 +101,11 @@ impl MeridianApp {
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        let mut updater = crate::updater::Updater::from_env();
+        if updater.auto || (prefs.auto_update && !launch.demo && launch.screenshot.is_none()) {
+            // Off the startup path: the check waits a few seconds on its own thread.
+            updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }));
+        }
         let (mut project, mut selected_clip, mut message) = (Project::new("Untitled"), None, None);
         if launch.demo {
             match crate::demo::project(&theme::get()) {
@@ -156,7 +166,6 @@ impl MeridianApp {
             trimmer,
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
-            prefs,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
             welcome,
@@ -167,6 +176,10 @@ impl MeridianApp {
             new_settings: None,
             dock_rect: egui::Rect::NOTHING,
             clipboard: None,
+            updater,
+            install_on_exit: None,
+            update_prefs_seen: (prefs.auto_update, prefs.skipped_update.clone()),
+            prefs,
         };
         app.open_from_env(&cc.egui_ctx);
         app
@@ -422,7 +435,9 @@ impl eframe::App for MeridianApp {
 
         // After the timeline so this frame's cursor/clip edits are what gets requested.
         self.preview.update(ctx, &self.project);
-        if let Some(shot) = &mut self.shot {
+        // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
+        let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
+        if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
             shot.tick(ctx, busy);
         }
