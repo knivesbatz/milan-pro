@@ -393,6 +393,21 @@ mod tests {
         }
     }
 
+    /// Release check against real GitHub: what an installed 0.2.0 sees, downloaded and verified with the app's code.
+    /// Run after publishing: cargo test --release live_github_release -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_github_release() {
+        let json = get(&agent(false), API, false, describe).unwrap().body_mut().read_to_string().unwrap();
+        let rel = parse_release(&json, "0.2.0").unwrap().expect("a release newer than 0.2.0");
+        assert!(rel.digest.is_some() && rel.sha_url.is_some(), "{rel:?}");
+        let dir = std::env::temp_dir().join(format!("milan-live-update-{}", std::process::id()));
+        let (exe, sha) = download(&rel, &dir, false, &AtomicBool::new(false), |_| {}).unwrap();
+        println!("latest {} -> {} ({sha})", rel.version, exe.display());
+        assert_eq!(open_hashed(&exe).unwrap().1, sha);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn release_json(tag: &str, prerelease: bool, assets: &str) -> String {
         format!(r#"{{"tag_name":"{tag}","draft":false,"prerelease":{prerelease},"body":"Notes\r\nline 2","assets":[{assets}]}}"#)
     }
