@@ -62,6 +62,9 @@ pub enum Command {
     EventPanCrop, TrackMotion,
     /// The FX window on the focus video event, the focus video track or the Video Output.
     VideoEventFx, TrackFx, VideoOutputFx,
+    /// The FX window on the focus audio event or the focus audio track; Options › Bypass All Audio FX; the focus audio
+    /// track's FX as the chain new audio tracks get (Set Default Track Properties).
+    AudioEventFx, AudioTrackFx, BypassAudioFx, DefaultTrackFx,
     /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
     ToggleEnvelope(crate::project::EnvKind),
     /// Edit › Editing Tool items and the transport tool radios.

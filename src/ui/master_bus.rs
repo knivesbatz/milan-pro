@@ -72,7 +72,8 @@ pub fn master_bus_toolbar(ui: &mut Ui) {
     inert_button(ui, Icon::MixingConsole, "Mixing Console (not available yet)", false);
 }
 
-pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master) {
+/// `fx`: the Audio Master FX chain has plug-ins (its fx button is lit; a click opens it).
+pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(0.1)));
@@ -92,6 +93,15 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master) {
     for (i, icon) in strip.iter().enumerate() {
         let c = Rect::from_min_size(pos2(r.min.x + 6.0 + 20.0 * i as f32, r.min.y + 22.0), vec2(16.0, 16.0));
         match icon {
+            Some(Icon::TrackFx) => {
+                paint_icon(&p, c, Icon::TrackFx, t.look(), None);
+                if fx {
+                    p.circle_filled(c.right_bottom() - vec2(2.0, 2.0), 2.0, t.accent);
+                }
+                if ui.interact(c, ui.id().with("master_fx"), Sense::click()).on_hover_text("Audio Master FX").clicked() {
+                    super::open_tool(ui.ctx(), super::ToolWin::Fx(crate::edit::FxTarget::AudioMaster));
+                }
+            }
             Some(icon) => paint_icon(&p, c, *icon, t.look(), None),
             None => automation_badge(&p, c),
         }

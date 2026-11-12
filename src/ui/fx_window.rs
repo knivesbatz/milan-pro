@@ -1,5 +1,5 @@
-//! The FX window (§5.15.2, decision 0.5): one modeless window for Video Event, Track and Output FX, generated media and
-//! transitions. The chain bar (bypass box, select, drag to reorder, fx+ and fx×), the preset row (built-in and user
+//! The FX window (§5.15.2, decision 0.5): one modeless window for Video Event, Track and Output FX, Audio Event, Track
+//! and Master FX, generated media and transitions. The chain bar (bypass box, select, drag to reorder, fx+ and fx×), the preset row (built-in and user
 //! presets, save and delete), the parameter grid from the plug-in's `ParamSpec`s and, while Animate is on, the keyframe
 //! controller with one lane for the selected plug-in. Each gesture is one undo step.
 use eframe::egui::*;
@@ -67,7 +67,7 @@ pub fn key_time(p: &Project, target: &FxTarget) -> Option<(f64, f64, f64)> {
     let cur = p.timeline.cursor_position;
     match target {
         FxTarget::Event(id) => p.clip(id).map(|c| ((cur - c.position).clamp(0.0, c.duration), c.duration, c.position)),
-        FxTarget::Track(_) | FxTarget::VideoOutput => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
+        FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
         FxTarget::Media(_) | FxTarget::Transition(_) => None,
     }
 }
@@ -190,10 +190,12 @@ impl FxWindow {
 
     fn title(&self, p: &Project) -> String {
         let clip = |id: &str| p.clip(id).map_or(String::new(), |c| c.name.clone());
+        let kind = if edit::fx_is_audio(p, &self.target) { "Audio" } else { "Video" };
         match &self.target {
-            FxTarget::Event(id) => format!("Video Event FX: {}", clip(id)),
-            FxTarget::Track(id) => format!("Video Track FX: Track {}", p.find_track(id).map_or(0, |t| t.1 + 1)),
+            FxTarget::Event(id) => format!("{kind} Event FX: {}", clip(id)),
+            FxTarget::Track(id) => format!("{kind} Track FX: Track {}", p.find_track(id).map_or(0, |t| t.1 + 1)),
             FxTarget::VideoOutput => "Video Output FX".into(),
+            FxTarget::AudioMaster => "Audio Master FX".into(),
             FxTarget::Media(id) => format!("Video Media Generators: {}", p.media_pool.iter().find(|m| m.id == *id).map_or("", |m| m.name.as_str())),
             FxTarget::Transition(id) => format!("Transition: {}", clip(id)),
         }
@@ -212,7 +214,9 @@ impl FxWindow {
     /// Draw the window and apply its edits. False once it is closed (× or the target is gone); a status message.
     pub fn show(&mut self, ctx: &Context, project: &mut Project, history: &mut History, users: &mut Vec<UserPreset>) -> (bool, Option<String>) {
         let Some((orig, editable)) = edit::fx_list(project, &self.target) else { return (false, None) };
-        let chain = matches!(self.target, FxTarget::Event(_) | FxTarget::Track(_) | FxTarget::VideoOutput);
+        let chain = matches!(self.target, FxTarget::Event(_) | FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster);
+        let audio = edit::fx_is_audio(project, &self.target);
+        let kind = if audio { PluginKind::AudioFx } else { PluginKind::VideoFx };
         let fps = project.settings.frame_rate;
         let keyed = key_time(project, &self.target);
         let (at, span, base) = keyed.map_or((0.0, 0.0, 0.0), |(_, span, base)| (self.kf.cursor(project.timeline.cursor_position - base).clamp(0.0, span), span, base));
@@ -228,10 +232,15 @@ impl FxWindow {
             let full = ui.available_rect_before_wrap();
             // A Video FX tile dropped anywhere on the window joins the chain.
             if let Some(d) = super::plugin_dropped(&ui.interact(full, ui.id().with("fx_drop"), Sense::hover())) {
-                if chain && editable && d.kind == PluginKind::VideoFx {
+                if chain && editable && d.kind == kind {
                     (op, self.sel) = (Some(ChainOp::Add(d.fx.clone())), list.len());
                 } else {
-                    msg = Some(if chain { "The target is locked." } else { "Only a plug-in chain takes video FX." }.to_string());
+                    msg = Some(match (chain, audio, editable) {
+                        (false, ..) => "Only a plug-in chain takes video FX.",
+                        (true, true, _) => "Audio plug-ins are added with fx+.",
+                        (true, false, false) => "The target is locked.",
+                        (true, false, true) => "Only video FX go in a video chain.",
+                    }.to_string());
                 }
             }
             let animating = keyed.is_some() && chain && list.get(self.sel).is_some_and(|f| self.animate.contains(&f.id));
@@ -282,7 +291,7 @@ impl FxWindow {
                             // shortcut: a menu of plug-ins and their presets, without the chooser's thumbnails; reuse
                             // the chooser widget here if users miss them.
                             ui.menu_button("fx+", |ui| {
-                                for info in plugins::catalog(PluginKind::VideoFx) {
+                                for info in plugins::catalog(kind) {
                                     ui.menu_button(info.name, |ui| {
                                         let builtin = info.presets.iter().map(|p| (p.name.to_string(), plugins::new_fx(info, Some(p))));
                                         let mine = users.iter().filter(|u| u.plugin == info.id).map(|u| (u.name.clone(), plugins::new_user_fx(info, u)));
@@ -311,7 +320,7 @@ impl FxWindow {
                 .map(|(i, f)| (i, plugins::find(&f.plugin).map_or(f.plugin.clone(), |p| p.name.to_string()), lane(f, fps).iter().map(|k| k.0).collect()))
                 .collect();
             let Some(fx) = list.get_mut(self.sel) else {
-                ui.label("No plug-ins. Drag one here from the Video FX window, or use fx+.");
+                ui.label(if audio { "No plug-ins. Use fx+ to add one." } else { "No plug-ins. Drag one here from the Video FX window, or use fx+." });
                 return;
             };
             let Some(info) = plugins::find(&fx.plugin) else {
@@ -454,7 +463,9 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
     match (kind, cur) {
         (ParamKind::Float { min, max, .. }, Val::F(v)) => {
             let mut x = *v;
-            if ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always)).changed() {
+            // Wide positive ranges (frequencies, times) are swept on a log scale.
+            let log = min > 0.0 && max / min >= 100.0;
+            if ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always).logarithmic(log)).changed() {
                 set_num(fx, key, x, *v, key_at, fps);
             }
         }
@@ -561,6 +572,19 @@ mod tests {
         let mut edited = strong;
         set_num(&mut edited, "amount", 0.9, 1.0, None, 30.0);
         assert_eq!(shown_preset(info, &users, &edited, None), None);
+    }
+
+    #[test]
+    fn audio_targets_are_named_as_audio() {
+        let (mut p, _) = project();
+        let c = Clip::new("voice", 0.0, 2.0);
+        let id = c.id.clone();
+        p.timeline.audio_tracks[0].clips.push(c);
+        let title = |t: FxTarget| FxWindow::open(&p, t).unwrap().title(&p);
+        assert_eq!(title(FxTarget::Event(id)), "Audio Event FX: voice");
+        assert_eq!(title(FxTarget::Track(p.timeline.audio_tracks[0].id.clone())), "Audio Track FX: Track 1");
+        assert_eq!(title(FxTarget::AudioMaster), "Audio Master FX");
+        assert_eq!(title(FxTarget::Track(p.timeline.video_tracks[0].id.clone())), "Video Track FX: Track 1");
     }
 
     #[test]

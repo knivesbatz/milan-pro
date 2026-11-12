@@ -56,8 +56,10 @@ pub struct CmdState {
     pub clip_locked: bool,
     /// The focus event's Switches › Mute.
     pub clip_muted: bool,
-    /// The focus event is a video event (Pan/Crop).
+    /// A video event is selected (Pan/Crop, Video Event FX); an audio event is (Audio Event FX). A grouped A/V pair
+    /// sets both.
     pub video_clip: bool,
+    pub audio_clip: bool,
     /// A selected event has inactive takes.
     pub takes: bool,
     pub n_sel: usize,
@@ -95,6 +97,8 @@ pub struct CmdState {
     pub audio_track_focus: bool,
     pub video_track_focus: bool,
     pub focus_envs: Vec<EnvKind>,
+    /// Options › Bypass All Audio FX.
+    pub bypass_audio_fx: bool,
     /// Names of the saved user layouts 0-9 of this look (None = <EMPTY>).
     pub layouts: [Option<String>; 10],
     /// The user layout last loaded or saved (Save Layout saves over it); None = the default layout.
@@ -126,7 +130,9 @@ impl CmdState {
             ToggleEnvelope(k) => if crate::edit::env_fits(k, true) { self.video_track_focus } else { self.audio_track_focus },
             EventPanCrop | VideoEventFx => self.video_clip,
             TrackMotion | TrackFx => self.video_track_focus,
-            VideoOutputFx => true,
+            VideoOutputFx | BypassAudioFx => true,
+            AudioEventFx => self.audio_clip,
+            AudioTrackFx | DefaultTrackFx => self.audio_track_focus,
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
@@ -169,6 +175,7 @@ impl CmdState {
             Quantize => self.quantize,
             ShowEnvelopes => self.show_env,
             LockEnvelopes => self.lock_env,
+            BypassAudioFx => self.bypass_audio_fx,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             LayoutUser(n) => self.layout_slot == Some(n),
             LayoutDefault => self.layout_slot.is_none(),
@@ -725,10 +732,10 @@ pub const TOOLS: &[M] = &[
         X("Open &Copy in Audio Editor"),
         X("Edit Source Pro&ject"),
         S,
-        X("Audio &Event FX..."),
+        C("Audio &Event FX...", AudioEventFx),
         X("Apply Non-Real-Time Event &FX..."),
         S,
-        X("&Track FX..."),
+        C("&Track FX...", AudioTrackFx),
         S,
         X("&Remove Assignable FX..."),
     ]),
@@ -872,7 +879,7 @@ pub const OPTIONS: &[M] = &[
         K("Hold &Valleys", false),
     ]),
     S,
-    K("&Bypass All Audio FX", false),
+    C("&Bypass All Audio FX", BypassAudioFx),
     S,
     K("&Mute All Audio", false),
     K("Mute All Vi&deo", false),
@@ -1115,6 +1122,14 @@ mod tests {
         assert!(st.enabled(VideoOutputFx));
         (st.video_clip, st.video_track_focus) = (true, true);
         assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion) && st.enabled(VideoEventFx) && st.enabled(TrackFx));
+        // Audio Event FX needs an audio event (also beside a video one: a grouped pair); Track FX and the default
+        // chain an audio track.
+        assert!(!st.enabled(AudioEventFx) && !st.enabled(AudioTrackFx) && !st.enabled(DefaultTrackFx));
+        (st.audio_clip, st.audio_track_focus) = (true, true);
+        assert!(st.enabled(AudioEventFx) && st.enabled(AudioTrackFx) && st.enabled(DefaultTrackFx));
+        assert_eq!(st.checked(BypassAudioFx), Some(false));
+        st.bypass_audio_fx = true;
+        assert!(st.enabled(BypassAudioFx) && st.checked(BypassAudioFx) == Some(true));
     }
 
     #[test]

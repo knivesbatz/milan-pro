@@ -153,9 +153,9 @@ struct Session {
     calls: Arc<AtomicU64>,
     watch: (u64, Instant),
     stop: Arc<AtomicBool>,
-    /// The plan the mixer reads once per block, and the content hash it was compiled from.
+    /// The plan the mixer reads once per block, and the content hash and bypass it was compiled with.
     slot: Arc<Mutex<Arc<AudioPlan>>>,
-    hash: u64,
+    hash: (u64, bool),
 }
 
 pub struct Player {
@@ -169,6 +169,8 @@ pub struct Player {
     error: Arc<Mutex<Option<String>>>,
     /// Master fader and meter tap (§5.12).
     pub master: Arc<Master>,
+    /// Options › Bypass All Audio FX: the plans this player compiles skip every audio plug-in.
+    pub bypass_fx: bool,
 }
 
 impl Drop for Player {
@@ -188,6 +190,7 @@ impl Player {
             session: None,
             error: Arc::new(Mutex::new(None)),
             master: Arc::new(Master::new()),
+            bypass_fx: false,
         };
         p.open();
         p
@@ -255,7 +258,7 @@ impl Player {
             self.reopen();
             return;
         }
-        let slot = Arc::new(Mutex::new(Arc::new(compile_audio(project))));
+        let slot = Arc::new(Mutex::new(Arc::new(self.plan(project))));
         let lp = lp.map(|(a, b)| (frame(a), frame(b)));
         let (s, quit, error, ctx) = (slot.clone(), stop.clone(), self.error.clone(), ctx.clone());
         std::thread::Builder::new()
@@ -267,17 +270,24 @@ impl Player {
                 })
             })
             .expect("spawn milan-mix");
-        let hash = crate::engine::content_hash(project);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx);
         self.session = Some(Session { clock, calls, watch: (0, Instant::now()), stop, slot, hash });
     }
 
-    /// While playing: give the mixer the project's new plan after an edit. It is heard within about 150 ms.
+    fn plan(&self, project: &Project) -> AudioPlan {
+        AudioPlan { bypass_fx: self.bypass_fx, ..compile_audio(project) }
+    }
+
+    /// While playing: give the mixer the project's new plan after an edit (or a Bypass All Audio FX toggle). It is
+    /// heard within about 150 ms.
     pub fn set_plan(&mut self, project: &Project) {
-        let Some(s) = &mut self.session else { return };
-        let hash = crate::engine::content_hash(project);
-        if hash != s.hash {
-            s.hash = hash;
-            *s.slot.lock().unwrap() = Arc::new(compile_audio(project));
+        let hash = (crate::engine::content_hash(project), self.bypass_fx);
+        if self.session.as_ref().is_none_or(|s| s.hash == hash) {
+            return;
+        }
+        let plan = Arc::new(self.plan(project));
+        if let Some(s) = &mut self.session {
+            (s.hash, *s.slot.lock().unwrap()) = (hash, plan);
         }
     }
 

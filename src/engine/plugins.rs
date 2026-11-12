@@ -1,6 +1,6 @@
 //! The plug-in registry (decision 0.4): every built-in video FX, transition and generator with its parameters and
 //! presets, evaluation of a stored `Fx` at a time, and user presets in %APPDATA%\MilanPro\presets.json.
-//! Audio FX register here too from batch 16.
+//! Audio FX register here too; their DSP is in `afx.rs`.
 //!
 //! Storage: a Float is one key; a Color is four (`key.r`, `key.g`, `key.b`, `key.a`); Choice and Bool are floats
 //! (index, 0/1); Text and Font live in `Fx.text`. A missing key means the default.
@@ -16,6 +16,7 @@ pub enum PluginKind {
     VideoFx,
     Transition,
     Generator,
+    AudioFx,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -483,6 +484,99 @@ pub static PLUGINS: &[PluginInfo] = &[
             preset("Title", &[("size", 0.14), ("outline", 0.004)]),
             preset("Subtitle", &[("y", 0.9), ("size", 0.05), ("outline", 0.003)]),
         ],
+    },
+    // ---- Audio FX (DSP in afx.rs) ----
+    PluginInfo {
+        id: "milan.afx.gate",
+        name: "Track Noise Gate",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Silences the track below a threshold",
+        params: &[f("threshold", "Threshold (dB)", -96.0, 0.0, -96.0), f("attack", "Attack (ms)", 0.1, 100.0, 1.0), f("release", "Release (ms)", 1.0, 2000.0, 100.0)],
+        presets: &[DEFAULT],
+    },
+    PluginInfo {
+        id: "milan.afx.eq",
+        name: "Track EQ",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Four-band equalizer",
+        params: &[
+            choice("b1.type", "Type", &["Low Shelf", "High-Pass"], 0).sec("Band 1"),
+            f("b1.freq", "Frequency (Hz)", 20.0, 20000.0, 100.0),
+            f("b1.gain", "Gain (dB)", -24.0, 24.0, 0.0),
+            f("b1.q", "Q", 0.1, 10.0, 0.7071),
+            f("b2.freq", "Frequency (Hz)", 20.0, 20000.0, 800.0).sec("Band 2"),
+            f("b2.gain", "Gain (dB)", -24.0, 24.0, 0.0),
+            f("b2.q", "Q", 0.1, 10.0, 1.0),
+            f("b3.freq", "Frequency (Hz)", 20.0, 20000.0, 4000.0).sec("Band 3"),
+            f("b3.gain", "Gain (dB)", -24.0, 24.0, 0.0),
+            f("b3.q", "Q", 0.1, 10.0, 1.0),
+            choice("b4.type", "Type", &["High Shelf", "Low-Pass"], 0).sec("Band 4"),
+            f("b4.freq", "Frequency (Hz)", 20.0, 20000.0, 10000.0),
+            f("b4.gain", "Gain (dB)", -24.0, 24.0, 0.0),
+            f("b4.q", "Q", 0.1, 10.0, 0.7071),
+        ],
+        presets: &[DEFAULT],
+    },
+    PluginInfo {
+        id: "milan.afx.compressor",
+        name: "Track Compressor",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Reduces the dynamic range",
+        params: &[
+            f("threshold", "Threshold (dB)", -60.0, 0.0, -12.0),
+            f("ratio", "Ratio", 1.0, 20.0, 1.0),
+            f("attack", "Attack (ms)", 0.1, 500.0, 5.0),
+            f("release", "Release (ms)", 1.0, 5000.0, 100.0),
+            f("output", "Output gain (dB)", -24.0, 24.0, 0.0),
+        ],
+        presets: &[DEFAULT],
+    },
+    PluginInfo {
+        id: "milan.afx.reverb",
+        name: "Reverb",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Room reverberation",
+        params: &[
+            f("room", "Room size", 0.0, 1.0, 0.5),
+            f("damp", "Damping", 0.0, 1.0, 0.5),
+            f("width", "Width", 0.0, 1.0, 1.0),
+            f("wet", "Reverb out", 0.0, 1.0, 0.25),
+            f("dry", "Dry out", 0.0, 1.0, 1.0),
+        ],
+        presets: &[DEFAULT],
+    },
+    PluginInfo {
+        id: "milan.afx.delay",
+        name: "Simple Delay",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Echoes the signal",
+        params: &[
+            f("delay", "Delay time (ms)", 1.0, 5000.0, 250.0),
+            f("feedback", "Feedback", 0.0, 0.95, 0.3),
+            f("dry", "Dry out", 0.0, 1.0, 1.0),
+            f("wet", "Delay out", 0.0, 1.0, 0.5),
+        ],
+        presets: &[DEFAULT],
+    },
+    PluginInfo {
+        id: "milan.afx.limiter",
+        name: "Limiter",
+        kind: PluginKind::AudioFx,
+        group: "Audio",
+        category: "Audio",
+        desc: "Keeps peaks under a ceiling (1.5 ms lookahead)",
+        params: &[f("input", "Input gain (dB)", 0.0, 24.0, 0.0), f("ceiling", "Ceiling (dB)", -24.0, 0.0, -1.0), f("release", "Release (ms)", 1.0, 1000.0, 50.0)],
+        presets: &[DEFAULT],
     },
 ];
 

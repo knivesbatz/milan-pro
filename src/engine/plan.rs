@@ -385,6 +385,8 @@ pub struct ASrc {
 
 #[derive(Debug)]
 pub struct AEvent {
+    /// The clip id: keys its FX state.
+    pub id: String,
     pub src: ASrc,
     /// Event gain, linear.
     pub gain: f32,
@@ -394,10 +396,16 @@ pub struct AEvent {
     pub fade_out_curve: Curve,
     /// Event volume envelope (dB), event-relative.
     pub vol_env: Option<Envelope>,
+    /// Audio Event FX, keyed event-relative; they run on the PCM before gain, fades and envelope.
+    pub fx: Vec<Fx>,
 }
 
 #[derive(Debug)]
 pub struct ATrack {
+    /// The track id: keys its FX state.
+    pub id: String,
+    /// Audio Track FX, run before the track's envelopes, Volume and Pan.
+    pub fx: Vec<Fx>,
     /// Static Volume (linear) and Pan (-1 left .. 1 right). With a pan envelope, Pan is added to it as a trim, as in VEGAS.
     pub volume: f32,
     pub pan: f32,
@@ -411,6 +419,10 @@ pub struct ATrack {
 pub struct AudioPlan {
     /// Audible tracks only (muted and un-soloed tracks are left out).
     pub tracks: Vec<ATrack>,
+    /// Audio Master FX, run before the master gain.
+    pub master_fx: Vec<Fx>,
+    /// Options › Bypass All Audio FX (playback only; a render never sets it).
+    pub bypass_fx: bool,
 }
 
 pub fn compile_audio(p: &Project) -> AudioPlan {
@@ -430,6 +442,8 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 .filter_map(|c| {
                     let m = media.get(c.media_id.as_deref()?)?;
                     Some(AEvent {
+                        id: c.id.clone(),
+                        fx: c.fx.clone(),
                         src: ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: c.in_point, rate: c.rate, reverse: c.reverse },
                         gain: crate::engine::keyframes::db_to_gain(c.gain_db),
                         fade_in: c.fade_in,
@@ -442,6 +456,8 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 .collect();
             let e = &t.envelopes;
             (!events.is_empty()).then(|| ATrack {
+                id: t.id.clone(),
+                fx: t.fx.clone(),
                 volume: t.volume,
                 pan: t.pan.clamp(-1.0, 1.0),
                 vol_env: env(e, EnvKind::Volume),
@@ -451,7 +467,7 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
             })
         })
         .collect();
-    AudioPlan { tracks }
+    AudioPlan { tracks, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false }
 }
 
 #[cfg(test)]

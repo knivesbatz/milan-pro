@@ -746,6 +746,7 @@ pub fn draw_timeline(
                     let why = if track.is_some() { "The track is locked." } else { "Drop generated media on a video track." };
                     (id.and_then(|id| project.clip(&id)?.media_id.clone()).map(edit::FxTarget::Media), why)
                 }
+                PluginKind::AudioFx => (None, "Audio plug-ins are added with fx+ in an FX window."),
             };
             match target {
                 Some(t) => {
@@ -841,7 +842,11 @@ pub fn draw_timeline(
                 match &hit {
                     Some(cr) if response.secondary_clicked() => {
                         let id = &project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx].id;
-                        if !sel.clips.contains(id) {
+                        // A selected event stays selected and becomes the focus (last), so the menu acts on it.
+                        if let Some(k) = sel.clips.iter().position(|c| c == id) {
+                            let f = sel.clips.remove(k);
+                            sel.clips.push(f);
+                        } else {
                             sel.clips = vec![id.clone()];
                         }
                     }
@@ -849,7 +854,7 @@ pub fn draw_timeline(
                     None if !(m.command || m.shift) => sel.clips.clear(),
                     None => {}
                 }
-                // A video event's Pan/Crop, fx and Generated Media buttons open their windows.
+                // An event's fx button and a video event's Pan/Crop and Generated Media buttons open their windows.
                 if let (Some(cr), Some(row), true) = (&hit, row_at(pos.y), response.clicked()) {
                     use super::icons::Icon;
                     let c = &project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx];
@@ -858,8 +863,7 @@ pub fn draw_timeline(
                     let generated = generated_media(project, c);
                     let win = events::buttons(&t, r, cr.is_video, generated.is_some()).into_iter().find(|(_, b)| b.contains(pos)).and_then(|(icon, _)| match icon {
                         Icon::PanCrop => Some(super::ToolWin::PanCrop(c.id.clone())),
-                        // shortcut: audio event FX arrive with the audio FX (batch 16).
-                        Icon::TrackFx if cr.is_video => Some(super::ToolWin::Fx(edit::FxTarget::Event(c.id.clone()))),
+                        Icon::TrackFx => Some(super::ToolWin::Fx(edit::FxTarget::Event(c.id.clone()))),
                         Icon::GeneratedMedia => generated.map(|m| super::ToolWin::Fx(edit::FxTarget::Media(m))),
                         _ => None,
                     });

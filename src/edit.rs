@@ -1588,9 +1588,11 @@ fn carry_spans(tl: &mut Timeline, mut spans: Vec<(bool, usize, usize, f64, f64)>
 /// What an FX window, a plug-in drop or the Color Grading panel edits (decision 0.5). Ids, so it survives edits.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FxTarget {
+    /// A video or audio event's or track's chain (the track kind says which).
     Event(String),
     Track(String),
     VideoOutput,
+    AudioMaster,
     /// Generated media: its generator.
     Media(String),
     /// The transition into this event.
@@ -1613,7 +1615,18 @@ pub fn fx_chain_mut<'a>(p: &'a mut Project, target: &FxTarget) -> Option<&'a mut
             (!t.locked).then_some(&mut t.fx)
         }
         FxTarget::VideoOutput => Some(&mut p.timeline.master.video_fx),
+        FxTarget::AudioMaster => Some(&mut p.timeline.master.audio_fx),
         FxTarget::Media(_) | FxTarget::Transition(_) => None,
+    }
+}
+
+/// `target` holds audio plug-ins: an audio event's or track's chain, or the Audio Master's.
+pub fn fx_is_audio(p: &Project, target: &FxTarget) -> bool {
+    match target {
+        FxTarget::Event(id) => p.find_clip(id).is_some_and(|r| !r.is_video),
+        FxTarget::Track(id) => p.find_track(id).is_some_and(|(v, _)| !v),
+        FxTarget::AudioMaster => true,
+        _ => false,
     }
 }
 
@@ -1630,6 +1643,7 @@ pub fn fx_list(p: &Project, target: &FxTarget) -> Option<(Vec<Fx>, bool)> {
         FxTarget::Event(id) => clip(id).map(|(c, free)| (c.fx.clone(), free)),
         FxTarget::Track(id) => p.find_track(id).map(|(v, i)| (p.timeline.tracks(v)[i].fx.clone(), !p.timeline.tracks(v)[i].locked)),
         FxTarget::VideoOutput => Some((p.timeline.master.video_fx.clone(), true)),
+        FxTarget::AudioMaster => Some((p.timeline.master.audio_fx.clone(), true)),
         FxTarget::Media(id) => p.media_pool.iter().find(|m| m.id == *id)?.generator.clone().map(|g| (vec![g], true)),
         FxTarget::Transition(id) => clip(id).and_then(|(c, free)| Some((vec![fx_of_transition(c.transition.as_ref()?)], free))),
     }
@@ -3071,6 +3085,13 @@ mod tests {
         assert!(std::ptr::eq(chain, &p.timeline.master.video_fx));
         assert!(add_fx(&mut p, &FxTarget::VideoOutput, fx("milan.fx.invert")));
         assert_eq!(p.timeline.master.video_fx.len(), 1);
+        // Audio Master FX is its audio chain; audio events and tracks are audio targets.
+        assert!(add_fx(&mut p, &FxTarget::AudioMaster, fx("milan.afx.limiter")));
+        assert_eq!((p.timeline.master.audio_fx.len(), fx_list(&p, &FxTarget::AudioMaster).unwrap().0.len()), (1, 1));
+        p.timeline.audio_tracks[0].clips.push(Clip::new("a", 0.0, 1.0));
+        let (ae, at) = (FxTarget::Event(p.timeline.audio_tracks[0].clips[0].id.clone()), FxTarget::Track(p.timeline.audio_tracks[0].id.clone()));
+        assert!([&ae, &at, &FxTarget::AudioMaster].iter().all(|t| fx_is_audio(&p, t)));
+        assert!([&ev, &tr, &FxTarget::VideoOutput].iter().all(|t| !fx_is_audio(&p, t)));
     }
 
     /// Two events meeting at 5 s on video track 1, each with `handle` seconds of media past the cut.

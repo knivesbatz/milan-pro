@@ -1,8 +1,9 @@
 //! Timeline engine: one plan of the project for preview, playback and render (docs/FEATURE_PLAN.md section 1).
 //! Video: `plan` turns the project into frame plans, `worker` composes them on the "milan-video" thread
 //! from persistent `vdecode` streams, and `VideoEngine` is the UI thread's handle to it.
-//! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`).
+//! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`), with `afx` FX chains.
 //! Render: `render` runs both into one ffmpeg encoder.
+pub mod afx;
 pub mod cache;
 pub mod composite;
 // shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the

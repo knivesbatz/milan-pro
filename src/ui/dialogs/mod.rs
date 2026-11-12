@@ -1,5 +1,6 @@
 //! Modal dialogs (§5.15): VP16 draws them as native light Win32 property sheets, VP23 dark. This module holds
 //! the shared frame (title row with ? and ×, tabs, group headings, 75×23 buttons) and the dialogs themselves.
+mod default_track;
 mod event_props;
 mod prefs;
 mod render;
@@ -8,6 +9,7 @@ mod take_chooser;
 mod update;
 mod welcome;
 
+pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
 pub use prefs::PrefsDialog;
 pub use render::{RenderDialog, open_folder};

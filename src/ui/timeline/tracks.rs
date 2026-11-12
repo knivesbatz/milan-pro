@@ -114,7 +114,7 @@ fn layout(t: &Theme, g: &Geo, row: &Row) -> Layout {
     let kinds: &[Btn] = match (v16, row.is_video) {
         (true, _) => &[Btn::Mute, Btn::Solo],
         (false, true) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
-        (false, false) => &[Btn::Mute, Btn::Solo],
+        (false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
     };
     // Row 1: right-aligned on a 24 px pitch with a 6 px right padding; buttons that don't fit are left out.
     let mut buttons = Vec::new();
@@ -169,7 +169,11 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             let m = ui.input(|i| i.modifiers);
             (sel.list_focus, sel.env) = (true, None);
             if br.secondary_clicked() {
-                if !sel.tracks.contains(&tid) {
+                // A selected track stays selected and becomes the focus (last), so the menu acts on it.
+                if let Some(k) = sel.tracks.iter().position(|s| *s == tid) {
+                    let f = sel.tracks.remove(k);
+                    sel.tracks.push(f);
+                } else {
                     sel.tracks = vec![tid.clone()];
                 }
             } else if m.shift {
@@ -431,7 +435,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
         // No track name: the scribble strip is off by default in both looks.
         let font = t.font(t.font.ui);
         for (b, r) in &l.buttons {
-            paint_button(&p, &t, *b, *r, tr);
+            paint_button(&p, &t, *b, *r, tr, project.timeline.cursor_position);
         }
         for (s, r, groove) in &l.sliders {
             let cy = r.center().y.round();
@@ -478,15 +482,24 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
     p.rect_filled(empty, 0.0, if v16 { t.frame } else { t.empty_lane_bg });
 }
 
-fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track) {
+/// `at`: the cursor time, at which an audio track's FX count as present when some plug-in changes the sound (every
+/// audio track carries the neutral gate, EQ and compressor).
+fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
     let v16 = t.look() == UiLook::Vegas16;
     let (icon, on) = match b {
         Btn::Comp => (Icon::CompositingMode, false),
+        Btn::Fx if matches!(tr.kind, TrackKind::Audio) => (Icon::TrackFx, crate::engine::afx::audible(&tr.fx, at)),
         Btn::Fx => (Icon::TrackFx, !tr.fx.is_empty()),
         Btn::Mute => (Icon::Mute, tr.muted),
         Btn::Solo => (Icon::Solo, tr.solo),
     };
-    if v16 {
+    if b == Btn::Fx && !v16 {
+        // VP23: a 4 px accent dot at the lower right when FX are present, not a toggle fill (§5.9.3).
+        paint_icon(p, r, icon, t.look(), None);
+        if on {
+            p.circle_filled(r.right_bottom() - vec2(3.0, 3.0), 2.0, t.accent);
+        }
+    } else if v16 {
         paint_icon(p, r, icon, t.look(), None);
         if on {
             p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));

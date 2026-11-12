@@ -127,9 +127,9 @@ fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &P
     }
 }
 
-/// Mix seconds `a..b` at RATE with the master gain, clamped to [-1, 1], as f32le stereo into `write`.
-/// Ok(false): `write` refused the data. Progress goes 0..`share`.
-// shortcut: always clamped; batch 16 skips the clamp when the master FX end in a limiter.
+/// Mix seconds `a..b` at RATE through the master FX (Bypass All Audio FX never applies to a render), then the master
+/// gain, clamped to [-1, 1], as f32le stereo into `write` (a master limiter's output never reaches the clamp while the
+/// master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`.
 fn mix_range(p: &Project, (a, b): (f64, f64), ctl: &Ctl, share: f64, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
     let plan = compile_audio(p);
     let gain = p.timeline.master.gain;
@@ -353,12 +353,19 @@ mod tests {
         }
         drop(wk);
 
-        // Master gain 0.5 halves the rendered audio.
+        // Master gain 0.5 with neutral master FX halves the rendered audio.
         let full = pcm(&dir.join("out3.wav"));
         p.timeline.master.gain = [0.5, 0.5];
+        p.timeline.master.audio_fx = vec![crate::engine::afx::test_fx("milan.afx.eq", &[]), crate::engine::afx::test_fx("milan.afx.compressor", &[])];
         let half = pcm(&run(&p, &PRESETS[3], "half.wav", (0.0, 3.0)));
         let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(peak(&full) > 0.05 &&(peak(&half) / peak(&full) - 0.5).abs() < 0.01, "{} vs {}", peak(&half), peak(&full));
+        // A master limiter at -1 dB, driven 24 dB into it, never lets the render past -1 dBFS.
+        let mut loud = p.clone();
+        loud.timeline.master.gain = [1.0, 1.0];
+        loud.timeline.master.audio_fx = vec![crate::engine::afx::test_fx("milan.afx.limiter", &[("input", 24.0), ("ceiling", -1.0)])];
+        let limited = peak(&pcm(&run(&loud, &PRESETS[3], "limited.wav", (0.0, 3.0))));
+        assert!(limited <= 10f32.powf(-1.0 / 20.0) + 1e-4 && limited > 0.85, "{limited}");
 
         // Cancel mid-render, then drop a running job (Milan closing): no output, no .partial, no temp audio.
         let mut long = p.clone();

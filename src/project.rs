@@ -499,6 +499,23 @@ impl Timeline {
     }
 }
 
+/// The app's Set Default Track Properties chain (`Prefs::default_track_fx`); None = the built-in one.
+static DEFAULT_TRACK_FX: std::sync::Mutex<Option<Vec<Fx>>> = std::sync::Mutex::new(None);
+
+pub fn set_default_track_fx(fx: Option<Vec<Fx>>) {
+    *DEFAULT_TRACK_FX.lock().unwrap_or_else(|e| e.into_inner()) = fx;
+}
+
+/// The FX a new audio track starts with: `saved` with fresh instance ids, or (None) Track Noise Gate, Track EQ and
+/// Track Compressor at neutral settings, as VEGAS gives a new audio track.
+pub fn default_track_chain(saved: Option<&[Fx]>) -> Vec<Fx> {
+    use crate::engine::plugins;
+    match saved {
+        Some(s) => s.iter().map(|f| Fx { id: uuid::Uuid::new_v4().to_string(), ..f.clone() }).collect(),
+        None => ["milan.afx.gate", "milan.afx.eq", "milan.afx.compressor"].into_iter().filter_map(plugins::find).map(|i| plugins::new_fx(i, None)).collect(),
+    }
+}
+
 impl Track {
     pub fn new(name: &str, kind: TrackKind) -> Self {
         Self {
@@ -515,7 +532,10 @@ impl Track {
             pan: 0.0,
             composite: Composite::default(),
             motion: Keyframes::default(),
-            fx: Vec::new(),
+            fx: match kind {
+                TrackKind::Audio => default_track_chain(DEFAULT_TRACK_FX.lock().unwrap_or_else(|e| e.into_inner()).as_deref()),
+                TrackKind::Video => Vec::new(),
+            },
             envelopes: Vec::new(),
         }
     }
@@ -691,6 +711,7 @@ mod tests {
         };
         strip(&mut v["timeline"], &["loop_region", "master"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes"]);
+        strip(&mut v["timeline"]["audio_tracks"][0], &["fx"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes"];
         strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &clip_keys);
         strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator"]);
@@ -702,6 +723,7 @@ mod tests {
         let t = &tl.video_tracks[0];
         assert_eq!(t.composite, Composite::SourceAlpha);
         assert!(t.motion.keys.is_empty() && t.fx.is_empty() && t.envelopes.is_empty());
+        assert!(tl.audio_tracks[0].fx.is_empty(), "an old audio track keeps its empty chain");
         let c = &t.clips[0];
         assert_eq!(c.fade_in, 0.0);
         assert_eq!((c.rate, c.gain_db, c.reverse, c.muted), (1.0, 0.0, false, false));
@@ -757,6 +779,23 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
+    }
+
+    #[test]
+    fn new_audio_tracks_get_the_default_chain() {
+        let t = Track::new("A", TrackKind::Audio);
+        let ids: Vec<&str> = t.fx.iter().map(|f| f.plugin.as_str()).collect();
+        assert_eq!(ids, ["milan.afx.gate", "milan.afx.eq", "milan.afx.compressor"]);
+        // Neutral: each plug-in's DSP would pass the signal through.
+        for f in &t.fx {
+            let p = crate::engine::plugins::eval(f, 0.0).unwrap();
+            assert!(crate::engine::afx::new(&f.plugin).unwrap().neutral(&p), "{}", f.plugin);
+        }
+        assert!(Track::new("V", TrackKind::Video).fx.is_empty());
+        // A saved chain comes back with new instance ids (each track's FX state is its own).
+        let saved = default_track_chain(Some(&t.fx));
+        assert!(saved.iter().zip(&t.fx).all(|(a, b)| a.id != b.id && Fx { id: b.id.clone(), ..a.clone() } == *b));
+        assert!(default_track_chain(Some(&[])).is_empty());
     }
 
     #[test]

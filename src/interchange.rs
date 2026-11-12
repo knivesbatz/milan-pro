@@ -287,6 +287,8 @@ pub fn to_project(e: &VegasExport, probed: &HashMap<String, Result<MediaItem, St
             });
         } else {
             (tr.volume, tr.pan) = (t.volume.max(0.0) as f32, t.pan.clamp(-1.0, 1.0) as f32);
+            // VEGAS's own neutral chain, not the user's saved default, which would change the imported mix.
+            tr.fx = crate::project::default_track_chain(None);
         }
         for env in &t.envelopes {
             let Some(k) = envelope(&env.kind, video) else {

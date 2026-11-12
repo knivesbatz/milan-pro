@@ -29,6 +29,7 @@ impl MeridianApp {
             || self.shortcuts_open
             || self.event_props.is_some()
             || self.take_chooser.is_some()
+            || self.default_track.is_some()
             || self.layout_as.is_some()
             || self.vegas_report.is_some()
     }
@@ -43,7 +44,8 @@ impl MeridianApp {
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
             clip_muted: clip.is_some_and(|c| c.muted),
-            video_clip: self.sel.clips.last().and_then(|id| self.project.find_clip(id)).is_some_and(|r| r.is_video),
+            video_clip: self.focus_clip(true).is_some(),
+            audio_clip: self.focus_clip(false).is_some(),
             takes: self.project.find_clips(&self.sel.clips).iter().any(|r| !tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].takes.is_empty()),
             n_sel: self.sel.clips.len(),
             any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
@@ -77,12 +79,34 @@ impl MeridianApp {
                 .collect(),
             layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(theme::get().look(), n)).map(|l| l.name.clone())),
             layout_slot: self.layout_slot,
+            bypass_audio_fx: self.bypass_audio_fx,
         }
     }
 
     /// The focus track of one kind: the last selected track of that kind.
     fn focus_of(&self, video: bool) -> Option<usize> {
         self.sel.tracks.iter().rev().filter_map(|id| self.project.find_track(id)).find(|f| f.0 == video).map(|f| f.1)
+    }
+
+    /// Set Default Track Properties OK: restore the built-in chain, or save the track's chain, for new audio tracks.
+    fn set_default_track(&mut self, d: &dialogs::DefaultTrackProps) {
+        let fx = if d.restore {
+            self.message = Some("New audio tracks will start with the original default FX.".into());
+            None
+        } else {
+            let Some((_, i)) = self.project.find_track(&d.track).filter(|f| !f.0 && d.track_fx) else { return };
+            let fx = self.project.timeline.audio_tracks[i].fx.clone();
+            self.message = Some(format!("New audio tracks will start with the FX of track {} ({} plug-ins).", i + 1, fx.len()));
+            Some(fx)
+        };
+        crate::project::set_default_track_fx(fx.clone());
+        self.prefs.default_track_fx = fx;
+        self.save_prefs();
+    }
+
+    /// The focus event of one kind: the last selected event of that kind (a grouped A/V pair has one of each).
+    fn focus_clip(&self, video: bool) -> Option<String> {
+        self.sel.clips.iter().rev().find(|id| self.project.find_clip(id).is_some_and(|r| r.is_video == video)).cloned()
     }
 
     /// The editing options the timeline follows.
@@ -113,7 +137,7 @@ impl MeridianApp {
         use crate::engine::plugins::PluginKind;
         use edit::FxTarget;
         let p = &self.project;
-        let clip = self.sel.clips.last().filter(|id| p.find_clip(id).is_some_and(|r| r.is_video)).cloned();
+        let clip = self.focus_clip(true);
         let (at, track, xfade, cut, len) = (self.quantized(p.timeline.cursor_position), self.focus_of(true), self.prefs.auto_crossfade, self.prefs.cut_overlap, self.prefs.still_len);
         let (mut target, mut inserted) = (None, None);
         self.edit(|p| {
@@ -130,6 +154,8 @@ impl MeridianApp {
                     inserted = edit::insert_generated(p, track, at, d.fx.clone(), &d.name, len);
                     inserted.as_ref().and_then(|id| p.clip(id)?.media_id.clone()).map(FxTarget::Media)
                 }
+                // No chooser offers audio FX.
+                PluginKind::AudioFx => None,
             };
             target.is_some()
         });
@@ -508,20 +534,34 @@ impl MeridianApp {
                     _ => edit::delete_active_take(p, &ids),
                 });
             }
-            EventPanCrop => self.pan_crop = self.sel.clips.last().and_then(|id| ui::PanCropWin::open(&self.project, id)),
+            EventPanCrop => self.pan_crop = self.focus_clip(true).and_then(|id| ui::PanCropWin::open(&self.project, &id)),
             TrackMotion => {
                 let id = self.focus_of(true).map(|i| self.project.timeline.video_tracks[i].id.clone());
                 self.track_motion = id.and_then(|id| ui::TrackMotionWin::open(&self.project, &id));
             }
             VideoEventFx | TrackFx | VideoOutputFx => {
                 let target = match c {
-                    VideoEventFx => self.sel.clips.last().cloned().map(edit::FxTarget::Event),
+                    VideoEventFx => self.focus_clip(true).map(edit::FxTarget::Event),
                     TrackFx => self.focus_of(true).map(|i| edit::FxTarget::Track(self.project.timeline.video_tracks[i].id.clone())),
                     _ => Some(edit::FxTarget::VideoOutput),
                 };
                 if let Some(t) = target {
                     self.open_fx(t);
                 }
+            }
+            AudioEventFx | AudioTrackFx => {
+                let target = if c == AudioEventFx {
+                    self.focus_clip(false).map(edit::FxTarget::Event)
+                } else {
+                    self.focus_of(false).map(|i| edit::FxTarget::Track(self.project.timeline.audio_tracks[i].id.clone()))
+                };
+                if let Some(t) = target {
+                    self.open_fx(t);
+                }
+            }
+            BypassAudioFx => self.bypass_audio_fx = !self.bypass_audio_fx,
+            DefaultTrackFx => {
+                self.default_track = self.focus_of(false).map(|i| dialogs::DefaultTrackProps::new(self.project.timeline.audio_tracks[i].id.clone()));
             }
             ChooseActiveTake | DeleteTake => {
                 self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
@@ -865,6 +905,7 @@ impl MeridianApp {
         self.env_drag = None;
         self.event_props = None;
         self.take_chooser = None;
+        self.default_track = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
         self.playing = false;
         self.message = None;
@@ -989,6 +1030,11 @@ impl MeridianApp {
         if let Some(ok) = self.take_chooser.as_mut().and_then(|tc| tc.show(ctx, &self.project)) {
             if let Some(tc) = self.take_chooser.take().filter(|_| ok) {
                 self.edit(|p| edit::take_chooser(p, &tc.id, tc.pick, tc.delete));
+            }
+        }
+        if let Some(ok) = self.default_track.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.default_track.take().filter(|_| ok) {
+                self.set_default_track(&d);
             }
         }
         if let Some(w) = &mut self.welcome {

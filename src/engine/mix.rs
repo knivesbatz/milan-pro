@@ -1,5 +1,6 @@
 //! Audio mixer: the audio plan mixed block by block from persistent ffmpeg PCM streams (stereo f32 at RATE).
 //! `run` is the "milan-mix" thread body for playback; it loops inside the mixer, so a loop wrap is seamless.
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -8,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use crate::audio::RATE;
+use crate::engine::afx::Chain;
 use crate::engine::keyframes::{db_to_gain, ramp};
 use crate::engine::plan::{ASrc, AudioPlan, fade};
 use crate::project::Envelope;
@@ -230,6 +232,12 @@ pub struct Mixer {
     pcm: Vec<f32>,
     /// First decoder error since it was last taken.
     pub error: Option<String>,
+    /// FX state by clip id (events playing in the last block) and track id, and the master's.
+    ev_fx: HashMap<String, Chain>,
+    tr_fx: HashMap<String, Chain>,
+    master_fx: Chain,
+    /// The last block had Bypass All Audio FX on: turning it off starts the chains fresh.
+    bypassed: bool,
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -246,7 +254,21 @@ impl Mixer {
     }
 
     fn new(open: Open) -> Self {
-        Self { open, streams: Vec::new(), round: 0, pass: 0, wait: true, render: None, track: Vec::new(), pcm: Vec::new(), error: None }
+        Self {
+            open,
+            streams: Vec::new(),
+            round: 0,
+            pass: 0,
+            wait: true,
+            render: None,
+            track: Vec::new(),
+            pcm: Vec::new(),
+            error: None,
+            ev_fx: HashMap::new(),
+            tr_fx: HashMap::new(),
+            master_fx: Chain::default(),
+            bypassed: false,
+        }
     }
 
     /// The stream that continues `src` at `at` frames into its event, opened if none does.
@@ -281,9 +303,9 @@ impl Mixer {
         }
     }
 
-    /// Mix `out.len() / 2` stereo frames from timeline frame `f0`: per event PCM x gain x fades x volume envelope,
-    /// then per track the volume, mute and pan envelopes (ramped across the block) x Volume and Pan.
-    // shortcut: no FX chains until batch 16 (event FX after the PCM, track FX before the envelopes, master FX last).
+    /// Mix `out.len() / 2` stereo frames from timeline frame `f0`: per event PCM, event FX, then x gain x fades x volume
+    /// envelope; per track the track FX, then the volume, mute and pan envelopes (ramped across the block) x Volume and
+    /// Pan; then the master FX. Event FX stop at the event's end; track FX run on past it, so their tails are heard.
     pub fn block(&mut self, plan: &AudioPlan, f0: i64, out: &mut [f32]) {
         // Streams nothing used in the last block, or warmed for this one, are closed.
         let round = self.round;
@@ -295,6 +317,12 @@ impl Mixer {
         let (f1, r) = (f0 + n as i64, RATE as f64);
         let (mut track, mut pcm) = (std::mem::take(&mut self.track), std::mem::take(&mut self.pcm));
         let stop = self.render.clone();
+        let fx_on = !plan.bypass_fx;
+        if self.bypassed != plan.bypass_fx {
+            (self.ev_fx, self.tr_fx, self.master_fx, self.bypassed) = (HashMap::new(), HashMap::new(), Chain::default(), plan.bypass_fx);
+        }
+        // Chains of events and tracks no longer playing are dropped with these.
+        let (mut ev_old, mut tr_old) = (std::mem::take(&mut self.ev_fx), std::mem::take(&mut self.tr_fx));
         for tr in &plan.tracks {
             track.clear();
             track.resize(out.len(), 0.0);
@@ -314,6 +342,11 @@ impl Mixer {
                 if let Some(err) = l.s.read(&mut pcm, wait, stop.as_deref()) {
                     self.error.get_or_insert(err);
                 }
+                if fx_on && !e.fx.is_empty() {
+                    let mut ch = ev_old.remove(&e.id).unwrap_or_default();
+                    ch.run(&e.fx, (a - ps) as f64 / r, &mut pcm);
+                    self.ev_fx.insert(e.id.clone(), ch);
+                }
                 let (v0, v1) = env_gain(&e.vol_env, (a - ps) as f64 / r, (b - ps) as f64 / r);
                 let len = (b - a) as f32;
                 for (i, (o, x)) in track[(a - f0) as usize * 2..].chunks_exact_mut(2).zip(pcm.chunks_exact(2)).enumerate() {
@@ -329,10 +362,14 @@ impl Mixer {
                     o[1] += x[1] * g;
                 }
             }
-            if !heard {
+            let (t0, t1) = (f0 as f64 / r, f1 as f64 / r);
+            if fx_on && !tr.fx.is_empty() {
+                let mut ch = tr_old.remove(&tr.id).unwrap_or_default();
+                ch.run(&tr.fx, t0, &mut track);
+                self.tr_fx.insert(tr.id.clone(), ch);
+            } else if !heard {
                 continue;
             }
-            let (t0, t1) = (f0 as f64 / r, f1 as f64 / r);
             let (v0, v1) = env_gain(&tr.vol_env, t0, t1);
             let (m0, m1) = tr.mute_env.as_ref().map_or((1.0, 1.0), |e| ramp(e, t0, t1));
             let (p0, p1) = tr.pan_env.as_ref().map_or((0.0, 0.0), |e| ramp(e, t0, t1));
@@ -345,6 +382,9 @@ impl Mixer {
                 o[0] += x[0] * g * (1.0 - p).min(1.0);
                 o[1] += x[1] * g * (1.0 + p).min(1.0);
             }
+        }
+        if fx_on {
+            self.master_fx.run(&plan.master_fx, f0 as f64 / r, out);
         }
         (self.track, self.pcm) = (track, pcm);
     }
@@ -482,6 +522,8 @@ mod tests {
     #[test]
     fn mix_mute_solo_volume_pan() {
         let mut p = project();
+        // An empty master chain and the neutral default track chains: the exact batch 3 values.
+        assert!(p.timeline.master.audio_fx.is_empty() && p.timeline.audio_tracks.iter().all(|t| t.fx.len() == 3));
         // Track 0: 0.5 both sides; track 1: hard right at 1.0; track 2 muted.
         assert_eq!(mix(&p, &mut ones(), 0, 4), [0.5, 1.5, 0.5, 1.5, 0.5, 1.5, 0.5, 1.5]);
         p.timeline.audio_tracks[0].solo = true;
@@ -601,6 +643,95 @@ mod tests {
         *slot.lock().unwrap() = Arc::new(compile_audio(&p));
         m.block(&slot.lock().unwrap().clone(), 4, &mut out);
         assert_eq!(out, [0.25; 8]);
+    }
+
+    use crate::engine::afx::test_fx as afx;
+
+    #[test]
+    fn event_fx_run_before_the_fade() {
+        let mut p = solo_track();
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        (c.fade_in, c.fade_in_curve) = (100.0 / RATE as f64, Curve::Linear);
+        // A pure 1 ms (48-frame) delay: before the fade, frame 60 is the fade's 0.6; after it, the delayed 0.12.
+        c.fx = vec![afx("milan.afx.delay", &[("delay", 1.0), ("feedback", 0.0), ("wet", 1.0), ("dry", 0.0)])];
+        let out = left(&mix(&p, &mut ones(), 0, 200));
+        assert_eq!((out[47], out[48], out[60], out[150]), (0.0, 0.48, 0.6, 1.0));
+    }
+
+    #[test]
+    fn track_fx_tails_continue_and_event_fx_tails_are_cut() {
+        let mut p = solo_track();
+        p.timeline.audio_tracks[0].clips[0].duration = 0.1;
+        let end = frame(0.1) as usize;
+        let reverb = afx("milan.afx.reverb", &[("room", 0.8)]);
+        p.timeline.audio_tracks[0].clips[0].fx = vec![reverb.clone()];
+        let mut m = ones();
+        let a = [mix(&p, &mut m, 0, end), mix(&p, &mut m, end as i64, end)].concat();
+        assert!(a[..2 * end].iter().any(|&v| v != 1.0), "the event reverb is heard");
+        assert!(a[2 * end..].iter().all(|&v| v == 0.0), "and stops with the event");
+        p.timeline.audio_tracks[0].clips[0].fx.clear();
+        p.timeline.audio_tracks[0].fx.push(reverb);
+        let mut m = ones();
+        let b = [mix(&p, &mut m, 0, end), mix(&p, &mut m, end as i64, end)].concat();
+        assert!(b[2 * end..].iter().any(|&v| v.abs() > 1e-4), "the track reverb rings on");
+    }
+
+    /// Event delay, track reverb and a master limiter on both tracks of `project()`.
+    fn with_fx() -> Project {
+        let mut p = project();
+        let d = afx("milan.afx.delay", &[("delay", 3.0), ("feedback", 0.4)]);
+        for t in &mut p.timeline.audio_tracks {
+            t.clips[0].fx = vec![d.clone()];
+            t.fx.push(afx("milan.afx.reverb", &[]));
+        }
+        p.timeline.master.audio_fx = vec![afx("milan.afx.limiter", &[("input", 6.0)])];
+        p
+    }
+
+    #[test]
+    fn bypass_equals_a_plan_without_fx() {
+        let p = with_fx();
+        let mut plan = compile_audio(&p);
+        plan.bypass_fx = true;
+        let mut bypassed = vec![0.0; 2 * BLOCK];
+        fake(|k| (k as f32 * 0.37).sin()).block(&plan, 0, &mut bypassed);
+        let mut q = p.clone();
+        q.timeline.master.audio_fx.clear();
+        for t in &mut q.timeline.audio_tracks {
+            t.fx.clear();
+            t.clips[0].fx.clear();
+        }
+        let mut plain = vec![0.0; 2 * BLOCK];
+        fake(|k| (k as f32 * 0.37).sin()).block(&compile_audio(&q), 0, &mut plain);
+        assert_eq!(bypassed, plain);
+        let mut on = vec![0.0; 2 * BLOCK];
+        fake(|k| (k as f32 * 0.37).sin()).block(&compile_audio(&p), 0, &mut on);
+        assert_ne!(on, plain);
+    }
+
+    #[test]
+    fn fx_blocks_are_deterministic_and_split_invariant() {
+        let p = with_fx();
+        let ramp = |k: i64| (k as f32 * 0.37).sin();
+        let (mut one, mut two) = (vec![0.0; 2 * 2048], vec![0.0; 2 * 2048]);
+        fake(ramp).block(&compile_audio(&p), 100, &mut one);
+        fake(ramp).block(&compile_audio(&p), 100, &mut two);
+        assert_eq!(one, two);
+        let mut m = fake(ramp);
+        assert_eq!([mix(&p, &mut m, 100, 1024), mix(&p, &mut m, 1124, 1024)].concat(), one);
+    }
+
+    #[test]
+    fn master_limiter_holds_the_ceiling_and_neutral_fx_change_nothing() {
+        let mut p = project();
+        let plain = mix(&p, &mut ones(), 0, BLOCK);
+        p.timeline.master.audio_fx = vec![afx("milan.afx.eq", &[]), afx("milan.afx.compressor", &[])];
+        assert_eq!(mix(&p, &mut ones(), 0, BLOCK), plain, "neutral master FX are bit-exact");
+        p.timeline.master.audio_fx.push(afx("milan.afx.limiter", &[("input", 12.0), ("ceiling", -1.0)]));
+        let ceil = 10f32.powf(-1.0 / 20.0);
+        let out = mix(&p, &mut ones(), 0, 4 * BLOCK);
+        assert!(out.iter().all(|v| v.abs() <= ceil), "{:?}", out.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+        assert!(out[2 * BLOCK..].iter().any(|v| v.abs() > 0.9 * ceil));
     }
 
     /// Runs a session on a fake decoder and returns its first `blocks` blocks.

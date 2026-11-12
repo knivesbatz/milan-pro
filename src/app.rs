@@ -104,6 +104,8 @@ pub struct MeridianApp {
     event_props: Option<crate::ui::dialogs::EventProps>,
     /// Take › Choose Active... / Delete..., open on one event.
     take_chooser: Option<crate::ui::dialogs::TakeChooser>,
+    /// Set Default Track Properties..., open on one audio track.
+    default_track: Option<crate::ui::dialogs::DefaultTrackProps>,
     /// The modeless Event Pan/Crop and Track Motion windows.
     pan_crop: Option<ui::PanCropWin>,
     track_motion: Option<ui::TrackMotionWin>,
@@ -116,6 +118,8 @@ pub struct MeridianApp {
     shortcuts_open: bool,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
     shuttle: f64,
+    /// Options › Bypass All Audio FX (playback only, for this session).
+    bypass_audio_fx: bool,
     /// Recent project picked from a menu, opened once the save prompt is answered.
     pending_open: Option<std::path::PathBuf>,
     /// File › New opens Project Properties for the new project.
@@ -142,6 +146,8 @@ impl MeridianApp {
         // The demo harness never reads or writes the user's preferences.
         let prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
         let look = launch.look.unwrap_or(prefs.look);
+        // Before the first project: its audio track starts with this chain.
+        crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
@@ -232,6 +238,7 @@ impl MeridianApp {
             prefs_dlg: PrefsDialog::default(),
             event_props: None,
             take_chooser: None,
+            default_track: None,
             pan_crop: None,
             track_motion: None,
             fx_win: None,
@@ -241,6 +248,7 @@ impl MeridianApp {
             welcome,
             shortcuts_open: false,
             shuttle: 0.0,
+            bypass_audio_fx: false,
             pending_open: None,
             props_after_new: false,
             new_settings: None,
@@ -466,7 +474,7 @@ impl eframe::App for MeridianApp {
                     ui::master_bus_toolbar(bar);
                     // The faders edit the project's master gain (saved with it, used by the render).
                     self.master_view.gain = self.project.timeline.master.gain;
-                    ui::master_bus(body, &mut self.master_view, &self.audio.master);
+                    ui::master_bus(body, &mut self.master_view, &self.audio.master, !self.project.timeline.master.audio_fx.is_empty());
                     let down = body.input(|i| i.pointer.any_down());
                     set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
                 }
@@ -654,6 +662,7 @@ impl eframe::App for MeridianApp {
         // Video and audio play on through loop wraps (both wrap themselves); a seek or a new loop region restarts them.
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
+        self.audio.bypass_fx = self.bypass_audio_fx;
         if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
             self.audio.stop();
             if self.playing {

@@ -525,6 +525,13 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
             });
         }
         sep(ui);
+    } else if theme::get().look() == UiLook::Vegas16 {
+        // VP16 keeps the audio Track FX button hidden too (VP23 shows it on the header).
+        let id = project.timeline.audio_tracks[i].id.clone();
+        if entry(ui, "Track &FX...", "", true, Mark::None) {
+            crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id)));
+        }
+        sep(ui);
     }
     switches(ui, project, history, v, i);
     if entry(ui, "Default Track &Height", "Ctrl+`", project.timeline.tracks(v)[i].height > 0.0, Mark::None) {
@@ -724,7 +731,7 @@ const AUDIO_HEADER_MID: &[M] = &[
     S,
 ];
 
-const AUDIO_HEADER_END: &[M] = &[S, X("Set De&fault Track Properties..."), S];
+const AUDIO_HEADER_END: &[M] = &[S, C("Set De&fault Track Properties...", DefaultTrackFx), S];
 
 const AUDIO_HEADER_METERS: &[M] = &[
     S,
@@ -802,7 +809,7 @@ const AUDIO_EVENT: &[M] = &[
     X("Edit Source Pro&ject"),
     C("Select &in Project Media List", EventSelectInMedia),
     S,
-    X("Audio Event FX..."),
+    C("Audio Event &FX...", AudioEventFx),
     X("Apply Non-Real-Time Event FX..."),
     Inline(EVENT_SHARED),
     X("Create Su&bclip"),

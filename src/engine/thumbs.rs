@@ -43,6 +43,8 @@ pub fn eval_thumb(kind: PluginKind, e: &FxEval, p: f32) -> ColorImage {
             transition::mix(e, &a, &b, p, 1)
         }
         PluginKind::Generator => generate::render(e, W as u32, H as u32, 0.0),
+        // Audio FX have no chooser.
+        PluginKind::AudioFx => sample(),
     }
 }
 
