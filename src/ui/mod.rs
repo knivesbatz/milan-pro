@@ -1,10 +1,12 @@
 //! All panels. Colours, sizes and fonts come from `theme::get()` (never hard-coded).
 pub mod chrome;
 mod choosers;
+mod color_grading;
 pub mod dialogs;
 pub mod dock;
 mod explorer;
 pub mod fonts;
+mod fx_window;
 #[allow(dead_code)] // toolkit for the look stages; not every icon is placed yet
 pub mod icons;
 mod keyframes;
@@ -13,7 +15,6 @@ mod master_bus;
 mod media_panel;
 pub mod menus;
 mod pancrop;
-mod panels;
 mod preview;
 mod properties;
 mod status;
@@ -30,13 +31,14 @@ mod workspace;
 use std::path::PathBuf;
 use crate::project::Clip;
 
-pub use choosers::{Chooser, Kind as ChooserKind, draw_chooser, draw_chooser_toolbar};
+pub use choosers::{Chooser, draw_chooser, draw_chooser_toolbar};
+pub use color_grading::{ColorGrading, color_grading_toolbar, draw_color_grading};
+pub use fx_window::FxWindow;
 pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};
 pub use master_bus::{MasterView, master_bus, master_bus_toolbar};
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
 pub use pancrop::PanCropWin;
-pub use panels::placeholder;
 pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
@@ -56,11 +58,39 @@ pub enum WinAction {
     CreateProxy(Vec<crate::project::MediaItem>),
 }
 
-/// A Pan/Crop (event id) or Track Motion (track id) window asked for by a timeline button or menu; the app opens it.
+/// A Pan/Crop (event id), Track Motion (track id) or FX window asked for by a timeline button, a drop or a menu; the
+/// app opens it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolWin {
     PanCrop(String),
     TrackMotion(String),
+    Fx(crate::edit::FxTarget),
+}
+
+/// A plug-in tile dragged from a chooser: a ready instance of its preset (a transition's values as keys at 0).
+#[derive(Clone)]
+pub struct PluginDrag {
+    pub kind: crate::engine::plugins::PluginKind,
+    pub name: String,
+    pub fx: crate::project::Fx,
+}
+
+/// A plug-in tile released over `resp` this frame. Other drags' payloads are left alone.
+pub fn plugin_dropped(resp: &eframe::egui::Response) -> Option<std::sync::Arc<PluginDrag>> {
+    eframe::egui::DragAndDrop::has_payload_of_type::<PluginDrag>(&resp.ctx).then(|| resp.dnd_release_payload::<PluginDrag>()).flatten()
+}
+
+fn hint_id() -> eframe::egui::Id {
+    eframe::egui::Id::new("milan_status_hint")
+}
+
+/// A status-bar message from a window without its own (a refused plug-in drop); the app shows it.
+pub fn hint(ctx: &eframe::egui::Context, msg: impl Into<String>) {
+    ctx.data_mut(|d| d.insert_temp(hint_id(), msg.into()));
+}
+
+pub fn take_hint(ctx: &eframe::egui::Context) -> Option<String> {
+    ctx.data_mut(|d| d.remove_temp::<String>(hint_id()))
 }
 
 fn tool_id() -> eframe::egui::Id {
@@ -78,7 +108,7 @@ pub fn take_tool(ctx: &eframe::egui::Context) -> Option<ToolWin> {
 /// The tool windows' layers: plain keys over them (Delete) are theirs, as over a dock window.
 pub fn over_tool_window(ctx: &eframe::egui::Context) -> bool {
     let layer = ctx.pointer_hover_pos().and_then(|p| ctx.layer_id_at(p));
-    [pancrop::ID, trackmotion::ID].iter().any(|id| layer == Some(dialogs::tool_layer(id)))
+    [pancrop::ID, trackmotion::ID, fx_window::ID].iter().any(|id| layer == Some(dialogs::tool_layer(id)))
 }
 
 /// Drag-and-drop payload for media headed to the timeline.
@@ -183,6 +213,8 @@ pub struct EditOpts {
     /// View › Show Envelopes and Options › Lock Envelopes to Events.
     pub show_envelopes: bool,
     pub lock_envelopes: bool,
+    /// Preferences › Editing: the crossfade a transition dropped on a cut makes (seconds).
+    pub cut_overlap: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

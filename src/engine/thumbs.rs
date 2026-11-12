@@ -1,7 +1,7 @@
 //! Chooser thumbnails: a preset rendered on a procedural sample picture (100 x 60).
 use eframe::egui::{Color32, ColorImage};
 use crate::engine::generate::{self, fill};
-use crate::engine::plugins::{PluginInfo, PluginKind, Preset, find, preset_eval};
+use crate::engine::plugins::{FxEval, PluginInfo, PluginKind, Preset, find, preset_eval};
 use crate::engine::{transition, vfx};
 
 pub const W: usize = 100;
@@ -25,20 +25,24 @@ fn sample() -> ColorImage {
 
 /// `info` with `preset` (None = defaults); a transition is shown at progress `p` from the sample to its negative.
 pub fn preset_thumb(info: &'static PluginInfo, preset: Option<&Preset>, p: f32) -> ColorImage {
-    let e = preset_eval(info, preset);
-    match info.kind {
+    eval_thumb(info.kind, &preset_eval(info, preset), p)
+}
+
+/// `preset_thumb` for any evaluated plug-in (a user preset).
+pub fn eval_thumb(kind: PluginKind, e: &FxEval, p: f32) -> ColorImage {
+    match kind {
         PluginKind::VideoFx => {
             let mut img = sample();
-            vfx::apply(&mut img, &e, 1);
+            vfx::apply(&mut img, e, 1);
             img
         }
         PluginKind::Transition => {
             let a = sample();
             let mut b = a.clone();
             vfx::apply(&mut b, &preset_eval(find("milan.fx.invert").expect("built in"), None), 1);
-            transition::mix(&e, &a, &b, p, 1)
+            transition::mix(e, &a, &b, p, 1)
         }
-        PluginKind::Generator => generate::render(&e, W as u32, H as u32, 0.0),
+        PluginKind::Generator => generate::render(e, W as u32, H as u32, 0.0),
     }
 }
 

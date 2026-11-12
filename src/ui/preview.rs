@@ -1,6 +1,7 @@
 //! Video Preview window (§5.8): toolbar, letterboxed frame with overlays, centred transport and the 2×2 status block.
 use eframe::egui::*;
 use crate::decode::{Preview, Quality, Size};
+use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
 use super::menus::MenuAction;
@@ -33,7 +34,9 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         *action = Some(MenuAction::Properties);
     }
     inert_button(ui, Icon::ExternalMonitor, "Preview on External Monitor (not available yet)", false);
-    inert_button(ui, Icon::TrackFx, "Video Output FX (not available yet)", false);
+    if tool_button(ui, Icon::TrackFx, "Video Output FX", true, false).clicked() {
+        super::menus::send(ui.ctx(), super::keymap::Command::VideoOutputFx);
+    }
     inert_split(ui, Icon::SplitScreen, "Split-Screen View (not available yet)");
     ui.add_space(2.0);
     let label = format!("{:?} ({:?})", preview.quality, preview.size);
@@ -108,8 +111,9 @@ fn save_snapshot(preview: &Preview) -> Option<String> {
     })
 }
 
-/// Body: frame in the `preview_bg` surround, a 22 px transport row and the status block.
-pub fn draw_preview(ui: &mut Ui, project: &mut Project, preview: &mut Preview, view: &mut PreviewView, pb: &mut Playback) {
+/// Body: frame in the `preview_bg` surround, a 22 px transport row and the status block. A video FX tile dropped on
+/// the picture goes on the Video Output FX (one undo step).
+pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, preview: &mut Preview, view: &mut PreviewView, pb: &mut Playback) {
     let t = theme::get();
     let rect = ui.max_rect();
     let p = ui.painter().clone();
@@ -143,6 +147,15 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, preview: &mut Preview, v
     }
     paint_overlays(&pv, frame, view);
     let resp = ui.interact(video, ui.id().with("preview_video"), Sense::click());
+    if let Some(d) = super::plugin_dropped(&resp) {
+        let (target, before) = (crate::edit::FxTarget::VideoOutput, project.clone());
+        if d.kind == crate::engine::plugins::PluginKind::VideoFx && crate::edit::add_fx(project, &target, d.fx.clone()) {
+            history.push(before);
+            super::open_tool(ui.ctx(), super::ToolWin::Fx(target));
+        } else {
+            super::hint(ui.ctx(), "Only video FX go on the Video Output.");
+        }
+    }
     let v16_menu = theme::get().look() == UiLook::Vegas16;
     super::menus::context(&resp, |ui| {
         ui.add_enabled(false, Button::new("Simulate Device Aspect Ratio"));

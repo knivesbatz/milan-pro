@@ -295,6 +295,37 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     out
 }
 
+/// More lanes under the controller's own in `rect` (the same `rect` and `span`): each (name, key times) is drawn
+/// read-only; Some(k) when lane k's name is clicked. Lanes that do not fit are left out.
+pub fn passive_lanes(ui: &Ui, rect: Rect, span: f64, fps: f64, lanes: &[(&str, &[f64])]) -> Option<usize> {
+    let t = theme::get();
+    // The controller's layout: label column, ruler, then its own lane.
+    let body = rect.with_max_y(rect.max.y - BTN_H);
+    let area = body.with_min_x(body.min.x + LABEL_W + 1.0);
+    let view = (span * 1.05).max(1.0 / fps.max(1.0));
+    let p = ui.painter_at(body);
+    let mut picked = None;
+    for (k, (name, times)) in lanes.iter().enumerate() {
+        let y = body.min.y + RULER_H + LANE_H * (k + 1) as f32;
+        if y + LANE_H > body.max.y {
+            break;
+        }
+        let label = Rect::from_min_max(pos2(body.min.x, y), pos2(area.min.x - 1.0, y + LANE_H));
+        if ui.interact(label, ui.id().with(("kf_lane", k)), Sense::click()).on_hover_text("Select this plug-in").clicked() {
+            picked = Some(k);
+        }
+        p.text(label.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, *name, t.font(11.0), t.text);
+        for &kt in *times {
+            let c = pos2(area.min.x + (kt / view) as f32 * area.width(), label.center().y);
+            if area.x_range().contains(c.x) {
+                let d = 3.5;
+                p.add(Shape::convex_polygon(vec![c + vec2(0.0, -d), c + vec2(d, 0.0), c + vec2(0.0, d), c + vec2(-d, 0.0)], t.text_dim, Stroke::NONE));
+            }
+        }
+    }
+    picked
+}
+
 /// Button glyphs: 0 Sync (a padlock), 1 First, 2 Previous, 3 Next, 4 Last, 5 Create (◆+), 6 Delete (◆×).
 fn glyph(p: &Painter, r: Rect, k: usize, ink: Color32) {
     let c = r.center();

@@ -17,7 +17,8 @@ use crate::ui::dock::{Dock, Panel};
 use crate::ui::theme::{self, LookChoice, Theme, UiLook};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
-use crate::ui::{self, ChooserKind, ClipRef, DragState, MenuAction, Playback, Selection, TransportAction, TransportState, WinAction};
+use crate::engine::plugins::PluginKind;
+use crate::ui::{self, ClipRef, DragState, MenuAction, Playback, Selection, TransportAction, TransportState, WinAction};
 
 pub struct MeridianApp {
     pub project: Project,
@@ -106,6 +107,11 @@ pub struct MeridianApp {
     /// The modeless Event Pan/Crop and Track Motion windows.
     pan_crop: Option<ui::PanCropWin>,
     track_motion: Option<ui::TrackMotionWin>,
+    /// The FX window (event, track or output FX, generated media or a transition).
+    fx_win: Option<ui::FxWindow>,
+    /// User plug-in presets (%APPDATA%\MilanPro\presets.json), read at start and after the FX window saves or deletes one.
+    user_presets: Vec<crate::engine::plugins::UserPreset>,
+    grading: ui::ColorGrading,
     welcome: Option<Welcome>,
     shortcuts_open: bool,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
@@ -217,7 +223,7 @@ impl MeridianApp {
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
-            choosers: [ChooserKind::Transitions, ChooserKind::VideoFx, ChooserKind::Generators].map(ui::Chooser::new),
+            choosers: [PluginKind::Transition, PluginKind::VideoFx, PluginKind::Generator].map(ui::Chooser::new),
             trimmer,
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
@@ -228,6 +234,10 @@ impl MeridianApp {
             take_chooser: None,
             pan_crop: None,
             track_motion: None,
+            fx_win: None,
+            // The demo harness never reads the user's files.
+            user_presets: if launch.demo { Vec::new() } else { crate::engine::plugins::load_user_presets() },
+            grading: Default::default(),
             welcome,
             shortcuts_open: false,
             shuttle: 0.0,
@@ -386,6 +396,7 @@ impl eframe::App for MeridianApp {
             let mut dock_action = None;
             let mut actions: Vec<WinAction> = Vec::new();
             let mut preview_msg = None;
+            let (mut plugin_apply, mut favorites_changed) = (None, false);
             // The engine makes frames only while the Video Preview window is on screen.
             self.preview.visible = false;
             self.dock.show(ui, a.dock, |panel, bar, body| match panel {
@@ -424,13 +435,23 @@ impl eframe::App for MeridianApp {
                         _ => 2,
                     };
                     ui::draw_chooser_toolbar(bar, &mut self.choosers[k]);
-                    ui::draw_chooser(body, &mut self.choosers[k]);
+                    let out = ui::draw_chooser(body, &mut self.choosers[k], &self.user_presets, &mut self.prefs.fx_favorites);
+                    if out.apply.is_some() {
+                        plugin_apply = out.apply;
+                    }
+                    favorites_changed |= out.favorites;
                 }
                 Panel::VideoPreview => {
                     self.preview.visible = true;
                     preview_msg = ui::draw_preview_toolbar(bar, &mut self.preview, &mut self.preview_view, &mut dock_action);
                     let mut pb = Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start };
-                    ui::draw_preview(body, &mut self.project, &mut self.preview, &mut self.preview_view, &mut pb);
+                    ui::draw_preview(body, &mut self.project, &mut self.history, &mut self.preview, &mut self.preview_view, &mut pb);
+                }
+                Panel::ColorGrading => {
+                    ui::color_grading_toolbar(bar, &mut self.grading, &self.project, &self.sel);
+                    if let Some(m) = ui::draw_color_grading(body, &mut self.grading, &mut self.project, &mut self.history, &self.sel) {
+                        preview_msg = Some(m);
+                    }
                 }
                 Panel::Trimmer => {
                     ui::draw_trimmer_toolbar(bar, &mut self.trimmer);
@@ -449,10 +470,15 @@ impl eframe::App for MeridianApp {
                     let down = body.input(|i| i.pointer.any_down());
                     set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
                 }
-                p => ui::placeholder(body, p),
             });
             if preview_msg.is_some() {
                 self.message = preview_msg;
+            }
+            if favorites_changed {
+                self.save_prefs();
+            }
+            if let Some(d) = plugin_apply {
+                self.apply_plugin(d);
             }
             for act in actions {
                 match act {
@@ -546,7 +572,11 @@ impl eframe::App for MeridianApp {
         match ui::take_tool(ctx) {
             Some(ui::ToolWin::PanCrop(id)) => self.pan_crop = ui::PanCropWin::open(&self.project, &id),
             Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
+            Some(ui::ToolWin::Fx(target)) => self.open_fx(target),
             None => {}
+        }
+        if let Some(h) = ui::take_hint(ctx) {
+            self.message = Some(h);
         }
         // Before the media added below is offered for auto proxies: an imported project is opened, not imported media.
         self.poll_vegas(ctx);

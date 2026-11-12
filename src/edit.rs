@@ -1583,6 +1583,262 @@ fn carry_spans(tl: &mut Timeline, mut spans: Vec<(bool, usize, usize, f64, f64)>
     }
 }
 
+// ---- Plug-ins ----
+
+/// What an FX window, a plug-in drop or the Color Grading panel edits (decision 0.5). Ids, so it survives edits.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FxTarget {
+    Event(String),
+    Track(String),
+    VideoOutput,
+    /// Generated media: its generator.
+    Media(String),
+    /// The transition into this event.
+    Transition(String),
+}
+
+/// The FX chain `target` names; None when it is gone, locked, or not a chain (Media, Transition).
+pub fn fx_chain_mut<'a>(p: &'a mut Project, target: &FxTarget) -> Option<&'a mut Vec<Fx>> {
+    match target {
+        FxTarget::Event(id) => {
+            let r = p.find_clip(id)?;
+            let t = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx];
+            let free = !t.locked;
+            let c = &mut t.clips[r.clip_idx];
+            (free && !c.locked).then_some(&mut c.fx)
+        }
+        FxTarget::Track(id) => {
+            let (v, i) = p.find_track(id)?;
+            let t = &mut p.timeline.tracks_mut(v)[i];
+            (!t.locked).then_some(&mut t.fx)
+        }
+        FxTarget::VideoOutput => Some(&mut p.timeline.master.video_fx),
+        FxTarget::Media(_) | FxTarget::Transition(_) => None,
+    }
+}
+
+/// The plug-ins `target` holds as the FX window shows them (a transition as one plug-in keyed at 0, generated media as
+/// its generator), and whether they may be changed. None when the target is gone.
+pub fn fx_list(p: &Project, target: &FxTarget) -> Option<(Vec<Fx>, bool)> {
+    let clip = |id: &str| {
+        let r = p.find_clip(id)?;
+        let t = &p.timeline.tracks(r.is_video)[r.track_idx];
+        let c = &t.clips[r.clip_idx];
+        Some((c, !t.locked && !c.locked))
+    };
+    match target {
+        FxTarget::Event(id) => clip(id).map(|(c, free)| (c.fx.clone(), free)),
+        FxTarget::Track(id) => p.find_track(id).map(|(v, i)| (p.timeline.tracks(v)[i].fx.clone(), !p.timeline.tracks(v)[i].locked)),
+        FxTarget::VideoOutput => Some((p.timeline.master.video_fx.clone(), true)),
+        FxTarget::Media(id) => p.media_pool.iter().find(|m| m.id == *id)?.generator.clone().map(|g| (vec![g], true)),
+        FxTarget::Transition(id) => clip(id).and_then(|(c, free)| Some((vec![fx_of_transition(c.transition.as_ref()?)], free))),
+    }
+}
+
+/// Put back what `fx_list` gave, edited. False when nothing changed or the target is gone or locked.
+pub fn set_fx_list(p: &mut Project, target: &FxTarget, list: Vec<Fx>) -> bool {
+    let done = match target {
+        FxTarget::Media(id) => match (p.media_pool.iter_mut().find(|m| m.id == *id), list.into_iter().next()) {
+            (Some(m), Some(g)) if m.generator.is_some() && m.generator.as_ref() != Some(&g) => {
+                m.generator = Some(g);
+                true
+            }
+            _ => false,
+        },
+        FxTarget::Transition(id) => {
+            let tr = list.first().map(transition_of);
+            p.find_clip(id).is_some_and(|r| {
+                let t = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx];
+                let free = !t.locked;
+                let c = &mut t.clips[r.clip_idx];
+                let ok = free && !c.locked && c.transition.is_some() && tr.is_some() && c.transition != tr;
+                if ok {
+                    c.transition = tr;
+                }
+                ok
+            })
+        }
+        _ => fx_chain_mut(p, target).is_some_and(|c| {
+            let ok = *c != list;
+            *c = list;
+            ok
+        }),
+    };
+    changed(p, done)
+}
+
+/// A transition's settings as a plug-in instance (each value one key at 0), for the FX window.
+pub fn fx_of_transition(tr: &Transition) -> Fx {
+    let key = |v| Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] };
+    Fx { id: "transition".into(), plugin: tr.plugin.clone(), enabled: true, params: tr.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: Default::default() }
+}
+
+/// A plug-in instance as a transition (transitions are not keyframed: each value at 0).
+pub fn transition_of(fx: &Fx) -> Transition {
+    Transition { plugin: fx.plugin.clone(), params: fx.params.iter().filter(|(_, k)| !k.keys.is_empty()).map(|(k, kf)| (k.clone(), kf.at(0.0))).collect() }
+}
+
+/// Append `fx` to `target`'s chain; refused (false) when it is locked or gone.
+pub fn add_fx(p: &mut Project, target: &FxTarget, fx: Fx) -> bool {
+    let done = fx_chain_mut(p, target).map(|c| c.push(fx)).is_some();
+    changed(p, done)
+}
+
+pub fn remove_fx(p: &mut Project, target: &FxTarget, i: usize) -> bool {
+    let done = fx_chain_mut(p, target).filter(|c| i < c.len()).map(|c| c.remove(i)).is_some();
+    changed(p, done)
+}
+
+/// Move plug-in `from` so it ends up at index `to` (clamped to the chain).
+pub fn move_fx(p: &mut Project, target: &FxTarget, from: usize, to: usize) -> bool {
+    let done = fx_chain_mut(p, target).filter(|c| from < c.len() && from != to.min(c.len() - 1)).map(|c| {
+        let f = c.remove(from);
+        c.insert(to.min(c.len()), f);
+    });
+    changed(p, done.is_some())
+}
+
+/// The chain pill's bypass box.
+pub fn set_fx_enabled(p: &mut Project, target: &FxTarget, i: usize, on: bool) -> bool {
+    let done = fx_chain_mut(p, target).and_then(|c| c.get_mut(i)).filter(|f| f.enabled != on).map(|f| f.enabled = on).is_some();
+    changed(p, done)
+}
+
+/// Where a transition dropped at `at` on a track goes, as clip indices.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Edge {
+    /// Outgoing, incoming.
+    Overlap(usize, usize),
+    Cut(usize, usize),
+    /// An event's start with nothing before it.
+    Start(usize),
+}
+
+/// Overlap: two events live at `at`. Otherwise the half of the event under `at` picks its start or its end; an end
+/// counts only when an event starts there (Milan Pro has no transition on a lone fade-out).
+fn transition_edge(clips: &[Clip], at: f64, tol: f64) -> Option<Edge> {
+    let end = |c: &Clip| c.position + c.duration;
+    let live: Vec<usize> = (0..clips.len()).filter(|&k| clips[k].position <= at && at < end(&clips[k])).collect();
+    let b = live.iter().copied().max_by(|&x, &y| clips[x].position.total_cmp(&clips[y].position))?;
+    // An overlap within `tol` (float error, an unsnapped drag) is a cut.
+    if let Some(a) = live.iter().copied().filter(|&k| clips[k].position < clips[b].position && end(&clips[k]) - clips[b].position > tol).max_by(|&x, &y| end(&clips[x]).total_cmp(&end(&clips[y]))) {
+        return Some(Edge::Overlap(a, b));
+    }
+    let e = &clips[b];
+    if at < e.position + e.duration * 0.5 {
+        let prev = (0..clips.len()).find(|&k| k != b && clips[k].position < e.position && (end(&clips[k]) - e.position).abs() <= tol);
+        Some(prev.map_or(Edge::Start(b), |a| Edge::Cut(a, b)))
+    } else {
+        let next = (0..clips.len()).find(|&k| k != b && clips[k].position > e.position && (clips[k].position - end(e)).abs() <= tol)?;
+        Some(Edge::Cut(b, next))
+    }
+}
+
+/// Drop transition `tr` on video track `track` at time `at`. On an overlap it becomes the incoming event's. At a cut,
+/// with Automatic Crossfades on, the outgoing event is extended right and the incoming one left by `cut_overlap / 2`
+/// each, within their media (one with no handle leaves the whole overlap to the other), and both fade over it. On an
+/// event's start with nothing before it, the event fades in over `cut_overlap` unless it already fades in. False
+/// (nothing changed) when an event or the track is locked, at an end with nothing after it, or at a cut that cannot
+/// overlap.
+pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut_overlap: f64, auto_xfade: bool) -> bool {
+    let Some((true, ti)) = p.find_track(track) else { return false };
+    let fps = p.settings.frame_rate.max(1.0);
+    let t = &p.timeline.video_tracks[ti];
+    let Some(edge) = transition_edge(&t.clips, at, 0.5 / fps).filter(|_| !t.locked) else { return false };
+    let free = |k: usize| !t.clips[k].locked;
+    match edge {
+        Edge::Overlap(a, b) | Edge::Cut(a, b) if !free(a) || !free(b) => return false,
+        Edge::Start(b) if !free(b) => return false,
+        Edge::Cut(..) if !auto_xfade => return false,
+        _ => {}
+    }
+    let (b, na) = match edge {
+        Edge::Overlap(_, b) | Edge::Start(b) => (b, None),
+        Edge::Cut(a, b) => {
+            let (oa, ob) = (t.clips[a].clone(), t.clips[b].clone());
+            let (la, lb) = (media_limit(p, &oa), media_limit(p, &ob));
+            // Neither side may pass the other's far edge (less a frame) or run into the event beyond it.
+            let (a_end, frame) = (oa.position + oa.duration, 1.0 / fps);
+            let others = || t.clips.iter().enumerate().filter(|&(k, _)| k != a && k != b).map(|(_, c)| c);
+            let next = others().filter(|c| c.position >= ob.position).map(|c| c.position).fold(f64::INFINITY, f64::min);
+            let prev = others().filter(|c| c.position < oa.position).map(|c| c.position + c.duration).fold(f64::NEG_INFINITY, f64::max);
+            let max_a = (ob.position + ob.duration - frame).min(next) - a_end;
+            let max_b = ob.position - (oa.position + frame).max(prev);
+            let ext_a = |w: f64| {
+                let mut c = oa.clone();
+                trim_right(&mut c, &oa, a_end + w.min(max_a).max(0.0), frame, la);
+                c
+            };
+            let ext_b = |w: f64| {
+                let mut c = ob.clone();
+                trim_left(&mut c, &ob, ob.position - w.min(max_b).max(0.0), frame, lb);
+                c
+            };
+            // Half each; what one side cannot give, the other takes.
+            let ga = ext_a(cut_overlap * 0.5).duration - oa.duration;
+            let mut nb = ext_b(cut_overlap - ga);
+            let mut na = ext_a(cut_overlap - (ob.position - nb.position));
+            let ov = na.position + na.duration - nb.position;
+            if ov <= 1e-9 {
+                return false;
+            }
+            (na.fade_out, nb.fade_in) = (ov, ov);
+            na.clamp_fades();
+            nb.clamp_fades();
+            p.timeline.video_tracks[ti].clips[b] = nb;
+            (b, Some((a, na)))
+        }
+    };
+    let clips = &mut p.timeline.video_tracks[ti].clips;
+    let mut done = na.is_some();
+    if let Some((a, na)) = na {
+        clips[a] = na;
+    }
+    let c = &mut clips[b];
+    if matches!(edge, Edge::Start(_)) && c.fade_in == 0.0 {
+        c.fade_in = cut_overlap;
+        c.clamp_fades();
+        done = true;
+    }
+    done |= c.transition.as_ref() != Some(&tr);
+    c.transition = Some(tr);
+    changed(p, done)
+}
+
+/// Event context menu › Remove Transition.
+pub fn remove_transition(p: &mut Project, id: &str) -> bool {
+    let done = p.find_clip(id).is_some_and(|r| {
+        let t = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx];
+        let free = !t.locked;
+        let c = &mut t.clips[r.clip_idx];
+        free && !c.locked && c.transition.take().is_some()
+    });
+    changed(p, done)
+}
+
+/// Insert › Generated Media: a new media item drawn by `fx`, named `name`, and a `len`-second event of it at `at` on
+/// video track `track` (the first video track when None; a new one when there is none or `track` is past the last), as
+/// one edit. The event's id; None when the track is locked.
+pub fn insert_generated(p: &mut Project, track: Option<usize>, at: f64, fx: Fx, name: &str, len: f64) -> Option<String> {
+    let tl = &mut p.timeline;
+    let i = track.unwrap_or(0).min(tl.video_tracks.len());
+    if tl.video_tracks.get(i).is_some_and(|t| t.locked) {
+        return None;
+    }
+    if i == tl.video_tracks.len() {
+        tl.add_video_track();
+    }
+    let m = MediaItem { id: uuid::Uuid::new_v4().to_string(), name: name.into(), media_type: MediaType::Image, duration: 86400.0, generator: Some(fx), ..Default::default() };
+    let mut c = Clip::from_media(&m, at.max(0.0));
+    (c.duration, c.out_point) = (len, len);
+    let id = c.id.clone();
+    let clips = &mut tl.video_tracks[i].clips;
+    clips.push(c);
+    clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    p.media_pool.push(m);
+    changed(p, true).then_some(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2770,5 +3026,202 @@ mod tests {
         // Saved and loaded with the project.
         let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.timeline.video_tracks[0].composite, Composite::Screen);
+    }
+
+    fn fx(plugin: &str) -> Fx {
+        crate::engine::plugins::new_fx(crate::engine::plugins::find(plugin).unwrap(), None)
+    }
+
+    fn json(p: &Project) -> serde_json::Value {
+        serde_json::to_value(p).unwrap()
+    }
+
+    #[test]
+    fn fx_chains_add_remove_move_and_respect_locks() {
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips.push(Clip::new("c", 0.0, 4.0));
+        let ev = FxTarget::Event(p.timeline.video_tracks[0].clips[0].id.clone());
+        let tr = FxTarget::Track(p.timeline.video_tracks[0].id.clone());
+        let start = json(&p);
+        assert!(add_fx(&mut p, &ev, fx("milan.fx.invert")));
+        assert!(remove_fx(&mut p, &ev, 0));
+        assert_eq!(json(&p), start, "add then remove restores the project");
+        // Locked event, locked track: refused, nothing changes.
+        p.timeline.video_tracks[0].clips[0].locked = true;
+        assert!(!add_fx(&mut p, &ev, fx("milan.fx.invert")));
+        p.timeline.video_tracks[0].clips[0].locked = false;
+        p.timeline.video_tracks[0].locked = true;
+        assert!(!add_fx(&mut p, &ev, fx("milan.fx.invert")) && !add_fx(&mut p, &tr, fx("milan.fx.invert")));
+        p.timeline.video_tracks[0].locked = false;
+        assert_eq!(json(&p), start);
+        assert!(!add_fx(&mut p, &FxTarget::Event("gone".into()), fx("milan.fx.invert")));
+        // Reorder and bypass.
+        for id in ["milan.fx.invert", "milan.fx.sepia", "milan.fx.crop"] {
+            assert!(add_fx(&mut p, &tr, fx(id)));
+        }
+        assert!(move_fx(&mut p, &tr, 0, 2));
+        let order = |p: &Project| p.timeline.video_tracks[0].fx.iter().map(|f| f.plugin.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&p), ["milan.fx.sepia", "milan.fx.crop", "milan.fx.invert"]);
+        assert!(move_fx(&mut p, &tr, 2, 0) && !move_fx(&mut p, &tr, 1, 1) && !move_fx(&mut p, &tr, 5, 0));
+        assert_eq!(order(&p), ["milan.fx.invert", "milan.fx.sepia", "milan.fx.crop"]);
+        assert!(set_fx_enabled(&mut p, &tr, 1, false) && !set_fx_enabled(&mut p, &tr, 1, false));
+        assert!(!p.timeline.video_tracks[0].fx[1].enabled);
+        // Video Output FX is the master bus's video chain.
+        let chain: *const Vec<Fx> = fx_chain_mut(&mut p, &FxTarget::VideoOutput).unwrap();
+        assert!(std::ptr::eq(chain, &p.timeline.master.video_fx));
+        assert!(add_fx(&mut p, &FxTarget::VideoOutput, fx("milan.fx.invert")));
+        assert_eq!(p.timeline.master.video_fx.len(), 1);
+    }
+
+    /// Two events meeting at 5 s on video track 1, each with `handle` seconds of media past the cut.
+    fn cut(handle_a: f64, handle_b: f64) -> (Project, String) {
+        let mut p = Project::new("t");
+        for (id, dur) in [("a", 5.0 + handle_a), ("b", 5.0 + handle_b)] {
+            p.media_pool.push(MediaItem { id: id.into(), media_type: MediaType::Video, duration: dur, ..Default::default() });
+        }
+        let mut a = Clip::from_media(&p.media_pool[0], 0.0);
+        (a.duration, a.out_point) = (5.0, 5.0);
+        let mut b = Clip::from_media(&p.media_pool[1], 5.0);
+        (b.in_point, b.duration) = (handle_b, 5.0);
+        b.out_point = b.in_point + 5.0;
+        p.timeline.video_tracks[0].clips = vec![a, b];
+        let t = p.timeline.video_tracks[0].id.clone();
+        (p, t)
+    }
+
+    fn dissolve() -> Transition {
+        Transition { plugin: "milan.tr.dissolve".into(), params: Default::default() }
+    }
+
+    #[test]
+    fn a_transition_on_a_cut_makes_a_centred_crossfade() {
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let (mut p, t) = cut(5.0, 5.0);
+        let mut h = crate::history::History::default();
+        let before = p.clone();
+        assert!(set_transition(&mut p, &t, 4.9, dissolve(), 1.0, true));
+        h.push(before.clone());
+        let c = &p.timeline.video_tracks[0].clips;
+        assert!(close(c[0].position + c[0].duration, 5.5) && close(c[1].position, 4.5) && close(c[1].in_point, 4.5));
+        assert!(close(c[0].fade_out, 1.0) && close(c[1].fade_in, 1.0) && c[1].transition == Some(dissolve()));
+        // One undo puts back positions, trims and fades.
+        assert!(h.undo(&mut p));
+        assert_eq!(p.timeline.video_tracks[0].clips, before.timeline.video_tracks[0].clips);
+        // No outgoing handle: the incoming event takes the whole overlap.
+        let (mut p, t) = cut(0.0, 5.0);
+        assert!(set_transition(&mut p, &t, 5.1, dissolve(), 1.0, true));
+        let c = &p.timeline.video_tracks[0].clips;
+        assert!(close(c[0].duration, 5.0) && close(c[1].position, 4.0) && close(c[1].fade_in, 1.0) && close(c[0].fade_out, 1.0));
+        // Automatic Crossfades off: a cut is refused.
+        let (mut p, t) = cut(5.0, 5.0);
+        let start = json(&p);
+        assert!(!set_transition(&mut p, &t, 4.9, dissolve(), 1.0, false));
+        assert_eq!(json(&p), start);
+        // Locked track, or a locked event: refused.
+        p.timeline.video_tracks[0].locked = true;
+        let start = json(&p);
+        assert!(!set_transition(&mut p, &t, 4.9, dissolve(), 1.0, true));
+        assert_eq!(json(&p), start);
+        (p.timeline.video_tracks[0].locked, p.timeline.video_tracks[0].clips[1].locked) = (false, true);
+        assert!(!set_transition(&mut p, &t, 4.9, dissolve(), 1.0, true));
+        // A sub-frame overlap (float error) is still a cut: it converts, at the incoming event's start.
+        let (mut p, t) = cut(5.0, 5.0);
+        p.timeline.video_tracks[0].clips[0].duration += 1e-9;
+        assert!(set_transition(&mut p, &t, 5.0, dissolve(), 1.0, true));
+        let c = &p.timeline.video_tracks[0].clips;
+        assert!((c[1].position - 4.5).abs() < 1e-6 && (c[1].fade_in - 1.0).abs() < 1e-6);
+    }
+
+    /// The conversion never runs one event past the other or into the event beyond it.
+    #[test]
+    fn a_cut_to_overlap_stops_at_the_short_event_and_its_neighbour() {
+        let frame = 1.0 / 30.0;
+        let image = |p: &mut Project, at: f64, len: f64| {
+            let m = MediaItem { id: format!("img{at}"), media_type: MediaType::Image, ..Default::default() };
+            let mut c = Clip::from_media(&m, at);
+            (c.duration, c.out_point) = (len, len);
+            p.media_pool.push(m);
+            c
+        };
+        // A (0-5, 5 s tail handle) | B (5.0-5.3, no head handle) | D at 5.3.
+        let (mut p, t) = cut(5.0, 0.0);
+        p.settings.frame_rate = 30.0;
+        let tr = &mut p.timeline.video_tracks[0];
+        (tr.clips[1].duration, tr.clips[1].out_point) = (0.3, 0.3);
+        let d = image(&mut p, 5.3, 2.0);
+        p.timeline.video_tracks[0].clips.push(d.clone());
+        assert!(set_transition(&mut p, &t, 4.9, dissolve(), 1.0, true));
+        let c = &p.timeline.video_tracks[0].clips;
+        assert!(c[0].position + c[0].duration <= 5.3 - frame + 1e-9, "A stops a frame short of B's end");
+        assert_eq!((c[1].position, &c[2]), (5.0, &d), "B stays, D is untouched");
+        // Mirror: P (0-4) | A (4.0-4.3, no tail handle) | B (4.3, 5 s head handle).
+        let mut p = Project::new("t");
+        p.settings.frame_rate = 30.0;
+        let pc = image(&mut p, 0.0, 4.0);
+        for (id, dur) in [("a", 0.3), ("b", 10.0)] {
+            p.media_pool.push(MediaItem { id: id.into(), media_type: MediaType::Video, duration: dur, ..Default::default() });
+        }
+        let mut a = Clip::from_media(&p.media_pool[1], 4.0);
+        (a.duration, a.out_point) = (0.3, 0.3);
+        let mut b = Clip::from_media(&p.media_pool[2], 4.3);
+        (b.in_point, b.duration, b.out_point) = (5.0, 5.0, 10.0);
+        p.timeline.video_tracks[0].clips = vec![pc.clone(), a, b];
+        let t = p.timeline.video_tracks[0].id.clone();
+        assert!(set_transition(&mut p, &t, 4.31, dissolve(), 1.0, true));
+        let c = &p.timeline.video_tracks[0].clips;
+        assert!(c[2].position >= 4.0 + frame - 1e-9, "B stops a frame after A's start");
+        assert_eq!((&c[0], c[1].position, c[1].duration), (&pc, 4.0, 0.3), "P and A are untouched");
+    }
+
+    #[test]
+    fn a_transition_on_an_overlap_or_a_lone_start_or_end() {
+        let (mut p, t) = cut(5.0, 5.0);
+        p.timeline.video_tracks[0].clips[1].position = 4.0; // a 1 s overlap
+        let mut want = p.clone();
+        want.timeline.video_tracks[0].clips[1].transition = Some(dissolve());
+        assert!(set_transition(&mut p, &t, 4.5, dissolve(), 1.0, true));
+        assert_eq!(json(&p), json(&want), "on an overlap only the field changes");
+        assert!(!set_transition(&mut p, &t, 4.5, dissolve(), 1.0, true), "already there");
+        // A lone start fades in over the cut-to-overlap length; the end of the last event takes none.
+        let (mut p, t) = cut(5.0, 5.0);
+        p.timeline.video_tracks[0].clips.remove(0);
+        assert!(set_transition(&mut p, &t, 5.2, dissolve(), 0.5, false));
+        assert_eq!(p.timeline.video_tracks[0].clips[0].fade_in, 0.5);
+        assert!(!set_transition(&mut p, &t, 9.5, dissolve(), 0.5, true));
+        let id = p.timeline.video_tracks[0].clips[0].id.clone();
+        assert!(remove_transition(&mut p, &id) && !remove_transition(&mut p, &id));
+        assert!(p.timeline.video_tracks[0].clips[0].transition.is_none());
+        // The FX window edits a transition as a plug-in and puts it back.
+        let tr = Transition { plugin: "milan.tr.linear_wipe".into(), params: [("angle".to_string(), 90.0)].into() };
+        assert_eq!(transition_of(&fx_of_transition(&tr)), tr);
+    }
+
+    #[test]
+    fn generated_media_inserts_as_one_undo_step() {
+        let mut p = Project::new("t");
+        let mut h = crate::history::History::default();
+        let before = p.clone();
+        let id = insert_generated(&mut p, None, 2.0, fx("milan.gen.solid"), "Solid Color", 5.0).unwrap();
+        h.push(before);
+        assert_eq!((p.media_pool.len(), p.timeline.video_tracks[0].clips.len()), (1, 1));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((c.position, c.duration, c.media_id.as_ref()), (2.0, 5.0, Some(&p.media_pool[0].id)));
+        assert!(p.media_pool[0].generator.is_some());
+        assert!(h.undo(&mut p));
+        assert!(p.media_pool.is_empty() && p.timeline.video_tracks[0].clips.is_empty());
+        // No video track: one is made. A locked one refuses.
+        p.timeline.video_tracks.clear();
+        assert!(insert_generated(&mut p, Some(3), 0.0, fx("milan.gen.solid"), "S", 5.0).is_some());
+        assert_eq!(p.timeline.video_tracks.len(), 1);
+        p.timeline.video_tracks[0].locked = true;
+        assert!(insert_generated(&mut p, None, 0.0, fx("milan.gen.solid"), "S", 5.0).is_none());
+        // Past the last track (a drop below the tracks): a new track.
+        assert!(insert_generated(&mut p, Some(1), 0.0, fx("milan.gen.solid"), "S", 5.0).is_some());
+        assert_eq!(p.timeline.video_tracks.len(), 2);
+        // The generator is edited through the FX window's list.
+        let m = FxTarget::Media(p.media_pool[0].id.clone());
+        let (mut list, free) = fx_list(&p, &m).unwrap();
+        list[0].text.insert("x".into(), "y".into());
+        assert!(free && set_fx_list(&mut p, &m, list.clone()) && !set_fx_list(&mut p, &m, list));
     }
 }

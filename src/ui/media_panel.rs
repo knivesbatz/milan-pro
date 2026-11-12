@@ -169,7 +169,7 @@ pub fn draw_media_toolbar(
     }
     if tool_button(ui, Icon::Properties, "Media Properties", selected.is_some(), false).clicked() {
         sel_clips.clear();
-        actions.push(WinAction::Show(Panel::Properties));
+        properties(ui.ctx(), selected.and_then(|i| project.media_pool.get(i)), actions);
     }
     tool_button(ui, Icon::TrackFx, "Media FX (not available yet)", false, false);
     // Start Preview opens the selected (else first) media in the Trimmer, where it can be played.
@@ -272,9 +272,17 @@ pub fn draw_media_browser(
         Some((i, ItemCmd::Proxy)) => actions.push(WinAction::CreateProxy(targets(view, &items, i).into_iter().map(|k| project.media_pool[k].clone()).collect())),
         Some((i, ItemCmd::Properties)) => {
             (*selected, *sel_clips) = (Some(i), Vec::new());
-            actions.push(WinAction::Show(Panel::Properties));
+            properties(ui.ctx(), project.media_pool.get(i), actions);
         }
         None => {}
+    }
+}
+
+/// Properties: generated media opens its generator in the FX window, other media shows in the Properties window.
+fn properties(ctx: &Context, m: Option<&crate::project::MediaItem>, actions: &mut Vec<WinAction>) {
+    match m.filter(|m| m.generator.is_some()) {
+        Some(m) => super::open_tool(ctx, super::ToolWin::Fx(edit::FxTarget::Media(m.id.clone()))),
+        None => actions.push(WinAction::Show(Panel::Properties)),
     }
 }
 

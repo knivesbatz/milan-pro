@@ -24,6 +24,8 @@ pub(super) struct Ev<'a> {
     pub level: Option<f32>,
     /// Muted track or event: drawn at 50 % over the lane.
     pub dim: bool,
+    /// The event's media is generated: it gets the Generated Media button.
+    pub generated: bool,
     pub pps: f64,
     pub fps: f64,
 }
@@ -211,12 +213,16 @@ fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
     }
 }
 
-/// The event's buttons where they sit in event rect `r`, right to left (⋯, fx, Pan/Crop on video): VP16 16 px glyphs
-/// on an 18 px pitch in the header bar, VP23 20×20 chips at the bottom right. Ones that don't fit are left out.
-pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool) -> Vec<(Icon, Rect)> {
+/// The event's buttons where they sit in event rect `r`, right to left (⋯, fx, Pan/Crop on video, Generated Media on
+/// generated events): VP16 16 px glyphs on an 18 px pitch in the header bar, VP23 20×20 chips at the bottom right.
+/// Ones that don't fit are left out.
+pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool, generated: bool) -> Vec<(Icon, Rect)> {
     let mut icons = vec![Icon::More, Icon::TrackFx];
     if is_video {
         icons.push(Icon::PanCrop);
+    }
+    if generated {
+        icons.push(Icon::GeneratedMedia);
     }
     if t.look() == UiLook::Vegas16 {
         let hh = header_h(t, r.height());
@@ -235,10 +241,11 @@ pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool) -> Vec<(Icon, Rect)> {
 
 /// VP16 header bar: name at x+4 (white, 12 px, truncated) and right-aligned glyph buttons on an 18 px pitch.
 fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
-    let icons = buttons(t, ev.rect, ev.is_video);
+    let icons = buttons(t, ev.rect, ev.is_video, ev.generated);
     let pi = p.with_clip_rect(bar.intersect(p.clip_rect()));
     for (icon, r) in &icons {
         paint_icon(&pi, *r, *icon, t.look(), None);
+        fx_dot(&pi, t, ev, *icon, *r);
     }
     let name_w = bar.max.x - 2.0 - 18.0 * icons.len() as f32 - bar.min.x - 6.0;
     if name_w > 8.0 {
@@ -277,9 +284,17 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
         pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
         pr.with_clip_rect(b.shrink(1.0).intersect(pr.clip_rect())).galley(pos2(b.min.x + 4.0, b.center().y - galley.size().y * 0.5), galley, t.event_text);
     }
-    for (icon, c) in buttons(t, r, ev.is_video) {
+    for (icon, c) in buttons(t, r, ev.is_video, ev.generated) {
         pr.rect_filled(c, CornerRadius::same(2), t.event_chip_bg);
         paint_icon(&pr, c.shrink(2.0), icon, t.look(), Some(t.text_bright));
+        fx_dot(&pr, t, ev, icon, c);
+    }
+}
+
+/// The fx button's accent dot while the event has FX.
+fn fx_dot(p: &Painter, t: &Theme, ev: &Ev, icon: Icon, r: Rect) {
+    if icon == Icon::TrackFx && !ev.clip.fx.is_empty() {
+        p.circle_filled(r.right_top() + vec2(-2.5, 2.5), 2.5, t.accent);
     }
 }
 

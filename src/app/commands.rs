@@ -97,6 +97,48 @@ impl MeridianApp {
             tool: self.tool,
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
+            cut_overlap: p.cut_overlap,
+        }
+    }
+
+    /// The FX window on `target`, its last plug-in selected (a drop just put it there).
+    pub(super) fn open_fx(&mut self, target: edit::FxTarget) {
+        self.fx_win = ui::FxWindow::open(&self.project, target).map(|w| w.select_last(&self.project));
+    }
+
+    /// A chooser tile double-clicked: video FX go on the focus video event, a transition on its start, generated media
+    /// at the cursor on the focus video track (New still image length long, as VEGAS). One undo step; the FX window then
+    /// opens on it.
+    pub(super) fn apply_plugin(&mut self, d: ui::PluginDrag) {
+        use crate::engine::plugins::PluginKind;
+        use edit::FxTarget;
+        let p = &self.project;
+        let clip = self.sel.clips.last().filter(|id| p.find_clip(id).is_some_and(|r| r.is_video)).cloned();
+        let (at, track, xfade, cut, len) = (self.quantized(p.timeline.cursor_position), self.focus_of(true), self.prefs.auto_crossfade, self.prefs.cut_overlap, self.prefs.still_len);
+        let (mut target, mut inserted) = (None, None);
+        self.edit(|p| {
+            target = match d.kind {
+                PluginKind::VideoFx => clip.map(FxTarget::Event).filter(|t| edit::add_fx(p, t, d.fx.clone())),
+                PluginKind::Transition => clip
+                    .filter(|id| {
+                        let (Some(r), Some(start)) = (p.find_clip(id), p.clip(id).map(|c| c.position)) else { return false };
+                        let tid = p.timeline.video_tracks[r.track_idx].id.clone();
+                        edit::set_transition(p, &tid, start, edit::transition_of(&d.fx), cut, xfade)
+                    })
+                    .map(FxTarget::Transition),
+                PluginKind::Generator => {
+                    inserted = edit::insert_generated(p, track, at, d.fx.clone(), &d.name, len);
+                    inserted.as_ref().and_then(|id| p.clip(id)?.media_id.clone()).map(FxTarget::Media)
+                }
+            };
+            target.is_some()
+        });
+        if let Some(id) = inserted {
+            (self.sel.clips, self.sel.env) = (vec![id], None);
+        }
+        match target {
+            Some(t) => self.open_fx(t),
+            None => self.message = Some("Select an unlocked video event (or, for generated media, an unlocked video track) first.".into()),
         }
     }
 
@@ -471,6 +513,16 @@ impl MeridianApp {
                 let id = self.focus_of(true).map(|i| self.project.timeline.video_tracks[i].id.clone());
                 self.track_motion = id.and_then(|id| ui::TrackMotionWin::open(&self.project, &id));
             }
+            VideoEventFx | TrackFx | VideoOutputFx => {
+                let target = match c {
+                    VideoEventFx => self.sel.clips.last().cloned().map(edit::FxTarget::Event),
+                    TrackFx => self.focus_of(true).map(|i| edit::FxTarget::Track(self.project.timeline.video_tracks[i].id.clone())),
+                    _ => Some(edit::FxTarget::VideoOutput),
+                };
+                if let Some(t) = target {
+                    self.open_fx(t);
+                }
+            }
             ChooseActiveTake | DeleteTake => {
                 self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
             }
@@ -813,7 +865,7 @@ impl MeridianApp {
         self.env_drag = None;
         self.event_props = None;
         self.take_chooser = None;
-        (self.pan_crop, self.track_motion) = (None, None);
+        (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {
@@ -924,6 +976,15 @@ impl MeridianApp {
         }
         if self.track_motion.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
             self.track_motion = None;
+        }
+        if let Some(w) = &mut self.fx_win {
+            let (open, msg) = w.show(ctx, &mut self.project, &mut self.history, &mut self.user_presets);
+            if msg.is_some() {
+                self.message = msg;
+            }
+            if !open {
+                self.fx_win = None;
+            }
         }
         if let Some(ok) = self.take_chooser.as_mut().and_then(|tc| tc.show(ctx, &self.project)) {
             if let Some(tc) = self.take_chooser.take().filter(|_| ok) {
@@ -1061,6 +1122,8 @@ impl MeridianApp {
             "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),
             "take-chooser" => self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, false)),
             "pan-crop" => self.exec(ctx, EventPanCrop),
+            "fx" => self.exec(ctx, VideoEventFx),
+            "fx-output" => self.exec(ctx, VideoOutputFx),
             "track-motion" => {
                 self.sel.tracks = self.project.timeline.video_tracks.first().map(|t| t.id.clone()).into_iter().collect();
                 self.exec(ctx, TrackMotion);

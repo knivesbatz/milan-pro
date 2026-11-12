@@ -60,6 +60,8 @@ pub enum Command {
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
     /// Video Event Pan/Crop on the focus event; Track Motion on the focus video track.
     EventPanCrop, TrackMotion,
+    /// The FX window on the focus video event, the focus video track or the Video Output.
+    VideoEventFx, TrackFx, VideoOutputFx,
     /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
     ToggleEnvelope(crate::project::EnvKind),
     /// Edit › Editing Tool items and the transport tool radios.

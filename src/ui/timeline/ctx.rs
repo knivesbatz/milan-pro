@@ -4,6 +4,7 @@
 //! actions on the clicked track / marker / region are done here.
 use eframe::egui::*;
 use crate::edit;
+use crate::engine::plugins::{self, PluginKind};
 use crate::history::History;
 use crate::project::*;
 use crate::ui::{EnvSel, Selection};
@@ -24,7 +25,8 @@ enum Target {
     /// A track envelope's point, or its line at a time (with the point starting that segment): track id, kind.
     EnvPoint(String, EnvKind, usize),
     EnvLine(String, EnvKind, f64, usize),
-    Event,
+    /// The selected events; with the incoming event's id and the cut time when the click was on a cut's edge.
+    Event(Option<(String, f64)>),
     Lane(bool, usize),
     Selection,
     MarkerBar,
@@ -53,6 +55,8 @@ pub(super) struct DropReq {
 }
 
 const TAG: Vec2 = vec2(13.0, 14.0);
+/// How near a cut a right-click offers Transition ▸ for it.
+const CUT_PX: f32 = 8.0;
 
 fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, env_on: bool) -> Option<Target> {
     let t = theme::get();
@@ -108,6 +112,7 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, en
                 });
             }
         }
+        let mut cut = None;
         if let Some(r) = row {
             let clips = &tl.tracks(r.is_video)[r.idx].clips;
             let xfade = clips.iter().enumerate().find_map(|(i, a)| {
@@ -120,9 +125,17 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, en
             if fade.is_some() {
                 return fade;
             }
+            // Near a video cut (two events butting): the cut can become a transition.
+            let tol = 0.5 / project.settings.frame_rate.max(1.0);
+            let end = |c: &Clip| c.position + c.duration;
+            cut = clips
+                .iter()
+                .filter(|b| r.is_video && (p.x - g.to_x(b.position)).abs() <= CUT_PX)
+                .find(|b| clips.iter().any(|a| a.position < b.position && (end(a) - b.position).abs() <= tol))
+                .map(|b| (b.id.clone(), b.position));
         }
         if !sel.clips.is_empty() {
-            return Some(Target::Event);
+            return Some(Target::Event(cut));
         }
         if tl.loop_region.is_some_and(|(a, b)| b > a && time >= a && time <= b) {
             return Some(Target::Selection);
@@ -145,6 +158,7 @@ pub(super) fn menu(
     sel: &mut Selection,
     st: &mut TlState,
     env_on: bool,
+    xf: (f64, bool),
     drop: Option<(Pos2, DropReq)>,
     drops: &mut crate::ui::FileDrag,
 ) {
@@ -170,7 +184,9 @@ pub(super) fn menu(
             cmd(ui, "&Preferences...", Preferences);
         }
         Target::Crossfade(ref a, ref b) => {
-            off(ui, "&Transition");
+            // Inside the overlap, so a transition lands on it.
+            let mid = project.clip(a).zip(project.clip(b)).map_or(0.0, |(a, b)| (b.position + a.position + a.duration) * 0.5);
+            transition_items(ui, project, history, b, mid, xf);
             sub(ui, "&Fade Type", true, |ui| {
                 // A curve pair: the outgoing event's fade-out, then the incoming one's fade-in.
                 const CURVES: [(&str, Curve); 5] = [("Linear", Curve::Linear), ("Fast", Curve::Fast), ("Slow", Curve::Slow), ("Smooth", Curve::Smooth), ("Sharp", Curve::Sharp)];
@@ -211,9 +227,17 @@ pub(super) fn menu(
         }
         Target::EnvPoint(ref track, kind, k) => env_point(ui, project, history, sel, st, track, kind, k),
         Target::EnvLine(ref track, kind, t, seg) => env_line(ui, project, history, sel, track, kind, t, seg),
-        Target::Event => {
+        Target::Event(ref cut) => {
             let is_video = sel.clips.last().and_then(|id| project.find_clip(id)).is_some_and(|c| c.is_video);
             menus::show(ui, if is_video { VIDEO_EVENT } else { AUDIO_EVENT });
+            if let Some((b, at)) = cut {
+                sep(ui);
+                transition_items(ui, project, history, b, *at, xf);
+            } else if let Some(id) = sel.clips.last().filter(|id| project.clip(id).is_some_and(|c| c.transition.is_some())).cloned() {
+                // A transition with nothing before it (a fade-in) is removed from its event's menu.
+                sep(ui);
+                transition_tail(ui, project, history, &id, true);
+            }
         }
         Target::Lane(v, i) => lane(ui, project, history, &sel.tracks, st, v, i),
         Target::Selection => {
@@ -291,6 +315,44 @@ fn drop_menu(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mu
     }
     sep(ui);
     entry(ui, "&Cancel", "", true, Mark::None);
+}
+
+/// Transition ▸ (the transitions, the one into event `b` checked; one picked goes on at time `at`, a cut converted
+/// with `xf` = (cut-to-overlap, Automatic Crossfades)) and Remove Transition. Audio crossfades have no transitions.
+fn transition_items(ui: &mut Ui, project: &mut Project, history: &mut History, b: &str, at: f64, xf: (f64, bool)) {
+    let Some(r) = project.find_clip(b) else { return };
+    let track = project.timeline.tracks(r.is_video)[r.track_idx].id.clone();
+    let cur = project.clip(b).and_then(|c| c.transition.as_ref()).map(|t| t.plugin.clone());
+    if !r.is_video {
+        return off(ui, "&Transition");
+    }
+    sub(ui, "&Transition", true, |ui| {
+        for info in plugins::catalog(PluginKind::Transition) {
+            if entry(ui, info.name, "", true, Mark::Radio(cur.as_deref() == Some(info.id))) {
+                let tr = edit::transition_of(&plugins::new_fx(info, info.presets.first()));
+                let before = project.clone();
+                if edit::set_transition(project, &track, at, tr, xf.0, xf.1) {
+                    history.push(before);
+                } else if !xf.1 && cur.is_none() {
+                    crate::ui::hint(ui.ctx(), "Turn on Automatic Crossfades to convert a cut to a transition.");
+                }
+            }
+        }
+    });
+    transition_tail(ui, project, history, b, cur.is_some());
+}
+
+/// Transition Properties... (its FX window) and Remove Transition, for the transition into event `id`.
+fn transition_tail(ui: &mut Ui, project: &mut Project, history: &mut History, id: &str, has: bool) {
+    if entry(ui, "Transition &Properties...", "", has, Mark::None) {
+        crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Transition(id.to_string())));
+    }
+    if entry(ui, "&Remove Transition", "", has, Mark::None) {
+        let before = project.clone();
+        if edit::remove_transition(project, id) {
+            history.push(before);
+        }
+    }
 }
 
 /// Mute / Solo / Lock (and Show in Preview on video) for one track.
@@ -442,14 +504,17 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         return;
     }
     if v {
-        // The hidden video buttons (§5.9.3): Track Motion and, in VP16, Compositing Mode.
+        // The hidden video buttons (§5.9.3): Track Motion and, in VP16, Track FX and Compositing Mode.
         let tr = &project.timeline.video_tracks[i];
         let (id, cur, locked) = (tr.id.clone(), tr.composite, tr.locked);
         if entry(ui, "Track &Motion...", "", true, Mark::None) {
             crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::TrackMotion(id.clone()));
         }
-        // VP23 shows the Comp button on the header, so only VP16 lists it here.
+        // VP23 shows the fx and Comp buttons on the header, so only VP16 lists them here.
         if theme::get().look() == UiLook::Vegas16 {
+            if entry(ui, "Track &FX...", "", true, Mark::None) {
+                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id.clone())));
+            }
             sub(ui, "&Compositing Mode", true, |ui| {
                 if let Some(m) = crate::ui::trackmotion::composite_menu(ui, cur, !locked) {
                     let before = project.clone();
@@ -718,7 +783,7 @@ const VIDEO_EVENT: &[M] = &[
     X("Media &FX..."),
     S,
     C("Video Event Pan/C&rop...", EventPanCrop),
-    X("Video &Event FX..."),
+    C("Video &Event FX...", VideoEventFx),
     X("Red E&ye Reduction..."),
     Inline(EVENT_SHARED),
     X("Create Su&bclip"),

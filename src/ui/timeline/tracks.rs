@@ -199,6 +199,16 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         if br.double_clicked() && br.interact_pointer_pos().is_some_and(|p| p.y < l.rect.min.y + 24.0 && p.x > l.body.min.x) {
             st.rename = Some((Rename::Track(row.is_video, row.idx), project.timeline.tracks(row.is_video)[row.idx].name.clone()));
         }
+        // A video FX tile dropped on a video track's header goes on the track's FX (one undo step), and its FX window opens.
+        if let Some(d) = crate::ui::plugin_dropped(&br) {
+            let (target, before) = (edit::FxTarget::Track(tid.clone()), project.clone());
+            if row.is_video && d.kind == crate::engine::plugins::PluginKind::VideoFx && edit::add_fx(project, &target, d.fx.clone()) {
+                history.push(before);
+                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
+            } else {
+                crate::ui::hint(ui.ctx(), "Drop video FX on an unlocked video track's header.");
+            }
+        }
         // Right-click: the timeline's context-menu handler (ctx.rs) covers headers too.
 
         // ≡ / ⋯ menu: the buttons that are not shown plus the button-set entry.
@@ -251,6 +261,9 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                         history.push(before);
                     }
                 }
+            }
+            if resp.clicked() && *b == Btn::Fx {
+                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(tid.clone())));
             }
             if resp.clicked() && matches!(b, Btn::Mute | Btn::Solo) {
                 history.push(project.clone());
@@ -469,7 +482,7 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track) {
     let v16 = t.look() == UiLook::Vegas16;
     let (icon, on) = match b {
         Btn::Comp => (Icon::CompositingMode, false),
-        Btn::Fx => (Icon::TrackFx, false),
+        Btn::Fx => (Icon::TrackFx, !tr.fx.is_empty()),
         Btn::Mute => (Icon::Mute, tr.muted),
         Btn::Solo => (Icon::Solo, tr.solo),
     };

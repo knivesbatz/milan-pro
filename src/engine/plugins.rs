@@ -32,7 +32,15 @@ pub enum ParamKind {
 pub struct ParamSpec {
     pub key: &'static str,
     pub name: &'static str,
+    /// The FX window heading this parameter starts; "" = in the previous one's section.
+    pub section: &'static str,
     pub kind: ParamKind,
+}
+
+impl ParamSpec {
+    const fn sec(self, section: &'static str) -> Self {
+        ParamSpec { section, ..self }
+    }
 }
 
 /// Stored values, in the same keys as `Fx.params` / `Fx.text` (colours as `key.r` .. `key.a`).
@@ -59,19 +67,19 @@ pub struct PluginInfo {
 }
 
 const fn f(key: &'static str, name: &'static str, min: f32, max: f32, default: f32) -> ParamSpec {
-    ParamSpec { key, name, kind: ParamKind::Float { min, max, default } }
+    ParamSpec { key, name, section: "", kind: ParamKind::Float { min, max, default } }
 }
 const fn color(key: &'static str, name: &'static str, default: [f32; 4]) -> ParamSpec {
-    ParamSpec { key, name, kind: ParamKind::Color { default } }
+    ParamSpec { key, name, section: "", kind: ParamKind::Color { default } }
 }
 const fn choice(key: &'static str, name: &'static str, options: &'static [&'static str], default: usize) -> ParamSpec {
-    ParamSpec { key, name, kind: ParamKind::Choice { options, default } }
+    ParamSpec { key, name, section: "", kind: ParamKind::Choice { options, default } }
 }
 const fn flag(key: &'static str, name: &'static str, default: bool) -> ParamSpec {
-    ParamSpec { key, name, kind: ParamKind::Bool { default } }
+    ParamSpec { key, name, section: "", kind: ParamKind::Bool { default } }
 }
 const fn text(key: &'static str, name: &'static str, multiline: bool, default: &'static str) -> ParamSpec {
-    ParamSpec { key, name, kind: ParamKind::Text { multiline, default } }
+    ParamSpec { key, name, section: "", kind: ParamKind::Text { multiline, default } }
 }
 const fn preset(name: &'static str, vals: &'static [(&'static str, f32)]) -> Preset {
     Preset { name, vals, text: &[] }
@@ -266,8 +274,8 @@ pub static PLUGINS: &[PluginInfo] = &[
         category: "Color",
         desc: "Wheels, curves and LUTs",
         params: &[
-            text("input_lut", "Input LUT", false, ""),
-            f("offset.r", "Offset R", -1.0, 1.0, 0.0),
+            text("input_lut", "Input LUT", false, "").sec("Input LUT"),
+            f("offset.r", "Offset R", -1.0, 1.0, 0.0).sec("Color Wheels"),
             f("offset.g", "Offset G", -1.0, 1.0, 0.0),
             f("offset.b", "Offset B", -1.0, 1.0, 0.0),
             f("offset.y", "Offset Y", -1.0, 1.0, 0.0),
@@ -284,14 +292,14 @@ pub static PLUGINS: &[PluginInfo] = &[
             f("gamma.b", "Gamma B", 0.1, 4.0, 1.0),
             f("gamma.y", "Gamma Y", 0.1, 4.0, 1.0),
             // "x:y;x:y" control points, 0..1; empty = straight.
-            text("curve.m", "Curve", false, ""),
+            text("curve.m", "Curve", false, "").sec("Curves"),
             text("curve.r", "Curve R", false, ""),
             text("curve.g", "Curve G", false, ""),
             text("curve.b", "Curve B", false, ""),
-            f("saturation", "Saturation", 0.0, 4.0, 1.0),
+            f("saturation", "Saturation", 0.0, 4.0, 1.0).sec("Color"),
             f("temperature", "Temperature", -1.0, 1.0, 0.0),
             f("tint", "Tint", -1.0, 1.0, 0.0),
-            text("look_lut", "Look LUT", false, ""),
+            text("look_lut", "Look LUT", false, "").sec("Look LUT"),
         ],
         presets: &[DEFAULT],
     },
@@ -452,22 +460,22 @@ pub static PLUGINS: &[PluginInfo] = &[
         category: "Creative",
         desc: "Generates titles",
         params: &[
-            text("text", "Text", true, "Sample Text"),
-            ParamSpec { key: "font", name: "Font", kind: ParamKind::Font { default: "Arial" } },
+            text("text", "Text", true, "Sample Text").sec("Text"),
+            ParamSpec { key: "font", name: "Font", section: "", kind: ParamKind::Font { default: "Arial" } },
             f("size", "Size", 0.01, 0.5, 0.1),
             color("color", "Text color", WHITE),
-            f("x", "Location X", 0.0, 1.0, 0.5),
+            f("x", "Location X", 0.0, 1.0, 0.5).sec("Placement"),
             f("y", "Location Y", 0.0, 1.0, 0.5),
             choice("align", "Alignment", &["Left", "Center", "Right"], 1),
             f("spacing", "Line spacing", 0.5, 3.0, 1.0),
-            f("outline", "Outline width", 0.0, 0.05, 0.0),
+            f("outline", "Outline width", 0.0, 0.05, 0.0).sec("Outline"),
             color("outline_color", "Outline color", BLACK),
-            flag("shadow", "Shadow", false),
+            flag("shadow", "Shadow", false).sec("Shadow"),
             f("shadow_x", "Shadow offset X", -0.1, 0.1, 0.005),
             f("shadow_y", "Shadow offset Y", -0.1, 0.1, 0.005),
             f("shadow_blur", "Shadow blur", 0.0, 0.05, 0.005),
             color("shadow_color", "Shadow color", [0.0, 0.0, 0.0, 0.6]),
-            color("background", "Background", [0.0, 0.0, 0.0, 0.0]),
+            color("background", "Background", [0.0, 0.0, 0.0, 0.0]).sec("Background"),
         ],
         presets: &[
             DEFAULT,
@@ -602,6 +610,18 @@ pub fn preset_eval(info: &'static PluginInfo, preset: Option<&Preset>) -> FxEval
     resolve(info, num, txt)
 }
 
+/// A new instance with a user preset's values (single keys at t = 0).
+pub fn new_user_fx(info: &PluginInfo, p: &UserPreset) -> Fx {
+    let key = |v| Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] };
+    Fx { params: p.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: p.text.clone(), ..new_fx(info, None) }
+}
+
+/// `fx`'s values at `t` as a user preset named `name`.
+pub fn user_preset_of(fx: &Fx, name: &str, t: f64) -> UserPreset {
+    let params = fx.params.iter().filter(|(_, k)| !k.keys.is_empty()).map(|(k, kf)| (k.clone(), kf.at(t))).collect();
+    UserPreset { plugin: fx.plugin.clone(), name: name.into(), params, text: fx.text.clone() }
+}
+
 /// A preset the user saved from the FX window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserPreset {
@@ -627,6 +647,11 @@ pub fn save_user_preset(p: UserPreset) -> io::Result<()> {
     write_preset(&presets_path().ok_or_else(|| io::Error::other("APPDATA is not set"))?, p)
 }
 
+/// Remove the user preset `name` of `plugin` (the FX window's delete ✕).
+pub fn delete_user_preset(plugin: &str, name: &str) -> io::Result<()> {
+    rewrite(&presets_path().ok_or_else(|| io::Error::other("APPDATA is not set"))?, |all| all.retain(|q| !(q.plugin == plugin && q.name == name)))
+}
+
 /// A missing file is empty; a damaged one is an error, so a save never overwrites presets it could not read.
 fn read_presets(path: &Path) -> io::Result<Vec<UserPreset>> {
     match std::fs::read_to_string(path) {
@@ -637,9 +662,15 @@ fn read_presets(path: &Path) -> io::Result<Vec<UserPreset>> {
 }
 
 fn write_preset(path: &Path, p: UserPreset) -> io::Result<()> {
+    rewrite(path, |all| {
+        all.retain(|q| !(q.plugin == p.plugin && q.name == p.name));
+        all.push(p);
+    })
+}
+
+fn rewrite(path: &Path, f: impl FnOnce(&mut Vec<UserPreset>)) -> io::Result<()> {
     let mut all = read_presets(path)?;
-    all.retain(|q| !(q.plugin == p.plugin && q.name == p.name));
-    all.push(p);
+    f(&mut all);
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
     }
@@ -709,12 +740,15 @@ mod tests {
         let path = dir.join("presets.json");
         let _ = std::fs::remove_dir_all(&dir);
         let p = UserPreset { plugin: "milan.fx.levels".into(), name: "Mine".into(), params: BTreeMap::from([("gamma".into(), 1.5)]), text: BTreeMap::new() };
+        assert_eq!(user_preset_of(&new_user_fx(find("milan.fx.levels").unwrap(), &p), "Mine", 3.0), p);
         write_preset(&path, p.clone()).unwrap();
         write_preset(&path, UserPreset { name: "Other".into(), ..p.clone() }).unwrap();
         write_preset(&path, UserPreset { params: BTreeMap::from([("gamma".into(), 2.0)]), ..p.clone() }).unwrap(); // replaces "Mine"
         let back = read_presets(&path).unwrap();
         assert_eq!(back.len(), 2);
         assert_eq!(back.iter().find(|q| q.name == "Mine").unwrap().params["gamma"], 2.0);
+        rewrite(&path, |all| all.retain(|q| q.name != "Other")).unwrap();
+        assert_eq!(read_presets(&path).unwrap().len(), 1);
         std::fs::write(&path, "{ damaged").unwrap();
         assert!(write_preset(&path, p).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ damaged");

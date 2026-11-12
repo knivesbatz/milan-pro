@@ -124,8 +124,9 @@ impl CmdState {
             ShowEnvelopes | LockEnvelopes => true,
             VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope => self.audio_track_focus,
             ToggleEnvelope(k) => if crate::edit::env_fits(k, true) { self.video_track_focus } else { self.audio_track_focus },
-            EventPanCrop => self.video_clip,
-            TrackMotion => self.video_track_focus,
+            EventPanCrop | VideoEventFx => self.video_clip,
+            TrackMotion | TrackFx => self.video_track_focus,
+            VideoOutputFx => true,
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
@@ -735,12 +736,12 @@ pub const TOOLS: &[M] = &[
         X("&Media FX..."),
         S,
         C("Video Event &Pan/Crop...", EventPanCrop),
-        X("Video Event &FX..."),
+        C("Video Event &FX...", VideoEventFx),
         S,
-        X("Video Track F&X..."),
+        C("Video Track F&X...", TrackFx),
         C("&Track Motion...", TrackMotion),
         S,
-        X("Vi&deo Output FX..."),
+        C("Vi&deo Output FX...", VideoOutputFx),
         V23(&C("Motion Tracking", MotionTracking)),
     ]),
     S,
@@ -1109,10 +1110,11 @@ mod tests {
         assert!(st.enabled(RenameEvent) && st.enabled(EventProperties) && !st.enabled(NextTake) && !st.enabled(DeleteActiveTake) && !st.enabled(DeleteTake));
         st.takes = true;
         assert!(st.enabled(NextTake) && st.enabled(PrevTake) && st.enabled(ChooseActiveTake) && st.enabled(DeleteActiveTake) && st.enabled(DeleteTake));
-        // Pan/Crop needs a video event, Track Motion a video track.
-        assert!(!st.enabled(EventPanCrop) && !st.enabled(TrackMotion));
+        // Pan/Crop and Event FX need a video event, Track Motion and Track FX a video track; Video Output FX nothing.
+        assert!(!st.enabled(EventPanCrop) && !st.enabled(TrackMotion) && !st.enabled(VideoEventFx) && !st.enabled(TrackFx));
+        assert!(st.enabled(VideoOutputFx));
         (st.video_clip, st.video_track_focus) = (true, true);
-        assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion));
+        assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion) && st.enabled(VideoEventFx) && st.enabled(TrackFx));
     }
 
     #[test]

@@ -711,6 +711,51 @@ pub fn draw_timeline(
     if ghost.as_ref().is_some_and(|gh| gh.2.refused) && payload.is_some() {
         ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
     }
+    // A plug-in tile dropped on the lanes: video FX on the video event under it, a transition on the edge or overlap
+    // there, generated media at the drop time. One undo step; the FX window then opens on what it made.
+    if let Some(d) = super::plugin_dropped(&response) {
+        if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| g.lanes.contains(*p)) {
+            use crate::engine::plugins::PluginKind;
+            let (before, row) = (project.clone(), row_at(p.y).filter(|r| r.is_video));
+            let track = row.map(|r| project.timeline.video_tracks[r.idx].id.clone());
+            let (target, refused) = match d.kind {
+                PluginKind::VideoFx => {
+                    let ev = hit_clip(project, p).filter(|(cr, _)| cr.is_video).map(|(cr, _)| edit::FxTarget::Event(project.timeline.video_tracks[cr.track_idx].clips[cr.clip_idx].id.clone()));
+                    (ev.filter(|t| edit::add_fx(project, t, d.fx.clone())), "Drop video FX on an unlocked video event, a video track header or the Video Preview.")
+                }
+                PluginKind::Transition => {
+                    let tr = edit::transition_of(&d.fx);
+                    let done = track.as_ref().is_some_and(|t| edit::set_transition(project, t, g.to_time(p.x).max(0.0), tr.clone(), opts.cut_overlap, opts.auto_crossfade));
+                    // The event that took it: the last one whose transition is now this one and that changed.
+                    let tl = &project.timeline;
+                    let into = row.filter(|_| done).and_then(|r| tl.video_tracks[r.idx].clips.iter().rev().find(|c| c.transition.as_ref() == Some(&tr) && before.clip(&c.id) != Some(c)));
+                    let why = "A transition goes on an event's start, a cut (with Automatic Crossfades on) or a crossfade on an unlocked video track; Milan Pro has none on a fade-out.";
+                    (into.map(|c| edit::FxTarget::Transition(c.id.clone())), why)
+                }
+                PluginKind::Generator => {
+                    let at = drop_time(project, p.x);
+                    // Over a video track: on it; below the last track: on a new one; over an audio track: refused.
+                    let track = match row_at(p.y) {
+                        Some(r) if !r.is_video => None,
+                        r => Some(r.map_or(project.timeline.video_tracks.len(), |r| r.idx)),
+                    };
+                    let id = track.and_then(|i| edit::insert_generated(project, Some(i), at, d.fx.clone(), &d.name, drops.still_len));
+                    if let Some(id) = &id {
+                        (sel.clips, sel.list_focus, sel.env) = (vec![id.clone()], false, None);
+                    }
+                    let why = if track.is_some() { "The track is locked." } else { "Drop generated media on a video track." };
+                    (id.and_then(|id| project.clip(&id)?.media_id.clone()).map(edit::FxTarget::Media), why)
+                }
+            };
+            match target {
+                Some(t) => {
+                    history.push(before);
+                    super::open_tool(ui.ctx(), super::ToolWin::Fx(t));
+                }
+                None => super::hint(ui.ctx(), refused),
+            }
+        }
+    }
     let released = response.dnd_release_payload::<super::MediaDrag>();
     let right_drop = ui.input(|i| i.pointer.button_released(PointerButton::Secondary));
     let mut drop_menu = None;
@@ -804,13 +849,22 @@ pub fn draw_timeline(
                     None if !(m.command || m.shift) => sel.clips.clear(),
                     None => {}
                 }
-                // A video event's Pan/Crop button opens its Pan/Crop window.
+                // A video event's Pan/Crop, fx and Generated Media buttons open their windows.
                 if let (Some(cr), Some(row), true) = (&hit, row_at(pos.y), response.clicked()) {
+                    use super::icons::Icon;
                     let c = &project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx];
                     let (x0, x1) = (g.to_x(c.position).round(), g.to_x(c.position + c.duration).round());
                     let r = Rect::from_min_max(pos2(x0, row.top + 1.0), pos2(x1.max(x0 + 1.0), row.top + row.h - 2.0));
-                    if cr.is_video && events::buttons(&t, r, true).iter().any(|(i, b)| *i == super::icons::Icon::PanCrop && b.contains(pos)) {
-                        super::open_tool(ui.ctx(), super::ToolWin::PanCrop(c.id.clone()));
+                    let generated = generated_media(project, c);
+                    let win = events::buttons(&t, r, cr.is_video, generated.is_some()).into_iter().find(|(_, b)| b.contains(pos)).and_then(|(icon, _)| match icon {
+                        Icon::PanCrop => Some(super::ToolWin::PanCrop(c.id.clone())),
+                        // shortcut: audio event FX arrive with the audio FX (batch 16).
+                        Icon::TrackFx if cr.is_video => Some(super::ToolWin::Fx(edit::FxTarget::Event(c.id.clone()))),
+                        Icon::GeneratedMedia => generated.map(|m| super::ToolWin::Fx(edit::FxTarget::Media(m))),
+                        _ => None,
+                    });
+                    if let Some(w) = win {
+                        super::open_tool(ui.ctx(), w);
                     }
                 }
                 if response.clicked() {
@@ -829,7 +883,7 @@ pub fn draw_timeline(
     // 1–9, 0 jump to marker N through the keymap (§7).
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
-    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on, drop_menu, drops);
+    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on, (opts.cut_overlap, opts.auto_crossfade), drop_menu, drops);
 
     let mut rows = rows_of(project, &g, scroll_y);
     // A drop that adds video tracks: the audio rows move down to show where they will go.
@@ -883,11 +937,15 @@ pub fn draw_timeline(
                 ripple: opts.ripple.is_some(),
                 level: level_of(clip, row.is_video),
                 dim: track.muted || clip.muted,
+                generated: media.is_some_and(|m| m.generator.is_some()),
                 pps: g.pps,
                 fps,
             };
             let mut thumb = |src: f64| pic.and_then(|m| thumbs.get(m, src)).map(|tex| tex.id());
             paint_event(&pe, &t, &ev, t.lane_bg, wave, &mut thumb);
+        }
+        if row.is_video {
+            paint_transitions(&pe, &t, &g, row, &track.clips);
         }
     }
     if opts.show_envelopes {
@@ -960,6 +1018,37 @@ pub fn draw_timeline(
     rename_box(ui, &g, &rows, project, history, &mut st);
     ui.data_mut(|d| d.insert_temp(sid, st));
     released_op
+}
+
+/// The id of event `c`'s media when it is generated.
+fn generated_media(project: &Project, c: &Clip) -> Option<String> {
+    let id = c.media_id.as_ref()?;
+    project.media_pool.iter().find(|m| m.id == *id && m.generator.is_some()).map(|m| m.id.clone())
+}
+
+/// The Transition Progress colour (spec §2 envelope colours), the same in both looks.
+const TRANSITION: Color32 = Color32::from_rgb(0xBF, 0x7F, 0xD3);
+
+/// Each transition on a video row: its overlap (or a lone one's fade-in) tinted, with the plug-in's name.
+fn paint_transitions(p: &Painter, t: &Theme, g: &Geo, row: &Row, clips: &[Clip]) {
+    let (t0, t1) = (g.to_time(p.clip_rect().min.x), g.to_time(p.clip_rect().max.x));
+    // Off-screen events are skipped before the overlap search, which scans the track.
+    for c in clips.iter().filter(|c| c.position <= t1 && c.position + c.duration >= t0) {
+        let Some(tr) = &c.transition else { continue };
+        let from = clips.iter().filter(|a| a.position < c.position && a.position + a.duration > c.position).map(|a| a.position + a.duration).reduce(f64::max);
+        let end = from.map_or(c.position + c.fade_in, |e| e.min(c.position + c.duration));
+        if end <= c.position {
+            continue;
+        }
+        let r = Rect::from_min_max(pos2(g.to_x(c.position), row.top + 1.0), pos2(g.to_x(end), row.top + row.h - 2.0));
+        if !r.intersects(p.clip_rect()) {
+            continue;
+        }
+        p.rect_filled(r, 0.0, TRANSITION.gamma_multiply(0.45));
+        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, TRANSITION), StrokeKind::Inside);
+        let name = crate::engine::plugins::find(&tr.plugin).map_or(tr.plugin.as_str(), |i| i.name);
+        p.with_clip_rect(r.intersect(p.clip_rect())).text(r.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text_bright);
+    }
 }
 
 /// The level handle's height (0..=1): gain as an amplitude (audio) or opacity (video). None when an opacity envelope
