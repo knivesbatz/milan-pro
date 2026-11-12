@@ -52,6 +52,8 @@ pub enum WinAction {
     Show(dock::Panel),
     /// Import files (skipping ones already in the project).
     Import(Vec<PathBuf>),
+    /// Project Media › Create Video Proxy for these media.
+    CreateProxy(Vec<crate::project::MediaItem>),
 }
 
 /// A Pan/Crop (event id) or Track Motion (track id) window asked for by a timeline button or menu; the app opens it.

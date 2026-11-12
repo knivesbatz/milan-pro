@@ -235,7 +235,8 @@ pub fn draw_media_browser(
             Mode::List => list(ui, project, &items, &view.sel),
         };
         for (i, r) in resps {
-            item_interaction(ui, &r, i, view.sel.contains(&i), &mut cmd);
+            let video = crate::proxy::is_video(&project.media_pool[i]);
+            item_interaction(ui, &r, i, view.sel.contains(&i), video, &mut cmd);
             // The payload is every selected item when the grabbed one is selected, so they are added across time.
             if r.drag_started() {
                 r.dnd_set_drag_payload(MediaDrag::Pool(targets(view, &items, i), None));
@@ -268,6 +269,7 @@ pub fn draw_media_browser(
             (*selected, *sel_clips) = (None, Vec::new());
         }
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
+        Some((i, ItemCmd::Proxy)) => actions.push(WinAction::CreateProxy(targets(view, &items, i).into_iter().map(|k| project.media_pool[k].clone()).collect())),
         Some((i, ItemCmd::Properties)) => {
             (*selected, *sel_clips) = (Some(i), Vec::new());
             actions.push(WinAction::Show(Panel::Properties));
@@ -283,11 +285,13 @@ enum ItemCmd {
     Add(bool),
     Remove,
     Explore,
+    Proxy,
     Properties,
 }
 
 /// `selected`: a right-click on a selected item keeps the selection, so its menu acts on all of it.
-fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, cmd: &mut Option<(usize, ItemCmd)>) {
+/// `video`: the item is file-based video without alpha, which Create Video Proxy needs.
+fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool, cmd: &mut Option<(usize, ItemCmd)>) {
     if r.double_clicked() {
         *cmd = Some((i, ItemCmd::Trim));
     } else if r.clicked() || (r.secondary_clicked() && !selected) {
@@ -298,23 +302,23 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, cmd: &mut O
     }
     // Project Media item menu (§6.9); Milan Pro adds "Add to Video/Audio Track".
     menus::context(r, |ui| {
-        let mut item = |ui: &mut Ui, text: &str, c: ItemCmd| {
-            if menus::entry(ui, text, "", true, menus::Mark::None) {
+        let mut item = |ui: &mut Ui, text: &str, c: ItemCmd, on: bool| {
+            if menus::entry(ui, text, "", on, menus::Mark::None) {
                 *cmd = Some((i, c));
             }
         };
-        item(ui, "Open in &Trimmer", ItemCmd::Trim);
+        item(ui, "Open in &Trimmer", ItemCmd::Trim, true);
         menus::off(ui, "Open Parent Media in &Trimmer");
-        item(ui, "Add to &Video Track", ItemCmd::Add(true));
-        item(ui, "Add to A&udio Track", ItemCmd::Add(false));
+        item(ui, "Add to &Video Track", ItemCmd::Add(true), true);
+        item(ui, "Add to A&udio Track", ItemCmd::Add(false), true);
         menus::show(ui, &[X("Add as CD Trac&k"), X("Add at Project &Frame Rate"), X("Se&lect Timeline Events"), X("Match Pr&oject Video Settings"), X("Edit Source Pro&ject")]);
-        item(ui, "Explore &Containing Folder", ItemCmd::Explore);
-        menus::off(ui, "Create Video Pro&xy");
+        item(ui, "Explore &Containing Folder", ItemCmd::Explore, true);
+        item(ui, "Create Video Pro&xy", ItemCmd::Proxy, video);
         menus::sep(ui);
         menus::off(ui, "Remove from Current &Bin");
-        item(ui, "&Remove from Project", ItemCmd::Remove);
+        item(ui, "&Remove from Project", ItemCmd::Remove, true);
         menus::show(ui, ITEM_REST);
-        item(ui, "&Properties...", ItemCmd::Properties);
+        item(ui, "&Properties...", ItemCmd::Properties, true);
         menus::show(ui, &[V23(&S), V23(&X("Tempo Detection")), V23(&X("Detect Scenes and Add to Timeline")), V23(&X("Detect Scenes and Add to Timeline from Cursor")), V23(&X("Detect Scenes and Create Subclips"))]);
     });
 }
@@ -402,11 +406,21 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
                 if let Some(tex) = thumbs.get(m, thumb_time(m)) {
                     widgets::paint_thumb(p, thumb, tex);
                 }
+                if crate::proxy::ready(&m.path).is_some() {
+                    proxy_badge(p, thumb.right_top() + vec2(-2.0, 2.0));
+                }
             }
         }
         out.push((i, resp));
     }
     out
+}
+
+/// "P" on media that has a video proxy, its top-right corner at `tr`.
+fn proxy_badge(p: &Painter, tr: Pos2) {
+    let r = Rect::from_min_max(tr - vec2(13.0, 0.0), tr + vec2(0.0, 13.0));
+    p.rect_filled(r, CornerRadius::same(2), theme::get().accent);
+    p.text(r.center(), Align2::CENTER_CENTER, "P", FontId::proportional(10.0), Color32::WHITE);
 }
 
 const DETAIL_COLS: [(&str, f32); 7] =
@@ -434,6 +448,9 @@ fn details(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Ve
             m.path.display().to_string(),
         ];
         widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, if sel.contains(&i) { Color32::WHITE } else { t.text });
+        if crate::proxy::ready(&m.path).is_some() {
+            proxy_badge(ui.painter(), pos2(r.rect.min.x + DETAIL_COLS[0].1 - 6.0, r.rect.min.y + 2.0));
+        }
         out.push((i, r));
     }
     out
@@ -448,7 +465,10 @@ fn list(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(
         let icon = if m.media_type == MediaType::Audio { Icon::TrackAudio } else { Icon::TrackVideo };
         paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, t.look(), None);
         let color = if sel.contains(&i) { Color32::WHITE } else { t.text };
-        ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
+        let name = ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
+        if crate::proxy::ready(&m.path).is_some() {
+            proxy_badge(ui.painter(), pos2(name.max.x + 18.0, r.rect.min.y + 2.0));
+        }
         out.push((i, r));
     }
     out

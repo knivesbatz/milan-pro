@@ -43,6 +43,8 @@ pub struct Prefs {
     pub show_envelopes: bool,
     /// Options › Lock Envelopes to Events: envelope points move with the events over them.
     pub lock_envelopes: bool,
+    /// Preferences › Video: create video proxies for 4K, HEVC and AV1 media as it is imported.
+    pub auto_proxy: bool,
     /// Window layouts by `layout_key`: each look's last layout ("vp16:last") and user slots 0-9 ("vp16:3").
     /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
     #[serde(deserialize_with = "lenient_layouts")]
@@ -88,6 +90,7 @@ impl Default for Prefs {
             ignore_grouping: false,
             show_envelopes: true,
             lock_envelopes: true,
+            auto_proxy: false,
             layouts: BTreeMap::new(),
         }
     }
@@ -317,7 +320,9 @@ mod tests {
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
-        assert!(d.show_envelopes && d.lock_envelopes);
+        assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
+        let a = Prefs { auto_proxy: true, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&a).unwrap()).unwrap(), a);
         let r = Prefs { auto_ripple: true, ripple_mode: crate::edit::RippleMode::All, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
         let mut r = Prefs { recent_max: 2, ..Default::default() };

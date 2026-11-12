@@ -45,6 +45,8 @@ pub struct MeridianApp {
     pub audio: Player,
     pub waves: Waveforms,
     pub thumbs: Thumbs,
+    /// Create Video Proxy jobs; they belong to files, so they carry on through New and Open.
+    proxies: crate::proxy::ProxyJobs,
     render: RenderDialog,
     settings: SettingsDialog,
     autosave: Autosave,
@@ -182,6 +184,7 @@ impl MeridianApp {
             audio: Player::new(),
             waves: Waveforms::new(&cc.egui_ctx),
             thumbs: Thumbs::new(&cc.egui_ctx),
+            proxies: Default::default(),
             render: RenderDialog::default(),
             settings: SettingsDialog::default(),
             autosave: Autosave::default(),
@@ -451,6 +454,7 @@ impl eframe::App for MeridianApp {
                     }
                     WinAction::Show(p) => self.dock.open(p),
                     WinAction::Import(paths) => self.import_new(ctx, paths),
+                    WinAction::CreateProxy(items) => self.proxies.add(&items),
                 }
             }
             menu_action = menu_action.or(dock_action);
@@ -501,7 +505,9 @@ impl eframe::App for MeridianApp {
             );
             // Last, so hovered-command hints from every bar this frame are shown.
             let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
-            ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref());
+            if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), self.proxies.status().as_deref()) {
+                self.proxies.cancel();
+            }
             if !v16 {
                 chrome::resize_edges(ui, full);
             }
@@ -542,6 +548,8 @@ impl eframe::App for MeridianApp {
         } else if drag.os_dropped {
             self.file_drop.drop(drag.files, None);
         }
+        // Media added below (drops and imports append to the pool) may get a video proxy automatically.
+        let pool_len = self.project.media_pool.len();
         // Not during an event drag: it restores the tracks from its start every frame and would wipe the drop out.
         while !self.dragging() {
             let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len, self.prefs.auto_crossfade) else { break };
@@ -567,6 +575,17 @@ impl eframe::App for MeridianApp {
                 self.project.mark_modified();
             }
             self.message = (!errors.is_empty()).then(|| format!("Import failed: {}", errors.join("; ")));
+        }
+        if self.prefs.auto_proxy {
+            let added = self.project.media_pool.get(pool_len..).unwrap_or_default();
+            self.proxies.add(added.iter().filter(|m| crate::proxy::wants_auto(m)));
+        }
+        self.proxies.scan(ctx, &self.project.media_pool);
+        if let Some(e) = self.proxies.poll() {
+            self.message = Some(e);
+        }
+        if self.proxies.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.render.show(ctx, &self.project);
         self.settings.show(ctx, &mut self.project, &mut self.history);

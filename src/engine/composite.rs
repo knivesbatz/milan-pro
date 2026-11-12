@@ -310,6 +310,7 @@ mod tests {
             matrix: None,
             codec: None,
             interlaced: false,
+            proxy: None,
         })
     }
 

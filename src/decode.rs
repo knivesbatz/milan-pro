@@ -66,6 +66,8 @@ struct FrameRequest {
     scaler: &'static str,
     /// ffmpeg `in_color_matrix` (None = auto), as the engine decodes the same media.
     matrix: Option<&'static str>,
+    /// A video proxy of `path`, read instead; if it fails, `path` is read (and the proxy forgotten if that works).
+    proxy: Option<PathBuf>,
 }
 
 struct FrameResult {
@@ -85,9 +87,22 @@ fn decode_size(m: &MediaItem, max_w: u32) -> (u32, u32) {
 }
 
 fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
+    let proxied = req.proxy.as_ref().map(|p| decode_file(req, p));
+    if let Some(Ok(img)) = proxied {
+        return Ok(img);
+    }
+    let r = decode_file(req, &req.path);
+    if proxied.is_some() && r.is_ok() {
+        // The source has this frame and the proxy does not: the proxy is broken or gone.
+        crate::proxy::forget(&req.path);
+    }
+    r
+}
+
+fn decode_file(req: &FrameRequest, path: &Path) -> Result<ColorImage, String> {
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(["-v", "error", "-ss", &format!("{:.3}", req.time.max(0.0)), "-i"])
-        .arg(&req.path)
+        .arg(path)
         .args(["-frames:v", "1", "-vf"])
         .arg(format!(
             "scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
@@ -111,7 +126,7 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
 
 /// The first frame of `path` (a still) at `w` x `h`, premultiplied.
 pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
-    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None })
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -242,6 +257,8 @@ impl Preview {
             match src {
                 Some((m, time)) => {
                     let (width, height) = decode_size(m, max_w);
+                    // Draft and Preview read the video proxy, as the timeline preview does.
+                    let proxy = matches!(self.quality, Quality::Draft | Quality::Preview) && crate::proxy::is_video(m);
                     let req = FrameRequest {
                         id: self.next_id,
                         path: m.path.clone(),
@@ -250,6 +267,7 @@ impl Preview {
                         height,
                         scaler: self.quality.scaler(),
                         matrix: crate::engine::plan::matrix(m),
+                        proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(),
                     };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
@@ -302,7 +320,8 @@ enum Thumb {
 /// Timeline event thumbnails: small frames decoded by ffmpeg on two worker threads, newest request first,
 /// so the visible events fill in before anything scrolled away.
 pub struct Thumbs {
-    queue: Arc<(Mutex<Vec<(ThumbKey, FrameRequest)>>, Condvar)>,
+    /// (key, request for the source, may read a video proxy)
+    queue: Arc<(Mutex<Vec<(ThumbKey, FrameRequest, bool)>>, Condvar)>,
     rx: Receiver<(ThumbKey, Result<ColorImage, String>)>,
     cache: HashMap<ThumbKey, Thumb>,
     ctx: egui::Context,
@@ -318,7 +337,7 @@ pub const THUMB_WIDTH: u32 = 160;
 
 impl Thumbs {
     pub fn new(ctx: &egui::Context) -> Self {
-        let queue = Arc::new((Mutex::new(Vec::<(ThumbKey, FrameRequest)>::new()), Condvar::new()));
+        let queue = Arc::new((Mutex::new(Vec::<(ThumbKey, FrameRequest, bool)>::new()), Condvar::new()));
         let (tx, rx) = mpsc::channel();
         let paused = Arc::new(AtomicBool::new(false));
         for _ in 0..2 {
@@ -328,12 +347,15 @@ impl Thumbs {
                     while paused.load(Relaxed) {
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    let (key, req) = {
+                    let (key, req, proxyable) = {
                         let (lock, cv) = &*queue;
                         let mut q = cv.wait_while(lock.lock().unwrap(), |q| q.is_empty()).unwrap();
                         q.pop().expect("non-empty queue")
                     };
-                    if tx.send((key, decode_frame(&req))).is_err() {
+                    // The proxy is chosen here, not when queued, so thumbnails asked for before the proxy lookup
+                    // finished (every project open) still read it.
+                    let proxy = proxyable.then(|| crate::proxy::ready(&req.path).or_else(|| crate::proxy::find_own(&req.path))).flatten();
+                    if tx.send((key, decode_frame(&FrameRequest { proxy, ..req }))).is_err() {
                         break;
                     }
                     ctx.request_repaint();
@@ -377,12 +399,13 @@ impl Thumbs {
                 self.cache.retain(|_, v| matches!(v, Thumb::Pending));
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m) };
+            // Keyed by the source, so thumbnails made before its proxy was ready stay; new ones read the proxy.
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None };
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
-            q.push((key.clone(), req));
+            q.push((key.clone(), req, crate::proxy::is_video(m)));
             if q.len() > THUMB_QUEUE {
-                let (old, _) = q.remove(0);
+                let (old, ..) = q.remove(0);
                 self.cache.remove(&old);
             }
             cv.notify_one();

@@ -136,7 +136,8 @@ impl VideoEngine {
     /// Once per UI frame: replan after edits, then take the wanted frame (paused) or the due frame (playing).
     /// Returns a new picture and the first decode error behind it.
     pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<ColorImage>, Option<String>)> {
-        let hash = content_hash(p);
+        // A proxy becoming ready replans, so Draft and Preview switch to it.
+        let hash = content_hash(p) ^ crate::proxy::generation();
         if hash != self.sent_hash {
             let plan = plan::compile(p);
             self.fps = plan.fps;

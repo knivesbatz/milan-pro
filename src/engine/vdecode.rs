@@ -62,6 +62,8 @@ struct VideoStream {
     w: u32,
     h: u32,
     scaler: &'static str,
+    /// Reads the media's proxy (Draft and Preview), not the source.
+    proxy: bool,
     hw: bool,
     /// The frame the next read returns.
     next_sf: i64,
@@ -82,7 +84,7 @@ impl Drop for VideoStream {
     }
 }
 
-fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool) -> std::io::Result<VideoStream> {
+fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool) -> std::io::Result<VideoStream> {
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(args(spec)).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = crate::proc::spawn(&mut cmd)?;
@@ -111,7 +113,7 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool) -> std::io::Result<Vi
         }
     });
     let err = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
-    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, hw: spec.hw, next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None, chase: false })
+    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, hw: spec.hw, next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None, chase: false })
 }
 
 pub enum Pull {
@@ -125,12 +127,17 @@ pub enum Pull {
 pub struct DecoderPool {
     streams: Vec<VideoStream>,
     hw_failed: HashSet<Arc<str>>,
-    /// Last decodable frame of a media whose video ends before its container duration (which counts the audio).
-    ends: HashMap<Arc<str>, i64>,
+    /// Last decodable frame of a media (and whether read from its proxy, which may end sooner) whose video ends before
+    /// its container duration (which counts the audio).
+    ends: HashMap<(Arc<str>, bool), i64>,
     fps: f64,
     fps_str: String,
     /// Frames read past and late layers, for the stats.
     pub dropped: u64,
+}
+
+fn end_key(m: &MediaRef, q: Quality) -> (Arc<str>, bool) {
+    (m.id.clone(), m.proxy_for(q).is_some())
 }
 
 fn image(px: Vec<Color32>, w: u32, h: u32) -> Arc<ColorImage> {
@@ -147,9 +154,9 @@ impl DecoderPool {
         }
     }
 
-    /// `sf`, held at the media's last video frame once that is known: frames past it show the last one.
-    pub fn clamp(&self, m: &MediaRef, sf: i64) -> i64 {
-        self.ends.get(&m.id).map_or(sf, |&e| sf.min(e))
+    /// `sf`, held at the last video frame `q` reads (source or proxy) once that is known: frames past it show the last one.
+    pub fn clamp(&self, m: &MediaRef, sf: i64, q: Quality) -> i64 {
+        self.ends.get(&end_key(m, q)).map_or(sf, |&e| sf.min(e))
     }
 
     fn reach(&self) -> i64 {
@@ -165,12 +172,15 @@ impl DecoderPool {
         self.streams.retain(|s| s.used.elapsed() < IDLE);
     }
 
+    /// A stream decoding the picture `q` asks for: this media, size, scaler and file (proxy or source).
+    fn same(s: &VideoStream, m: &MediaRef, w: u32, h: u32, q: Quality) -> bool {
+        s.media == m.id && (s.w, s.h, s.scaler, s.proxy) == (w, h, q.scaler(), m.proxy_for(q).is_some())
+    }
+
     /// The stream that reaches `sf` reading forward the fewest frames, at most `reach`.
-    fn find(&self, m: &MediaRef, sf: i64, w: u32, h: u32, scaler: &str, reach: i64) -> Option<usize> {
+    fn find(&self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, reach: i64) -> Option<usize> {
         let s = &self.streams;
-        (0..s.len())
-            .filter(|&i| s[i].media == m.id && (s[i].w, s[i].h, s[i].scaler) == (w, h, scaler) && (0..=reach).contains(&(sf - s[i].next_sf)))
-            .min_by_key(|&i| sf - s[i].next_sf)
+        (0..s.len()).filter(|&i| Self::same(&s[i], m, w, h, q) && (0..=reach).contains(&(sf - s[i].next_sf))).min_by_key(|&i| sf - s[i].next_sf)
     }
 
     /// Hardware decoding for heavy sources (HEVC, AV1, 2560 px and up) during playback, until it fails once.
@@ -178,12 +188,17 @@ impl DecoderPool {
         !self.hw_failed.contains(&m.id) && (m.w >= 2560 || matches!(m.codec.as_deref(), Some("hevc" | "av1")))
     }
 
-    fn open(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, scaler: &'static str, hw: bool) -> Result<usize, String> {
+    fn open(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, hw: bool) -> Result<usize, String> {
         // Enough project frames back to start inside the previous source frame (2 for 25p in 29.97).
         let per = if m.fps > 0.0 { (self.fps / m.fps - 1e-9).ceil() as i64 } else { 2 };
         let lead = per.clamp(1, 30).min(sf);
-        let spec = DecSpec { path: &m.path, sf, lead, fps_str: &self.fps_str, fps: self.fps, w, h, scaler, hw, matrix: m.matrix, interlaced: m.interlaced };
-        let s = spawn(&spec, m.id.clone(), m.has_alpha).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
+        // A proxy keeps the source's frame times and colour matrix; it is light H.264, so never hardware decoded.
+        let proxy = m.proxy_for(q);
+        let (path, hw) = (proxy.unwrap_or(&m.path), hw && proxy.is_none());
+        // The proxy was deinterlaced when it was made.
+        let interlaced = m.interlaced && proxy.is_none();
+        let spec = DecSpec { path, sf, lead, fps_str: &self.fps_str, fps: self.fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, interlaced };
+        let s = spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some()).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
         if self.streams.len() >= MAX_STREAMS {
             if let Some(i) = (0..self.streams.len()).min_by_key(|&i| self.streams[i].used) {
                 self.streams.remove(i);
@@ -196,22 +211,22 @@ impl DecoderPool {
     /// Start a stream at `sf` ahead of time unless one can reach it in time: playing (`play`, hardware decoding allowed),
     /// within a few frames, so a jump cut inside one file gets its own stream; paused, within 2 s.
     pub fn prewarm(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, play: bool) {
-        let sf = self.clamp(m, sf);
+        let sf = self.clamp(m, sf, q);
         let reach = if play { JUMP } else { self.reach() };
-        if self.find(m, sf, w, h, q.scaler(), reach).is_none() {
-            let _ = self.open(m, sf, w, h, q.scaler(), play && self.wants_hw(m));
+        if self.find(m, sf, w, h, q, reach).is_none() {
+            let _ = self.open(m, sf, w, h, q, play && self.wants_hw(m));
         }
     }
 
     /// Frame `sf` of `m` at `w` x `h`. With a deadline (playback) a late stream gives its last frame instead.
     pub fn frame(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> Pull {
-        let (sf, scaler) = (self.clamp(m, sf), q.scaler());
-        let i = match self.find(m, sf, w, h, scaler, self.reach()) {
+        let sf = self.clamp(m, sf, q);
+        let i = match self.find(m, sf, w, h, q, self.reach()) {
             Some(i) => i,
             None => {
                 // Playing, a stream still starting for this picture (a reversed event asks for an earlier frame each time)
                 // is waited on rather than respawned every frame; its frame shows as held, about 5 updates a second.
-                let starting = self.streams.iter().position(|s| s.chase && s.last.is_none() && s.media == m.id && (s.w, s.h, s.scaler) == (w, h, scaler));
+                let starting = self.streams.iter().position(|s| s.chase && s.last.is_none() && Self::same(s, m, w, h, q));
                 if let (Some(d), Some(j)) = (deadline, starting) {
                     self.streams[j].used = Instant::now();
                     return match self.streams[j].rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
@@ -229,7 +244,7 @@ impl DecoderPool {
                         }
                     };
                 }
-                match self.open(m, sf, w, h, scaler, deadline.is_some() && self.wants_hw(m)) {
+                match self.open(m, sf, w, h, q, deadline.is_some() && self.wants_hw(m)) {
                     Ok(i) => {
                         self.streams[i].chase = deadline.is_some();
                         i
@@ -264,22 +279,26 @@ impl DecoderPool {
                 Err(RecvTimeoutError::Disconnected) => {
                     let _ = s.child.wait();
                     let err = s.err.take().and_then(|j| j.join().ok()).unwrap_or_default();
-                    let (hw, last, end) = (s.hw, s.last.clone(), s.next_sf - 1);
+                    let (hw, proxy, last, end) = (s.hw, s.proxy, s.last.clone(), s.next_sf - 1);
                     self.streams.remove(i);
                     if !err.is_empty() {
                         if hw && last.is_none() {
                             self.hw_failed.insert(m.id.clone());
                             return self.frame(m, sf, w, h, q, deadline);
                         }
+                        if proxy && last.is_none() {
+                            // A deleted or unreadable proxy: forget it, so the replan reads the source.
+                            crate::proxy::forget(&m.path);
+                        }
                         return last.map_or(Pull::Err(err), |img| Pull::Held(Some(img)));
                     }
                     // A clean end before `sf`: the video is shorter than the media. Its last frame is what `sf` shows.
                     return match last {
                         Some(img) => {
-                            self.ends.insert(m.id.clone(), end);
+                            self.ends.insert(end_key(m, q), end);
                             Pull::Exact(img)
                         }
-                        None => self.tail(m, sf, w, h, scaler),
+                        None => self.tail(m, sf, w, h, q),
                     };
                 }
             }
@@ -287,13 +306,13 @@ impl DecoderPool {
     }
 
     /// A stream at `sf` ended cleanly without a frame: read on from a second earlier to find the video's last frame.
-    fn tail(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, scaler: &'static str) -> Pull {
+    fn tail(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality) -> Pull {
         let none = format!("No frame at {:.3} s", sf as f64 / self.fps);
         let from = (sf - self.fps.ceil() as i64).max(0);
         if from == sf {
             return Pull::Err(none);
         }
-        let i = match self.open(m, from, w, h, scaler, false) {
+        let i = match self.open(m, from, w, h, q, false) {
             Ok(i) => i,
             Err(e) => return Pull::Err(e),
         };
@@ -309,7 +328,7 @@ impl DecoderPool {
             (None, _) => Pull::Err(none),
             (Some(px), end) => {
                 if let Some(e) = end {
-                    self.ends.insert(m.id.clone(), e);
+                    self.ends.insert(end_key(m, q), e);
                 }
                 Pull::Exact(image(px, w, h))
             }
@@ -352,6 +371,7 @@ mod tests {
             matrix: None,
             codec: Some(codec.into()),
             interlaced: false,
+            proxy: None,
         };
         assert!(!pool.wants_hw(&m("h264", 1920)));
         assert!(pool.wants_hw(&m("hevc", 1920)) && pool.wants_hw(&m("av1", 1920)) && pool.wants_hw(&m("h264", 2560)));
@@ -388,7 +408,7 @@ mod tests {
                 .unwrap()
                 .success();
             assert!(ok);
-            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false };
+            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None };
             let mut pool = DecoderPool::default();
             let fps = 30000.0 / 1001.0;
             pool.set_rate(fps, "30000/1001");
@@ -424,7 +444,7 @@ mod tests {
             .success();
         assert!(ok);
         // shortcut: no hardware decoding here (DXVA rejects 64x64); that a clean end is not a hardware failure is read from the code.
-        MediaRef { id: "ramp".into(), path, w: 64, h: 64, duration: audio, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false }
+        MediaRef { id: "ramp".into(), path, w: 64, h: 64, duration: audio, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None }
     }
 
     fn gray(p: Pull) -> Option<u8> {
@@ -450,7 +470,7 @@ mod tests {
             let g = gray(pool.frame(&m, sf, 64, 64, Quality::Best, None)).unwrap();
             assert!((g as f64 - last).abs() <= 1.5, "sf {sf}: {g} vs {last:.1}");
         }
-        assert_eq!(pool.clamp(&m, 35), 29);
+        assert_eq!(pool.clamp(&m, 35, Quality::Best), 29);
         // Playing into the end.
         let mut pool = DecoderPool::default();
         pool.set_rate(30.0, "30");
@@ -458,7 +478,12 @@ mod tests {
             let g = gray(pool.frame(&m, sf, 64, 64, Quality::Best, Some(Instant::now() + Duration::from_secs(5)))).unwrap();
             assert!((g as f64 - level(sf.min(29))).abs() <= 1.5, "sf {sf}: {g}");
         }
-        assert_eq!(pool.clamp(&m, 35), 29);
+        assert_eq!(pool.clamp(&m, 35, Quality::Best), 29);
+        // A proxy's end is its own: the source is not held at it.
+        let mut m = m;
+        m.proxy = Some("p.mp4".into());
+        assert_eq!(pool.clamp(&m, 35, Quality::Preview), 35);
+        assert_eq!(pool.clamp(&m, 35, Quality::Good), 29);
         drop(pool);
         std::fs::remove_dir_all(&dir).unwrap();
     }

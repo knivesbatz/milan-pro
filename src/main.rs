@@ -11,6 +11,7 @@ mod history;
 mod media;
 mod proc;
 mod project;
+mod proxy;
 mod render;
 mod settings;
 mod ui;

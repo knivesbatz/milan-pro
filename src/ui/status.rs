@@ -1,4 +1,5 @@
-//! Status bar (§5.11): hovered command / message on the left, free recording time on the right.
+//! Status bar (§5.11): hovered command / message on the left; background progress (video proxies) and free recording
+//! time on the right.
 use eframe::egui::*;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -7,7 +8,9 @@ use crate::project::Project;
 use super::{theme, toolbar};
 
 /// `rect` is the status bar body (17 px VP16 / 20 px VP23); edge lines are painted by the frame.
-pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>) {
+/// `progress`: a background job's status ("Creating video proxy 2 of 5: 43%"), followed by a Cancel link.
+/// Returns true when Cancel was clicked.
+pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>, progress: Option<&str>) -> bool {
     let t = theme::get();
     let p = ui.painter();
     p.rect_filled(rect, 0.0, t.status_bg);
@@ -20,14 +23,35 @@ pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Opti
         (None, None) if t.look() == theme::UiLook::Vegas16 => ("Complete: 00:00:00".to_owned(), t.text),
         (None, None) => (String::new(), t.text),
     };
-    let right = record_time(project).map(|r| format!("Record Time (2 channels): {r}")).unwrap_or_default();
-    let rg = p.layout_no_wrap(right, font.clone(), t.text);
-    let left_room = (rect.width() - rg.size().x - 24.0).max(0.0);
-    let lg = p.layout(left, font, color, f32::INFINITY);
     let y = rect.center().y;
+    // Right to left: record time, then the job's Cancel link and progress.
+    let mut x = rect.max.x - 6.0;
+    let mut put = |g: std::sync::Arc<Galley>, gap: f32| {
+        x -= g.size().x;
+        let at = pos2(x, (y - g.size().y * 0.5).round());
+        p.galley(at, g.clone(), t.text);
+        x -= gap;
+        Rect::from_min_size(at, g.size())
+    };
+    if let Some(r) = record_time(project) {
+        put(p.layout_no_wrap(format!("Record Time (2 channels): {r}"), font.clone(), t.text), 36.0);
+    }
+    let mut cancel = false;
+    if let Some(progress) = progress {
+        let link = put(p.layout_no_wrap("Cancel".into(), font.clone(), t.text), 10.0);
+        let r = ui.interact(link, Id::new("status_job_cancel"), Sense::click()).on_hover_text("Stop creating video proxies");
+        if r.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            p.hline(link.x_range(), link.max.y, Stroke::new(1.0_f32, t.text));
+        }
+        cancel = r.clicked();
+        put(p.layout_no_wrap(progress.to_owned(), font.clone(), t.text), 0.0);
+    }
+    let left_room = (x - rect.min.x - 18.0).max(0.0);
+    let lg = p.layout(left, font, color, f32::INFINITY);
     p.with_clip_rect(Rect::from_min_size(rect.min, vec2(left_room, rect.height())))
         .galley(pos2(rect.min.x + 6.0, (y - lg.size().y * 0.5).round()), lg, t.text);
-    p.galley(pos2(rect.max.x - 6.0 - rg.size().x, (y - rg.size().y * 0.5).round()), rg, t.text);
+    cancel
 }
 
 /// Free space on the record drive (project folder, else temp) as 48 kHz 16-bit stereo time, refreshed every 10 s.

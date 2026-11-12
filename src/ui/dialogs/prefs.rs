@@ -1,4 +1,4 @@
-//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Editing and Display are live.
+//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Editing and Display are live.
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
 use super::super::theme::{self, LookChoice, UiLook, Variant};
@@ -13,6 +13,7 @@ const ROWS23: &[&[&str]] = &[
     &["File I/O", "Deprecated Features"],
 ];
 const GENERAL: usize = 0;
+const VIDEO: usize = 1;
 const EDITING: usize = 7;
 const DISPLAY: usize = 8;
 
@@ -53,6 +54,7 @@ impl PrefsDialog {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
                 GENERAL => general(ui, d),
+                VIDEO => video(ui, d),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track),
                 _ => {
@@ -103,6 +105,15 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     });
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update) = (false, true, 4, true);
+    }
+}
+
+fn video(ui: &mut Ui, d: &mut Prefs) {
+    // VEGAS creates proxies for 4K video automatically; Milan Pro makes that opt-in (off by default, per the plan),
+    // besides Project Media › Create Video Proxy.
+    ui.checkbox(&mut d.auto_proxy, "Automatically create video proxies for 4K, HEVC and AV1 media on import");
+    if default_all(ui) {
+        d.auto_proxy = false;
     }
 }
 

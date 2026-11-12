@@ -14,8 +14,8 @@ use crate::engine::vdecode::{DecoderPool, Pull};
 use crate::engine::{Played, Shown, Stats, VCmd};
 use crate::project::Project;
 
-/// (media, source frame or -1 for a still, decode width, scaler)
-type SrcKey = (Arc<str>, i64, u32, &'static str);
+/// (media, source frame or -1 for a still, decode width, scaler, read from the proxy)
+type SrcKey = (Arc<str>, i64, u32, &'static str, bool);
 /// (media, decode width, height): one layer's picture, held while its decoder is late.
 type HeldKey = (Arc<str>, u32, u32);
 type StillDone = (SrcKey, Result<ColorImage, String>);
@@ -57,6 +57,10 @@ pub struct Worker {
     k: usize,
 }
 
+fn src_key(pool: &DecoderPool, s: &SrcAt, w: u32, q: Quality) -> SrcKey {
+    (s.m.id.clone(), s.sf.map_or(-1, |sf| pool.clamp(&s.m, sf, q)), w, q.scaler(), s.m.proxy_for(q).is_some())
+}
+
 /// The real `Sources`: source cache, then stills or the decoder pool.
 struct Live<'a> {
     pool: &'a mut DecoderPool,
@@ -75,7 +79,7 @@ struct Live<'a> {
 
 impl Live<'_> {
     fn fetch(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
-        let key = (s.m.id.clone(), s.sf.map_or(-1, |sf| self.pool.clamp(&s.m, sf)), w, self.q.scaler());
+        let key = src_key(self.pool, s, w, self.q);
         if let Some(img) = self.sources.get(&key) {
             return Some(img);
         }
@@ -180,7 +184,7 @@ impl Worker {
     /// Start every decoder frame `fp` needs (and background still decodes when playing), so they open in parallel.
     fn warm(&mut self, fp: &plan::FramePlan, w: u32, h: u32, q: Quality, play: bool) {
         for (src, dw, dh) in composite::requests(fp, w as usize, h as usize) {
-            let key = (src.m.id.clone(), src.sf.map_or(-1, |sf| self.pool.clamp(&src.m, sf)), dw, q.scaler());
+            let key = src_key(&self.pool, src, dw, q);
             if self.sources.get(&key).is_some() || self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
                 continue;
             }

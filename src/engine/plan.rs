@@ -3,8 +3,9 @@
 //! `compile_audio` once per edit for the mixer.
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use crate::decode::Quality;
 use crate::edit::src_time;
 use crate::engine::composite::Affine;
 use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
@@ -26,6 +27,15 @@ pub struct MediaRef {
     pub matrix: Option<&'static str>,
     pub codec: Option<String>,
     pub interlaced: bool,
+    /// A ready video proxy (`proxy::ready`), decoded instead of `path` at Draft and Preview quality.
+    pub proxy: Option<PathBuf>,
+}
+
+impl MediaRef {
+    /// The file `q` decodes instead of the source: the proxy at Draft and Preview; Good, Best and render never use it.
+    pub fn proxy_for(&self, q: Quality) -> Option<&Path> {
+        self.proxy.as_deref().filter(|_| matches!(q, Quality::Draft | Quality::Preview))
+    }
 }
 
 #[derive(Debug)]
@@ -139,6 +149,7 @@ fn media_ref(m: &MediaItem) -> Option<MediaRef> {
         matrix: matrix(m),
         codec: m.codec.clone(),
         interlaced: m.interlaced,
+        proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
     })
 }
 
@@ -606,6 +617,29 @@ mod tests {
         }
         p.timeline.video_tracks[0].clips[0].name = "renamed".into(); // does not change the picture
         assert_eq!(key(&p), k);
+    }
+
+    #[test]
+    fn proxies_are_used_at_draft_and_preview_only() {
+        let mut p = project();
+        let (mut v, mut img) = (media("pv", MediaType::Video), media("pi", MediaType::Image));
+        (v.path, img.path) = ("proxied-video.bin".into(), "proxied-image.bin".into());
+        p.timeline.video_tracks[0].clips[0].media_id = Some("pv".into());
+        p.timeline.video_tracks[1].clips[1].media_id = Some("pi".into());
+        p.media_pool.extend([v, img]);
+        let before = frame_plan(&compile(&p), 345).key();
+        crate::proxy::set_ready("proxied-video.bin".into(), "pv.proxy.mp4".into());
+        crate::proxy::set_ready("proxied-image.bin".into(), "pi.proxy.mp4".into());
+        let vp = compile(&p);
+        let refs: Vec<&MediaRef> = vp.tracks.iter().flat_map(|t| &t.events).map(|e| &*e.m).collect();
+        let r = |id: &str| *refs.iter().find(|m| &*m.id == id).unwrap();
+        assert_eq!(r("pv").proxy_for(Quality::Draft), Some(Path::new("pv.proxy.mp4")));
+        assert!(r("pv").proxy_for(Quality::Preview).is_some());
+        assert!(r("pv").proxy_for(Quality::Good).is_none() && r("pv").proxy_for(Quality::Best).is_none());
+        assert!(r("pi").proxy.is_none(), "stills are never proxied");
+        assert!(r("b").proxy.is_none());
+        // A frame that now decodes from the proxy is a different cached picture.
+        assert_ne!(frame_plan(&vp, 345).key(), before);
     }
 
     #[test]
