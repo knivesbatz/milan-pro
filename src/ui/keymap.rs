@@ -57,6 +57,8 @@ pub enum Command {
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
+    /// Video Event Pan/Crop on the focus event; Track Motion on the focus video track.
+    EventPanCrop, TrackMotion,
     /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
     ToggleEnvelope(crate::project::EnvKind),
     /// Edit › Editing Tool items and the transport tool radios.

@@ -441,6 +441,26 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
     if i >= project.timeline.tracks(v).len() {
         return;
     }
+    if v {
+        // The hidden video buttons (§5.9.3): Track Motion and, in VP16, Compositing Mode.
+        let tr = &project.timeline.video_tracks[i];
+        let (id, cur, locked) = (tr.id.clone(), tr.composite, tr.locked);
+        if entry(ui, "Track &Motion...", "", true, Mark::None) {
+            crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::TrackMotion(id.clone()));
+        }
+        // VP23 shows the Comp button on the header, so only VP16 lists it here.
+        if theme::get().look() == UiLook::Vegas16 {
+            sub(ui, "&Compositing Mode", true, |ui| {
+                if let Some(m) = crate::ui::trackmotion::composite_menu(ui, cur, !locked) {
+                    let before = project.clone();
+                    if edit::set_composite(project, &id, m) {
+                        history.push(before);
+                    }
+                }
+            });
+        }
+        sep(ui);
+    }
     switches(ui, project, history, v, i);
     if entry(ui, "Default Track &Height", "Ctrl+`", project.timeline.tracks(v)[i].height > 0.0, Mark::None) {
         project.timeline.tracks_mut(v)[i].height = 0.0;
@@ -697,7 +717,7 @@ const VIDEO_EVENT: &[M] = &[
     S,
     X("Media &FX..."),
     S,
-    X("Video Event Pan/C&rop..."),
+    C("Video Event Pan/C&rop...", EventPanCrop),
     X("Video &Event FX..."),
     X("Red E&ye Reduction..."),
     Inline(EVENT_SHARED),

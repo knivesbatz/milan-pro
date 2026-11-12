@@ -7,10 +7,12 @@ mod explorer;
 pub mod fonts;
 #[allow(dead_code)] // toolkit for the look stages; not every icon is placed yet
 pub mod icons;
+mod keyframes;
 pub mod keymap;
 mod master_bus;
 mod media_panel;
 pub mod menus;
+mod pancrop;
 mod panels;
 mod preview;
 mod properties;
@@ -19,9 +21,11 @@ mod status;
 pub mod theme;
 mod timeline;
 mod toolbar;
+mod trackmotion;
 mod transport;
 mod trimmer;
 mod widgets;
+mod workspace;
 
 use std::path::PathBuf;
 use crate::project::Clip;
@@ -31,12 +35,14 @@ pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};
 pub use master_bus::{MasterView, master_bus, master_bus_toolbar};
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
+pub use pancrop::PanCropWin;
 pub use panels::placeholder;
 pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
 pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, rename_event};
 pub use toolbar::draw_main_toolbar;
+pub use trackmotion::TrackMotionWin;
 pub use transport::{Cmd, Playback, TransportAction, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
 pub use trimmer::{Trimmer, draw_trimmer, draw_trimmer_toolbar};
 
@@ -46,6 +52,31 @@ pub enum WinAction {
     Show(dock::Panel),
     /// Import files (skipping ones already in the project).
     Import(Vec<PathBuf>),
+}
+
+/// A Pan/Crop (event id) or Track Motion (track id) window asked for by a timeline button or menu; the app opens it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ToolWin {
+    PanCrop(String),
+    TrackMotion(String),
+}
+
+fn tool_id() -> eframe::egui::Id {
+    eframe::egui::Id::new("milan_open_tool")
+}
+
+pub fn open_tool(ctx: &eframe::egui::Context, w: ToolWin) {
+    ctx.data_mut(|d| d.insert_temp(tool_id(), Some(w)));
+}
+
+pub fn take_tool(ctx: &eframe::egui::Context) -> Option<ToolWin> {
+    ctx.data_mut(|d| d.remove_temp::<Option<ToolWin>>(tool_id())).flatten()
+}
+
+/// The tool windows' layers: plain keys over them (Delete) are theirs, as over a dock window.
+pub fn over_tool_window(ctx: &eframe::egui::Context) -> bool {
+    let layer = ctx.pointer_hover_pos().and_then(|p| ctx.layer_id_at(p));
+    [pancrop::ID, trackmotion::ID].iter().any(|id| layer == Some(dialogs::tool_layer(id)))
 }
 
 /// Drag-and-drop payload for media headed to the timeline.

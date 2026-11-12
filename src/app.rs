@@ -90,6 +90,9 @@ pub struct MeridianApp {
     event_props: Option<crate::ui::dialogs::EventProps>,
     /// Take › Choose Active... / Delete..., open on one event.
     take_chooser: Option<crate::ui::dialogs::TakeChooser>,
+    /// The modeless Event Pan/Crop and Track Motion windows.
+    pan_crop: Option<ui::PanCropWin>,
+    track_motion: Option<ui::TrackMotionWin>,
     welcome: Option<Welcome>,
     shortcuts_open: bool,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
@@ -201,7 +204,8 @@ impl MeridianApp {
             prefs_dlg: PrefsDialog::default(),
             event_props: None,
             take_chooser: None,
-
+            pan_crop: None,
+            track_motion: None,
             welcome,
             shortcuts_open: false,
             shuttle: 0.0,
@@ -515,6 +519,11 @@ impl eframe::App for MeridianApp {
             self.exec(ctx, Command::from(a));
         }
         self.run_bus(ctx);
+        match ui::take_tool(ctx) {
+            Some(ui::ToolWin::PanCrop(id)) => self.pan_crop = ui::PanCropWin::open(&self.project, &id),
+            Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
+            None => {}
+        }
         self.show_dialogs(ctx);
         // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
         // (§5.4). Both reuse the probes started while the files hovered.

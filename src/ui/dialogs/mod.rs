@@ -95,6 +95,18 @@ pub fn window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl Fn
     with_style(ctx, || area(ctx, id, size, UiKind::Window).show(ctx, |ui| dialog_frame().show(ui, |ui| framed(ui, id, title, size, body)).inner).inner)
 }
 
+/// A modeless tool window (Pan/Crop, Track Motion): the native-style title row of `window`, with the body in the
+/// look's own dark style in both looks (§5.15.2). Its layer is `tool_layer(id)`.
+pub fn tool_window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let t = theme::get();
+    let frame = Frame::NONE.fill(t.panel_bg).stroke(Stroke::new(1.0_f32, t.dialog().border));
+    area(ctx, id, size, UiKind::Window).show(ctx, |ui| frame.show(ui, |ui| framed(ui, id, title, size, body)).inner).inner
+}
+
+pub fn tool_layer(id: &str) -> LayerId {
+    LayerId::new(Order::Foreground, Id::new(id))
+}
+
 fn area(ctx: &Context, id: &str, size: Vec2, kind: UiKind) -> Area {
     Area::new(Id::new(id))
         .kind(kind)

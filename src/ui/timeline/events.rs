@@ -211,22 +211,36 @@ fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
     }
 }
 
-/// VP16 header bar: name at x+4 (white, 12 px, truncated) and right-aligned glyph buttons on an 18 px pitch.
-fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
+/// The event's buttons where they sit in event rect `r`, right to left (⋯, fx, Pan/Crop on video): VP16 16 px glyphs
+/// on an 18 px pitch in the header bar, VP23 20×20 chips at the bottom right. Ones that don't fit are left out.
+pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool) -> Vec<(Icon, Rect)> {
     let mut icons = vec![Icon::More, Icon::TrackFx];
-    if ev.is_video {
+    if is_video {
         icons.push(Icon::PanCrop);
     }
-    let fit = (((bar.width() - 28.0) / 18.0).floor().max(0.0) as usize).min(icons.len());
-    let icons = &icons[..if bar.height() >= 16.0 { fit } else { 0 }];
-    let mut x = bar.max.x - 2.0;
-    let pi = p.with_clip_rect(bar.intersect(p.clip_rect()));
-    for icon in icons {
-        x -= 18.0;
-        let r = Rect::from_center_size(pos2(x + 9.0, bar.center().y), vec2(16.0, 16.0));
-        paint_icon(&pi, r, *icon, t.look(), None);
+    if t.look() == UiLook::Vegas16 {
+        let hh = header_h(t, r.height());
+        let bar = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh));
+        icons.truncate(if hh >= 16.0 { ((bar.width() - 28.0) / 18.0).floor().max(0.0) as usize } else { 0 });
+        let at = |k: usize| Rect::from_center_size(pos2(bar.max.x - 2.0 - 18.0 * (k + 1) as f32 + 9.0, bar.center().y), vec2(16.0, 16.0));
+        icons.into_iter().enumerate().map(|(k, i)| (i, at(k))).collect()
+    } else {
+        if r.height() < 46.0 || r.width() < 22.0 * icons.len() as f32 + 30.0 {
+            icons.truncate(if r.height() >= 24.0 && r.width() >= 60.0 { 1 } else { 0 });
+        }
+        let at = |k: usize| Rect::from_min_size(pos2(r.max.x - 2.0 - 20.0 - 22.0 * k as f32, r.max.y - 2.0 - 20.0), vec2(20.0, 20.0));
+        icons.into_iter().enumerate().map(|(k, i)| (i, at(k))).collect()
     }
-    let name_w = x - bar.min.x - 6.0;
+}
+
+/// VP16 header bar: name at x+4 (white, 12 px, truncated) and right-aligned glyph buttons on an 18 px pitch.
+fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
+    let icons = buttons(t, ev.rect, ev.is_video);
+    let pi = p.with_clip_rect(bar.intersect(p.clip_rect()));
+    for (icon, r) in &icons {
+        paint_icon(&pi, *r, *icon, t.look(), None);
+    }
+    let name_w = bar.max.x - 2.0 - 18.0 * icons.len() as f32 - bar.min.x - 6.0;
     if name_w > 8.0 {
         paint_name(&pi, ev, pos2(bar.min.x + 4.0, bar.center().y), name_w, t.font(t.font.event_name), t.event_text);
     }
@@ -263,17 +277,9 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
         pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
         pr.with_clip_rect(b.shrink(1.0).intersect(pr.clip_rect())).galley(pos2(b.min.x + 4.0, b.center().y - galley.size().y * 0.5), galley, t.event_text);
     }
-    let mut chips = vec![Icon::More, Icon::TrackFx];
-    if ev.is_video {
-        chips.push(Icon::PanCrop);
-    }
-    if r.height() < 46.0 || r.width() < 22.0 * chips.len() as f32 + 30.0 {
-        chips.truncate(if r.height() >= 24.0 && r.width() >= 60.0 { 1 } else { 0 });
-    }
-    for (k, icon) in chips.iter().enumerate() {
-        let c = Rect::from_min_size(pos2(r.max.x - 2.0 - 20.0 - 22.0 * k as f32, r.max.y - 2.0 - 20.0), vec2(20.0, 20.0));
+    for (icon, c) in buttons(t, r, ev.is_video) {
         pr.rect_filled(c, CornerRadius::same(2), t.event_chip_bg);
-        paint_icon(&pr, c.shrink(2.0), *icon, t.look(), Some(t.text_bright));
+        paint_icon(&pr, c.shrink(2.0), icon, t.look(), Some(t.text_bright));
     }
 }
 

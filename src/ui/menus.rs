@@ -53,6 +53,8 @@ pub struct CmdState {
     pub clip_locked: bool,
     /// The focus event's Switches › Mute.
     pub clip_muted: bool,
+    /// The focus event is a video event (Pan/Crop).
+    pub video_clip: bool,
     /// A selected event has inactive takes.
     pub takes: bool,
     pub n_sel: usize,
@@ -113,6 +115,8 @@ impl CmdState {
             ShowEnvelopes | LockEnvelopes => true,
             VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope => self.audio_track_focus,
             ToggleEnvelope(k) => if crate::edit::env_fits(k, true) { self.video_track_focus } else { self.audio_track_focus },
+            EventPanCrop => self.video_clip,
+            TrackMotion => self.video_track_focus,
             Trim => self.clip && self.selection,
             Copy => self.n_sel > 0,
             Cut => self.n_sel > 0 && !self.clip_locked,
@@ -711,11 +715,11 @@ pub const TOOLS: &[M] = &[
     Sub("&Video", &[
         X("&Media FX..."),
         S,
-        X("Video Event &Pan/Crop..."),
+        C("Video Event &Pan/Crop...", EventPanCrop),
         X("Video Event &FX..."),
         S,
         X("Video Track F&X..."),
-        X("&Track Motion..."),
+        C("&Track Motion...", TrackMotion),
         S,
         X("Vi&deo Output FX..."),
         V23(&C("Motion Tracking", MotionTracking)),
@@ -1086,7 +1090,10 @@ mod tests {
         assert!(st.enabled(RenameEvent) && st.enabled(EventProperties) && !st.enabled(NextTake) && !st.enabled(DeleteActiveTake) && !st.enabled(DeleteTake));
         st.takes = true;
         assert!(st.enabled(NextTake) && st.enabled(PrevTake) && st.enabled(ChooseActiveTake) && st.enabled(DeleteActiveTake) && st.enabled(DeleteTake));
-
+        // Pan/Crop needs a video event, Track Motion a video track.
+        assert!(!st.enabled(EventPanCrop) && !st.enabled(TrackMotion));
+        (st.video_clip, st.video_track_focus) = (true, true);
+        assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion));
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the

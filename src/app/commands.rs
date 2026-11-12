@@ -36,6 +36,7 @@ impl MeridianApp {
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
             clip_muted: clip.is_some_and(|c| c.muted),
+            video_clip: self.sel.clips.last().and_then(|id| self.project.find_clip(id)).is_some_and(|r| r.is_video),
             takes: self.project.find_clips(&self.sel.clips).iter().any(|r| !tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].takes.is_empty()),
             n_sel: self.sel.clips.len(),
             any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
@@ -112,7 +113,8 @@ impl MeridianApp {
     /// Keyboard shortcuts for this frame, run before the UI is drawn (as the old hard-wired keys were).
     pub(super) fn handle_keys(&mut self, ctx: &egui::Context) {
         let blocked = ctx.wants_keyboard_input() || menus::any_open(ctx) || self.modal_open();
-        let over_dock = ctx.pointer_hover_pos().is_some_and(|p| self.dock_rect.contains(p));
+        // Over a dock window or a Pan/Crop / Track Motion window, plain keys (Delete) are that window's.
+        let over_dock = ui::over_tool_window(ctx) || ctx.pointer_hover_pos().is_some_and(|p| self.dock_rect.contains(p));
         let look = theme::get().look();
         for c in self.keymap.poll(ctx, look, Scope { blocked, over_dock }) {
             self.exec(ctx, c);
@@ -433,6 +435,11 @@ impl MeridianApp {
                     _ => edit::delete_active_take(p, &ids),
                 });
             }
+            EventPanCrop => self.pan_crop = self.sel.clips.last().and_then(|id| ui::PanCropWin::open(&self.project, id)),
+            TrackMotion => {
+                let id = self.focus_of(true).map(|i| self.project.timeline.video_tracks[i].id.clone());
+                self.track_motion = id.and_then(|id| ui::TrackMotionWin::open(&self.project, &id));
+            }
             ChooseActiveTake | DeleteTake => {
                 self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
             }
@@ -749,6 +756,7 @@ impl MeridianApp {
         self.env_drag = None;
         self.event_props = None;
         self.take_chooser = None;
+        (self.pan_crop, self.track_motion) = (None, None);
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {
@@ -815,6 +823,13 @@ impl MeridianApp {
             if let Some(ep) = self.event_props.take().filter(|_| ok) {
                 self.edit(|p| edit::apply_props(p, &ep.id, ep.draft));
             }
+        }
+        // The tool windows edit the project as they go (one undo step per gesture); closed when × or their target is gone.
+        if self.pan_crop.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history, &mut self.thumbs)) {
+            self.pan_crop = None;
+        }
+        if self.track_motion.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
+            self.track_motion = None;
         }
         if let Some(ok) = self.take_chooser.as_mut().and_then(|tc| tc.show(ctx, &self.project)) {
             if let Some(tc) = self.take_chooser.take().filter(|_| ok) {
@@ -916,7 +931,11 @@ impl MeridianApp {
             "event-props" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
             "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),
             "take-chooser" => self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, false)),
-
+            "pan-crop" => self.exec(ctx, EventPanCrop),
+            "track-motion" => {
+                self.sel.tracks = self.project.timeline.video_tracks.first().map(|t| t.id.clone()).into_iter().collect();
+                self.exec(ctx, TrackMotion);
+            }
             "about" => self.about = true,
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {

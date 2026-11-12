@@ -229,6 +229,29 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 Btn::Solo => "Solo",
             };
             let resp = ui.interact(*r, id.with(tip), Sense::click()).on_hover_text(tip);
+            if *b == Btn::Comp {
+                // VP23 Compositing Mode: the mode list drops down from the button.
+                let pid = id.with("comp_popup");
+                if resp.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(pid));
+                }
+                let tr = &project.timeline.tracks(row.is_video)[row.idx];
+                let (cur, locked) = (tr.composite, tr.locked);
+                let mut picked = None;
+                super::super::chrome::with_menu_style(&ui.ctx().clone(), &t, || {
+                    #[allow(deprecated)]
+                    popup::popup_below_widget(ui, pid, &resp, PopupCloseBehavior::CloseOnClick, |ui| {
+                        ui.set_min_width(180.0);
+                        picked = crate::ui::trackmotion::composite_menu(ui, cur, !locked);
+                    });
+                });
+                if let Some(m) = picked {
+                    let before = project.clone();
+                    if edit::set_composite(project, &tid, m) {
+                        history.push(before);
+                    }
+                }
+            }
             if resp.clicked() && matches!(b, Btn::Mute | Btn::Solo) {
                 history.push(project.clone());
                 let tr = &mut project.timeline.tracks_mut(row.is_video)[row.idx];

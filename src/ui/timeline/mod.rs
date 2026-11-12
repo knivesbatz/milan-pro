@@ -804,6 +804,15 @@ pub fn draw_timeline(
                     None if !(m.command || m.shift) => sel.clips.clear(),
                     None => {}
                 }
+                // A video event's Pan/Crop button opens its Pan/Crop window.
+                if let (Some(cr), Some(row), true) = (&hit, row_at(pos.y), response.clicked()) {
+                    let c = &project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx];
+                    let (x0, x1) = (g.to_x(c.position).round(), g.to_x(c.position + c.duration).round());
+                    let r = Rect::from_min_max(pos2(x0, row.top + 1.0), pos2(x1.max(x0 + 1.0), row.top + row.h - 2.0));
+                    if cr.is_video && events::buttons(&t, r, true).iter().any(|(i, b)| *i == super::icons::Icon::PanCrop && b.contains(pos)) {
+                        super::open_tool(ui.ctx(), super::ToolWin::PanCrop(c.id.clone()));
+                    }
+                }
                 if response.clicked() {
                     project.timeline.cursor_position = cursor_at(g.to_time(pos.x));
                     if v16 && hit.is_none() {

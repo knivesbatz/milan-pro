@@ -347,6 +347,10 @@ impl Thumbs {
         self.paused.store(on, Relaxed);
     }
 
+    pub fn paused(&self) -> bool {
+        self.paused.load(Relaxed)
+    }
+
     fn receive(&mut self) {
         for (key, img) in self.rx.try_iter() {
             let v = match img {

@@ -1290,6 +1290,17 @@ pub fn edit_envelope(project: &mut Project, track: &str, kind: EnvKind, f: impl 
     changed(project, done)
 }
 
+/// The compositing mode of video track `track` (unless it is locked).
+pub fn set_composite(project: &mut Project, track: &str, mode: Composite) -> bool {
+    let Some((true, i)) = project.find_track(track) else { return false };
+    let t = &mut project.timeline.video_tracks[i];
+    let done = !t.locked && t.composite != mode;
+    if done {
+        t.composite = mode;
+    }
+    changed(project, done)
+}
+
 /// Add a point at `t` holding `v`; it takes its left neighbour's curve (Mute points hold). Returns its index.
 pub fn env_insert(env: &mut Envelope, t: f64, v: f32) -> usize {
     let keys = &mut env.points.keys;
@@ -2731,4 +2742,21 @@ mod tests {
         assert!(!apply_props(&mut p, &id, d), "nothing else to change");
     }
 
+    #[test]
+    fn composite_mode_is_stored_and_replans() {
+        let mut p = Project::new("t");
+        let id = p.timeline.video_tracks[0].id.clone();
+        let h = crate::engine::content_hash(&p);
+        assert!(set_composite(&mut p, &id, Composite::Screen));
+        assert_eq!(p.timeline.video_tracks[0].composite, Composite::Screen);
+        assert_ne!(crate::engine::content_hash(&p), h);
+        assert!(!set_composite(&mut p, &id, Composite::Screen), "unchanged");
+        let audio = p.timeline.audio_tracks[0].id.clone();
+        assert!(!set_composite(&mut p, &audio, Composite::Add), "audio tracks have no mode");
+        p.timeline.video_tracks[0].locked = true;
+        assert!(!set_composite(&mut p, &id, Composite::Add), "locked");
+        // Saved and loaded with the project.
+        let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back.timeline.video_tracks[0].composite, Composite::Screen);
+    }
 }

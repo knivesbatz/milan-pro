@@ -286,6 +286,15 @@ pub struct Theme {
     pub envelope_mute: Color32,
     pub envelope_point: Color32,
 
+    // Pan/Crop and Track Motion (§5.15.2–3): light workspace, keyframe controller
+    pub workspace_bg: Color32,
+    pub workspace_grid: Color32,
+    pub workspace_frame: Color32,
+    pub kf_ruler: Color32,
+    pub kf_lane: Color32,
+    pub kf_lane_alt: Color32,
+    pub kf_row_sel: Color32,
+
     // Meters and faders
     pub meter_bg: Color32,
     /// VP23 unlit wells: the meter gradient blended this far over `meter_bg` (0 = flat `meter_bg`).
@@ -545,6 +554,14 @@ impl Theme {
             envelope_mute: hex(0x32F0FF),
             envelope_point: hex(0xFFFFFF),
 
+            workspace_bg: hex(0xECECEC),
+            workspace_grid: hex(0xC8C8C8),
+            workspace_frame: hex(0x505050),
+            kf_ruler: hex(0x373737),
+            kf_lane: hex(0x383838),
+            kf_lane_alt: hex(0x2B2B2B),
+            kf_row_sel: hex(0x828282),
+
             meter_bg: hex(0x232323),
             meter_unlit: 0.0,
             meter_green: hex(0x00FF57),
@@ -759,6 +776,14 @@ impl Theme {
             envelope_pan: hex(0xDC6450),
             envelope_mute: hex(0x32F0FF),
             envelope_point: hex(0xFFFFFF),
+
+            workspace_bg: hex(0xECECEC),
+            workspace_grid: hex(0xC8C8C8),
+            workspace_frame: hex(0x505050),
+            kf_ruler: hex(0x333333),
+            kf_lane: hex(0x282828),
+            kf_lane_alt: hex(0x2E2E2E),
+            kf_row_sel: hex(0x505050),
 
             meter_bg: hex(0x141414),
             meter_unlit: 0.117, // green end -> #16291C (dark2026)

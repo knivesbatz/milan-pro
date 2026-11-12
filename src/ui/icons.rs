@@ -103,6 +103,8 @@ pub enum Icon {
     StatusPreview,
     StatusFrame,
     StatusDisplay,
+    // Pan/Crop and Track Motion toolbar (§5.15.2)
+    SizeAboutCenter,
 }
 
 impl Icon {
@@ -118,7 +120,7 @@ impl Icon {
             PanThumb, Downmix, Dim, MixingConsole, ExternalMonitor, SplitScreen, Overlays, SnapshotCopy,
             SnapshotSave, AutoPreview, DockMaximize, DockClose, Logo, DropDown, Search, Folder, RemoveUnused, Capture,
             DeviceMedia, WebMedia, Views, Back, Forward, Up, Refresh, Favorite, FxBadge, Import, MediaBin, StatusPreview,
-            StatusFrame, StatusDisplay,
+            StatusFrame, StatusDisplay, SizeAboutCenter,
         ]
     };
 }
@@ -883,6 +885,15 @@ fn draw(p: &Pen, icon: Icon) {
             for x in [4.0, 7.0, 10.0] {
                 p.fill(x, 4.5, 1.5, 1.5, ink);
                 p.fill(x, 10.0, 1.5, 1.5, ink);
+            }
+        }
+        SizeAboutCenter => {
+            // A dashed box with a centre dot and arrows growing out from it to the corners.
+            p.dashed_rect(1.5, 1.5, 13.0, 13.0, 2.0, 1.5, ink);
+            p.dot((8.0, 8.0), 1.2, ink);
+            for (dx, dy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                p.line(&[(8.0 + dx * 2.0, 8.0 + dy * 2.0), (8.0 + dx * 5.0, 8.0 + dy * 5.0)], ink);
+                p.arrow_head_k((8.0 + dx * 5.5, 8.0 + dy * 5.5), (dx * 0.7071, dy * 0.7071), ink, 0.8);
             }
         }
         StatusDisplay => {
