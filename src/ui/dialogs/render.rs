@@ -1,9 +1,10 @@
 //! File › Render As (VP16, light native dialog with a Formats tree) / File › Render (VP23, dark dialog with a
-//! category tree and a template grid), §5.15.1 and §5.15.3. Templates are Milan Pro's ffmpeg presets.
+//! category tree and a template grid), §5.15.1 and §5.15.3. Templates are Milan Pro's ffmpeg presets; the render runs
+//! through the engine (`engine::render`).
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
 use crate::project::{Project, format_timecode};
-use crate::render::{Job, PRESETS, Status, build_args, content_end};
+use crate::render::{Job, PRESETS, Status, content_end};
 use super::super::theme::{self, UiLook};
 
 /// Format group and description per preset (same order as `PRESETS`).
@@ -36,7 +37,8 @@ pub struct RenderDialog {
     pub open: bool,
     preset: usize,
     job: Option<Job>,
-    error: Option<String>,
+    /// "Render loop region only" (used while the loop region is set).
+    loop_only: bool,
     folder: String,
     name: String,
     search: String,
@@ -53,7 +55,8 @@ impl Default for RenderDialog {
             open: false,
             preset: 0,
             job: None,
-            error: None,
+            // VEGAS: on whenever there is a loop region; an untick is kept for the session.
+            loop_only: true,
             folder: folder.display().to_string(),
             name: String::new(),
             search: String::new(),
@@ -86,12 +89,17 @@ impl RenderDialog {
             if let Some(j) = &self.job {
                 j.cancel();
             }
-            (self.job, self.error, self.open) = (None, None, false);
+            (self.job, self.open) = (None, false);
         }
     }
 
     fn running(&self) -> bool {
         self.job.as_ref().is_some_and(|j| j.status() == Status::Running)
+    }
+
+    /// The time span to render: the loop region when "Render loop region only" is on and one is set, else the whole timeline.
+    fn range(&self, project: &Project) -> (f64, f64) {
+        project.timeline.loop_region.filter(|&(a, b)| self.loop_only && b > a).unwrap_or((0.0, content_end(project)))
     }
 
     fn out_path(&self) -> PathBuf {
@@ -123,7 +131,9 @@ impl RenderDialog {
             ui.label(format!("Video:  {:.3} fps; {}x{}; Progressive", s.frame_rate, s.width, s.height));
         }
         ui.label(format!("Audio:  {} Hz; Stereo", s.sample_rate));
-        ui.label(format!("Length: {} (whole timeline)", format_timecode(content_end(project), s.frame_rate)));
+        let (a, b) = self.range(project);
+        let what = if (a, b) == (0.0, content_end(project)) { "whole timeline" } else { "loop region" };
+        ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
     }
 
     /// Progress / result block and the bottom buttons. True when Render was clicked.
@@ -151,10 +161,9 @@ impl RenderDialog {
             }
             None => {}
         }
-        if let Some(e) = &self.error {
-            ui.colored_label(theme::get().warning_text, e);
-        }
-        let empty = content_end(project) <= 0.0;
+        let (a, b) = self.range(project);
+        let empty = b <= a;
+        let has_loop = project.timeline.loop_region.is_some_and(|(a, b)| b > a);
         let running = self.running();
         let mut render = false;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -165,14 +174,14 @@ impl RenderDialog {
                         j.cancel();
                     }
                 } else {
-                    self.open = false;
-                    (self.job, self.error) = (None, None);
+                    (self.open, self.job) = (false, None);
                 }
             }
             render = super::button(ui, render_label, !empty && !running && !self.name.trim().is_empty(), true).clicked();
-            ui.add_enabled_ui(false, |ui| {
-                ui.checkbox(&mut false, "Render loop region only");
-            });
+            let mut on = self.loop_only && has_loop;
+            if ui.add_enabled(has_loop && !running, Checkbox::new(&mut on, "Render loop region only")).changed() {
+                self.loop_only = on;
+            }
         });
         render
     }
@@ -337,8 +346,6 @@ impl RenderDialog {
     }
 
     fn start(&mut self, ctx: &Context, project: &Project) {
-        let preset = &PRESETS[self.preset];
-        self.error = None;
         let out = self.out_path();
         if out.exists()
             && rfd::MessageDialog::new()
@@ -350,10 +357,7 @@ impl RenderDialog {
         {
             return;
         }
-        match build_args(project, preset, &out) {
-            Ok(args) => self.job = Some(Job::start(args, content_end(project), out, ctx.clone())),
-            Err(e) => self.error = Some(e),
-        }
+        self.job = Some(crate::engine::render::start(project, &PRESETS[self.preset], out, self.range(project), ctx.clone()));
     }
 }
 
@@ -375,7 +379,7 @@ pub fn open_folder(path: &Path) {
     {
         use std::os::windows::process::CommandExt;
         // explorer parses its own command line; /select needs the path quoted after the comma.
-        cmd.raw_arg(format!("/select,\"{}\"", path.display()));
+        cmd.raw_arg(format!("/select,\"{}\"", path.display())).creation_flags(0x08000000);
     }
     #[cfg(not(windows))]
     cmd.arg(path.parent().unwrap_or(path));

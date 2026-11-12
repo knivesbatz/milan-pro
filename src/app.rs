@@ -66,6 +66,8 @@ pub struct MeridianApp {
     trimmer: ui::Trimmer,
     preview_view: ui::PreviewView,
     master_view: ui::MasterView,
+    /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
+    master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
     prefs: Prefs,
     keymap: Keymap,
@@ -166,6 +168,7 @@ impl MeridianApp {
             trimmer,
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
+            master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
             welcome,
@@ -315,7 +318,11 @@ impl eframe::App for MeridianApp {
                 }
                 Panel::MasterBus => {
                     ui::master_bus_toolbar(bar);
+                    // The faders edit the project's master gain (saved with it, used by the render).
+                    self.master_view.gain = self.project.timeline.master.gain;
                     ui::master_bus(body, &mut self.master_view, &self.audio.master);
+                    let down = body.input(|i| i.pointer.any_down());
+                    set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
                 }
                 p => ui::placeholder(body, p),
             });
@@ -471,6 +478,8 @@ impl eframe::App for MeridianApp {
                 self.audio.set_plan(&self.project);
             }
         }
+        // Playback follows the project's master gain also while the Master Bus window is closed (an opened project, Undo).
+        self.audio.master.set_gain(self.project.timeline.master.gain);
         // Thumbnail and waveform decodes wait while playing.
         self.thumbs.set_paused(self.playing);
         self.waves.set_paused(self.playing);
@@ -483,5 +492,44 @@ impl eframe::App for MeridianApp {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
             shot.tick(ctx, busy);
         }
+    }
+}
+
+/// Apply the Master Bus faders' `gain` to the project: one undo step per gesture (a drag, a click, a wheel step or a
+/// double-click reset), like the track faders, so Undo never reverts the master gain as a side effect of another edit.
+fn set_master_gain(project: &mut Project, history: &mut History, gesture: &mut bool, gain: [f32; 2], pointer_down: bool) {
+    let changed = gain != project.timeline.master.gain;
+    if changed {
+        if !*gesture {
+            history.push(project.clone());
+        }
+        project.timeline.master.gain = gain;
+        project.mark_modified();
+    }
+    *gesture = pointer_down && (*gesture || changed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn master_fader_gesture_is_one_undo_step() {
+        let (mut p, mut h, mut g) = (Project::new("t"), History::default(), false);
+        // A drag over three frames, then release: one step.
+        for v in [0.9, 0.7, 0.5] {
+            set_master_gain(&mut p, &mut h, &mut g, [v, v], true);
+        }
+        set_master_gain(&mut p, &mut h, &mut g, [0.5, 0.5], false);
+        assert_eq!(h.lens(), (1, 0));
+        assert!(p.modified);
+        // A wheel step (no button down) is its own step; an unchanged frame adds none.
+        set_master_gain(&mut p, &mut h, &mut g, [0.4, 0.4], false);
+        set_master_gain(&mut p, &mut h, &mut g, [0.4, 0.4], false);
+        assert_eq!(h.lens(), (2, 0));
+        h.undo(&mut p);
+        assert_eq!(p.timeline.master.gain, [0.5, 0.5]);
+        h.undo(&mut p);
+        assert_eq!(p.timeline.master.gain, [1.0, 1.0]);
     }
 }

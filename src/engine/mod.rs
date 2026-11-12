@@ -2,6 +2,7 @@
 //! Video: `plan` turns the project into frame plans, `worker` composes them on the "milan-video" thread
 //! from persistent `vdecode` streams, and `VideoEngine` is the UI thread's handle to it.
 //! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`).
+//! Render: `render` runs both into one ffmpeg encoder.
 pub mod cache;
 pub mod composite;
 // shortcut: key editing is used from batch 10 (keyframe UI) on.
@@ -9,6 +10,7 @@ pub mod composite;
 pub mod keyframes;
 pub mod mix;
 pub mod plan;
+pub mod render;
 pub mod vdecode;
 mod worker;
 

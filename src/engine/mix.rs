@@ -108,13 +108,16 @@ impl Stream {
     /// Fill `out`, with silence once the stream has ended. Returns the decoder's error the first time it ends with one.
     /// A decoder that has not started (or is still catching up) holds the caller only when `wait` is set: otherwise
     /// it plays silence, so a slow start (a reversed span, a cold disk) delays only its own event.
-    fn read(&mut self, out: &mut [f32], wait: bool) -> Option<String> {
+    /// With `stop` (a render) every read waits however long it takes, until `stop` is set.
+    fn read(&mut self, out: &mut [f32], wait: bool, stop: Option<&AtomicBool>) -> Option<String> {
         let mut k = 0;
         while k < out.len() {
             if self.pos >= self.buf.len() {
                 let behind = !self.started || self.skip > 0;
                 let got = if behind && !wait {
                     self.rx.try_recv().map_err(|e| if e == TryRecvError::Empty { RecvTimeoutError::Timeout } else { RecvTimeoutError::Disconnected })
+                } else if let Some(stop) = stop {
+                    recv_until(&self.rx, stop)
                 } else {
                     self.rx.recv_timeout(TIMEOUT)
                 };
@@ -146,6 +149,16 @@ impl Stream {
             (self.pos, k) = (self.pos + n, k + n);
         }
         None
+    }
+}
+
+/// Receive however long it takes; a Timeout once `stop` is set.
+fn recv_until<T>(rx: &Receiver<T>, stop: &AtomicBool) -> Result<T, RecvTimeoutError> {
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Err(RecvTimeoutError::Timeout) if !stop.load(Relaxed) => {}
+            r => return r,
+        }
     }
 }
 
@@ -211,6 +224,8 @@ pub struct Mixer {
     pass: u64,
     /// Wait for decoders that have not started yet (a session's first block, a render); otherwise they play silence.
     wait: bool,
+    /// A render's cancel flag: every decoder is waited for, however slow, until it is set.
+    pub render: Option<Arc<AtomicBool>>,
     track: Vec<f32>,
     pcm: Vec<f32>,
     /// First decoder error since it was last taken.
@@ -231,7 +246,7 @@ impl Mixer {
     }
 
     fn new(open: Open) -> Self {
-        Self { open, streams: Vec::new(), round: 0, pass: 0, wait: true, track: Vec::new(), pcm: Vec::new(), error: None }
+        Self { open, streams: Vec::new(), round: 0, pass: 0, wait: true, render: None, track: Vec::new(), pcm: Vec::new(), error: None }
     }
 
     /// The stream that continues `src` at `at` frames into its event, opened if none does.
@@ -279,6 +294,7 @@ impl Mixer {
         let n = out.len() / 2;
         let (f1, r) = (f0 + n as i64, RATE as f64);
         let (mut track, mut pcm) = (std::mem::take(&mut self.track), std::mem::take(&mut self.pcm));
+        let stop = self.render.clone();
         for tr in &plan.tracks {
             track.clear();
             track.resize(out.len(), 0.0);
@@ -295,7 +311,7 @@ impl Mixer {
                 let wait = self.wait;
                 let l = self.stream(&e.src, a - ps);
                 (l.next, l.t) = (b - ps, l.t + (b - a) as f64 * e.src.rate / r);
-                if let Some(err) = l.s.read(&mut pcm, wait) {
+                if let Some(err) = l.s.read(&mut pcm, wait, stop.as_deref()) {
                     self.error.get_or_insert(err);
                 }
                 let (v0, v1) = env_gain(&e.vol_env, (a - ps) as f64 / r, (b - ps) as f64 / r);
@@ -682,13 +698,37 @@ mod tests {
         let mut s = Stream::from_rx(rx);
         let mut out = vec![1.0; 4];
         let t = Instant::now();
-        assert_eq!(s.read(&mut out, false), None);
+        assert_eq!(s.read(&mut out, false, None), None);
         assert!(t.elapsed() < Duration::from_millis(50), "waited for the decoder");
         assert_eq!(out, [0.0; 4]);
         // The 4 samples played as silence are dropped when they arrive.
         tx.send((0..12).map(|v| v as f32).collect()).unwrap();
-        assert_eq!(s.read(&mut out, false), None);
+        assert_eq!(s.read(&mut out, false, None), None);
         assert_eq!(out, [4.0, 5.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn a_render_waits_past_the_timeout_until_cancelled() {
+        let (tx, rx) = mpsc::sync_channel(8);
+        let mut s = Stream::from_rx(rx);
+        let stop = AtomicBool::new(false);
+        let mut out = vec![0.0; 4];
+        std::thread::scope(|sc| {
+            sc.spawn(move || {
+                std::thread::sleep(TIMEOUT + Duration::from_millis(300));
+                tx.send(vec![1.0; 4]).unwrap();
+            });
+            assert_eq!(s.read(&mut out, true, Some(&stop)), None);
+        });
+        assert_eq!(out, [1.0; 4]);
+        // Cancelled while waiting for a decoder that never starts: silence, at once.
+        let (_tx, rx) = mpsc::sync_channel(8);
+        let mut s = Stream::from_rx(rx);
+        stop.store(true, Relaxed);
+        let t = Instant::now();
+        assert_eq!(s.read(&mut out, true, Some(&stop)), None);
+        assert!(t.elapsed() < Duration::from_millis(500));
+        assert_eq!(out, [0.0; 4]);
     }
 
     #[test]
@@ -752,14 +792,14 @@ mod tests {
         let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true };
         let mut s = spawn(&src, 0).unwrap();
         let mut out = vec![0.0; 2 * 48_000];
-        assert_eq!(s.read(&mut out, true), None);
+        assert_eq!(s.read(&mut out, true, None), None);
         // Timeline 0 shows source 3 s, timeline 0.5 s shows source 2 s.
         assert!((out[0] - 0.3).abs() < 0.01, "{}", out[0]);
         assert!((out[48_000] - 0.2).abs() < 0.01, "{}", out[48_000]);
         drop(s);
         // Forward, 0.5 s into the event: source 1.5 s, read on past the event end (no -t).
         let mut s = spawn(&ASrc { rate: 1.0, reverse: false, ..src }, frame(0.5)).unwrap();
-        assert_eq!(s.read(&mut out, true), None);
+        assert_eq!(s.read(&mut out, true, None), None);
         assert!((out[0] - 0.15).abs() < 0.01, "{}", out[0]);
         assert!((out[2 * 47_999] - 0.25).abs() < 0.01, "{}", out[2 * 47_999]);
         drop(s);

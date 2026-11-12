@@ -146,6 +146,11 @@ impl Worker {
         w
     }
 
+    /// For a render: every frame is new, so there is no composite cache (sources stay cached for stills).
+    pub fn for_render() -> Self {
+        Self { composites: ByteLru::new(0), ..Self::new() }
+    }
+
     pub fn set_plan(&mut self, p: Arc<VideoPlan>) {
         if p.fps != self.plan.fps {
             // Source frame numbers are on the project-fps grid: cached frames would show the wrong time.
