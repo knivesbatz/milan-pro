@@ -16,11 +16,14 @@ use crate::ui::dock::{Dock, Panel};
 use crate::ui::theme::{self, LookChoice, UiLook};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
-use crate::ui::{self, ChooserKind, ClipRef, DragState, MenuAction, Playback, TransportAction, TransportState, WinAction};
+use crate::ui::{self, ChooserKind, ClipRef, DragState, MenuAction, Playback, Selection, TransportAction, TransportState, WinAction};
 
 pub struct MeridianApp {
     pub project: Project,
     pub history: History,
+    /// Selected events and tracks (ids).
+    pub sel: Selection,
+    /// The focus event (`sel.clips.last()`), looked up again by `sync_sel` after anything that edits or selects.
     pub selected_clip: Option<ClipRef>,
     pub selected_media: Option<usize>,
     pub playing: bool,
@@ -84,8 +87,10 @@ pub struct MeridianApp {
     new_settings: Option<crate::project::ProjectSettings>,
     /// Dock area last frame: plain keys over it go to the dock window.
     dock_rect: egui::Rect,
-    /// Copied or cut event and whether it came from a video track (Edit › Cut/Copy/Paste).
-    clipboard: Option<(bool, crate::project::Clip)>,
+    /// Copied or cut events (Edit › Cut/Copy/Paste), from `edit::copy_clips`.
+    clipboard: Vec<(bool, usize, crate::project::Clip)>,
+    /// Track heights saved by View › Minimize All Tracks, restored by the next toggle.
+    minimized: Option<Vec<(String, f32)>>,
     updater: crate::updater::Updater,
     /// Verified installer and its SHA-256, to start when the app exits ("Install and restart", after the save prompt).
     install_on_exit: Option<(std::path::PathBuf, String)>,
@@ -108,10 +113,13 @@ impl MeridianApp {
             // Off the startup path: the check waits a few seconds on its own thread.
             updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }));
         }
-        let (mut project, mut selected_clip, mut message) = (Project::new("Untitled"), None, None);
+        let (mut project, mut sel, mut message) = (Project::new("Untitled"), Selection::default(), None);
         if launch.demo {
             match crate::demo::project(&theme::get()) {
-                Ok((p, sel)) => (project, selected_clip) = (p, Some(sel)),
+                Ok((p, cr)) => {
+                    sel.clips = p.timeline.tracks(cr.is_video).get(cr.track_idx).and_then(|t| t.clips.get(cr.clip_idx)).map(|c| c.id.clone()).into_iter().collect();
+                    project = p;
+                }
                 Err(e) => message = Some(format!("Demo media failed: {e}")),
             }
         }
@@ -133,7 +141,8 @@ impl MeridianApp {
         let mut app = Self {
             project,
             history: History::default(),
-            selected_clip,
+            sel,
+            selected_clip: None,
             selected_media: None,
             playing: false,
             looping: false,
@@ -178,14 +187,29 @@ impl MeridianApp {
             props_after_new: false,
             new_settings: None,
             dock_rect: egui::Rect::NOTHING,
-            clipboard: None,
+            clipboard: Vec::new(),
+            minimized: None,
             updater,
             install_on_exit: None,
             update_prefs_seen: (prefs.auto_update, prefs.skipped_update.clone()),
             prefs,
         };
+        app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
         app
+    }
+
+    /// Drop selected ids that no longer exist (after an undo, a delete) and look the focus event up again.
+    fn sync_sel(&mut self) {
+        let p = &self.project;
+        if !self.sel.clips.is_empty() {
+            // One sweep, not a find_clip per id: this runs every frame, and Select All on a long project is big.
+            let tl = &p.timeline;
+            let all: std::collections::HashSet<&str> = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).map(|c| c.id.as_str()).collect();
+            self.sel.clips.retain(|id| all.contains(id.as_str()));
+        }
+        self.sel.tracks.retain(|id| p.find_track(id).is_some());
+        self.selected_clip = self.sel.clips.last().and_then(|id| p.find_clip(id));
     }
 
     /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
@@ -256,7 +280,7 @@ impl eframe::App for MeridianApp {
             });
 
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            let a_tb = ui::draw_main_toolbar(&mut row, &mut self.project, &mut self.history, &mut self.selected_clip);
+            let a_tb = ui::draw_main_toolbar(&mut row, &self.project, &self.history);
             menu_action = menu_action.or(a_tb);
 
             // Dock windows.
@@ -273,7 +297,7 @@ impl eframe::App for MeridianApp {
                         &mut self.history,
                         &mut self.media_view,
                         &mut self.selected_media,
-                        &mut self.selected_clip,
+                        &mut self.sel.clips,
                         &self.importer,
                         &mut actions,
                     );
@@ -282,7 +306,7 @@ impl eframe::App for MeridianApp {
                         &mut self.project,
                         &mut self.media_view,
                         &mut self.selected_media,
-                        &mut self.selected_clip,
+                        &mut self.sel.clips,
                         &mut self.history,
                         &mut self.thumbs,
                         &mut actions,
@@ -355,11 +379,12 @@ impl eframe::App for MeridianApp {
             ui::draw_timeline(
                 &mut tl,
                 &mut self.project,
-                &mut self.selected_clip,
+                &mut self.sel,
                 &mut self.drag_state,
                 &mut self.timeline_scroll_y,
                 &mut self.history,
                 self.snapping,
+                self.prefs.quantize,
                 &mut self.waves,
                 &mut self.thumbs,
                 self.playing,
@@ -374,7 +399,6 @@ impl eframe::App for MeridianApp {
                 TransportState {
                     project: &mut self.project,
                     history: &mut self.history,
-                    selected_clip: &mut self.selected_clip,
                     playback: Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start },
                     snapping: &mut self.snapping,
                     auto_crossfade: &mut self.auto_crossfade,
@@ -387,6 +411,7 @@ impl eframe::App for MeridianApp {
                 chrome::resize_edges(ui, full);
             }
         });
+        self.sync_sel();
         if let Some(TransportAction::ToggleColorGrading) = transport_action {
             self.dock.toggle(Panel::ColorGrading);
         }
@@ -417,14 +442,10 @@ impl eframe::App for MeridianApp {
         }
         while let Some(batch) = self.importer.poll() {
             let before = self.project.clone();
-            let mut errors = Vec::new();
-            for r in batch {
-                match r {
-                    Ok(m) => self.project.media_pool.push(m),
-                    Err(e) => errors.push(e),
-                }
-            }
-            if self.project.media_pool.len() != before.media_pool.len() {
+            let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().partition(Result::is_ok);
+            let errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
+            // Files imported twice (two drops or picks before the first probe finished) are added once.
+            if crate::media::merge_new(&mut self.project.media_pool, ok.into_iter().filter_map(Result::ok).collect()) {
                 self.history.push(before);
                 self.project.mark_modified();
             }

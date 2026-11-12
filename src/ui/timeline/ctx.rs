@@ -3,13 +3,15 @@
 //! loop bar) took, works out what was clicked and shows that menu. Global actions go to the command bus;
 //! actions on the clicked track / marker / region are done here.
 use eframe::egui::*;
+use crate::edit;
 use crate::history::History;
 use crate::project::*;
+use crate::ui::Selection;
 use super::super::keymap::Command::*;
 use super::super::menus::{self, M, M::*, Mark, cmd, entry, off, sep, sub};
 use super::super::theme::{self, UiLook};
 use super::ruler::band_rows;
-use super::{ClipRef, Geo, Rename, Row, TlState};
+use super::{Geo, Rename, Row, TlState};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Target {
@@ -29,7 +31,7 @@ enum Target {
 
 const TAG: Vec2 = vec2(13.0, 14.0);
 
-fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Option<ClipRef>, p: Pos2) -> Option<Target> {
+fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2) -> Option<Target> {
     let t = theme::get();
     let tl = &project.timeline;
     if Rect::from_min_size(g.rect.min, vec2(g.header_w, t.m.band_h)).contains(p) {
@@ -57,7 +59,7 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Option<ClipRef>, p: Po
         return Some(row.map_or(Target::ListEmpty, |r| Target::TrackHeader(r.is_video, r.idx)));
     }
     if g.lanes.contains(p) {
-        if sel.is_some() {
+        if !sel.clips.is_empty() {
             return Some(Target::Event);
         }
         let time = g.to_time(p.x);
@@ -78,20 +80,20 @@ pub(super) fn menu(
     rows: &[Row],
     project: &mut Project,
     history: &mut History,
-    selected_clip: &mut Option<ClipRef>,
+    sel: &Selection,
     st: &mut TlState,
 ) {
     let tid = ui.id().with("ctx_target");
     let clicked = ui.input(|i| i.pointer.button_clicked(PointerButton::Secondary).then(|| i.pointer.interact_pos()).flatten());
     let open_at = clicked
         .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
-        .and_then(|p| target(g, rows, project, selected_clip, p).map(|t| (p, t)));
+        .and_then(|p| target(g, rows, project, sel, p).map(|t| (p, t)));
     if let Some((_, tg)) = open_at {
         ui.data_mut(|d| d.insert_temp(tid, tg));
     }
     let Some(tg) = ui.data(|d| d.get_temp::<Target>(tid)) else { return };
     menus::context_at(response, open_at.map(|o| o.0), |ui| match tg {
-        Target::TrackHeader(v, i) => track_header(ui, project, history, selected_clip, st, v, i),
+        Target::TrackHeader(v, i) => track_header(ui, project, history, &sel.tracks, st, v, i),
         Target::ListEmpty => {
             cmd(ui, "&Open...", Open);
             cmd(ui, "&Insert Audio Track", InsertAudioTrack);
@@ -100,10 +102,10 @@ pub(super) fn menu(
             cmd(ui, "&Preferences...", Preferences);
         }
         Target::Event => {
-            let is_video = selected_clip.as_ref().is_some_and(|c| c.is_video);
+            let is_video = sel.clips.last().and_then(|id| project.find_clip(id)).is_some_and(|c| c.is_video);
             menus::show(ui, if is_video { VIDEO_EVENT } else { AUDIO_EVENT });
         }
-        Target::Lane(v, i) => lane(ui, project, history, selected_clip, st, v, i),
+        Target::Lane(v, i) => lane(ui, project, history, &sel.tracks, st, v, i),
         Target::Selection => {
             off(ui, "&Insert Empty Event");
             cmd(ui, "&Zoom Selection", ZoomSelection);
@@ -185,6 +187,7 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
     switches(ui, project, history, v, i);
     if entry(ui, "Default Track &Height", "Ctrl+`", project.timeline.tracks(v)[i].height > 0.0, Mark::None) {
         project.timeline.tracks_mut(v)[i].height = 0.0;
+        project.mark_modified(); // a view change: no undo step
     }
     sep(ui);
     off(ui, "Edit Visible Button Set...");
@@ -201,17 +204,19 @@ fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usi
     project.mark_modified();
 }
 
-fn delete_track(project: &mut Project, history: &mut History, sel: &mut Option<ClipRef>, st: &mut TlState, v: bool, i: usize) {
-    history.push(project.clone());
-    project.timeline.tracks_mut(v).remove(i);
-    project.mark_modified();
-    // Indices after the removed track shift; drop selections that may point at the wrong track.
-    *sel = None;
-    st.sel_tracks.clear();
+/// Delete track `i`, or every selected track when it is one of them.
+fn delete_track(project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, v: bool, i: usize) {
+    let before = project.clone();
+    let id = project.timeline.tracks(v)[i].id.clone();
+    let ids = if sel.contains(&id) { sel.to_vec() } else { vec![id] };
+    if edit::delete_tracks(project, &ids) {
+        history.push(before);
+    }
+    // Row numbers after the removed track shift (selections are ids and drop the gone ones themselves).
     st.anchor = None;
 }
 
-fn track_rows(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Option<ClipRef>, st: &mut TlState, v: bool, i: usize) {
+fn track_rows(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, v: bool, i: usize) {
     if entry(ui, "D&uplicate Track", "", true, Mark::None) {
         duplicate_track(project, history, v, i);
     }
@@ -233,7 +238,7 @@ fn track_group_and_color(ui: &mut Ui) {
     });
 }
 
-fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Option<ClipRef>, st: &mut TlState, v: bool, i: usize) {
+fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, v: bool, i: usize) {
     if i >= project.timeline.tracks(v).len() {
         return;
     }
@@ -283,7 +288,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
     }
 }
 
-fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Option<ClipRef>, st: &mut TlState, v: bool, i: usize) {
+fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, v: bool, i: usize) {
     if i >= project.timeline.tracks(v).len() {
         return;
     }

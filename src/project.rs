@@ -388,6 +388,47 @@ impl Project {
     pub fn mark_modified(&mut self) {
         self.modified = true;
     }
+
+    /// Where the event with `id` is now.
+    pub fn find_clip(&self, id: &str) -> Option<ClipRef> {
+        [true, false].into_iter().find_map(|is_video| {
+            self.timeline.tracks(is_video).iter().enumerate().find_map(|(track_idx, t)| {
+                t.clips.iter().position(|c| c.id == id).map(|clip_idx| ClipRef { is_video, track_idx, clip_idx })
+            })
+        })
+    }
+
+    /// `find_clip` for many ids in one sweep over the timeline, in the order of `ids` (missing ones skipped).
+    pub fn find_clips(&self, ids: &[String]) -> Vec<ClipRef> {
+        let want: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut at = std::collections::HashMap::with_capacity(ids.len());
+        for is_video in [true, false] {
+            for (track_idx, t) in self.timeline.tracks(is_video).iter().enumerate() {
+                for (clip_idx, c) in t.clips.iter().enumerate().filter(|(_, c)| want.contains(c.id.as_str())) {
+                    at.insert(c.id.as_str(), ClipRef { is_video, track_idx, clip_idx });
+                }
+            }
+        }
+        ids.iter().filter_map(|id| at.get(id.as_str()).cloned()).collect()
+    }
+
+    pub fn clip(&self, id: &str) -> Option<&Clip> {
+        let r = self.find_clip(id)?;
+        Some(&self.timeline.tracks(r.is_video)[r.track_idx].clips[r.clip_idx])
+    }
+
+    /// (is video, index) of the track with `id`.
+    pub fn find_track(&self, id: &str) -> Option<(bool, usize)> {
+        [true, false].into_iter().find_map(|v| self.timeline.tracks(v).iter().position(|t| t.id == id).map(|i| (v, i)))
+    }
+}
+
+/// An event's place on the timeline; indices go stale after edits, so selections keep ids and look this up.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipRef {
+    pub is_video: bool,
+    pub track_idx: usize,
+    pub clip_idx: usize,
 }
 
 impl Default for ProjectSettings {
@@ -451,6 +492,10 @@ impl Timeline {
     pub fn add_audio_track(&mut self) {
         let n = self.audio_tracks.len() + 1;
         self.audio_tracks.push(Track::new(&format!("Audio {n}"), TrackKind::Audio));
+    }
+
+    pub fn add_track(&mut self, video: bool) {
+        if video { self.add_video_track() } else { self.add_audio_track() }
     }
 }
 
@@ -697,6 +742,25 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
+    }
+
+    #[test]
+    fn find_clip_survives_a_reorder() {
+        let mut p = Project::new("t");
+        p.timeline.add_video_track();
+        let (a, b) = (Clip::new("a", 0.0, 1.0), Clip::new("b", 2.0, 1.0));
+        let id = b.id.clone();
+        p.timeline.video_tracks[1].clips = vec![a, b];
+        assert_eq!(p.find_clip(&id), Some(ClipRef { is_video: true, track_idx: 1, clip_idx: 1 }));
+        p.timeline.video_tracks.swap(0, 1);
+        p.timeline.video_tracks[0].clips.swap(0, 1);
+        assert_eq!(p.find_clip(&id), Some(ClipRef { is_video: true, track_idx: 0, clip_idx: 0 }));
+        assert_eq!(p.clip(&id).map(|c| c.name.as_str()), Some("b"));
+        let tid = p.timeline.audio_tracks[0].id.clone();
+        assert_eq!((p.find_track(&tid), p.find_clip("nope")), (Some((false, 0)), None));
+        let a_id = p.timeline.video_tracks[0].clips[1].id.clone();
+        let refs = p.find_clips(&[a_id.clone(), "nope".into(), id.clone()]);
+        assert_eq!(refs, [p.find_clip(&a_id).unwrap(), p.find_clip(&id).unwrap()]);
     }
 
     #[test]

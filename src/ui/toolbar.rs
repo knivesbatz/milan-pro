@@ -4,9 +4,8 @@ use crate::history::History;
 use crate::project::Project;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{MenuAction, save};
+use super::menus::{MenuAction, send};
 use super::theme::{self, UiLook};
-use super::ClipRef;
 
 const HINT: &str = "milan_status_hint";
 
@@ -159,13 +158,9 @@ fn history_popup(ui: &mut Ui, arrow: &Response, steps: usize, verb: &str) -> Opt
     .flatten()
 }
 
-/// Main toolbar (§5.2): `ui` is a left-to-right row over the toolbar body. Returns app-level actions.
-pub fn draw_main_toolbar(
-    ui: &mut Ui,
-    project: &mut Project,
-    history: &mut History,
-    selected_clip: &mut Option<ClipRef>,
-) -> Option<MenuAction> {
+/// Main toolbar (§5.2): `ui` is a left-to-right row over the toolbar body. Returns app-level actions; Save, Cut,
+/// Copy, Paste, Undo and Redo go to the command bus.
+pub fn draw_main_toolbar(ui: &mut Ui, project: &Project, history: &History) -> Option<MenuAction> {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     ui.spacing_mut().item_spacing.x = 0.0;
@@ -181,7 +176,7 @@ pub fn draw_main_toolbar(
     act(tool_button(ui, Icon::New, "New Empty Project (Ctrl+Shift+N)", true, false), MenuAction::New);
     act(tool_button(ui, Icon::Open, "Open (Ctrl+O)", true, false), MenuAction::Open);
     if tool_button(ui, Icon::Save, "Save (Ctrl+S)", true, false).clicked() {
-        save(project);
+        send(ui.ctx(), Command::Save);
     }
     let render = if v16 { "Render As (Ctrl+M)" } else { "Render (Ctrl+M)" };
     // Greyed with nothing to render, as VEGAS does.
@@ -194,7 +189,7 @@ pub fn draw_main_toolbar(
         (Icon::Paste, "Paste (Ctrl+V)", Command::Paste),
     ] {
         if tool_button(ui, icon, tip, st.enabled(cmd), false).clicked() {
-            super::menus::send(ui.ctx(), cmd);
+            send(ui.ctx(), cmd);
         }
     }
     let (undo_n, redo_n) = history.lens();
@@ -202,14 +197,11 @@ pub fn draw_main_toolbar(
     let undo = if m.clicked() { Some(1) } else { history_popup(ui, &a, undo_n, "Undo") };
     let (m, a) = split_button(ui, Icon::Redo, "Redo (Ctrl+Shift+Z)", redo_n > 0, false);
     let redo = if m.clicked() { Some(1) } else { history_popup(ui, &a, redo_n, "Redo") };
-    for _ in 0..undo.unwrap_or(0) {
-        history.undo(project);
-    }
-    for _ in 0..redo.unwrap_or(0) {
-        history.redo(project);
-    }
-    if undo.or(redo).is_some() {
-        *selected_clip = None;
+    // One command per step, so the app's Undo/Redo handling (selection, drag state) runs for each.
+    for (n, c) in [(undo, Command::Undo), (redo, Command::Redo)] {
+        for _ in 0..n.unwrap_or(0) {
+            send(ui.ctx(), c);
+        }
     }
     if v16 {
         act(tool_button(ui, Icon::Tutorials, "Interactive Tutorials", true, false), MenuAction::About);

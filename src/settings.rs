@@ -26,6 +26,8 @@ pub struct Prefs {
     pub auto_update: bool,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
+    /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
+    pub quantize: bool,
 }
 
 impl Default for Prefs {
@@ -39,6 +41,7 @@ impl Default for Prefs {
             recent_max: 4,
             auto_update: true,
             skipped_update: None,
+            quantize: true,
         }
     }
 }
@@ -249,7 +252,7 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update), (LookChoice::VEGAS16, true, 4, true));
+        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize), (LookChoice::VEGAS16, true, 4, true, true));
         let mut r = Prefs { recent_max: 2, ..Default::default() };
         for p in ["a", "b", "a", "c"] {
             r.add_recent(std::path::Path::new(p));

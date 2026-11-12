@@ -15,7 +15,7 @@ use crate::edit;
 use crate::history::History;
 use crate::project::*;
 use super::theme::{self, Theme, UiLook};
-use super::{ClipRef, DragMode, DragState};
+use super::{ClipRef, DragMode, DragState, Selection};
 use events::{Ev, paint_event, paint_fade_tag};
 use ruler::LoopDrag;
 
@@ -26,7 +26,7 @@ const FADE_PX: f32 = 6.0;
 const SNAP_PX: f64 = 8.0;
 /// Pixels per second at zoom 1.
 pub const BASE_PPS: f64 = 80.0;
-const MIN_TRACK_H: f32 = 22.0;
+pub const MIN_TRACK_H: f32 = 22.0;
 
 /// This frame's layout.
 #[derive(Clone, Copy)]
@@ -75,8 +75,10 @@ enum Rename {
 /// Timeline UI state kept in egui memory between frames.
 #[derive(Clone, Default)]
 struct TlState {
-    sel_tracks: Vec<usize>,
+    /// Row number Shift+click on a header extends from.
     anchor: Option<usize>,
+    /// Header reorder drag in progress.
+    track_drag: Option<tracks::TrackDrag>,
     loop_drag: Option<LoopDrag>,
     /// (marker index, grab offset in px)
     marker_drag: Option<(usize, f32)>,
@@ -108,11 +110,12 @@ fn set_zoom(tl: &mut Timeline, zoom: f64) {
 pub fn draw_timeline(
     ui: &mut Ui,
     project: &mut Project,
-    selected_clip: &mut Option<ClipRef>,
+    sel: &mut Selection,
     drag_state: &mut Option<DragState>,
     scroll_y: &mut f32,
     history: &mut History,
     snapping: bool,
+    quantize: bool,
     waves: &mut Waveforms,
     thumbs: &mut Thumbs,
     playing: bool,
@@ -148,6 +151,8 @@ pub fn draw_timeline(
 
     let fps = project.settings.frame_rate;
     let frame = 1.0 / fps.max(1.0);
+    // Quantize to Frames also puts a clicked cursor on a frame, as in VEGAS.
+    let cursor_at = |t: f64| if quantize { edit::quantize(t.max(0.0), fps) } else { t.max(0.0) };
     let make_geo = |tl: &Timeline| {
         let clips_left = rect.min.x + header_w + gap;
         let rows_top = rect.min.y + t.m.band_h;
@@ -184,7 +189,7 @@ pub fn draw_timeline(
 
     // ---- Interaction ----
 
-    tracks::interact(ui, &g, &rows, project, history, &mut st);
+    tracks::interact(ui, &g, &rows, project, history, sel, &mut st);
 
     // Wheel (§5.9.9): zooms around the mouse; Ctrl+wheel (or wheel over the track list) scrolls tracks;
     // Shift+wheel scrolls time.
@@ -282,14 +287,21 @@ pub fn draw_timeline(
                     DragMode::FadeOut => clip.position + clip.duration - clip.fade_out,
                     _ => clip.position,
                 };
-                *selected_clip = Some(cr.clone());
+                // Dragging an unselected event selects it alone; a selected one moves the whole selection.
+                if !sel.clips.contains(&clip.id) {
+                    sel.clips = vec![clip.id.clone()];
+                }
+                sel.tracks = vec![project.timeline.tracks(cr.is_video)[cr.track_idx].id.clone()];
+                sel.list_focus = false;
+                let ids = if mode == DragMode::Move { sel.clips.clone() } else { vec![clip.id.clone()] };
+                let moving: Vec<&str> = ids.iter().map(String::as_str).collect();
                 *drag_state = Some(DragState {
-                    clip_ref: cr,
-                    original_position: clip.position,
+                    id: clip.id.clone(),
                     mode,
                     grab_offset: g.to_time(p.x) - edge,
                     limit: edit::media_limit(project, &clip),
-                    snap_targets: edit::snap_targets(project, Some(&clip.id)),
+                    snap_targets: edit::snap_targets_except(project, &moving),
+                    ids,
                     original: clip,
                     before: project.clone(),
                     changed: false,
@@ -306,37 +318,39 @@ pub fn draw_timeline(
             let edge = g.to_time(p.x) - ds.grab_offset;
             let snap = if snap_on { edit::snap(edge, &ds.snap_targets, thr) } else { None };
             let snapped_edge = snap.unwrap_or(edge);
+            let q = |t: f64| if quantize { edit::quantize(t, fps) } else { t };
+            let trim_edge = snap.unwrap_or_else(|| q(edge));
 
-            // Vertical move to another unlocked track of the same kind
             if ds.mode == DragMode::Move {
-                if let Some(row) = row_at(p.y) {
-                    let cr = &mut ds.clip_ref;
-                    let tracks = project.timeline.tracks_mut(row.is_video);
-                    let ti = row.idx;
-                    if row.is_video == cr.is_video && ti != cr.track_idx && !tracks[ti].locked && cr.clip_idx < tracks[cr.track_idx].clips.len() {
-                        let c = tracks[cr.track_idx].clips.remove(cr.clip_idx);
-                        tracks[ti].clips.push(c);
-                        cr.track_idx = ti;
-                        cr.clip_idx = tracks[ti].clips.len() - 1;
-                        ds.changed = true;
-                    }
+                // The grabbed event snaps, or else quantizes (a snapped edge stays on its target even off the frame
+                // grid); every selected event gets the same delta, applied to the tracks as they were before the
+                // drag, so each frame starts from scratch.
+                let o = &ds.original;
+                let mut pos = edge.max(0.0);
+                let mut hit = None;
+                if snap_on {
+                    pos = edit::snap_span(pos, o.duration, &ds.snap_targets, thr).max(0.0);
+                    hit = [pos, pos + o.duration].into_iter().find(|v| ds.snap_targets.iter().any(|x| (x - v).abs() < 1e-9));
+                    st.snap = hit;
                 }
+                let dt = if hit.is_some() { pos } else { q(pos) } - o.position;
+                let from = ds.before.find_clip(&ds.id);
+                let dtrack = row_at(p.y).zip(from).filter(|(r, f)| r.is_video == f.is_video).map_or(0, |(r, f)| r.idx as isize - f.track_idx as isize);
+                let tl = &mut project.timeline;
+                tl.video_tracks.clone_from(&ds.before.timeline.video_tracks);
+                tl.audio_tracks.clone_from(&ds.before.timeline.audio_tracks);
+                // A hop onto a missing or locked track still moves in time.
+                ds.changed = edit::move_clips(project, &ds.ids, dt, dtrack) || (dtrack != 0 && edit::move_clips(project, &ds.ids, dt, 0));
+                project.modified = ds.before.modified; // marked on release, if anything changed
             }
 
-            let cr = ds.clip_ref.clone();
-            let clip = project.timeline.tracks_mut(cr.is_video).get_mut(cr.track_idx).and_then(|t| t.clips.get_mut(cr.clip_idx));
+            let cr = project.find_clip(&ds.id).filter(|_| ds.mode != DragMode::Move);
+            let clip = cr.and_then(|cr| project.timeline.tracks_mut(cr.is_video).get_mut(cr.track_idx)?.clips.get_mut(cr.clip_idx));
             if let Some(clip) = clip {
                 match ds.mode {
-                    DragMode::Move => {
-                        let mut pos = edge.max(0.0);
-                        if snap_on {
-                            pos = edit::snap_span(pos, clip.duration, &ds.snap_targets, thr).max(0.0);
-                            st.snap = [pos, pos + clip.duration].into_iter().find(|v| ds.snap_targets.iter().any(|x| (x - v).abs() < 1e-9));
-                        }
-                        clip.position = pos;
-                    }
-                    DragMode::TrimLeft => edit::trim_left(clip, &ds.original, snapped_edge, frame, ds.limit),
-                    DragMode::TrimRight => edit::trim_right(clip, &ds.original, snapped_edge, frame, ds.limit),
+                    DragMode::Move => {}
+                    DragMode::TrimLeft => edit::trim_left(clip, &ds.original, trim_edge, frame, ds.limit),
+                    DragMode::TrimRight => edit::trim_right(clip, &ds.original, trim_edge, frame, ds.limit),
                     DragMode::FadeIn => {
                         let len = ((snapped_edge - clip.position) / frame).round() * frame;
                         clip.fade_in = len.clamp(0.0, (clip.duration - clip.fade_out).max(0.0));
@@ -346,15 +360,9 @@ pub fn draw_timeline(
                         clip.fade_out = len.clamp(0.0, (clip.duration - clip.fade_in).max(0.0));
                     }
                 }
-                if ds.mode != DragMode::Move {
-                    st.snap = snap;
-                }
+                st.snap = snap;
                 let o = &ds.original;
-                ds.changed |= clip.position != ds.original_position
-                    || clip.duration != o.duration
-                    || clip.fade_in != o.fade_in
-                    || clip.fade_out != o.fade_out;
-                *selected_clip = Some(cr);
+                ds.changed |= clip.position != o.position || clip.duration != o.duration || clip.fade_in != o.fade_in || clip.fade_out != o.fade_out;
             }
         }
     }
@@ -366,7 +374,7 @@ pub fn draw_timeline(
                 let tp = ruler::snapped(ui, project, g.to_time(p.x), g.pps, snapping, &mut st);
                 ruler::loop_drag_to(&mut project.timeline, d, tp);
             } else if g.band.contains(o) {
-                project.timeline.cursor_position = g.to_time(p.x.clamp(g.lanes.min.x, g.lanes.max.x)).max(0.0);
+                project.timeline.cursor_position = cursor_at(g.to_time(p.x.clamp(g.lanes.min.x, g.lanes.max.x)));
             }
         }
     }
@@ -394,39 +402,59 @@ pub fn draw_timeline(
         .map(|p| g.to_x(drop_time(project, p.x)));
     if let Some(drag) = response.dnd_release_payload::<super::MediaDrag>() {
         if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| g.lanes.contains(*p)) {
-            if let Some(row) = row_at(p.y) {
-                let time = drop_time(project, p.x);
-                let before = project.clone();
-                if super::drop_media_drag(project, &drag, row.is_video, row.idx, time) {
-                    history.push(before);
-                }
+            // Below the last track a new track of the media's kind is added.
+            let track = row_at(p.y).map(|row| (row.is_video, row.idx));
+            let time = drop_time(project, p.x);
+            let before = project.clone();
+            if super::drop_media_drag(project, &drag, track, time) {
+                history.push(before);
             }
         }
     }
 
-    // Click: select the event under the pointer (or none) and put the cursor there, as VEGAS does.
-    // A right-click selects too, so the context menu acts on the clicked event.
+    // Click: select the event under the pointer (Ctrl toggles, Shift adds the range on its track) and put the
+    // cursor there, as VEGAS does; the clicked track gets the focus. A right-click on an unselected event selects
+    // it, so the context menu acts on the clicked event.
     if response.clicked() || response.secondary_clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             if g.lanes.contains(pos) || (response.secondary_clicked() && !g.band.contains(pos)) {
-                *selected_clip = hit_clip(project, pos).map(|(cr, _)| cr);
+                let hit = hit_clip(project, pos).map(|(cr, _)| cr);
+                let m = ui.input(|i| i.modifiers);
+                if g.lanes.contains(pos) {
+                    // Any click in the lanes (also below the last track) takes the focus from the track list.
+                    sel.list_focus = false;
+                    if let Some(row) = row_at(pos.y) {
+                        sel.tracks = vec![project.timeline.tracks(row.is_video)[row.idx].id.clone()];
+                    }
+                }
+                match &hit {
+                    Some(cr) if response.secondary_clicked() => {
+                        let id = &project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx].id;
+                        if !sel.clips.contains(id) {
+                            sel.clips = vec![id.clone()];
+                        }
+                    }
+                    Some(cr) => click_select(project, sel, cr, m.command, m.shift),
+                    None if !(m.command || m.shift) => sel.clips.clear(),
+                    None => {}
+                }
                 if response.clicked() {
-                    project.timeline.cursor_position = g.to_time(pos.x).max(0.0);
-                    if v16 && selected_clip.is_none() {
+                    project.timeline.cursor_position = cursor_at(g.to_time(pos.x));
+                    if v16 && hit.is_none() {
                         project.timeline.loop_region = None; // a plain click deselects the time
                     }
                 }
             } else if response.clicked() && g.band.contains(pos) {
-                project.timeline.cursor_position = g.to_time(pos.x).max(0.0);
+                project.timeline.cursor_position = cursor_at(g.to_time(pos.x));
             } else if response.clicked() && g.list.contains(pos) {
-                st.sel_tracks.clear();
+                sel.tracks.clear();
             }
         }
     }
     // 1–9, 0 jump to marker N through the keymap (§7).
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
-    ctx::menu(ui, &response, &g, &rows, project, history, selected_clip, &mut st);
+    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st);
     let rows = rows_of(project, &g, scroll_y);
 
     // ---- Painting ----
@@ -443,7 +471,8 @@ pub fn draw_timeline(
     }
     ruler::paint_grid(&pl, &g, fps);
 
-    let hover_ref = hovered_clip.map(|(cr, _)| cr).or_else(|| drag_state.as_ref().map(|d| d.clip_ref.clone()));
+    let hover_ref = hovered_clip.map(|(cr, _)| cr).or_else(|| drag_state.as_ref().and_then(|d| project.find_clip(&d.id)));
+    let selected: std::collections::HashSet<&str> = sel.clips.iter().map(String::as_str).collect();
     for row in &rows {
         if row.top > g.lanes.max.y || row.top + row.h < g.lanes.min.y {
             continue;
@@ -468,7 +497,7 @@ pub fn draw_timeline(
                 is_video: row.is_video,
                 still: pic.is_some_and(|m| m.media_type == MediaType::Image),
                 aspect,
-                selected: selected_clip.as_ref().is_some_and(same),
+                selected: selected.contains(clip.id.as_str()),
                 hovered: hover_ref.as_ref().is_some_and(same),
                 dim: track.muted,
                 pps: g.pps,
@@ -480,13 +509,14 @@ pub fn draw_timeline(
     }
     ruler::paint_marker_lines(&pl, &g, project);
     if let Some(s) = st.snap {
-        paint_snap(&painter, &g, &rows, project, s, drag_state.as_ref().map(|d| d.original.id.as_str()));
+        paint_snap(&painter, &g, &rows, project, s, drag_state.as_ref().map_or(&[], |d| d.ids.as_slice()));
     }
     if let Some(x) = drop_x {
         pl.rect_filled(Rect::from_min_max(pos2(x.floor() - 1.0, g.lanes.min.y), pos2(x.floor() + 1.0, g.lanes.max.y)), 0.0, t.accent);
     }
 
-    tracks::paint(&painter, &g, &rows, project, &st);
+    tracks::paint(&painter, &g, &rows, project, sel);
+    tracks::paint_reorder(&painter, &g, &rows, &st);
     let display = Rect::from_min_size(rect.min, vec2(header_w, t.m.time_display_h.min(t.m.band_h)));
     ruler::draw_time_display(&painter, display, project);
     ruler::paint_band(&painter, &g, project, st.loop_drag.is_some());
@@ -494,8 +524,7 @@ pub fn draw_timeline(
     ruler::paint_playhead(&painter, &g, project.timeline.cursor_position);
     // Fade length tag while dragging a fade.
     if let Some(ds) = drag_state.as_ref().filter(|d| matches!(d.mode, DragMode::FadeIn | DragMode::FadeOut)) {
-        let cr = &ds.clip_ref;
-        if let Some(c) = project.timeline.tracks(cr.is_video).get(cr.track_idx).and_then(|tr| tr.clips.get(cr.clip_idx)) {
+        if let Some((cr, c)) = project.find_clip(&ds.id).zip(project.clip(&ds.id)) {
             let (len, x) = if ds.mode == DragMode::FadeIn {
                 (c.fade_in, g.to_x(c.position + c.fade_in) + 4.0)
             } else {
@@ -512,9 +541,31 @@ pub fn draw_timeline(
     ui.data_mut(|d| d.insert_temp(sid, st));
 }
 
+/// Left-click on event `cr`: replace the selection, Ctrl toggles it, Shift selects every event on its track between
+/// the focus event and it (a plain click when the focus is on another track). The clicked event becomes the focus.
+fn click_select(project: &Project, sel: &mut Selection, cr: &ClipRef, ctrl: bool, shift: bool) {
+    let track = &project.timeline.tracks(cr.is_video)[cr.track_idx];
+    let id = track.clips[cr.clip_idx].id.clone();
+    let focus = sel.clips.last().and_then(|f| track.clips.iter().find(|c| c.id == *f));
+    if ctrl {
+        if let Some(k) = sel.clips.iter().position(|s| *s == id) {
+            sel.clips.remove(k);
+        } else {
+            sel.clips.push(id);
+        }
+    } else if let Some(f) = focus.filter(|_| shift) {
+        let c = &track.clips[cr.clip_idx];
+        let (a, b) = (f.position.min(c.position), f.position.max(c.position));
+        sel.clips = track.clips.iter().filter(|e| e.position >= a && e.position <= b && e.id != id).map(|e| e.id.clone()).collect();
+        sel.clips.push(id);
+    } else {
+        sel.clips = vec![id];
+    }
+}
+
 /// Vertical snap indicator in the target type's colour: across the target track for event edges, the full
 /// height for the cursor, markers, loop ends and time 0 (§5.9.7). VP23 adds a soft glow.
-fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exclude: Option<&str>) {
+fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exclude: &[String]) {
     let t = theme::get();
     let tl = &project.timeline;
     let near = |v: f64| (v - s).abs() < 1e-9;
@@ -529,7 +580,7 @@ fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exc
         let spans: Vec<Rangef> = rows
             .iter()
             .filter(|r| {
-                tl.tracks(r.is_video)[r.idx].clips.iter().any(|c| Some(c.id.as_str()) != exclude && (near(c.position) || near(c.position + c.duration)))
+                tl.tracks(r.is_video)[r.idx].clips.iter().any(|c| !exclude.contains(&c.id) && (near(c.position) || near(c.position + c.duration)))
             })
             .map(|r| Rangef::new(r.top, r.top + r.h - 2.0))
             .collect();
@@ -570,7 +621,12 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history
     }
     if resp.lost_focus() {
         st.rename_focused = false;
-        if !ui.input(|i| i.key_pressed(Key::Escape)) {
+        let old = match target {
+            Rename::Track(v, i) => project.timeline.tracks(v).get(i).map(|t| &t.name),
+            Rename::Marker(i) => project.timeline.markers.get(i).map(|m| &m.name),
+        };
+        // An unchanged name is no edit (no undo step).
+        if !ui.input(|i| i.key_pressed(Key::Escape)) && old.is_some_and(|o| *o != buf) {
             history.push(project.clone());
             match target {
                 Rename::Track(v, i) => project.timeline.tracks_mut(v)[i].name = buf,
@@ -590,13 +646,14 @@ mod tests {
     struct Rig {
         ctx: Context,
         project: Project,
-        sel: Option<ClipRef>,
+        sel: Selection,
         drag: Option<DragState>,
         scroll_y: f32,
         history: History,
         waves: Waveforms,
         thumbs: Thumbs,
         track_w: f32,
+        quantize: bool,
     }
 
     impl Rig {
@@ -606,34 +663,48 @@ mod tests {
             let mut project = Project::new("t");
             project.timeline.video_tracks[0].clips.push(Clip::new("c", 2.0, 4.0));
             let (waves, thumbs) = (Waveforms::new(&ctx), Thumbs::new(&ctx));
-            Rig { ctx, project, sel: None, drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 251.0 }
+            Rig { ctx, project, sel: Selection::default(), drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 251.0, quantize: false }
         }
         fn frame(&mut self, events: Vec<Event>) {
-            let raw = RawInput { events, screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0))), ..Default::default() };
+            self.frame_mod(events, Modifiers::NONE);
+        }
+        fn frame_mod(&mut self, events: Vec<Event>, modifiers: Modifiers) {
+            let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0)));
+            let raw = RawInput { events, screen_rect, modifiers, ..Default::default() };
             let ctx = self.ctx.clone();
             let _ = ctx.run(raw, |ctx| {
                 CentralPanel::default().frame(Frame::NONE).show(ctx, |ui| {
                     let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0))));
                     let r = &mut *self;
                     draw_timeline(
-                        &mut child, &mut r.project, &mut r.sel, &mut r.drag, &mut r.scroll_y, &mut r.history, true,
+                        &mut child, &mut r.project, &mut r.sel, &mut r.drag, &mut r.scroll_y, &mut r.history, true, r.quantize,
                         &mut r.waves, &mut r.thumbs, false, &mut r.track_w,
                     );
                 });
             });
         }
         fn drag(&mut self, from: Pos2, to: Pos2) {
-            let press = |p: Pos2, pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
-            self.frame(vec![Event::PointerMoved(from)]);
-            self.frame(vec![press(from, true)]);
+            self.drag_mod(from, to, Modifiers::NONE);
+        }
+        fn drag_mod(&mut self, from: Pos2, to: Pos2, modifiers: Modifiers) {
+            let press = |p: Pos2, pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers };
+            self.frame_mod(vec![Event::PointerMoved(from)], modifiers);
+            self.frame_mod(vec![press(from, true)], modifiers);
             for k in 1..=4 {
-                self.frame(vec![Event::PointerMoved(from + (to - from) * k as f32 / 4.0)]);
+                self.frame_mod(vec![Event::PointerMoved(from + (to - from) * k as f32 / 4.0)], modifiers);
             }
-            self.frame(vec![press(to, false)]);
+            self.frame_mod(vec![press(to, false)], modifiers);
             self.frame(vec![]);
         }
         fn clip(&self) -> &Clip {
             &self.project.timeline.video_tracks[0].clips[0]
+        }
+        fn click(&mut self, p: Pos2, modifiers: Modifiers) {
+            let press = |pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers };
+            self.frame_mod(vec![Event::PointerMoved(p)], modifiers);
+            self.frame_mod(vec![press(true)], modifiers);
+            self.frame_mod(vec![press(false)], modifiers);
+            self.frame(vec![]);
         }
         fn right_click(&mut self, p: Pos2) {
             let press = |pressed| Event::PointerButton { pos: p, button: PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
@@ -650,7 +721,7 @@ mod tests {
         let mut r = Rig::new();
         r.right_click(pos2(575.0, 90.0));
         assert!(r.ctx.is_context_menu_open(), "event menu");
-        assert!(r.sel.is_some(), "right-click selects the event");
+        assert_eq!(r.sel.clips.len(), 1, "right-click selects the event");
         r.right_click(pos2(100.0, 80.0));
         assert!(r.ctx.is_context_menu_open(), "track header menu");
         r.right_click(pos2(400.0, 15.0));
@@ -664,7 +735,7 @@ mod tests {
         r.drag(pos2(575.0, 90.0), pos2(655.0, 90.0));
         assert!((r.clip().position - 3.0).abs() < 1e-6, "moved to {}", r.clip().position);
         assert_eq!(r.history.lens().0, 1);
-        assert!(r.sel.is_some());
+        assert_eq!(r.sel.clips, [r.clip().id.clone()]);
 
         // Top-left corner of the event (now at x 495) sets the fade-in length, frame-quantised.
         r.drag(pos2(497.0, 51.0), pos2(577.0, 51.0));
@@ -680,5 +751,76 @@ mod tests {
         r.drag(pos2(300.0, 4.0), pos2(460.0, 4.0));
         let (a, b) = r.project.timeline.loop_region.expect("loop region");
         assert!((a - 0.5625).abs() < 1e-6 && (b - 2.5625).abs() < 1e-6, "loop {a}..{b}");
+    }
+
+    /// Ctrl+click three events on two tracks, drag one: all three move by the same delta, in one undo step.
+    #[test]
+    fn ctrl_click_select_and_group_move() {
+        let mut r = Rig::new();
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("c2", 8.0, 2.0));
+        r.project.timeline.audio_tracks[0].clips.push(Clip::new("a", 3.0, 2.0));
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        // Lanes start at x 255, 80 px/s; Video 1 at y 48..112, Audio 1 below it.
+        for p in [pos2(575.0, 90.0), pos2(935.0, 90.0), pos2(575.0, 150.0)] {
+            r.click(p, ctrl);
+        }
+        assert_eq!(r.sel.clips.len(), 3);
+        r.click(pos2(935.0, 90.0), ctrl); // Ctrl+click again deselects
+        assert_eq!(r.sel.clips.len(), 2);
+        r.click(pos2(935.0, 90.0), ctrl);
+        r.drag(pos2(575.0, 90.0), pos2(655.0, 90.0));
+        let tl = &r.project.timeline;
+        let pos: Vec<f64> = tl.video_tracks[0].clips.iter().chain(&tl.audio_tracks[0].clips).map(|c| c.position).collect();
+        assert!(pos.iter().zip([3.0, 9.0, 4.0]).all(|(a, b)| (a - b).abs() < 1e-6), "{pos:?}");
+        assert_eq!(r.history.lens().0, 1);
+        // A plain click replaces the selection.
+        r.click(pos2(575.0, 150.0), Modifiers::NONE);
+        assert_eq!(r.sel.clips, [r.project.timeline.audio_tracks[0].clips[0].id.clone()]);
+    }
+
+    /// Header clicks give the track list the focus (Delete then removes tracks); any lane click takes it back, also
+    /// below the last track. Ctrl+drag of a bottom edge sizes every selected track without an undo step; a drag
+    /// from the colour strip reorders in one undo step.
+    #[test]
+    fn track_focus_heights_and_reorder() {
+        let mut r = Rig::new();
+        r.project.timeline.add_video_track(); // V1 48..112, V2 112..176, A1 176..244
+        let ids: Vec<String> = r.project.timeline.video_tracks.iter().map(|t| t.id.clone()).collect();
+        let ctrl = Modifiers { ctrl: true, command: true, ..Default::default() };
+        // Header clicks below the name row (sliders at +27..+41), so the quick clicks don't open a rename.
+        r.click(pos2(575.0, 90.0), Modifiers::NONE); // the event
+        r.click(pos2(100.0, 100.0), Modifiers::NONE);
+        r.click(pos2(100.0, 165.0), ctrl);
+        assert!(r.sel.list_focus && r.sel.clips.len() == 1);
+        assert_eq!(r.sel.tracks, ids);
+        r.click(pos2(600.0, 300.0), Modifiers::NONE); // empty space below the tracks
+        assert!(!r.sel.list_focus && r.sel.clips.is_empty());
+        r.click(pos2(100.0, 100.0), Modifiers::NONE);
+        r.click(pos2(100.0, 165.0), ctrl);
+        assert_eq!(r.history.lens().0, 0);
+
+        r.drag_mod(pos2(100.0, 111.0), pos2(100.0, 131.0), ctrl);
+        let h: Vec<f32> = r.project.timeline.video_tracks.iter().chain(&r.project.timeline.audio_tracks).map(|t| t.height).collect();
+        assert_eq!(h, [84.0, 84.0, 0.0]);
+        assert!(r.project.modified && r.history.lens().0 == 0);
+
+        // V1 is now 48..132 and V2 132..216: select V1 alone and drag its strip past V2's middle.
+        r.click(pos2(100.0, 120.0), Modifiers::NONE);
+        r.drag(pos2(12.0, 90.0), pos2(12.0, 190.0));
+        let order: Vec<String> = r.project.timeline.video_tracks.iter().map(|t| t.id.clone()).collect();
+        assert_eq!(order, [ids[1].clone(), ids[0].clone()]);
+        assert_eq!(r.history.lens().0, 1);
+    }
+
+    /// With Quantize to Frames on, a move whose edge snaps to an off-grid event edge stays on that edge.
+    #[test]
+    fn snapped_move_is_not_quantized_off_its_target() {
+        let mut r = Rig::new();
+        r.quantize = true;
+        r.project.timeline.video_tracks[0].clips.push(Clip::new("b", 10.0213, 2.0));
+        // Drag the 2..6 s event right by ~4 s: its right edge (now ~10) snaps to 10.0213.
+        r.drag(pos2(575.0, 90.0), pos2(575.0 + 4.0 * 80.0 + 1.0, 90.0));
+        let c = r.clip();
+        assert!((c.position + c.duration - 10.0213).abs() < 1e-9, "end {}", c.position + c.duration);
     }
 }

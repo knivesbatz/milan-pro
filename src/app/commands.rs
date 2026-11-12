@@ -25,14 +25,20 @@ impl MeridianApp {
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
-        let clip = self.selected_clip.as_ref().and_then(|cr| self.project.timeline.tracks(cr.is_video).get(cr.track_idx)?.clips.get(cr.clip_idx));
+        let clip = self.sel.clips.last().and_then(|id| self.project.clip(id));
+        let tl = &self.project.timeline;
         CmdState {
             look: theme::get().look(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
-            clipboard: self.clipboard.is_some(),
+            n_sel: self.sel.clips.len(),
+            any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
+            tracks_sel: !self.sel.tracks.is_empty(),
+            list_focus: self.sel.list_focus,
+            quantize: self.prefs.quantize,
+            clipboard: !self.clipboard.is_empty(),
             selection: self.project.timeline.loop_region.is_some_and(|(a, b)| b > a),
             looping: self.looping,
             snapping: self.snapping,
@@ -78,14 +84,49 @@ impl MeridianApp {
         tl.scroll_x = (tl.cursor_position - px / (tl.zoom * ui::BASE_PPS)).max(0.0);
     }
 
-    fn edit_selected(&mut self, f: impl FnOnce(&mut Project, &ui::ClipRef) -> bool) -> bool {
-        let Some(cr) = self.selected_clip.clone().filter(|_| self.drag_state.is_none()) else { return false };
+    /// One undoable edit (not while a timeline drag holds its own undo step).
+    fn edit(&mut self, f: impl FnOnce(&mut Project) -> bool) -> bool {
+        if self.drag_state.is_some() {
+            return false;
+        }
         let before = self.project.clone();
-        let done = f(&mut self.project, &cr);
+        let done = f(&mut self.project);
         if done {
             self.history.push(before);
         }
         done
+    }
+
+    fn edit_selected(&mut self, f: impl FnOnce(&mut Project, &ui::ClipRef) -> bool) -> bool {
+        let Some(cr) = self.selected_clip.clone() else { return false };
+        self.edit(|p| f(p, &cr))
+    }
+
+    /// `t` on the frame grid when Quantize to Frames is on: edits at the cursor or selection (Split, Trim, Paste)
+    /// land on frames even when the cursor does not (playback stop, ruler scrub).
+    fn quantized(&self, t: f64) -> f64 {
+        if self.prefs.quantize { edit::quantize(t, self.project.settings.frame_rate) } else { t }
+    }
+
+    /// Index of the focus track (the last selected one), with its kind.
+    fn focus_track(&self) -> Option<(bool, usize)> {
+        self.sel.tracks.last().and_then(|id| self.project.find_track(id))
+    }
+
+    /// Remember a saved project; show why a save failed. True when saved.
+    fn save_result(&mut self, r: Result<bool, String>) -> bool {
+        match r {
+            Ok(saved) => {
+                if saved {
+                    self.remember();
+                }
+                saved
+            }
+            Err(e) => {
+                self.message = Some(format!("Save failed: {e}"));
+                false
+            }
+        }
     }
 
     fn save_prefs(&mut self) {
@@ -113,8 +154,20 @@ impl MeridianApp {
     }
 
     pub(super) fn exec(&mut self, ctx: &egui::Context, c: Command) {
+        self.sync_sel();
+        self.exec_one(ctx, c);
+        self.sync_sel();
+    }
+
+    fn exec_one(&mut self, ctx: &egui::Context, c: Command) {
         let st = self.cmd_state();
         if !st.enabled(c) {
+            return;
+        }
+        // An event drag restores the tracks every frame and pushes its own undo step on release: anything else that
+        // changes tracks or pushes history now would be wiped or leave a mid-drag snapshot.
+        let changes_tracks = matches!(c, InsertMarker | InsertRegion | MinimizeTracks | TracksTaller | TracksShorter | DefaultTrackHeights);
+        if changes_tracks && self.drag_state.is_some() {
             return;
         }
         let v16 = st.look == UiLook::Vegas16;
@@ -132,14 +185,12 @@ impl MeridianApp {
                 self.request(ctx, MenuAction::Open);
             }
             Save => {
-                if ui::save(&mut self.project) {
-                    self.remember();
-                }
+                let r = menus::save(&mut self.project);
+                self.save_result(r);
             }
             SaveAs => {
-                if menus::save_as(&mut self.project) {
-                    self.remember();
-                }
+                let r = menus::save_as(&mut self.project);
+                self.save_result(r);
             }
             RenderAs => self.render.open = true,
             ImportMedia => ui::import_media(ctx, &self.importer),
@@ -161,43 +212,62 @@ impl MeridianApp {
                     }
                 }
                 if done {
-                    self.selected_clip = None;
+                    // Selections keep the ids that still exist (`sync_sel`); a media index may point elsewhere now.
+                    self.selected_media = None;
                     self.drag_state = None;
                 }
             }
             ClearHistory => self.history.clear(),
-            Copy | Cut => {
-                let Some(cr) = self.selected_clip.clone() else { return };
-                let Some(clip) = self.project.timeline.tracks(cr.is_video).get(cr.track_idx).and_then(|t| t.clips.get(cr.clip_idx)) else { return };
-                self.clipboard = Some((cr.is_video, clip.clone()));
-                if c == Cut && self.edit_selected(edit::delete_clip) {
-                    self.selected_clip = None;
+            Copy => self.clipboard = edit::copy_clips(&self.project, &self.sel.clips),
+            Cut => {
+                // Only what the delete removes goes to the clipboard: locked events stay, so pasting them would
+                // duplicate them.
+                let p = &self.project;
+                let ids: Vec<String> = p
+                    .find_clips(&self.sel.clips)
+                    .iter()
+                    .filter_map(|r| {
+                        let t = &p.timeline.tracks(r.is_video)[r.track_idx];
+                        let c = &t.clips[r.clip_idx];
+                        (!t.locked && !c.locked).then(|| c.id.clone())
+                    })
+                    .collect();
+                if !ids.is_empty() && self.drag_state.is_none() {
+                    self.clipboard = edit::copy_clips(&self.project, &ids);
+                    self.edit(|p| edit::delete_clips(p, &ids));
                 }
             }
             Paste => {
-                // Onto the selected event's track when it is the same kind, else the first track of that kind.
-                let Some((video, mut clip)) = self.clipboard.clone() else { return };
-                let track = self.selected_clip.as_ref().filter(|cr| cr.is_video == video).map_or(0, |cr| cr.track_idx);
-                clip.id = uuid::Uuid::new_v4().to_string();
-                clip.position = self.project.timeline.cursor_position;
-                clip.locked = false;
-                let before = self.project.clone();
-                let Some(t) = self.project.timeline.tracks_mut(video).get_mut(track).filter(|t| !t.locked) else { return };
-                t.clips.push(clip);
-                let idx = t.clips.len() - 1;
-                self.project.mark_modified();
-                self.history.push(before);
-                self.selected_clip = Some(ui::ClipRef { is_video: video, track_idx: track, clip_idx: idx });
+                // From the focus track at the cursor (quantized); the pasted events become the selection.
+                let at = self.quantized(self.project.timeline.cursor_position);
+                let (clips, focus) = (self.clipboard.clone(), self.focus_track());
+                let mut ids = Vec::new();
+                self.edit(|p| {
+                    ids = edit::paste_clips(p, &clips, at, focus);
+                    !ids.is_empty()
+                });
+                if !ids.is_empty() {
+                    self.sel.clips = ids;
+                }
             }
             Delete => {
-                if self.edit_selected(edit::delete_clip) {
-                    self.selected_clip = None;
+                // What has the focus: the selected tracks after a click in the track list, else the events.
+                let (clips, tracks) = (self.sel.clips.clone(), self.sel.tracks.clone());
+                if self.sel.list_focus && !tracks.is_empty() {
+                    self.edit(|p| edit::delete_tracks(p, &tracks));
+                } else {
+                    self.edit(|p| edit::delete_clips(p, &clips));
                 }
             }
             Split => {
-                let at = self.project.timeline.cursor_position;
-                self.edit_selected(|p, cr| edit::split_at(p, cr, at));
+                let (at, ids) = (self.quantized(self.project.timeline.cursor_position), self.sel.clips.clone());
+                self.edit(|p| edit::split_ids(p, &ids, at));
             }
+            SelectAll => {
+                let tl = &self.project.timeline;
+                self.sel.clips = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).map(|c| c.id.clone()).collect();
+            }
+            SelectNone => self.sel.clips.clear(),
             Trim | TrimStart | TrimEnd => {
                 let tl = &self.project.timeline;
                 let (a, b) = match c {
@@ -205,6 +275,7 @@ impl MeridianApp {
                     TrimStart => (Some(tl.cursor_position), None),
                     _ => (None, Some(tl.cursor_position)),
                 };
+                let (a, b) = (a.map(|t| self.quantized(t)), b.map(|t| self.quantized(t)));
                 self.edit_selected(|p, cr| edit::trim_to(p, cr, a, b));
             }
             EventLock => {
@@ -218,7 +289,8 @@ impl MeridianApp {
                     self.trimmer.open(self.project.media_pool[idx].path.clone());
                     self.dock.open(Panel::Trimmer);
                 } else {
-                    (self.selected_media, self.selected_clip) = (Some(idx), None);
+                    self.selected_media = Some(idx);
+                    self.sel.clips.clear();
                     self.dock.open(Panel::ProjectMedia);
                 }
             }
@@ -348,14 +420,40 @@ impl MeridianApp {
             InsertMarker => ui::add_marker(&mut self.project, &mut self.history),
             InsertRegion => ui::add_region(&mut self.project, &mut self.history),
             InsertAudioTrack | InsertVideoTrack => {
-                self.history.push(self.project.clone());
-                if c == InsertAudioTrack {
-                    self.project.timeline.add_audio_track();
-                } else {
-                    self.project.timeline.add_video_track();
+                // Above the focus track of that kind (`insert_track`); the new track gets the focus.
+                let v = c == InsertVideoTrack;
+                let before = self.focus_track().filter(|f| f.0 == v).map(|f| f.1);
+                let mut i = 0;
+                if self.edit(|p| {
+                    i = edit::insert_track(p, v, before);
+                    true
+                }) {
+                    self.sel.tracks = vec![self.project.timeline.tracks(v)[i].id.clone()];
                 }
-                self.project.mark_modified();
             }
+            MuteTrack | SoloTrack => {
+                let ids = self.sel.tracks.clone();
+                self.edit(|p| edit::toggle_tracks(p, &ids, c == SoloTrack));
+            }
+            FocusPrevTrack | FocusNextTrack => {
+                let tl = &self.project.timeline;
+                let ids: Vec<&String> = tl.video_tracks.iter().chain(&tl.audio_tracks).map(|t| &t.id).collect();
+                let cur = self.sel.tracks.last().and_then(|f| ids.iter().position(|i| *i == f));
+                let next = match cur {
+                    None => 0,
+                    Some(k) if c == FocusPrevTrack => k.saturating_sub(1),
+                    Some(k) => (k + 1).min(ids.len().saturating_sub(1)),
+                };
+                if let Some(id) = ids.get(next) {
+                    self.sel.tracks = vec![(*id).clone()];
+                    self.sel.list_focus = true;
+                }
+            }
+            Quantize => {
+                self.prefs.quantize = !self.prefs.quantize;
+                self.save_prefs();
+            }
+            MinimizeTracks => edit::toggle_minimize(&mut self.project, &mut self.minimized, ui::MIN_TRACK_H),
             Snapping => self.snapping = !self.snapping,
             AutoCrossfade => self.auto_crossfade = !self.auto_crossfade,
             // Zoom
@@ -369,10 +467,12 @@ impl MeridianApp {
                     let h = if tr.height > 0.0 { tr.height } else if tr.kind == TrackKind::Video { t.m.video_track_h } else { t.m.audio_track_h };
                     tr.height = match c {
                         TracksTaller => (h * 1.25).min(400.0),
-                        TracksShorter => (h / 1.25).max(22.0),
+                        TracksShorter => (h / 1.25).max(ui::MIN_TRACK_H),
                         _ => 0.0,
                     };
                 }
+                // Heights are view state: saved with the project, never an undo step.
+                self.project.mark_modified();
             }
             PreviewQuality(q) => self.preview.quality = q,
             LayoutDefault => self.dock = Dock::new(&theme::get()),
@@ -426,8 +526,14 @@ impl MeridianApp {
         };
         self.project = project;
         self.history.clear();
+        self.sel = ui::Selection::default();
         self.selected_clip = None;
         self.selected_media = None;
+        self.minimized = None;
+        // Copied events point at the old project's media.
+        self.clipboard.clear();
+        // A probe batch still running for the old project is dropped (its send fails).
+        self.importer = crate::media::Importer::new();
         self.drag_state = None;
         self.playing = false;
         self.message = None;
@@ -458,17 +564,16 @@ impl MeridianApp {
             if hit.is_some() || close {
                 self.confirm = None;
             }
-            if hit == Some(2) || close {
-                // Cancelled: forget what the New/Open was going to use.
-                (self.pending_open, self.new_settings, self.props_after_new) = (None, None, false);
-            }
-            if save && ui::save(&mut self.project) {
-                self.remember();
-            }
-            // A cancelled or failed save leaves the project modified, so nothing is discarded.
-            if discard || (save && !self.project.modified) {
+            let saved = save && {
+                let r = menus::save(&mut self.project);
+                self.save_result(r)
+            };
+            // A cancelled or failed save aborts the New/Open/Exit, so nothing is discarded.
+            if discard || saved {
                 self.run(ctx, action);
             } else if hit.is_some() || close {
+                // Forget what the New/Open/Exit was going to use, so a later one doesn't pick it up.
+                (self.pending_open, self.new_settings, self.props_after_new) = (None, None, false);
                 self.install_on_exit = None; // the update waits for the next "Install and restart"
             }
         }

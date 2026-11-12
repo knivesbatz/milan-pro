@@ -72,6 +72,17 @@ impl Importer {
     }
 }
 
+/// Add probed `items` whose path is not in the pool yet (nor earlier in the same batch). True if any was added.
+pub fn merge_new(pool: &mut Vec<MediaItem>, items: Vec<MediaItem>) -> bool {
+    let n = pool.len();
+    for m in items {
+        if !pool.iter().any(|p| p.path == m.path) {
+            pool.push(m);
+        }
+    }
+    pool.len() != n
+}
+
 fn classify_extension(ext: &str) -> MediaType {
     match ext {
         "mp4" | "mov" | "avi" | "mkv" | "wmv" | "flv" | "webm" | "mxf" | "mpg" | "mpeg"
@@ -158,6 +169,16 @@ mod tests {
     fn unreadable_media_is_an_error() {
         // Err whether ffprobe is missing or fails on the file, never a 0-length Ok item.
         assert!(super::probe_media(std::path::Path::new("no-such-file.mp4")).is_err());
+    }
+
+    #[test]
+    fn merge_new_skips_known_and_repeated_paths() {
+        let item = |p: &str| MediaItem { path: p.into(), ..Default::default() };
+        let mut pool = vec![item("a.mp4")];
+        assert!(!merge_new(&mut pool, vec![item("a.mp4")]));
+        assert!(merge_new(&mut pool, vec![item("b.wav"), item("a.mp4"), item("b.wav")]));
+        assert_eq!(pool.iter().map(|m| m.path.to_string_lossy().into_owned()).collect::<Vec<_>>(), ["a.mp4", "b.wav"]);
+        assert!(!merge_new(&mut pool, Vec::new()));
     }
 
     fn parse(ext: &str, json: &str) -> MediaItem {

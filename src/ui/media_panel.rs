@@ -11,7 +11,7 @@ use super::icons::{Icon, paint_icon};
 use super::menus::{self, M::*, import_media};
 use super::toolbar::{arrow_menu, inert_button, split_button, tool_button};
 use super::widgets::{self, ROW_H};
-use super::{ClipRef, MediaDrag, WinAction, theme};
+use super::{MediaDrag, WinAction, theme};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Node {
@@ -69,11 +69,14 @@ impl MediaView {
 
 /// Remove media `idxs` and every event that uses it, as one undo step.
 fn remove_media(project: &mut Project, history: &mut History, mut idxs: Vec<usize>) {
+    // A stale index (from before an undo) removes nothing.
+    idxs.retain(|&i| i < project.media_pool.len());
     if idxs.is_empty() {
         return;
     }
     history.push(project.clone());
     idxs.sort_unstable();
+    idxs.dedup();
     for i in idxs.into_iter().rev() {
         let m = project.media_pool.remove(i);
         // Clips of removed media would play black/silent.
@@ -93,7 +96,7 @@ pub fn draw_media_toolbar(
     history: &mut History,
     view: &mut MediaView,
     selected: &mut Option<usize>,
-    selected_clip: &mut Option<ClipRef>,
+    sel_clips: &mut Vec<String>,
     importer: &Importer,
     actions: &mut Vec<WinAction>,
 ) {
@@ -101,7 +104,7 @@ pub fn draw_media_toolbar(
     let unused: Vec<usize> = (0..project.media_pool.len()).filter(|&i| use_count(project, &project.media_pool[i]) == 0).collect();
     if tool_button(ui, Icon::RemoveUnused, "Remove All Unused Media from Project", true, false).clicked() {
         remove_media(project, history, unused);
-        (*selected, *selected_clip) = (None, None);
+        (*selected, *sel_clips) = (None, Vec::new());
     }
     // Import Media…: icon + text + ▾ in one hover box.
     let (rect, resp) = ui.allocate_exact_size(vec2(124.0, t.m.button), Sense::click());
@@ -122,18 +125,18 @@ pub fn draw_media_toolbar(
     inert_button(ui, Icon::WebMedia, "Get Media from the Web (not available)", false);
     if tool_button(ui, Icon::Delete, "Remove Selected Media from Project", selected.is_some(), false).clicked() {
         remove_media(project, history, selected.take().into_iter().collect());
-        *selected_clip = None;
+        sel_clips.clear();
     }
     if tool_button(ui, Icon::Properties, "Media Properties", selected.is_some(), false).clicked() {
-        *selected_clip = None;
+        sel_clips.clear();
         actions.push(WinAction::Show(Panel::Properties));
     }
     tool_button(ui, Icon::TrackFx, "Media FX (not available yet)", false, false);
     // Start Preview opens the selected (else first) media in the Trimmer, where it can be played.
-    let target = (*selected).or((!project.media_pool.is_empty()).then_some(0));
+    let target = selected.and_then(|i| project.media_pool.get(i)).or(project.media_pool.first());
     if tool_button(ui, Icon::Play, "Start Preview (opens in the Trimmer)", target.is_some(), false).clicked() {
-        if let Some(i) = target {
-            actions.push(WinAction::OpenTrimmer(project.media_pool[i].path.clone()));
+        if let Some(m) = target {
+            actions.push(WinAction::OpenTrimmer(m.path.clone()));
         }
     }
     tool_button(ui, Icon::Stop, "Stop Preview", false, false);
@@ -165,7 +168,7 @@ pub fn draw_media_browser(
     project: &mut Project,
     view: &mut MediaView,
     selected: &mut Option<usize>,
-    selected_clip: &mut Option<ClipRef>,
+    sel_clips: &mut Vec<String>,
     history: &mut History,
     thumbs: &mut Thumbs,
     actions: &mut Vec<WinAction>,
@@ -198,7 +201,7 @@ pub fn draw_media_browser(
     match cmd {
         Some((i, ItemCmd::Select)) => {
             *selected = Some(i);
-            *selected_clip = None; // so Properties shows the media
+            sel_clips.clear(); // so Properties shows the media
         }
         Some((i, ItemCmd::Trim)) => {
             *selected = Some(i);
@@ -213,11 +216,11 @@ pub fn draw_media_browser(
         }
         Some((i, ItemCmd::Remove)) => {
             remove_media(project, history, vec![i]);
-            (*selected, *selected_clip) = (None, None);
+            (*selected, *sel_clips) = (None, Vec::new());
         }
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
         Some((i, ItemCmd::Properties)) => {
-            (*selected, *selected_clip) = (Some(i), None);
+            (*selected, *sel_clips) = (Some(i), Vec::new());
             actions.push(WinAction::Show(Panel::Properties));
         }
         None => {}

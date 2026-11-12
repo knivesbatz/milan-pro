@@ -1,8 +1,10 @@
 //! Track list (§5.9.3): colour strip with ≡ / ⋯, number and type badge; per-look Mute/Solo (and VP23 compositing
 //! and fx buttons); Level / Vol / Pan sliders with the "II" thumb; audio meter; selection, rename, height drag.
 use eframe::egui::*;
+use crate::edit;
 use crate::history::History;
 use crate::project::*;
+use crate::ui::Selection;
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{self, Theme, UiLook};
 use super::{Geo, MIN_TRACK_H, Rename, Row, TlState};
@@ -137,36 +139,62 @@ fn layout(t: &Theme, g: &Geo, row: &Row) -> Layout {
     Layout { rect, strip, body, more, buttons, sliders, meter }
 }
 
-/// Clicks, slider drags, renames and height drags in the visible headers.
-pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, st: &mut TlState) {
+/// Header reorder drag: the dragged tracks (one kind) and the gap they would land in.
+#[derive(Clone)]
+pub(super) struct TrackDrag {
+    is_video: bool,
+    ids: Vec<String>,
+    origin_y: f32,
+    to: Option<usize>,
+}
+
+/// Clicks, slider drags, renames, reorder and height drags in the visible headers.
+pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, sel: &mut Selection, st: &mut TlState) {
     let t = theme::get();
     let visible = |r: Rect| r.min.y >= g.list.min.y && r.max.y <= g.list.max.y;
+    let track_id = |project: &Project, r: &Row| project.timeline.tracks(r.is_video)[r.idx].id.clone();
     for row in rows {
         if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
             continue;
         }
         let l = layout(&t, g, row);
         let id = ui.id().with(("track_hdr", row.is_video, row.idx));
+        let tid = track_id(project, row);
 
-        // Body: select (Ctrl toggles, Shift extends); double-click on the name area renames.
+        // Body: select (Ctrl toggles, Shift extends; a right-click selects an unselected track); double-click on
+        // the name area renames; a drag from the colour strip reorders.
         let body_r = l.rect.intersect(g.list);
-        let br = ui.interact(body_r, id.with("body"), Sense::click());
-        if br.clicked() {
+        let br = ui.interact(body_r, id.with("body"), Sense::click_and_drag());
+        if br.clicked() || br.secondary_clicked() {
             let m = ui.input(|i| i.modifiers);
-            if m.shift {
+            sel.list_focus = true;
+            if br.secondary_clicked() {
+                if !sel.tracks.contains(&tid) {
+                    sel.tracks = vec![tid.clone()];
+                }
+            } else if m.shift {
                 let a = st.anchor.unwrap_or(row.num);
-                st.sel_tracks = (a.min(row.num)..=a.max(row.num)).collect();
+                sel.tracks = rows.iter().filter(|r| r.num >= a.min(row.num) && r.num <= a.max(row.num)).map(|r| track_id(project, r)).collect();
             } else if m.command {
-                if let Some(k) = st.sel_tracks.iter().position(|n| *n == row.num) {
-                    st.sel_tracks.remove(k);
+                if let Some(k) = sel.tracks.iter().position(|s| *s == tid) {
+                    sel.tracks.remove(k);
                 } else {
-                    st.sel_tracks.push(row.num);
+                    sel.tracks.push(tid.clone());
                 }
                 st.anchor = Some(row.num);
             } else {
-                st.sel_tracks = vec![row.num];
+                sel.tracks = vec![tid.clone()];
                 st.anchor = Some(row.num);
             }
+        }
+        if let Some(o) = ui.input(|i| i.pointer.press_origin()).filter(|o| br.drag_started() && l.strip.contains(*o)) {
+            // A selected track drags the selected tracks of its kind along, in list order.
+            let ids = if sel.tracks.contains(&tid) {
+                project.timeline.tracks(row.is_video).iter().filter(|t| sel.tracks.contains(&t.id)).map(|t| t.id.clone()).collect()
+            } else {
+                vec![tid.clone()]
+            };
+            st.track_drag = Some(TrackDrag { is_video: row.is_video, ids, origin_y: o.y, to: None });
         }
         if br.double_clicked() && br.interact_pointer_pos().is_some_and(|p| p.y < l.rect.min.y + 24.0 && p.x > l.body.min.x) {
             st.rename = Some((Rename::Track(row.is_video, row.idx), project.timeline.tracks(row.is_video)[row.idx].name.clone()));
@@ -275,17 +303,53 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         if let (Some(h0), true) = (st.height_drag, r.dragged()) {
             let total = r.interact_pointer_pos().zip(ui.input(|i| i.pointer.press_origin())).map_or(0.0, |(p, o)| p.y - o.y);
             let max = (g.lanes.height()).max(MIN_TRACK_H);
-            project.timeline.tracks_mut(row.is_video)[row.idx].height = (h0 + total).round().clamp(MIN_TRACK_H, max);
+            let h = (h0 + total).round().clamp(MIN_TRACK_H, max);
+            // Ctrl+drag on a selected track sizes every selected track.
+            let tid = track_id(project, row);
+            let all = ui.input(|i| i.modifiers.command) && sel.tracks.contains(&tid);
+            let tl = &mut project.timeline;
+            for tr in tl.video_tracks.iter_mut().chain(tl.audio_tracks.iter_mut()) {
+                if tr.id == tid || (all && sel.tracks.contains(&tr.id)) {
+                    tr.height = h;
+                }
+            }
             project.mark_modified();
         }
         if r.drag_stopped() {
             st.height_drag = None;
         }
     }
+
+    // Reorder drag: past 4 px the target gap follows the pointer; the release moves the tracks (one undo step).
+    if let Some(d) = st.track_drag.as_mut() {
+        let (ptr, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+        if let Some(p) = ptr {
+            d.to = ((p.y - d.origin_y).abs() > 4.0).then(|| rows.iter().filter(|r| r.is_video == d.is_video && r.top + r.h * 0.5 < p.y).count());
+        }
+        if !down {
+            if let Some(to) = d.to {
+                let before = project.clone();
+                if edit::move_tracks(project, d.is_video, &d.ids, to) {
+                    history.push(before);
+                }
+            }
+            st.track_drag = None;
+        }
+    }
+}
+
+/// The 2 px accent insertion line of a reorder drag, across the headers and lanes.
+pub(super) fn paint_reorder(p: &Painter, g: &Geo, rows: &[Row], st: &TlState) {
+    let Some((v, to)) = st.track_drag.as_ref().and_then(|d| Some((d.is_video, d.to?))) else { return };
+    let kind: Vec<&Row> = rows.iter().filter(|r| r.is_video == v).collect();
+    let Some(y) = kind.get(to).map(|r| r.top).or_else(|| kind.last().map(|r| r.top + r.h)) else { return };
+    let x = Rangef::new(g.rect.min.x, g.lanes.max.x);
+    let r = Rect::from_x_y_ranges(x, Rangef::new(y.round() - 1.0, y.round() + 1.0)).intersect(Rect::from_x_y_ranges(x, Rangef::new(g.list.min.y, g.list.max.y)));
+    p.rect_filled(r, 0.0, theme::get().accent);
 }
 
 /// Paint every visible header, the empty area below them and the separators.
-pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, st: &TlState) {
+pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: &Selection) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     let p = p.with_clip_rect(g.list.intersect(p.clip_rect()));
@@ -296,7 +360,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, st: &
         let tr = &project.timeline.tracks(row.is_video)[row.idx];
         let l = layout(&t, g, row);
         let color = t.track_color(row.num);
-        let selected = st.sel_tracks.contains(&row.num);
+        let selected = sel.tracks.contains(&tr.id);
 
         // Colour strip: ≡ / ⋯, number, type badge.
         p.rect_filled(l.strip, 0.0, color);

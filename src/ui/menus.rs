@@ -46,9 +46,15 @@ pub struct CmdState {
     pub look: UiLook,
     pub can_undo: bool,
     pub can_redo: bool,
-    /// An event is selected (and whether it is locked).
+    /// An event is selected (and whether the focus event is locked); `n_sel` events are.
     pub clip: bool,
     pub clip_locked: bool,
+    pub n_sel: usize,
+    /// Tracks exist / are selected; the track list had the last click.
+    pub any_tracks: bool,
+    pub tracks_sel: bool,
+    pub list_focus: bool,
+    pub quantize: bool,
     /// An event is on the clipboard.
     pub clipboard: bool,
     /// A time selection exists.
@@ -74,12 +80,17 @@ impl CmdState {
             Undo | UndoAll => self.can_undo,
             Redo => self.can_redo,
             ClearHistory => self.can_undo || self.can_redo,
-            Delete | TrimStart | TrimEnd | Split | EventLock | SelEventStart | SelEventEnd | EventOpenInTrimmer
-            | EventSelectInMedia | EventProperties => self.clip,
+            TrimStart | TrimEnd | EventLock | SelEventStart | SelEventEnd | EventOpenInTrimmer | EventSelectInMedia
+            | EventProperties => self.clip,
+            // With nothing selected, Split splits every event under the cursor.
+            Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
+            Delete => self.n_sel > 0 || (self.list_focus && self.tracks_sel),
             Trim => self.clip && self.selection,
-            Copy => self.clip,
-            Cut => self.clip && !self.clip_locked,
+            Copy => self.n_sel > 0,
+            Cut => self.n_sel > 0 && !self.clip_locked,
             Paste => self.clipboard,
+            MuteTrack | SoloTrack => self.tracks_sel,
+            FocusPrevTrack | FocusNextTrack => self.any_tracks,
             InsertRegion | ZoomSelection => self.selection,
             PlayStop | PlayPause | PlayFromStart | PlayAnyWindow | Stop | Loop | ShuttleReverse | ShuttlePause
             | ShuttleForward | SpacePlayPause => true,
@@ -104,8 +115,9 @@ impl CmdState {
             NormalTool => true,
             EventLock => self.clip_locked,
             SpacePlayPause => self.space_pauses,
+            Quantize => self.quantize,
             // Always-on behaviour Milan Pro has no switch for.
-            Quantize | SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
+            SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
             SnapGrid | SnapAllEvents | AutoRipple | BusTracks | VideoBusTrack | MediaMarkers | ShowEnvelopes
             | IgnoreGrouping | Multicam | ExternalMonitor => false,
@@ -947,20 +959,21 @@ pub fn context_at(owner: &Response, open_at: Option<Pos2>, add: impl FnOnce(&mut
     bs.store(ctx, id);
 }
 
-/// Save to the current path, or Save As if the project has none. True when saved.
-pub fn save(project: &mut Project) -> bool {
+/// Save to the current path, or Save As if the project has none. Ok(false): Save As was cancelled.
+pub fn save(project: &mut Project) -> Result<bool, String> {
     match project.path.clone() {
-        Some(path) => project.save(&path).is_ok(),
+        Some(path) => save_to(project, &path),
         None => save_as(project),
     }
 }
 
-pub fn save_as(project: &mut Project) -> bool {
-    rfd::FileDialog::new()
-        .add_filter("Milan Pro Project", &["mnle"])
-        .set_file_name(format!("{}.mnle", project.name))
-        .save_file()
-        .is_some_and(|path| project.save(&path).is_ok())
+pub fn save_as(project: &mut Project) -> Result<bool, String> {
+    let picked = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).set_file_name(format!("{}.mnle", project.name)).save_file();
+    picked.map_or(Ok(false), |path| save_to(project, &path))
+}
+
+fn save_to(project: &mut Project, path: &std::path::PathBuf) -> Result<bool, String> {
+    project.save(path).map(|_| true).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 pub fn add_marker(project: &mut Project, history: &mut History) {
@@ -991,5 +1004,19 @@ pub fn import_media(ctx: &Context, importer: &Importer) {
         .pick_files()
     {
         importer.import(ctx, paths);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the
+    /// project stays modified so the save prompt keeps its New/Open/Exit from discarding it.
+    #[test]
+    fn failed_save_is_an_error() {
+        let mut p = crate::project::Project::new("t");
+        p.mark_modified();
+        p.path = Some(std::env::temp_dir().join("milan-no-such-dir-7f3a").join("p.mnle"));
+        let e = super::save(&mut p).unwrap_err();
+        assert!(e.contains("p.mnle") && p.modified, "{e}");
     }
 }

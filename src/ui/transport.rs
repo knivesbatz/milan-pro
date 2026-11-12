@@ -1,15 +1,14 @@
 //! Transport and editing toolbar under the timeline (§5.10), the Rate area left of it, and the transport
 //! commands shared with the Video Preview bar and its More menu.
 use eframe::egui::*;
-use crate::edit;
 use crate::history::History;
 use crate::project::*;
 use crate::render::content_end;
 use super::icons::{Icon, paint_icon};
-use super::menus::add_marker;
+use super::keymap::Command;
+use super::menus::{self, add_marker};
 use super::theme::{self, UiLook};
 use super::toolbar::{inert_button, inert_split, separator, split_button, tool_button};
-use super::ClipRef;
 
 /// What the bar asks the app to do beyond editing the project.
 pub enum TransportAction {
@@ -143,7 +142,6 @@ pub fn cmd_menu(ui: &mut Ui, project: &mut Project, p: &mut Playback) {
 pub struct TransportState<'a> {
     pub project: &'a mut Project,
     pub history: &'a mut History,
-    pub selected_clip: &'a mut Option<ClipRef>,
     pub playback: Playback<'a>,
     pub snapping: &'a mut bool,
     /// Automatic Crossfades: a stored flag only; overlaps do not crossfade yet.
@@ -171,45 +169,23 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
     inert_button(ui, Icon::ZoomEdit, "Zoom Edit Tool (not available yet)", false);
     separator(ui);
 
-    let sel = s.selected_clip.clone();
-    let tl = &s.project.timeline;
-    let clip = sel.as_ref().and_then(|cr| tl.tracks(cr.is_video).get(cr.track_idx)?.clips.get(cr.clip_idx));
-    let has_sel = clip.is_some();
-    let locked = clip.is_some_and(|c| c.locked);
-    let region = tl.loop_region.filter(|(a, b)| b > a);
-    let cursor = tl.cursor_position;
-    // Each edit is one undo step.
-    let edit = |s: &mut TransportState, f: &dyn Fn(&mut Project, &ClipRef) -> bool| {
-        if let Some(cr) = &sel {
-            let before = s.project.clone();
-            if f(s.project, cr) {
-                s.history.push(before);
-            }
+    // Edits go through the app's commands, so they act on the whole selection like their keys and menu items.
+    let st = menus::state(ui.ctx());
+    let region = s.project.timeline.loop_region.filter(|(a, b)| b > a);
+    let button = |ui: &mut Ui, icon, tip: &str, c: Command, active: bool| {
+        if tool_button(ui, icon, tip, st.enabled(c), active).clicked() {
+            menus::send(ui.ctx(), c);
         }
     };
-    if tool_button(ui, Icon::Delete, "Delete (Delete)", has_sel && !locked, false).clicked() {
-        edit(&mut s, &|p, cr| edit::delete_clip(p, cr));
-        *s.selected_clip = None;
-    }
-    if tool_button(ui, Icon::Trim, "Trim to Time Selection (Ctrl+T)", has_sel && region.is_some(), false).clicked() {
-        let (a, b) = region.unwrap_or_default();
-        edit(&mut s, &|p, cr| edit::trim_to(p, cr, Some(a), Some(b)));
-    }
-    if tool_button(ui, Icon::TrimStart, "Trim Start (Alt+[)", has_sel, false).clicked() {
-        edit(&mut s, &|p, cr| edit::trim_to(p, cr, Some(cursor), None));
-    }
-    if tool_button(ui, Icon::TrimEnd, "Trim End (Alt+])", has_sel, false).clicked() {
-        edit(&mut s, &|p, cr| edit::trim_to(p, cr, None, Some(cursor)));
-    }
-    if tool_button(ui, Icon::Split, "Split (S)", has_sel, false).clicked() {
-        edit(&mut s, &|p, cr| edit::split_at(p, cr, cursor));
-    }
+    button(ui, Icon::Delete, "Delete (Delete)", Command::Delete, false);
+    button(ui, Icon::Trim, "Trim to Time Selection (Ctrl+T)", Command::Trim, false);
+    button(ui, Icon::TrimStart, "Trim Start (Alt+[)", Command::TrimStart, false);
+    button(ui, Icon::TrimEnd, "Trim End (Alt+])", Command::TrimEnd, false);
+    button(ui, Icon::Split, "Split (S)", Command::Split, false);
     if v23 {
         tool_button(ui, Icon::SmartSplit, "Smart Split (Alt+S) (not available yet)", false, false);
     }
-    if tool_button(ui, Icon::Lock, "Lock", has_sel, locked).clicked() {
-        edit(&mut s, &|p, cr| edit::toggle_clip_lock(p, cr));
-    }
+    button(ui, Icon::Lock, "Lock", Command::EventLock, st.clip_locked);
     separator(ui);
     if tool_button(ui, Icon::InsertMarker, "Insert Marker (M)", true, false).clicked() {
         add_marker(s.project, s.history);
