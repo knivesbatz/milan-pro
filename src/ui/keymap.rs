@@ -47,7 +47,8 @@ pub enum Command {
     NextWindow, PrevWindow, PreviewQuality(Quality),
     // Docking and layouts
     ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutDefault, LayoutVp14,
-    LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize),
+    LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
+    SaveLayoutAs,
     // Windows
     FocusTimeline, Window(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole,
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
@@ -267,8 +268,24 @@ pub const TABLE: &[Row] = &[
     (LayoutTimelineTop, "Timeline Top Layout", &["Alt+D T"], Some(&[])),
     (LayoutUser(0), "User layout 0", &["Alt+D 0"], None),
     (LayoutUser(1), "User layout 1", &["Alt+D 1"], None),
+    (LayoutUser(2), "User layout 2", &["Alt+D 2"], None),
+    (LayoutUser(3), "User layout 3", &["Alt+D 3"], None),
+    (LayoutUser(4), "User layout 4", &["Alt+D 4"], None),
+    (LayoutUser(5), "User layout 5", &["Alt+D 5"], None),
+    (LayoutUser(6), "User layout 6", &["Alt+D 6"], None),
+    (LayoutUser(7), "User layout 7", &["Alt+D 7"], None),
+    (LayoutUser(8), "User layout 8", &["Alt+D 8"], None),
+    (LayoutUser(9), "User layout 9", &["Alt+D 9"], None),
     (SaveLayoutUser(0), "Save user layout 0", &["Ctrl+Alt+D 0"], None),
     (SaveLayoutUser(1), "Save user layout 1", &["Ctrl+Alt+D 1"], None),
+    (SaveLayoutUser(2), "Save user layout 2", &["Ctrl+Alt+D 2"], None),
+    (SaveLayoutUser(3), "Save user layout 3", &["Ctrl+Alt+D 3"], None),
+    (SaveLayoutUser(4), "Save user layout 4", &["Ctrl+Alt+D 4"], None),
+    (SaveLayoutUser(5), "Save user layout 5", &["Ctrl+Alt+D 5"], None),
+    (SaveLayoutUser(6), "Save user layout 6", &["Ctrl+Alt+D 6"], None),
+    (SaveLayoutUser(7), "Save user layout 7", &["Ctrl+Alt+D 7"], None),
+    (SaveLayoutUser(8), "Save user layout 8", &["Ctrl+Alt+D 8"], None),
+    (SaveLayoutUser(9), "Save user layout 9", &["Ctrl+Alt+D 9"], None),
     // Windows
     (FocusTimeline, "Focus to Timeline", &["Alt+0"], None),
     (Window(Panel::Explorer), "Explorer", &["Alt+1"], None),
@@ -418,7 +435,8 @@ impl Keymap {
                 let digit = stroke.key.name().len() == 1 && stroke.key.name().as_bytes()[0].is_ascii_digit();
                 let plain_local =
                     !stroke.ctrl && !stroke.alt && !stroke.shift && (digit || matches!(stroke.key, Key::I | Key::O | Key::A | Key::Delete));
-                if scope.over_dock && plain_local {
+                // A digit that ends a chord (Alt+D 5) is the chord's, also over the dock.
+                if scope.over_dock && plain_local && self.chord.is_none() {
                     return true;
                 }
                 let first = self.chord.take().map(|(s, _)| s);
@@ -536,5 +554,22 @@ mod tests {
         assert_eq!(run(key(Key::D, Modifiers::NONE), UiLook::Vegas23), vec![LayoutDefault]);
         assert_eq!(run(key(Key::D, Modifiers::NONE), UiLook::Vegas23), vec![NextTool]);
         assert_eq!(run(key(Key::Num3, Modifiers::NONE), UiLook::Vegas23), vec![Marker(3)]);
+        for look in [UiLook::Vegas16, UiLook::Vegas23] {
+            assert_eq!(run(key(Key::D, Modifiers::ALT), look), vec![]);
+            assert_eq!(run(key(Key::Num5, Modifiers::NONE), look), vec![LayoutUser(5)]);
+            assert_eq!(run(key(Key::D, Modifiers::CTRL | Modifiers::ALT), look), vec![]);
+            assert_eq!(run(key(Key::Num5, Modifiers::NONE), look), vec![SaveLayoutUser(5)]);
+        }
+        // Over the dock a plain digit is the window's, unless it ends a chord.
+        let mut over = |events: Vec<Event>| {
+            let mut out = Vec::new();
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                out = km.poll(ctx, UiLook::Vegas23, Scope { blocked: false, over_dock: true });
+            });
+            out
+        };
+        assert_eq!(over(key(Key::Num9, Modifiers::NONE)), vec![]);
+        assert_eq!(over(key(Key::D, Modifiers::ALT)), vec![]);
+        assert_eq!(over(key(Key::Num9, Modifiers::NONE)), vec![LayoutUser(9)]);
     }
 }

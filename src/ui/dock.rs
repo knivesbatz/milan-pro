@@ -1,10 +1,11 @@
 //! Dock area (§4.3–4.5, §5.3): columns of tabbed window groups with tab strips at the bottom, draggable
 //! splitters, maximise-in-dock, close (hide), and moving tabs between groups by drag or context menu.
 use eframe::egui::*;
+use serde::{Deserialize, Serialize};
 use super::icons::{Icon, paint_icon};
 use super::theme::{self, Theme, UiLook};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub enum Panel {
     Explorer,
     ProjectMedia,
@@ -47,8 +48,14 @@ impl Panel {
             Panel::MasterBus => "Master Bus",
         }
     }
+
+    /// Color Grading is a VP23 window.
+    pub fn in_look(self, look: UiLook) -> bool {
+        self != Panel::ColorGrading || look == UiLook::Vegas23
+    }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Group {
     pub tabs: Vec<Panel>,
     pub active: usize,
@@ -64,6 +71,15 @@ pub struct Dock {
     /// Group maximised within the dock (□ on the active tab, or double-click).
     pub maximized: Option<usize>,
     dragging: Option<Panel>,
+}
+
+/// A saved window layout (View › Window Layouts): the dock's columns, its height and the track list width.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Layout {
+    pub name: String,
+    pub groups: Vec<Group>,
+    pub height: Option<f32>,
+    pub track_list_w: f32,
 }
 
 const MIN_W: f32 = 80.0;
@@ -87,6 +103,46 @@ impl Dock {
             track_list_w: t.m.track_list_w,
             maximized: None,
             dragging: None,
+        }
+    }
+
+    pub fn layout(&self, name: &str) -> Layout {
+        Layout { name: name.to_string(), groups: self.groups.clone(), height: self.height, track_list_w: self.track_list_w }
+    }
+
+    /// Take on `l`, made safe for `t`'s look: each panel once and only if the look has it, no empty groups, widths
+    /// of at least `MIN_W` (but the first), a valid active tab. A layout with nothing left gives the default dock.
+    pub fn apply(&mut self, l: &Layout, t: &Theme) {
+        let mut seen: Vec<Panel> = Vec::new();
+        let groups: Vec<Group> = l
+            .groups
+            .iter()
+            .filter_map(|g| {
+                let active = g.tabs.get(g.active).copied();
+                // The first column takes what the others leave: its width is unused, kept as saved (a true round trip).
+                let width = match seen.is_empty() {
+                    true if g.width.is_finite() => g.width,
+                    true => 0.0,
+                    false => g.width.max(MIN_W),
+                };
+                let mut tabs: Vec<Panel> = Vec::new();
+                for &p in &g.tabs {
+                    if p.in_look(t.look()) && !seen.contains(&p) {
+                        seen.push(p);
+                        tabs.push(p);
+                    }
+                }
+                let active = active.and_then(|a| tabs.iter().position(|&p| p == a)).unwrap_or(0);
+                (!tabs.is_empty()).then(|| Group { tabs, active, width })
+            })
+            .collect();
+        *self = Dock::new(t);
+        if !groups.is_empty() {
+            self.groups = groups;
+            self.height = l.height.filter(|h| h.is_finite());
+            if l.track_list_w.is_finite() && l.track_list_w >= 0.0 {
+                self.track_list_w = l.track_list_w;
+            }
         }
     }
 
@@ -254,11 +310,11 @@ impl Dock {
         let gr = &self.groups[g];
         let panel = gr.tabs[gr.active.min(gr.tabs.len() - 1)];
         let mut bar_ui = ui.new_child(
-            UiBuilder::new().id_salt(("dock_bar", panel)).max_rect(bar.shrink2(vec2(2.0, 0.0))).layout(Layout::left_to_right(Align::Center)),
+            UiBuilder::new().id_salt(("dock_bar", panel)).max_rect(bar.shrink2(vec2(2.0, 0.0))).layout(eframe::egui::Layout::left_to_right(Align::Center)),
         );
         bar_ui.set_clip_rect(bar.intersect(ui.clip_rect()));
         bar_ui.spacing_mut().item_spacing.x = 0.0;
-        let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(Layout::top_down(Align::Min)));
+        let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(eframe::egui::Layout::top_down(Align::Min)));
         body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         content(panel, &mut bar_ui, &mut body_ui);
         self.tab_strip(ui, t, g, strip);
@@ -420,6 +476,47 @@ mod tests {
         assert_eq!(d.groups[1].tabs, vec![Panel::Explorer]);
         let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum();
         assert_eq!(n, 8); // Color Grading is VP23-only; Properties opens on demand
+    }
+
+    #[test]
+    fn layout_roundtrips_and_apply_sanitises() {
+        use Panel::*;
+        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let mut d = Dock::new(&t23);
+        d.move_to(Trimmer, None);
+        d.height = Some(400.0);
+        let l = d.layout("Mine");
+        assert_eq!(serde_json::from_str::<Layout>(&serde_json::to_string(&l).unwrap()).unwrap(), l);
+        let mut e = Dock::new(&t23);
+        e.apply(&l, &t23);
+        assert_eq!((e.groups, e.height, e.track_list_w), (d.groups.clone(), Some(400.0), d.track_list_w));
+
+        let g = |tabs: Vec<Panel>, active, width| Group { tabs, active, width };
+        let bad = Layout {
+            name: String::new(),
+            groups: vec![
+                g(vec![ColorGrading, Explorer, Explorer], 0, 0.0),
+                g(vec![], 0, 300.0),
+                g(vec![Explorer, ColorGrading], 1, 300.0),
+                g(vec![Trimmer, VideoPreview], 9, 10.0),
+            ],
+            height: Some(f32::NAN),
+            track_list_w: f32::INFINITY,
+        };
+        let mut v16 = Dock::new(&t16);
+        v16.apply(&bad, &t16);
+        assert_eq!(v16.groups, vec![g(vec![Explorer], 0, 0.0), g(vec![Trimmer, VideoPreview], 0, MIN_W)]);
+        assert_eq!((v16.height, v16.track_list_w), (None, t16.m.track_list_w));
+        // VP23 keeps Color Grading, once, as the active tab it was.
+        let mut v23 = Dock::new(&t23);
+        v23.apply(&bad, &t23);
+        assert_eq!(v23.groups[0], g(vec![ColorGrading, Explorer], 0, 0.0));
+        assert_eq!(v23.groups.len(), 2);
+        // Nothing usable left: the default dock.
+        let mut z = Dock::new(&t16);
+        z.move_to(Explorer, None);
+        z.apply(&Layout { groups: vec![g(vec![ColorGrading], 0, 300.0)], ..bad }, &t16);
+        assert_eq!(z.groups, Dock::new(&t16).groups);
     }
 
     /// Simulated pointer input: a click on the tab strip switches tabs, dragging a splitter resizes columns.

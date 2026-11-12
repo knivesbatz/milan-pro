@@ -2,10 +2,12 @@
 //! (%APPDATA%\MilanPro\prefs.json).
 use eframe::egui::{self, Ui};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use crate::history::History;
 use crate::project::{Project, ProjectSettings};
 use crate::ui::dialogs;
+use crate::ui::dock::Layout;
 use crate::ui::theme::{self, LookChoice, UiLook};
 
 /// Per-user app preferences. Unknown or missing fields fall back to defaults.
@@ -41,6 +43,30 @@ pub struct Prefs {
     pub show_envelopes: bool,
     /// Options › Lock Envelopes to Events: envelope points move with the events over them.
     pub lock_envelopes: bool,
+    /// Window layouts by `layout_key`: each look's last layout ("vp16:last") and user slots 0-9 ("vp16:3").
+    /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
+    #[serde(deserialize_with = "lenient_layouts")]
+    pub layouts: BTreeMap<String, Layout>,
+}
+
+/// Key of a saved layout: `slot` is "last" or a user slot number; VP23 Dark and White share one.
+pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
+    format!("{}:{slot}", if look == UiLook::Vegas16 { "vp16" } else { "vp23" })
+}
+
+/// The layouts to save: those on `disk` (another window may have saved some), with this window's `changed` keys
+/// taken from `mine`.
+pub fn merge_layouts(disk: BTreeMap<String, Layout>, mine: BTreeMap<String, Layout>, changed: &BTreeSet<String>) -> BTreeMap<String, Layout> {
+    let mut out = disk;
+    out.extend(mine.into_iter().filter(|(k, _)| changed.contains(k)));
+    out
+}
+
+fn lenient_layouts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Layout>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Object(m) => m.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?))).collect(),
+        _ => BTreeMap::new(),
+    })
 }
 
 impl Default for Prefs {
@@ -62,6 +88,7 @@ impl Default for Prefs {
             ignore_grouping: false,
             show_envelopes: true,
             lock_envelopes: true,
+            layouts: BTreeMap::new(),
         }
     }
 }
@@ -72,18 +99,34 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        Self::try_load().unwrap_or_default()
     }
 
+    /// The preferences on disk; None when the file is there but cannot be read or parsed, so a read-modify-write
+    /// never puts defaults over it.
+    pub fn try_load() -> Option<Self> {
+        Self::path().map_or(Some(Self::default()), |p| Self::parse(std::fs::read_to_string(p)))
+    }
+
+    fn parse(file: std::io::Result<String>) -> Option<Self> {
+        match file {
+            Ok(s) => serde_json::from_str(&s).ok(),
+            Err(e) => (e.kind() == std::io::ErrorKind::NotFound).then(Self::default),
+        }
+    }
+
+    /// Written to a temporary file and renamed, so another window never reads a half-written file.
     pub fn save(&self) -> std::io::Result<()> {
         let Some(path) = Self::path() else { return Ok(()) };
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let res = std::fs::write(&tmp, serde_json::to_string_pretty(self)?).and_then(|_| std::fs::rename(&tmp, &path));
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
     }
 
     /// Put `path` first in the recent list.
@@ -282,5 +325,46 @@ mod tests {
             r.add_recent(std::path::Path::new(p));
         }
         assert_eq!(r.recent, ["c", "a"]);
+    }
+
+    /// A broken `layouts` (not a map, or a bad entry) loses only what is broken, never the other preferences.
+    #[test]
+    fn corrupt_layouts_fall_back() {
+        let t = crate::ui::theme::Theme::new(LookChoice::VEGAS16);
+        let good = crate::ui::dock::Dock::new(&t).layout("Mine");
+        let mut p = Prefs { quantize: false, ..Default::default() };
+        p.layouts.insert(layout_key(UiLook::Vegas16, 3), good.clone());
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
+        assert_eq!(layout_key(UiLook::Vegas23, "last"), "vp23:last");
+
+        let whole = json.replace(r#""layouts":{"#, r#""layouts":5,"x":{"#);
+        let d = serde_json::from_str::<Prefs>(&whole).unwrap();
+        assert!(d.layouts.is_empty() && !d.quantize);
+        let entry = json.replace(r#""layouts":{"#, r#""layouts":{"vp16:last":{"groups":"x"},"vp16:4":{"name":"Future","groups":[{"tabs":["Hub"],"active":0,"width":1}],"height":null,"track_list_w":1},"#);
+        let d = serde_json::from_str::<Prefs>(&entry).unwrap();
+        assert_eq!(d.layouts.keys().collect::<Vec<_>>(), ["vp16:3"]);
+        assert_eq!(d.layouts["vp16:3"], good);
+    }
+
+    /// A file that is there but unreadable is None (never defaults to write back); a missing one is the defaults.
+    #[test]
+    fn try_load_tells_missing_from_broken() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(Prefs::parse(Err(Error::from(ErrorKind::NotFound))), Some(Prefs::default()));
+        assert_eq!(Prefs::parse(Err(Error::from(ErrorKind::PermissionDenied))), None);
+        assert_eq!(Prefs::parse(Ok(r#"{"recent":["a""#.into())), None);
+        assert_eq!(Prefs::parse(Ok(r#"{"quantize":false}"#.into())).map(|p| p.quantize), Some(false));
+    }
+
+    /// Another window's saved slot survives this window's save; this window's changed slots win.
+    #[test]
+    fn merge_keeps_other_windows_layouts() {
+        let t = crate::ui::theme::Theme::new(LookChoice::VEGAS16);
+        let l = |n: &str| crate::ui::dock::Dock::new(&t).layout(n);
+        let disk = BTreeMap::from([("vp16:3".to_string(), l("Theirs")), ("vp16:4".to_string(), l("Disk4"))]);
+        let mine = BTreeMap::from([("vp16:4".to_string(), l("Mine4")), ("vp16:5".to_string(), l("Stale5"))]);
+        let m = merge_layouts(disk, mine, &BTreeSet::from(["vp16:4".to_string()]));
+        assert_eq!(m.iter().map(|(k, v)| (k.as_str(), v.name.as_str())).collect::<Vec<_>>(), [("vp16:3", "Theirs"), ("vp16:4", "Mine4")]);
     }
 }

@@ -4,6 +4,7 @@ use eframe::egui;
 use crate::edit;
 use crate::project::{Project, TrackKind};
 use crate::render::content_end;
+use crate::settings::layout_key;
 use crate::ui::dialogs::{self, UpdateResult, WelcomeResult};
 use crate::ui::dock::{Dock, Panel};
 use crate::ui::keymap::{Command, Command::*, Scope};
@@ -24,6 +25,7 @@ impl MeridianApp {
             || self.shortcuts_open
             || self.event_props.is_some()
             || self.take_chooser.is_some()
+            || self.layout_as.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -68,6 +70,8 @@ impl MeridianApp {
                 .filter_map(|v| self.focus_of(v).map(|i| (v, i)))
                 .flat_map(|(v, i)| tl.tracks(v)[i].envelopes.iter().filter(move |e| edit::env_fits(e.kind, v)).map(|e| e.kind))
                 .collect(),
+            layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(theme::get().look(), n)).map(|l| l.name.clone())),
+            layout_slot: self.layout_slot,
         }
     }
 
@@ -208,21 +212,36 @@ impl MeridianApp {
         }
     }
 
-    fn save_prefs(&mut self) {
+    pub(super) fn save_prefs(&mut self) {
         if !self.demo {
-            // Another window may have changed the update choices since; keep its values unless this one changed them.
-            let disk = crate::settings::Prefs::load();
-            if self.prefs.auto_update == self.update_prefs_seen.0 {
-                self.prefs.auto_update = disk.auto_update;
-            }
-            if self.prefs.skipped_update == self.update_prefs_seen.1 {
-                self.prefs.skipped_update = disk.skipped_update;
+            // Another window may have changed the update choices or layouts since; keep its values unless this one
+            // changed them. An unreadable file has nothing to keep.
+            if let Some(disk) = crate::settings::Prefs::try_load() {
+                if self.prefs.auto_update == self.update_prefs_seen.0 {
+                    self.prefs.auto_update = disk.auto_update;
+                }
+                if self.prefs.skipped_update == self.update_prefs_seen.1 {
+                    self.prefs.skipped_update = disk.skipped_update;
+                }
+                let mine = std::mem::take(&mut self.prefs.layouts);
+                self.prefs.layouts = crate::settings::merge_layouts(disk.layouts, mine, &self.layouts_changed);
             }
             self.update_prefs_seen = (self.prefs.auto_update, self.prefs.skipped_update.clone());
-            if let Err(e) = self.prefs.save() {
-                self.message = Some(format!("Could not save preferences: {e}"));
+            match self.prefs.save() {
+                Ok(()) => self.layouts_changed.clear(),
+                Err(e) => self.message = Some(format!("Could not save preferences: {e}")),
             }
         }
+    }
+
+    /// Keep the dock as user layout `n` of this look, named `name` (else the slot's name, else "Layout n").
+    fn save_layout(&mut self, n: usize, name: Option<String>) {
+        let key = layout_key(theme::get().look(), n);
+        let name = name.or_else(|| self.prefs.layouts.get(&key).map(|l| l.name.clone())).unwrap_or_else(|| format!("Layout {n}"));
+        self.prefs.layouts.insert(key.clone(), self.dock.layout(&name));
+        self.layouts_changed.insert(key);
+        self.layout_slot = Some(n);
+        self.save_prefs();
     }
 
     fn remember(&mut self) {
@@ -691,7 +710,23 @@ impl MeridianApp {
                 self.project.mark_modified();
             }
             PreviewQuality(q) => self.preview.quality = q,
-            LayoutDefault => self.dock = Dock::new(&theme::get()),
+            LayoutDefault => (self.dock, self.layout_slot) = (Dock::new(&theme::get()), None),
+            LayoutUser(n) => {
+                let t = theme::get();
+                if let Some(l) = self.prefs.layouts.get(&layout_key(t.look(), n)) {
+                    self.dock.apply(l, &t);
+                    self.layout_slot = Some(n);
+                }
+            }
+            SaveLayoutUser(n) => self.save_layout(n, None),
+            // Save Layout saves over the slot last loaded or saved; without one it asks, as Save Layout As does.
+            SaveLayout | SaveLayoutAs => match self.layout_slot.filter(|_| c == SaveLayout) {
+                Some(n) => self.save_layout(n, None),
+                None => {
+                    let n = self.layout_slot.or_else(|| st.layouts.iter().position(Option::is_none)).unwrap_or(0);
+                    self.layout_as = Some((st.layouts[n].clone().unwrap_or_else(|| format!("Layout {n}")), n));
+                }
+            },
             Window(p) => self.dock.toggle(p),
             _ => {}
         }
@@ -818,6 +853,7 @@ impl MeridianApp {
             self.save_prefs();
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
+        self.show_layout_as(ctx);
         if let Some(ok) = self.event_props.as_mut().and_then(|ep| ep.show(ctx, &self.project)) {
             // One undo step on OK, none when nothing changed (`apply_props`).
             if let Some(ep) = self.event_props.take().filter(|_| ok) {
@@ -860,6 +896,41 @@ impl MeridianApp {
                     WelcomeResult::Close => {}
                 }
             }
+        }
+    }
+
+    /// View › Window Layouts › Save Layout As: a name and one of the slots 0-9.
+    fn show_layout_as(&mut self, ctx: &egui::Context) {
+        if self.layout_as.is_none() {
+            return;
+        }
+        let look = theme::get().look();
+        // As VEGAS: the slot is picked by the Alt+D, n shortcut that loads it.
+        let slots: Vec<String> = (0..10)
+            .map(|n| {
+                let name = self.prefs.layouts.get(&layout_key(look, n)).map_or("<EMPTY>", |l| l.name.as_str());
+                format!("{}  {name}", crate::ui::keymap::shortcut_text(LayoutUser(n), look))
+            })
+            .collect();
+        let Some((name, slot)) = &mut self.layout_as else { return };
+        let (hit, close) = dialogs::modal(ctx, "save_layout_as", "Save Layout As", egui::vec2(340.0, 140.0), |ui| {
+            dialogs::row(ui, "Name:", 60.0, true, |ui| ui.add(egui::TextEdit::singleline(name).desired_width(250.0)));
+            dialogs::row(ui, "Shortcut:", 60.0, true, |ui| {
+                egui::ComboBox::from_id_salt("layout_as_slot").width(250.0).selected_text(slots[*slot].as_str()).show_ui(ui, |ui| {
+                    for (n, label) in slots.iter().enumerate() {
+                        ui.selectable_value(slot, n, label.as_str());
+                    }
+                });
+            });
+            ui.add_space(14.0);
+            dialogs::button_row(ui, &[("OK", !name.trim().is_empty()), ("Cancel", true)])
+        });
+        if hit == Some(0) {
+            if let Some((name, n)) = self.layout_as.take() {
+                self.save_layout(n, Some(name.trim().to_string()));
+            }
+        } else if hit.is_some() || close {
+            self.layout_as = None;
         }
     }
 
@@ -937,6 +1008,7 @@ impl MeridianApp {
                 self.exec(ctx, TrackMotion);
             }
             "about" => self.about = true,
+            "layout-as" => self.exec(ctx, SaveLayoutAs),
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {
                 if let Some(k) = m.strip_prefix("menu:").and_then(|k| k.parse::<usize>().ok()) {

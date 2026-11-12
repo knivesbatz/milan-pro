@@ -11,10 +11,10 @@ use crate::history::History;
 use crate::media::Importer;
 use crate::project::Project;
 use crate::render;
-use crate::settings::{Prefs, SettingsDialog};
+use crate::settings::{layout_key, Prefs, SettingsDialog};
 use crate::ui::chrome;
 use crate::ui::dock::{Dock, Panel};
-use crate::ui::theme::{self, LookChoice, UiLook};
+use crate::ui::theme::{self, LookChoice, Theme, UiLook};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
 use crate::ui::{self, ChooserKind, ClipRef, DragState, MenuAction, Playback, Selection, TransportAction, TransportState, WinAction};
@@ -68,6 +68,12 @@ pub struct MeridianApp {
     about: bool,
     look: LookChoice,
     dock: Dock,
+    /// The user layout slot last loaded or saved in this look (File-style "Save Layout" saves over it).
+    layout_slot: Option<usize>,
+    /// Save Layout As: the name and slot being chosen.
+    layout_as: Option<(String, usize)>,
+    /// `prefs.layouts` keys changed here since the last save; the others are taken from disk (another window's).
+    layouts_changed: std::collections::BTreeSet<String>,
     /// Native window decorations are on (VP16) or off (VP23 custom title bar).
     decorated: bool,
     /// MILAN_DEMO: nothing is written to the user's autosave or prefs.
@@ -125,6 +131,8 @@ impl MeridianApp {
         let look = launch.look.unwrap_or(prefs.look);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
+        // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
+        let look = theme::get().choice;
         let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
         let mut updater = crate::updater::Updater::from_env();
         if updater.auto || (prefs.auto_update && !launch.demo && launch.screenshot.is_none()) {
@@ -141,7 +149,7 @@ impl MeridianApp {
                 Err(e) => message = Some(format!("Demo media failed: {e}")),
             }
         }
-        let mut dock = Dock::new(&theme::get());
+        let mut dock = last_dock(&prefs, &theme::get());
         let mut trimmer = ui::Trimmer::new(&cc.egui_ctx);
         let mut explorer = ui::Explorer::default();
         if launch.demo {
@@ -190,6 +198,9 @@ impl MeridianApp {
             about: false,
             look,
             dock,
+            layout_slot: None,
+            layout_as: None,
+            layouts_changed: Default::default(),
             decorated: look.look == UiLook::Vegas16,
             demo: launch.demo,
             shot: launch.screenshot.map(Shot::new),
@@ -342,7 +353,6 @@ impl eframe::App for MeridianApp {
         }
 
         let mut drag = self.file_drag(ctx);
-        let look = self.look;
         let mut transport_action = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
             let full = ui.max_rect();
@@ -501,15 +511,15 @@ impl eframe::App for MeridianApp {
             self.dock.toggle(Panel::ColorGrading);
         }
 
-        if self.look != look {
+        // A new look (Preferences) applies live; each look keeps its own last layout.
+        if self.look != t.choice {
             theme::set(ctx, self.look);
-            self.dock = Dock::new(&theme::get());
-            if !self.demo {
-                self.prefs.look = self.look;
-                if let Err(e) = self.prefs.save() {
-                    self.message = Some(format!("Could not save preferences: {e}"));
-                }
-            }
+            self.look = theme::get().choice;
+            self.dock = look_dock(&mut self.prefs, &self.dock, t.look(), &theme::get());
+            self.layouts_changed.insert(layout_key(t.look(), "last"));
+            self.layout_slot = None;
+            self.prefs.look = self.look;
+            self.save_prefs();
         }
         if ctx.input(|i| i.viewport().close_requested()) && self.project.modified {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -621,6 +631,37 @@ impl eframe::App for MeridianApp {
             shot.tick(ctx, busy);
         }
     }
+
+    /// The window layout comes back at the next launch. Only the layout is written, over what is on disk, so
+    /// another window's preferences (recent projects) are kept.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.demo || self.shot.is_some() {
+            return;
+        }
+        let Some(mut p) = Prefs::try_load() else {
+            eprintln!("Could not read the preferences; the window layout is not saved.");
+            return;
+        };
+        p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
+        if let Err(e) = p.save() {
+            eprintln!("Could not save the window layout: {e}");
+        }
+    }
+}
+
+/// The dock for `t`'s look: the default, then that look's last layout if there is one.
+fn last_dock(prefs: &Prefs, t: &Theme) -> Dock {
+    let mut d = Dock::new(t);
+    if let Some(l) = prefs.layouts.get(&layout_key(t.look(), "last")) {
+        d.apply(l, t);
+    }
+    d
+}
+
+/// Switching looks: keep `dock` as the old look's last layout and bring back the new look's.
+fn look_dock(prefs: &mut Prefs, dock: &Dock, from: UiLook, to: &Theme) -> Dock {
+    prefs.layouts.insert(layout_key(from, "last"), dock.layout(""));
+    last_dock(prefs, to)
 }
 
 /// Apply the Master Bus faders' `gain` to the project: one undo step per gesture (a drag, a click, a wheel step or a
@@ -659,5 +700,28 @@ mod tests {
         assert_eq!(p.timeline.master.gain, [0.5, 0.5]);
         h.undo(&mut p);
         assert_eq!(p.timeline.master.gain, [1.0, 1.0]);
+    }
+
+    #[test]
+    fn layouts_save_restore_and_stay_per_look() {
+        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let mut prefs = Prefs::default();
+        // SaveLayoutUser(3), a move, LayoutUser(3): the groups come back.
+        let mut d = last_dock(&prefs, &t16);
+        d.toggle(Panel::MasterBus);
+        prefs.layouts.insert(layout_key(UiLook::Vegas16, 3), d.layout("Three"));
+        let saved = d.groups.clone();
+        d.open(Panel::Properties);
+        d.toggle(Panel::VideoPreview);
+        assert_ne!(d.groups, saved);
+        d.apply(&prefs.layouts[&layout_key(UiLook::Vegas16, 3)], &t16);
+        assert_eq!(d.groups, saved);
+        // To VP23 and back: each look gets its own last layout.
+        let mut d23 = look_dock(&mut prefs, &d, UiLook::Vegas16, &t23);
+        assert_eq!(d23.groups, Dock::new(&t23).groups);
+        d23.open(Panel::Properties);
+        let back = look_dock(&mut prefs, &d23, UiLook::Vegas23, &t16);
+        assert_eq!(back.groups, saved);
+        assert!(last_dock(&prefs, &t23).is_open(Panel::Properties));
     }
 }

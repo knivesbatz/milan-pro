@@ -92,6 +92,10 @@ pub struct CmdState {
     pub audio_track_focus: bool,
     pub video_track_focus: bool,
     pub focus_envs: Vec<EnvKind>,
+    /// Names of the saved user layouts 0-9 of this look (None = <EMPTY>).
+    pub layouts: [Option<String>; 10],
+    /// The user layout last loaded or saved (Save Layout saves over it); None = the default layout.
+    pub layout_slot: Option<usize>,
 }
 
 impl CmdState {
@@ -99,7 +103,9 @@ impl CmdState {
         let v23 = self.look == UiLook::Vegas23;
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | Properties | Exit | RenderAs | Preferences
-            | About | KeyboardShortcuts | CheckForUpdates | NormalTool | LayoutDefault => true,
+            | About | KeyboardShortcuts | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
+            | SaveLayoutUser(_) => true,
+            LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
             Welcome => v23,
             OpenRecent(i) => i < self.recent.len(),
             Undo | UndoAll => self.can_undo,
@@ -135,7 +141,7 @@ impl CmdState {
             SetSelStart | SetSelEnd | SelectionToView | SelectionToProject | InsertMarker | InsertAudioTrack
             | InsertVideoTrack | Snapping | AutoCrossfade | ZoomIn | ZoomOut | ZoomOutLarge | TracksTaller
             | TracksShorter | DefaultTrackHeights | PreviewQuality(_) => true,
-            Window(p) => p != Panel::ColorGrading || v23,
+            Window(p) => p.in_look(self.look),
             _ => false,
         }
     }
@@ -160,6 +166,8 @@ impl CmdState {
             ShowEnvelopes => self.show_env,
             LockEnvelopes => self.lock_env,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
+            LayoutUser(n) => self.layout_slot == Some(n),
+            LayoutDefault => self.layout_slot.is_none(),
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
@@ -275,7 +283,7 @@ pub fn entry(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark
 /// A row for `cmd`: state from the published `CmdState`, shortcut from the keymap; sends it when chosen.
 pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
-    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_));
+    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault);
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
         Some(on) => Mark::Check(on),
@@ -324,6 +332,8 @@ pub enum M {
     V16(&'static M),
     V23(&'static M),
     Recent,
+    /// View › Window Layouts: user slots 0-9 with their names.
+    UserLayouts,
 }
 
 use M::*;
@@ -358,6 +368,12 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
             }
             if st.recent.is_empty() {
                 off(ui, "Recent projects");
+            }
+        }
+        UserLayouts => {
+            let st = state(ui.ctx());
+            for (n, name) in st.layouts.iter().enumerate() {
+                cmd(ui, &format!("&{n} {}", name.as_ref().map_or("<EMPTY>".into(), |s| s.replace('&', "&&"))), LayoutUser(n));
             }
         }
     }
@@ -562,8 +578,8 @@ pub const EDIT: &[M] = &[
 
 const LAYOUTS: &[M] = &[
     X("&Organize Layouts..."),
-    X("&Save Layout"),
-    X("Save Layout &As..."),
+    C("&Save Layout", SaveLayout),
+    C("Save Layout &As...", SaveLayoutAs),
     X("R&eload Selected Layout"),
     S,
     C("&Default Layout", LayoutDefault),
@@ -573,8 +589,7 @@ const LAYOUTS: &[M] = &[
     V23(&C("Source Window Layout", LayoutSource)),
     V23(&C("Timeline Top Layout", LayoutTimelineTop)),
     S,
-    C("&0 <EMPTY>", LayoutUser(0)),
-    C("&1 <EMPTY>", LayoutUser(1)),
+    UserLayouts,
 ];
 
 const WINDOWS: &[M] = &[
@@ -1094,6 +1109,19 @@ mod tests {
         assert!(!st.enabled(EventPanCrop) && !st.enabled(TrackMotion));
         (st.video_clip, st.video_track_focus) = (true, true);
         assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion));
+    }
+
+    #[test]
+    fn user_layout_slots_follow_the_saved_ones() {
+        let mut st = CmdState::default();
+        assert!(!st.enabled(LayoutUser(3)) && st.enabled(SaveLayoutUser(3)) && st.enabled(SaveLayout) && st.enabled(SaveLayoutAs));
+        st.layouts[3] = Some("Edit".into());
+        assert!(st.enabled(LayoutUser(3)) && !st.enabled(LayoutUser(4)) && !st.enabled(LayoutUser(10)));
+        // The bullet follows the current layout: Default until a slot is loaded or saved.
+        assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3))), (Some(true), Some(false)));
+        st.layout_slot = Some(3);
+        assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3)), st.checked(LayoutUser(4))), (Some(false), Some(true), Some(false)));
+        assert!(!st.enabled(Window(Panel::ColorGrading)) && !st.enabled(LayoutTimelineTop));
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the

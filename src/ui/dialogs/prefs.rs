@@ -41,6 +41,10 @@ impl PrefsDialog {
     /// Show the dialog; returns the preferences to apply on OK / Apply.
     pub fn show(&mut self, ctx: &Context, current: &Prefs) -> Option<Prefs> {
         let d = self.draft.as_mut()?;
+        // Layouts change behind the dialog (Apply on a new look saves the old look's); OK must not hand back stale ones.
+        if d.layouts != current.layouts {
+            d.layouts.clone_from(&current.layouts);
+        }
         let t = theme::get();
         let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
         let (tab, track) = (&mut self.tab, &mut self.track);
@@ -192,5 +196,25 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     if default_all(ui) {
         d.track_colors = None;
         d.look.variant = Variant::Dark;
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Apply a new look, the app saves the old look's last layout, then OK: the dialog hands that layout back
+    /// (it does not undo it) and Apply goes off again.
+    #[test]
+    fn ok_after_apply_keeps_the_layouts_saved_meanwhile() {
+        let mut dlg = PrefsDialog::default();
+        let mut current = Prefs::default();
+        dlg.open(&current);
+        let l = crate::ui::dock::Dock::new(&theme::Theme::new(LookChoice::VEGAS16)).layout("");
+        current.layouts.insert(crate::settings::layout_key(UiLook::Vegas16, "last"), l);
+        let ctx = Context::default();
+        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current).is_none()));
+        assert_eq!(dlg.draft.as_ref(), Some(&current));
     }
 }
