@@ -2,7 +2,7 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.3). Editing, preview, audio and rendering work; video/audio effects, transitions and titles are in progress.
+> Early development (v0.4). Editing, preview, effects, transitions, titles, audio FX, recording and rendering work; plug-in hosting is next.
 
 ## Features
 
@@ -11,7 +11,8 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
 - Real-time multi-layer preview with persistent decoders, frame caches and video proxies
-- Streaming audio mixer with waveforms and meters
+- Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
+- Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
 - Render As through the same engine as the preview (FFmpeg encoders)
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
@@ -51,9 +52,8 @@ Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/mil
 
 ## Roadmap
 
-- Video FX, transitions, media generators, titles and colour grading
-- Audio FX and recording
 - OFX / VST plug-in hosting
+- Masks, freely dockable panels, direct `.veg` reading
 - EDL / OTIO interchange
 
 ## License
