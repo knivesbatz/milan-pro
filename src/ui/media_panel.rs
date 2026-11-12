@@ -90,7 +90,8 @@ fn click(view: &mut MediaView, items: &[usize], focus: Option<usize>, i: usize, 
 
 fn use_count(project: &Project, m: &MediaItem) -> usize {
     let tl = &project.timeline;
-    tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).filter(|c| c.media_id.as_deref() == Some(m.id.as_str())).count()
+    // Inactive takes count: their media must stay in the project.
+    tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).filter(|c| edit::uses_media(c, &m.id)).count()
 }
 
 impl MediaView {
@@ -107,7 +108,8 @@ impl MediaView {
     }
 }
 
-/// Remove media `idxs` and every event that uses it, as one undo step.
+/// Remove media `idxs`, the takes that use it and the events left with no take (`edit::forget_media`), as one undo
+/// step.
 fn remove_media(project: &mut Project, history: &mut History, mut idxs: Vec<usize>) {
     // A stale index (from before an undo) removes nothing.
     idxs.retain(|&i| i < project.media_pool.len());
@@ -119,11 +121,8 @@ fn remove_media(project: &mut Project, history: &mut History, mut idxs: Vec<usiz
     idxs.dedup();
     for i in idxs.into_iter().rev() {
         let m = project.media_pool.remove(i);
-        // Clips of removed media would play black/silent.
-        let tl = &mut project.timeline;
-        for t in tl.video_tracks.iter_mut().chain(&mut tl.audio_tracks) {
-            t.clips.retain(|c| c.media_id.as_deref() != Some(m.id.as_str()));
-        }
+        edit::forget_media(&mut project.timeline, &m.id);
+
     }
     project.mark_modified();
 }

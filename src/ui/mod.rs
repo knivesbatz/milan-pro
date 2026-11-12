@@ -35,7 +35,7 @@ pub use panels::placeholder;
 pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, rename_event};
 pub use toolbar::draw_main_toolbar;
 pub use transport::{Cmd, Playback, TransportAction, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
 pub use trimmer::{Trimmer, draw_trimmer, draw_trimmer_toolbar};
@@ -71,8 +71,8 @@ pub struct FileDrag {
     pub os_dropped: bool,
     /// Preferences › Editing: new still image length.
     pub still_len: f64,
-    /// Set by the timeline: (files, target track id or None for new tracks, time).
-    pub dropped_at: Option<(Vec<PathBuf>, Option<String>, f64)>,
+    /// Set by the timeline: (files, target track id or None for new tracks, time, how the drop menu adds them).
+    pub dropped_at: Option<(Vec<PathBuf>, Option<String>, f64, crate::edit::DropMode)>,
 }
 
 pub use crate::project::ClipRef;

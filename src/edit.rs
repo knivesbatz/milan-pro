@@ -51,8 +51,18 @@ fn trim_left_edge(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limi
     clip.position = start;
     clip.duration = end - start;
     clip.in_point = if shift { (orig.in_point + (start - orig.position) * orig.rate).max(0.0) } else { orig.in_point };
+    // Inactive takes move as a plain trim moves the media, also under a slip-trim (only the active take slips).
+    shift_takes(clip, orig, if orig.reverse { 0.0 } else { (start - orig.position) * orig.rate });
     rebase_keys(clip, orig, orig.position - start);
     keep_fades(clip, orig);
+}
+
+/// Inactive takes stay lined up with the active one: their in points move by `d` as the event's does in a trim, split
+/// or slide (a slip moves the active take alone, VEGAS's default with Slip All Takes off).
+fn shift_takes(clip: &mut Clip, orig: &Clip, d: f64) {
+    for (t, o) in clip.takes.iter_mut().zip(&orig.takes) {
+        t.in_point = (o.in_point + d).max(0.0);
+    }
 }
 
 /// Move the clip's right edge to `new_end`, keeping the frame at its left edge.
@@ -72,6 +82,7 @@ fn trim_right_edge(clip: &mut Clip, orig: &Clip, new_end: f64, frame: f64, limit
     let dur = (new_end - orig.position).min(max_dur).max(frame);
     clip.duration = dur;
     clip.in_point = if shift { (orig.in_point + (orig.duration - dur) * orig.rate).max(0.0) } else { orig.in_point };
+    shift_takes(clip, orig, if orig.reverse { (orig.duration - dur) * orig.rate } else { 0.0 });
     keep_fades(clip, orig);
 }
 
@@ -99,6 +110,7 @@ pub fn slide(clip: &mut Clip, orig: &Clip, d: f64, limit: Option<f64>) {
     let d = (dir * (dir * d).min(hi).max(lo)).max(-orig.position);
     clip.position = orig.position + d;
     clip.in_point = (orig.in_point + dir * d * orig.rate).max(0.0);
+    shift_takes(clip, orig, clip.in_point - orig.in_point);
     keep_fades(clip, orig);
 }
 
@@ -230,6 +242,7 @@ pub fn split_clip(clip: &Clip, at: f64) -> Option<(Clip, Clip)> {
         second.in_point += first_dur * clip.rate;
     }
     for c in [&mut first, &mut second] {
+        shift_takes(c, clip, c.in_point - clip.in_point);
         c.clamp_fades();
         sync_out(c);
     }
@@ -855,6 +868,21 @@ pub struct DropPlan {
 /// first one from a video row). A video's own audio takes that audio track only where it is free and unlocked,
 /// otherwise a new one, and shares a group id with its video event. Stills last `still_len`.
 pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], target: Option<(bool, usize)>, time: f64, still_len: f64) -> DropPlan {
+    plan_drop_as(tl, items, target, time, still_len, DropMode::AcrossTime)
+}
+
+/// The right-drag drop menu's choices (VEGAS's Add Across Time / Add Across Tracks / Add as Takes).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DropMode {
+    AcrossTime,
+    /// Every item at the drop time, each on the next track down (video and audio counted apart).
+    AcrossTracks,
+    /// One event per kind, as long as the first item: the first item is the active take, the rest inactive takes.
+    AsTakes,
+}
+
+/// `plan_drop` with a drop mode.
+pub fn plan_drop_as(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], target: Option<(bool, usize)>, time: f64, still_len: f64, mode: DropMode) -> DropPlan {
     let target = target.filter(|&(v, i)| i < tl.tracks(v).len());
     let pick = |v: bool| match target {
         Some((tv, i)) if tv == v => i,
@@ -872,7 +900,9 @@ pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], targ
             _ => range.filter(|(a, b)| b > a).unwrap_or((0.0, m.duration)),
         };
         spans.push((m, a, b, t));
-        t += b - a;
+        if mode == DropMode::AcrossTime {
+            t += b - a;
+        }
     }
     let paired = |m: &MediaItem| m.media_type == MediaType::Video && m.sample_rate.is_some();
     if let Some(tr) = tl.audio_tracks.get(at) {
@@ -882,11 +912,15 @@ pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], targ
         }
     }
     let mut events = Vec::new();
+    // Across Tracks: the next item of each kind goes one track further down.
+    let step = (mode == DropMode::AcrossTracks) as usize;
+    let (mut kv, mut ka) = (0, 0);
     for (m, a, b, pos) in spans {
         let mut c = Clip::from_media(m, pos);
         (c.in_point, c.out_point, c.duration) = (a, b, b - a);
         if m.media_type == MediaType::Audio {
-            events.push((false, at, c));
+            events.push((false, at + ka, c));
+            ka += step;
             continue;
         }
         if paired(m) {
@@ -894,15 +928,39 @@ pub fn plan_drop(tl: &Timeline, items: &[(&MediaItem, Option<(f64, f64)>)], targ
             let mut sound = c.clone();
             sound.id = uuid::Uuid::new_v4().to_string();
             sound.color = [100, 180, 100];
-            events.push((true, vt, c));
-            events.push((false, at, sound));
+            events.push((true, vt + kv, c));
+            events.push((false, at + ka, sound));
+            ka += step;
         } else {
-            events.push((true, vt, c));
+            events.push((true, vt + kv, c));
         }
+        kv += step;
+    }
+    if mode == DropMode::AsTakes {
+        // The kept video and audio events stay grouped only when every item brought both (in the same order), so
+        // their take lists match and T moves picture and sound together.
+        let groups = |v: bool| events.iter().filter(|e| e.0 == v).map(|e| e.2.group.clone()).collect::<Vec<_>>();
+        let paired = groups(true) == groups(false) && groups(true).iter().all(Option::is_some);
+        events = as_takes(events, paired);
     }
     let locked = |v: bool, i: usize| tl.tracks(v).get(i).is_some_and(|t| t.locked);
     let refused = target.is_some_and(|(v, i)| locked(v, i)) || events.iter().any(|(v, i, _)| locked(*v, *i));
     DropPlan { events, refused }
+}
+
+/// Add as Takes: the first event of each kind stays, and the later ones of that kind become its inactive takes.
+fn as_takes(events: Vec<(bool, usize, Clip)>, paired: bool) -> Vec<(bool, usize, Clip)> {
+    let mut kept: Vec<(bool, usize, Clip)> = Vec::new();
+    for (v, i, c) in events {
+        match kept.iter_mut().find(|e| e.0 == v) {
+            Some(e) => e.2.takes.push(Take { media_id: c.media_id.unwrap_or_default(), in_point: c.in_point, name: c.name }),
+            None => kept.push((v, i, c)),
+        }
+    }
+    if !paired {
+        kept.iter_mut().for_each(|e| e.2.group = None);
+    }
+    kept
 }
 
 /// Add the events of a `plan_drop`, creating the tracks it needs, with `auto_crossfade` when `xfade`. Returns the
@@ -933,8 +991,20 @@ pub fn apply_drop(project: &mut Project, plan: DropPlan, xfade: bool) -> Vec<Str
 
 /// Drop pool media `idxs` (each with source range `range`) on `target` at `time`: `plan_drop` + `apply_drop`.
 pub fn drop_media(project: &mut Project, idxs: &[usize], range: Option<(f64, f64)>, target: Option<(bool, usize)>, time: f64, still_len: f64, xfade: bool) -> Vec<String> {
-    let items: Vec<_> = idxs.iter().filter_map(|&i| project.media_pool.get(i)).map(|m| (m, range)).collect();
-    let plan = plan_drop(&project.timeline, &items, target, time, still_len);
+    drop_media_as(project, idxs, range, target, time, still_len, xfade, DropMode::AcrossTime)
+}
+
+/// `drop_media` as the drop menu's `mode` says: Add as Takes over an event adds the media to it (`add_takes_to`),
+/// anything else is `plan_drop_as` + `apply_drop`. The new or changed event ids (none when refused).
+#[allow(clippy::too_many_arguments)]
+pub fn drop_media_as(project: &mut Project, idxs: &[usize], range: Option<(f64, f64)>, target: Option<(bool, usize)>, time: f64, still_len: f64, xfade: bool, mode: DropMode) -> Vec<String> {
+
+    let pool = project.media_pool.clone();
+    let items: Vec<_> = idxs.iter().filter_map(|&i| pool.get(i)).map(|m| (m, range)).collect();
+    if let Some(id) = target.filter(|_| mode == DropMode::AsTakes).and_then(|t| add_takes_to(project, t, time, &items)) {
+        return vec![id];
+    }
+    let plan = plan_drop_as(&project.timeline, &items, target, time, still_len, mode);
     apply_drop(project, plan, xfade)
 }
 
@@ -946,6 +1016,190 @@ pub fn set_fade_curve(project: &mut Project, id: &str, is_in: bool, curve: Curve
     let done = *f != curve;
     *f = curve;
     changed(project, done)
+}
+
+// ---- Takes ----
+
+/// Make take `t` the event's own media, in point and name; returns the take it replaced.
+fn make_active(c: &mut Clip, t: Take) -> Take {
+    let old = Take { media_id: c.media_id.take().unwrap_or_default(), in_point: c.in_point, name: std::mem::take(&mut c.name) };
+    c.media_id = Some(t.media_id).filter(|m| !m.is_empty());
+    (c.in_point, c.name) = (t.in_point, t.name);
+    sync_out(c);
+    old
+}
+
+/// Next Take / Previous Take on one event: the active take and `takes` form a ring in list order. The event keeps
+/// its place and length. False without takes.
+// shortcut: a take shorter than the event holds its last frame and is silent past its end (VEGAS loops it); loop it in the plan if users ask.
+pub fn cycle_take(c: &mut Clip, forward: bool) -> bool {
+    let t = match (forward, c.takes.is_empty()) {
+        (_, true) => return false,
+        (true, _) => c.takes.remove(0),
+        (false, _) => c.takes.pop().expect("takes"),
+    };
+    let old = make_active(c, t);
+    if forward { c.takes.push(old) } else { c.takes.insert(0, old) }
+    true
+}
+
+/// Make inactive take `k` active, keeping the ring order (Event Properties' active take list).
+pub fn choose_take(c: &mut Clip, k: usize) {
+    if k < c.takes.len() {
+        for _ in 0..=k {
+            cycle_take(c, true);
+        }
+    }
+}
+
+/// Media `m` from `in_point` becomes the event's active take; the old one stays as an inactive take, next in the
+/// ring (VEGAS appends the new take and makes it active).
+pub fn add_as_take(c: &mut Clip, m: &MediaItem, in_point: f64) {
+    let old = make_active(c, Take { media_id: m.id.clone(), in_point, name: m.name.clone() });
+    c.takes.insert(0, old);
+}
+
+/// Add as Takes dropped onto an event: the event under `time` on track `(v, i)`, and its group mates under `time`
+/// (the other half of an A/V pair), get each item that has a stream for all of them as their new active take, in
+/// turn (the last one ends up active), so their takes stay matched. The event id; None when no unlocked event is
+/// there, a mate is locked or no item fits, and the drop then makes a new event.
+pub fn add_takes_to(project: &mut Project, (v, i): (bool, usize), time: f64, items: &[(&MediaItem, Option<(f64, f64)>)]) -> Option<String> {
+    let covers = |c: &Clip| time >= c.position && time < c.position + c.duration;
+    let tl = &project.timeline;
+    let tr = tl.tracks(v).get(i).filter(|t| !t.locked)?;
+    let c = tr.clips.iter().rev().find(|c| !c.locked && covers(c))?;
+    let id = c.id.clone();
+    // (kind, event id, locked) of the events that get the takes.
+    let mut mates = vec![(v, id.clone(), false)];
+    if let Some(g) = &c.group {
+        for kind in [true, false] {
+            for t in tl.tracks(kind) {
+                let mine = t.clips.iter().filter(|m| m.group.as_ref() == Some(g) && m.id != id && covers(m));
+                mates.extend(mine.map(|m| (kind, m.id.clone(), t.locked || m.locked)));
+            }
+        }
+    }
+    let fits = |m: &MediaItem, v: bool| if v { matches!(m.media_type, MediaType::Video | MediaType::Image) } else { m.sample_rate.is_some() };
+    let items: Vec<_> = items.iter().filter(|(m, _)| mates.iter().all(|k| fits(m, k.0))).collect();
+    if items.is_empty() || mates.iter().any(|m| m.2) {
+        return None;
+    }
+    for (_, mid, _) in &mates {
+        let r = project.find_clip(mid)?;
+        let c = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx];
+        for (m, range) in &items {
+            add_as_take(c, m, range.map_or(0.0, |r| r.0));
+        }
+    }
+    changed(project, true).then_some(id)
+}
+
+/// `f` on the unlocked events `ids` on unlocked tracks; true (and modified) when it changed any.
+fn edit_clips(project: &mut Project, ids: &[String], mut f: impl FnMut(&mut Clip) -> bool) -> bool {
+    let mut done = false;
+    for c in tracks_mut(&mut project.timeline).filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(|c| !c.locked && ids.contains(&c.id)) {
+        done |= f(c);
+    }
+    changed(project, done)
+}
+
+/// Next Take (T) / Previous Take (Shift+T) on events `ids`.
+pub fn next_take(project: &mut Project, ids: &[String], forward: bool) -> bool {
+    edit_clips(project, ids, |c| cycle_take(c, forward))
+}
+
+/// Take › Delete Active: the next take becomes active; refused (false) on an event without other takes.
+pub fn delete_active_take(project: &mut Project, ids: &[String]) -> bool {
+    edit_clips(project, ids, |c| {
+        let any = !c.takes.is_empty();
+        if any {
+            let t = c.takes.remove(0);
+            make_active(c, t);
+        }
+        any
+    })
+}
+
+/// Take Chooser OK on event `id`: take `k` (0 the active take, then the inactive takes in ring order) becomes active
+/// (Choose Active...) or is deleted (Delete...; deleting the active take makes the next one active, and an event's
+/// only take cannot go).
+pub fn take_chooser(project: &mut Project, id: &str, k: usize, delete: bool) -> bool {
+    edit_clips(project, &[id.to_string()], |c| {
+        if k > c.takes.len() || (k == 0 && (!delete || c.takes.is_empty())) {
+            return false;
+        }
+        match (k, delete) {
+            (0, _) => {
+                let t = c.takes.remove(0);
+                make_active(c, t);
+            }
+            (_, false) => choose_take(c, k - 1),
+            (_, true) => {
+                c.takes.remove(k - 1);
+            }
+        }
+        true
+    })
+}
+
+/// Event `c` plays media `id`, as its active take or an inactive one.
+pub fn uses_media(c: &Clip, id: &str) -> bool {
+    c.media_id.as_deref() == Some(id) || c.takes.iter().any(|t| t.media_id == id)
+}
+
+/// Media `id` leaves the pool: inactive takes of it go, an event whose active take it is moves on to its next take,
+/// and an event with no other take is deleted (it would play black or silence).
+pub fn forget_media(tl: &mut Timeline, id: &str) {
+    for tr in tracks_mut(tl) {
+        tr.clips.retain_mut(|c| {
+            c.takes.retain(|t| t.media_id != id);
+            if c.media_id.as_deref() != Some(id) {
+                return true;
+            }
+            let next = (!c.takes.is_empty()).then(|| c.takes.remove(0));
+            next.map(|t| make_active(c, t)).is_some()
+        });
+    }
+}
+
+// ---- Event Properties ----
+
+/// Event Properties' rate: the same source span plays at `rate` (0.25..=4), so rate x length stays the same.
+pub fn apply_rate(c: &mut Clip, rate: f64) {
+    let span = c.duration * c.rate;
+    c.rate = rate.clamp(MIN_RATE, MAX_RATE);
+    c.duration = span / c.rate;
+    c.clamp_fades();
+    sync_out(c);
+}
+
+/// Event Properties OK: event `id` becomes `draft`, kept inside its media with its fades inside it. On a locked track
+/// only the event's Lock switch changes (as `toggle_clip_lock`). False when nothing changes (no undo step then).
+pub fn apply_props(project: &mut Project, id: &str, mut draft: Clip) -> bool {
+    let Some(r) = project.find_clip(id) else { return false };
+    let tr = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx];
+    let (locked, cur) = (tr.locked, &mut tr.clips[r.clip_idx]);
+    if locked {
+        let done = cur.locked != draft.locked;
+        cur.locked = draft.locked;
+        return changed(project, done);
+    }
+    if *cur == draft {
+        return false;
+    }
+
+    let frame = 1.0 / project.settings.frame_rate.max(1.0);
+    if let Some(l) = media_limit(project, &draft) {
+        draft.in_point = draft.in_point.min(l - frame * draft.rate).max(0.0);
+        draft.duration = draft.duration.min((l - draft.in_point) / draft.rate);
+    }
+    (draft.position, draft.duration) = (draft.position.max(0.0), draft.duration.max(frame));
+    draft.clamp_fades();
+    sync_out(&mut draft);
+    let clips = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx].clips;
+    clips[r.clip_idx] = draft;
+    clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    changed(project, true)
 }
 
 // ---- Envelopes ----
@@ -2287,4 +2541,194 @@ mod tests {
         assert_eq!(starts(&auto.timeline.video_tracks[0]), [0.0, 3.0, 5.0, 10.0]);
         assert_eq!(starts(&post.timeline.video_tracks[0]), starts(&auto.timeline.video_tracks[0]));
     }
+
+    /// An audio event on "a" at 2..6 s from 1 s, with "v" (from 5 s) added as a take.
+    fn take_project() -> (Project, String) {
+        let mut p = media_project();
+        let mut c = Clip::from_media(&p.media_pool[2], 2.0);
+        (c.in_point, c.duration) = (1.0, 3.0);
+        sync_out(&mut c);
+        add_as_take(&mut c, &p.media_pool[0], 5.0);
+        let id = c.id.clone();
+        p.timeline.audio_tracks[0].clips.push(c);
+        (p, id)
+    }
+
+    fn active(p: &Project, id: &str) -> (String, f64, String) {
+        let c = p.clip(id).unwrap();
+        (c.media_id.clone().unwrap_or_default(), c.in_point, c.name.clone())
+    }
+
+    #[test]
+    fn takes_cycle_add_and_delete() {
+        let (mut p, id) = take_project();
+        let ids = vec![id.clone()];
+        // Add as Take: the new media is active, the old one kept.
+        assert_eq!(active(&p, &id), ("v".into(), 5.0, "v".into()));
+        assert_eq!(p.clip(&id).unwrap().takes, [Take { media_id: "a".into(), in_point: 1.0, name: "a".into() }]);
+        let c0 = p.clip(&id).unwrap().clone();
+        assert!(next_take(&mut p, &ids, true));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((active(&p, &id), c.position, c.duration, c.out_point), (("a".into(), 1.0, "a".into()), 2.0, 3.0, 4.0));
+        assert!(next_take(&mut p, &ids, false));
+        assert_eq!(*p.clip(&id).unwrap(), c0, "next then previous is the identity");
+        // A third take: the ring goes v -> a -> i -> v; choosing inactive take 1 is two steps on.
+        let mut c = c0.clone();
+        c.takes.push(Take { media_id: "i".into(), in_point: 0.0, name: "i".into() });
+        choose_take(&mut c, 1);
+        assert_eq!((c.name.as_str(), c.takes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()), ("i", vec!["v", "a"]));
+        // Delete Active: the next take takes over; with none left it is refused.
+        assert!(delete_active_take(&mut p, &ids));
+        assert_eq!((active(&p, &id).0, p.clip(&id).unwrap().takes.len()), ("a".into(), 0));
+        p.modified = false;
+        assert!(!delete_active_take(&mut p, &ids) && !next_take(&mut p, &ids, true) && !p.modified);
+        assert_eq!(active(&p, &id).0, "a");
+        // Take Chooser: Choose Active picks a take in the ring; Delete... removes only the picked take.
+        let (mut p, id) = take_project();
+        p.timeline.audio_tracks[0].clips[0].takes.push(Take { media_id: "i".into(), in_point: 0.0, name: "i".into() });
+        assert!(!take_chooser(&mut p, &id, 0, false) && !take_chooser(&mut p, &id, 3, true), "the active take, or none");
+        assert!(take_chooser(&mut p, &id, 2, false));
+        let names = |p: &Project| (p.clip(&id).unwrap().name.clone(), p.clip(&id).unwrap().takes.iter().map(|t| t.name.clone()).collect::<Vec<_>>());
+        assert_eq!(names(&p), ("i".into(), vec!["v".into(), "a".into()]));
+        assert!(take_chooser(&mut p, &id, 2, true));
+        assert_eq!(names(&p), ("i".into(), vec!["v".into()]));
+        assert!(take_chooser(&mut p, &id, 0, true));
+        assert_eq!(names(&p), ("v".into(), vec![]));
+        assert!(!take_chooser(&mut p, &id, 0, true), "the only take stays");
+    }
+
+    /// Media used only by an inactive take is in use; removing media keeps the event while it has another take.
+    #[test]
+    fn removed_media_leaves_the_other_takes() {
+        let (mut p, id) = take_project(); // active v, take a
+        let c = p.clip(&id).unwrap();
+        assert!(uses_media(c, "a") && uses_media(c, "v") && !uses_media(c, "i"));
+        let mut q = p.clone();
+        forget_media(&mut q.timeline, "a");
+        assert_eq!((active(&q, &id).0, q.clip(&id).unwrap().takes.len()), ("v".into(), 0));
+        forget_media(&mut p.timeline, "v");
+        assert_eq!((active(&p, &id), p.clip(&id).unwrap().takes.len()), (("a".into(), 1.0, "a".into()), 0));
+        forget_media(&mut p.timeline, "a");
+        assert!(p.clip(&id).is_none(), "no take left");
+    }
+
+    #[test]
+    fn splits_and_trims_keep_takes_lined_up() {
+        let (p, id) = take_project();
+        let c = p.clip(&id).unwrap(); // v from 5 at 2..5 s; take a from 1
+        let (a, b) = split_clip(c, 3.0).unwrap();
+        assert_eq!((a.takes[0].in_point, b.in_point, b.takes[0].in_point), (1.0, 6.0, 2.0));
+        let mut t = c.clone();
+        trim_left(&mut t, c, 2.5, F, None);
+        assert_eq!((t.in_point, t.takes[0].in_point), (5.5, 1.5));
+        let mut s = c.clone();
+        slip(&mut s, c, 1.0, None); // a slip moves the active take alone
+        assert_eq!((s.in_point, s.takes[0].in_point), (4.0, 1.0));
+        // Slip-trims too: the inactive take keeps showing the same source at each timeline time.
+        let mut s = c.clone();
+        slip_trim_left(&mut s, c, 3.0, F, None);
+        assert_eq!((s.position, s.in_point, s.takes[0].in_point), (3.0, 5.0, 2.0));
+        let mut s = c.clone();
+        slip_trim_right(&mut s, c, 4.0, F, None);
+        assert_eq!((s.duration, s.in_point, s.takes[0].in_point), (2.0, 6.0, 1.0));
+    }
+
+    #[test]
+    fn drop_as_takes_and_across_tracks() {
+        let p = media_project();
+        let items: Vec<_> = [2, 0].iter().map(|&i| (&p.media_pool[i], None)).collect();
+        let plan = plan_drop_as(&p.timeline, &items, Some((false, 0)), 1.0, 5.0, DropMode::AsTakes);
+        // Audio "a" (4 s) is the audio event with v's sound as its take; v's picture is the video event.
+        let ev: Vec<_> = plan.events.iter().map(|(v, i, c)| (*v, *i, c.position, c.duration, c.takes.len(), c.group.is_some())).collect();
+        assert_eq!(ev, [(false, 0, 1.0, 4.0, 1, false), (true, 0, 1.0, 10.0, 0, false)]);
+        assert_eq!(plan.events[0].2.takes[0].media_id, "v");
+        let plan = plan_drop_as(&p.timeline, &items, Some((false, 0)), 1.0, 5.0, DropMode::AcrossTracks);
+        let ev: Vec<_> = plan.events.iter().map(|(v, i, c)| (*v, *i, c.position)).collect();
+        assert_eq!(ev, [(false, 0, 1.0), (true, 0, 1.0), (false, 1, 1.0)]);
+
+        // Onto an audio event: "a" and v's sound become takes (v last, so active); the still has no sound.
+        let (mut p, id) = take_project(); // 2..5 s on Audio 1, active v, take a
+        let pool = p.media_pool.clone();
+        let items: Vec<_> = [1, 2, 0].iter().map(|&i| (&pool[i], Some((0.5, 1.0)))).collect();
+        assert_eq!(add_takes_to(&mut p, (false, 0), 3.0, &items), Some(id.clone()));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((c.name.as_str(), c.in_point, c.duration), ("v", 0.5, 3.0));
+        assert_eq!(c.takes.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["a", "v", "a"]);
+        assert!(p.modified && add_takes_to(&mut p, (false, 0), 6.0, &items).is_none(), "no event there");
+    }
+
+    /// A/V takes stay matched: picture and sound of each take come from the same item, also after T.
+    #[test]
+    fn av_takes_stay_matched() {
+        let p = media_project();
+        let plan_of = |idx: &[usize]| {
+            let items: Vec<_> = idx.iter().map(|&i| (&p.media_pool[i], None)).collect();
+            plan_drop_as(&p.timeline, &items, Some((true, 0)), 0.0, 5.0, DropMode::AsTakes)
+        };
+        // v, still, v: the video has two takes and the audio one, so they are not grouped.
+        let plan = plan_of(&[0, 1, 0]);
+        let ev: Vec<_> = plan.events.iter().map(|(v, _, c)| (*v, c.takes.len(), c.group.is_some())).collect();
+        assert_eq!(ev, [(true, 2, false), (false, 1, false)]);
+        assert!(plan_of(&[0, 0]).events.iter().all(|e| e.2.group.is_some() && e.2.takes.len() == 1));
+
+        // Onto the video half of a grouped A/V event: only items with picture and sound go, to both halves.
+        let mut p = media_project();
+        let ids = drop_media(&mut p, &[0], None, Some((true, 0)), 0.0, 5.0, false);
+        let ids2 = drop_media_as(&mut p, &[2, 0, 1], Some((2.0, 3.0)), Some((true, 0)), 1.0, 5.0, false, DropMode::AsTakes);
+        assert_eq!(ids2, [ids[0].clone()]);
+        let src = |p: &Project| ids.iter().map(|id| active(p, id)).collect::<Vec<_>>();
+        let v: (String, f64, String) = ("v".into(), 2.0, "v".into());
+        assert_eq!(src(&p), [v.clone(), v]);
+        for _ in 0..2 {
+            assert!(next_take(&mut p, &ids, true));
+            let s = src(&p);
+            assert_eq!(s[0], s[1]);
+        }
+        // A locked half refuses the takes.
+        let r = p.find_clip(&ids[1]).unwrap();
+        p.timeline.audio_tracks[r.track_idx].clips[r.clip_idx].locked = true;
+        let pool = p.media_pool.clone();
+        assert!(add_takes_to(&mut p, (true, 0), 1.0, &[(&pool[0], None)]).is_none());
+    }
+
+    #[test]
+    fn properties_rate_and_unchanged_draft() {
+        let mut c = clip(0.0, 4.0, 0.0);
+        c.fade_in = 3.0;
+        apply_rate(&mut c, 2.0);
+        assert_eq!((c.rate, c.duration, c.fade_in, c.out_point), (2.0, 2.0, 2.0, 4.0));
+        apply_rate(&mut c, 10.0);
+        assert_eq!((c.rate, c.duration), (4.0, 1.0));
+        apply_rate(&mut c, 0.0);
+        assert_eq!((c.rate, c.duration), (0.25, 16.0));
+
+        let (mut p, id) = take_project();
+        let draft = p.clip(&id).unwrap().clone();
+        assert!(!apply_props(&mut p, &id, draft.clone()) && !p.modified, "an unchanged draft is no edit");
+        // Media v is 10 s: from in 5 the event can last 5 s at most; it moves after the other event.
+        p.timeline.audio_tracks[0].clips.push(clip(4.0, 1.0, 0.0));
+        let mut d = draft;
+        (d.duration, d.position, d.name) = (8.0, 6.0, "Take B".into());
+        assert!(apply_props(&mut p, &id, d));
+        let c = &p.timeline.audio_tracks[0].clips[1];
+        assert_eq!((c.id.as_str(), c.position, c.duration, c.name.as_str()), (id.as_str(), 6.0, 5.0, "Take B"));
+
+        // Name, rate and curves together: one apply (one undo step) does all of them.
+        let mut d = p.clip(&id).unwrap().clone();
+        d.name = "Take C".into();
+        apply_rate(&mut d, 2.0);
+        (d.fade_in, d.fade_in_curve, d.fade_out_curve) = (0.5, Curve::Fast, Curve::Sharp);
+        assert!(apply_props(&mut p, &id, d.clone()));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((c.name.as_str(), c.rate, c.duration, c.fade_in_curve, c.fade_out_curve), ("Take C", 2.0, 2.5, Curve::Fast, Curve::Sharp));
+
+        // On a locked track only Lock changes.
+        p.timeline.audio_tracks[0].locked = true;
+        let mut d = p.clip(&id).unwrap().clone();
+        (d.locked, d.name) = (true, "ignored".into());
+        assert!(apply_props(&mut p, &id, d.clone()));
+        assert_eq!((p.clip(&id).unwrap().locked, p.clip(&id).unwrap().name.as_str()), (true, "Take C"));
+        assert!(!apply_props(&mut p, &id, d), "nothing else to change");
+    }
+
 }

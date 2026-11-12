@@ -22,6 +22,8 @@ impl MeridianApp {
             || self.render.open
             || self.welcome.is_some()
             || self.shortcuts_open
+            || self.event_props.is_some()
+            || self.take_chooser.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -34,6 +36,7 @@ impl MeridianApp {
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
             clip_muted: clip.is_some_and(|c| c.muted),
+            takes: self.project.find_clips(&self.sel.clips).iter().any(|r| !tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].takes.is_empty()),
             n_sel: self.sel.clips.len(),
             any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
             tracks_sel: !self.sel.tracks.is_empty(),
@@ -417,7 +420,22 @@ impl MeridianApp {
                     self.dock.open(Panel::ProjectMedia);
                 }
             }
-            EventProperties => self.dock.open(Panel::Properties),
+            EventProperties => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
+            RenameEvent => {
+                if let Some(id) = self.sel.clips.last() {
+                    ui::rename_event(ctx, id);
+                }
+            }
+            NextTake | PrevTake | DeleteActiveTake => {
+                let ids = self.sel.clips.clone();
+                self.edit(|p| match c {
+                    NextTake | PrevTake => edit::next_take(p, &ids, c == NextTake),
+                    _ => edit::delete_active_take(p, &ids),
+                });
+            }
+            ChooseActiveTake | DeleteTake => {
+                self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
+            }
             // Playback
             PlayStop | PlayAnyWindow if v16 && !self.prefs.space_pauses => {
                 if self.playing {
@@ -729,6 +747,8 @@ impl MeridianApp {
         self.file_drop.reset();
         self.drag_state = None;
         self.env_drag = None;
+        self.event_props = None;
+        self.take_chooser = None;
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {
@@ -790,6 +810,17 @@ impl MeridianApp {
             self.save_prefs();
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
+        if let Some(ok) = self.event_props.as_mut().and_then(|ep| ep.show(ctx, &self.project)) {
+            // One undo step on OK, none when nothing changed (`apply_props`).
+            if let Some(ep) = self.event_props.take().filter(|_| ok) {
+                self.edit(|p| edit::apply_props(p, &ep.id, ep.draft));
+            }
+        }
+        if let Some(ok) = self.take_chooser.as_mut().and_then(|tc| tc.show(ctx, &self.project)) {
+            if let Some(tc) = self.take_chooser.take().filter(|_| ok) {
+                self.edit(|p| edit::take_chooser(p, &tc.id, tc.pick, tc.delete));
+            }
+        }
         if let Some(w) = &mut self.welcome {
             let mut show = self.prefs.show_welcome;
             let res = w.show(ctx, &self.prefs.recent, &mut show, self.project.settings.sample_rate);
@@ -882,6 +913,10 @@ impl MeridianApp {
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,
+            "event-props" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
+            "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),
+            "take-chooser" => self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, false)),
+
             "about" => self.about = true,
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {

@@ -14,8 +14,8 @@ struct Pending {
     place: Option<Place>,
 }
 
-/// The target track's id (None: new tracks) and the time.
-pub type Place = (Option<String>, f64);
+/// The target track's id (None: new tracks), the time and how the drop menu adds the files.
+pub type Place = (Option<String>, f64, edit::DropMode);
 
 /// A placed drop: the project before it (None when nothing changed), the new events, files that failed to probe,
 /// and whether a locked track refused readable media.
@@ -77,7 +77,7 @@ impl FileDrop {
     }
 
     /// Take finished probes, then place the first drop whose files are all known: new files are imported (a file
-    /// already in the pool is reused) and laid out across time (crossfading when `xfade`), as one undo step.
+    /// already in the pool is reused) and placed as the drop menu chose (crossfading when `xfade`), as one undo step.
     pub fn poll(&mut self, project: &mut Project, still_len: f64, xfade: bool) -> Option<Placed> {
         while let Some(batch) = self.importer.poll() {
             self.probed.extend(batch);
@@ -95,16 +95,17 @@ impl FileDrop {
         }
         let idxs: Vec<usize> = d.paths.iter().filter_map(|p| project.media_pool.iter().position(|m| m.path == *p)).collect();
         let (ids, refused) = match &d.place {
-            Some((track, time)) => {
+            Some((track, time, mode)) => {
                 // A track deleted while probing: new tracks, as below the last track.
                 let target = track.as_deref().and_then(|id| project.find_track(id));
-                let items: Vec<_> = idxs.iter().map(|&i| (&project.media_pool[i], None)).collect();
-                let plan = edit::plan_drop(&project.timeline, &items, target, *time, still_len);
-                let refused = plan.refused;
-                (edit::apply_drop(project, plan, xfade), refused)
+                let ids = edit::drop_media_as(project, &idxs, None, target, *time, still_len, xfade, *mode);
+                // Readable media always makes or changes an event unless a locked track refused it.
+                let refused = ids.is_empty() && !idxs.is_empty();
+                (ids, refused)
             }
             None => (Vec::new(), false),
         };
+
         Some(Placed { before: (added || !ids.is_empty()).then_some(before), ids, errors, refused })
     }
 }
@@ -143,7 +144,7 @@ mod tests {
         p.timeline.add_audio_track();
         let a2 = p.timeline.audio_tracks[1].id.clone();
         let mut fd = FileDrop::new();
-        fd.drop(vec!["a.wav".into(), "b.wav".into(), "bad.mp4".into()], Some((Some(a2.clone()), 3.0)));
+        fd.drop(vec!["a.wav".into(), "b.wav".into(), "bad.mp4".into()], Some((Some(a2.clone()), 3.0, edit::DropMode::AcrossTime)));
         // A track inserted above while probing: the drop follows the track, not its old index.
         crate::edit::insert_track(&mut p, false, Some(0));
         assert!(fd.poll(&mut p, 5.0, false).is_none(), "nothing arrived yet");
@@ -159,10 +160,17 @@ mod tests {
         assert_eq!(clips, [(3.0, 4.0), (7.0, 4.0)]);
         assert_eq!(p.media_pool.len(), 2);
         // Dropped again: the pool items are reused, nothing is imported twice.
-        fd.drop(vec!["a.wav".into()], Some((None, 0.0)));
+        fd.drop(vec!["a.wav".into()], Some((None, 0.0, edit::DropMode::AcrossTime)));
         let placed = fd.poll(&mut p, 5.0, false).expect("placed at once");
         assert_eq!((placed.ids.len(), p.media_pool.len()), (1, 2));
+        // Add as Takes (the drop menu) onto the first event: it gets b as its active take.
+        let first = p.timeline.audio_tracks[2].clips[0].id.clone();
+        fd.drop(vec!["b.wav".into()], Some((Some(a2.clone()), 3.5, edit::DropMode::AsTakes)));
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed");
+        assert_eq!((placed.ids, placed.refused), (vec![first.clone()], false));
+        assert_eq!(p.clip(&first).map(|c| (c.media_id.clone(), c.takes.len())), Some((Some("b.wav".into()), 1)));
     }
+
 
     #[test]
     fn an_import_only_drop_reuses_the_probe_and_a_locked_track_is_reported() {
@@ -176,7 +184,7 @@ mod tests {
         // The pointed row is free, but the audio lands on the locked Audio 1.
         p.timeline.audio_tracks[0].locked = true;
         let v1 = p.timeline.video_tracks[0].id.clone();
-        fd.drop(vec!["c.wav".into()], Some((Some(v1), 0.0)));
+        fd.drop(vec!["c.wav".into()], Some((Some(v1), 0.0, edit::DropMode::AcrossTime)));
         let placed = fd.poll(&mut p, 5.0, false).expect("handled");
         assert!(placed.refused && placed.before.is_none());
     }
@@ -186,7 +194,7 @@ mod tests {
         let mut p = Project::new("t");
         let mut fd = FileDrop::new();
         let old = fd.importer.sender();
-        fd.drop(vec!["a.wav".into()], Some((None, 1.0)));
+        fd.drop(vec!["a.wav".into()], Some((None, 1.0, edit::DropMode::AcrossTime)));
         fd.reset(); // File › New
         assert!(old.send(vec![probed("a.wav")]).is_err(), "the old batch has nowhere to go");
         fd.importer.sender().send(vec![probed("a.wav")]).unwrap(); // even a result that does arrive places nothing

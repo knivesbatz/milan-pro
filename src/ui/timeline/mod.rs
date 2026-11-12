@@ -67,10 +67,21 @@ struct Row {
     h: f32,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Rename {
     Track(bool, usize),
     Marker(usize),
+    /// An event's active take (Take › Rename Active), by event id.
+    Event(String),
+}
+
+fn rename_id() -> Id {
+    Id::new("milan_rename_event")
+}
+
+/// Take › Rename Active: the timeline opens a rename box on event `id` next frame.
+pub fn rename_event(ctx: &Context, id: &str) {
+    ctx.data_mut(|d| d.insert_temp(rename_id(), id.to_string()));
 }
 
 /// Timeline UI state kept in egui memory between frames.
@@ -701,10 +712,22 @@ pub fn draw_timeline(
         ui.ctx().set_cursor_icon(CursorIcon::NotAllowed);
     }
     let released = response.dnd_release_payload::<super::MediaDrag>();
+    let right_drop = ui.input(|i| i.pointer.button_released(PointerButton::Secondary));
+    let mut drop_menu = None;
     if released.is_some() || drops.os_dropped {
         if let Some((target, time, plan)) = ghost.take() {
             drops.os_dropped = false;
             match released.as_deref() {
+                // A right-drag asks how to add the media first (VEGAS's drop menu).
+                Some(drag @ (super::MediaDrag::Pool(..) | super::MediaDrag::File(_))) if right_drop && !plan.refused => {
+                    let at = pointer.unwrap_or(g.lanes.center());
+                    let (still_len, xfade) = (drops.still_len, opts.auto_crossfade);
+                    let (idxs, range, files) = match drag {
+                        super::MediaDrag::Pool(idxs, range) => (idxs.clone(), *range, Vec::new()),
+                        super::MediaDrag::File(_) => (Vec::new(), None, drops.files.clone()),
+                    };
+                    drop_menu = Some((at, ctx::DropReq { target, time, idxs, range, files, still_len, xfade }));
+                }
                 Some(super::MediaDrag::Pool(..)) => {
                     let before = project.clone();
                     let ids = edit::apply_drop(project, plan, opts.auto_crossfade);
@@ -716,7 +739,7 @@ pub fn draw_timeline(
                 // Files are placed by the app once probed, on the track (by id) and at the time of the drop.
                 _ if !plan.refused => {
                     let track = target.map(|(v, i)| project.timeline.tracks(v)[i].id.clone());
-                    drops.dropped_at = Some((drops.files.clone(), track, time));
+                    drops.dropped_at = Some((drops.files.clone(), track, time, edit::DropMode::AcrossTime));
                 }
                 _ => {}
             }
@@ -797,7 +820,8 @@ pub fn draw_timeline(
     // 1–9, 0 jump to marker N through the keymap (§7).
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
-    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on);
+    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on, drop_menu, drops);
+
     let mut rows = rows_of(project, &g, scroll_y);
     // A drop that adds video tracks: the audio rows move down to show where they will go.
     if let Some((_, _, plan)) = &ghost {
@@ -1061,21 +1085,30 @@ fn paint_ghost(p: &Painter, g: &Geo, rows: &[Row], project: &Project, target: Op
     }
 }
 
-/// Inline rename box for a track name (double-click the header's top-left) or a marker (double-click its tag).
+/// Inline rename box for a track name (double-click the header's top-left), a marker (double-click its tag) or an
+/// event's active take (over its label).
 fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, st: &mut TlState) {
+    if let Some(c) = ui.data_mut(|d| d.remove_temp::<String>(rename_id())).and_then(|id| project.clip(&id)) {
+        (st.rename, st.rename_focused) = (Some((Rename::Event(c.id.clone()), c.name.clone())), false);
+    }
     let Some((target, mut buf)) = st.rename.take() else {
         st.rename_focused = false;
         return;
     };
     let t = theme::get();
-    let at = match target {
-        Rename::Track(v, i) => rows.iter().find(|r| r.is_video == v && r.idx == i).map(|r| {
+    let at = match &target {
+        &Rename::Track(v, i) => rows.iter().find(|r| r.is_video == v && r.idx == i).map(|r| {
             let x = g.rect.min.x + t.m.color_strip_w + 4.0;
             Rect::from_min_size(pos2(x, r.top + 2.0), vec2((g.header_w - t.m.color_strip_w - 80.0).max(60.0), 18.0))
         }),
-        Rename::Marker(i) => project.timeline.markers.get(i).map(|m| {
+        &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| {
             let (_, marker_r, _) = ruler::band_rows(&t, g.band);
             Rect::from_min_size(pos2(g.to_x(m.position) + 14.0, marker_r.min.y - 2.0), vec2(160.0, 18.0))
+        }),
+        Rename::Event(id) => project.find_clip(id).zip(project.clip(id)).and_then(|(r, c)| {
+            let row = rows.iter().find(|w| w.is_video == r.is_video && w.idx == r.track_idx)?;
+            let x = g.to_x(c.position).max(g.lanes.min.x) + 2.0;
+            Some(Rect::from_min_size(pos2(x, row.top + 2.0), vec2(200.0, 18.0)))
         }),
     };
     let Some(at) = at else { return };
@@ -1086,16 +1119,24 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history
     }
     if resp.lost_focus() {
         st.rename_focused = false;
-        let old = match target {
-            Rename::Track(v, i) => project.timeline.tracks(v).get(i).map(|t| &t.name),
-            Rename::Marker(i) => project.timeline.markers.get(i).map(|m| &m.name),
+        let clip = |id: &str| project.find_clip(id).map(|r| (r.is_video, r.track_idx, r.clip_idx));
+        let old = match &target {
+            &Rename::Track(v, i) => project.timeline.tracks(v).get(i).map(|t| &t.name),
+            &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| &m.name),
+            Rename::Event(id) => project.clip(id).map(|c| &c.name),
         };
         // An unchanged name is no edit (no undo step).
         if !ui.input(|i| i.key_pressed(Key::Escape)) && old.is_some_and(|o| *o != buf) {
+            let at = if let Rename::Event(id) = &target { clip(id) } else { None };
             history.push(project.clone());
             match target {
                 Rename::Track(v, i) => project.timeline.tracks_mut(v)[i].name = buf,
                 Rename::Marker(i) => project.timeline.markers[i].name = buf,
+                Rename::Event(_) => {
+                    if let Some((v, i, j)) = at {
+                        project.timeline.tracks_mut(v)[i].clips[j].name = buf;
+                    }
+                }
             }
             project.mark_modified();
         }
@@ -1625,6 +1666,45 @@ mod tests {
         assert_eq!((events(&r.project, true).len(), r.history.lens().0), (4, 2));
     }
 
+    /// A right-drag from Project Media asks how to add the media: the drop menu opens and nothing is added yet.
+    #[test]
+    fn right_drag_drop_opens_the_drop_menu() {
+        let mut r = Rig::new();
+        r.project.media_pool = pool();
+        let at = pos2(255.0 + 8.0 * 80.0, 80.0);
+        r.frame(vec![Event::PointerMoved(at)]);
+        DragAndDrop::set_payload(&r.ctx, crate::ui::MediaDrag::Pool(vec![0], None));
+        r.frame(vec![Event::PointerMoved(at)]);
+        r.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE }]);
+        r.frame(vec![]);
+        assert!(r.ctx.is_context_menu_open(), "drop menu");
+        assert_eq!((events(&r.project, true).len(), r.history.lens().0), (1, 0));
+        // A right-drag from the Explorer asks too; nothing goes to the app until a choice is made.
+        let mut r = Rig::new();
+        (r.drops.files, r.drops.items) = (vec!["v.mp4".into()], Some(pool()[..1].to_vec()));
+        r.frame(vec![Event::PointerMoved(at)]);
+        DragAndDrop::set_payload(&r.ctx, crate::ui::MediaDrag::File("v.mp4".into()));
+        r.frame(vec![Event::PointerMoved(at)]);
+        r.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Secondary, pressed: false, modifiers: Modifiers::NONE }]);
+        r.frame(vec![]);
+        assert!(r.ctx.is_context_menu_open() && r.drops.dropped_at.is_none(), "drop menu for files");
+    }
+
+
+    /// Take › Rename Active opens a rename box on the event; typing a name and Enter renames it in one undo step.
+    #[test]
+    fn rename_active_take() {
+        let mut r = Rig::new();
+        let id = r.clip().id.clone();
+        rename_event(&r.ctx, &id);
+        r.frame(vec![]);
+        r.frame(vec![Event::Key { key: Key::Backspace, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]); // the old name, "c"
+        r.frame(vec![Event::Text("Take 2".into())]);
+        r.frame(vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]);
+        r.frame(vec![]);
+        assert_eq!((r.clip().name.as_str(), r.history.lens().0), ("Take 2", 1));
+    }
+
     /// Files from Windows: the timeline reports where they were dropped (by track id) for the app to place once probed;
     /// a drop outside the lanes is left to the app (import only).
     #[test]
@@ -1638,7 +1718,7 @@ mod tests {
         r.drops.os_dropped = true;
         r.frame(vec![]);
         let a1 = r.project.timeline.audio_tracks[0].id.clone();
-        assert_eq!(r.drops.dropped_at.take(), Some((vec!["v.mp4".into()], Some(a1), 8.0)));
+        assert_eq!(r.drops.dropped_at.take(), Some((vec!["v.mp4".into()], Some(a1), 8.0, edit::DropMode::AcrossTime)));
         assert!(!r.drops.os_dropped);
         r.drops.os_pos = Some(pos2(100.0, 150.0)); // over the track list
         r.drops.os_dropped = true;

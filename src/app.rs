@@ -86,6 +86,10 @@ pub struct MeridianApp {
     prefs: Prefs,
     keymap: Keymap,
     prefs_dlg: PrefsDialog,
+    /// Event Properties, open on one event.
+    event_props: Option<crate::ui::dialogs::EventProps>,
+    /// Take › Choose Active... / Delete..., open on one event.
+    take_chooser: Option<crate::ui::dialogs::TakeChooser>,
     welcome: Option<Welcome>,
     shortcuts_open: bool,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
@@ -195,6 +199,9 @@ impl MeridianApp {
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
+            event_props: None,
+            take_chooser: None,
+
             welcome,
             shortcuts_open: false,
             shuttle: 0.0,
@@ -511,8 +518,8 @@ impl eframe::App for MeridianApp {
         self.show_dialogs(ctx);
         // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
         // (§5.4). Both reuse the probes started while the files hovered.
-        if let Some((paths, track, time)) = drag.dropped_at.take() {
-            self.file_drop.drop(paths, Some((track, time)));
+        if let Some((paths, track, time, mode)) = drag.dropped_at.take() {
+            self.file_drop.drop(paths, Some((track, time, mode)));
         } else if drag.os_dropped {
             self.file_drop.drop(drag.files, None);
         }

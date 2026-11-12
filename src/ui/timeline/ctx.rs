@@ -34,6 +34,22 @@ enum Target {
     LoopBar,
     Ruler,
     TimeDisplay,
+    /// The menu after a right-drag of media onto the lanes.
+    Drop(DropReq),
+}
+
+/// A right-drag media drop waiting on its menu: where it lands, what it adds and how.
+#[derive(Clone, PartialEq, Debug)]
+pub(super) struct DropReq {
+    pub target: Option<(bool, usize)>,
+    pub time: f64,
+    /// Media pool indices and their source range.
+    pub idxs: Vec<usize>,
+    /// Or files from the Explorer window, imported and placed by the app once a choice is made.
+    pub files: Vec<std::path::PathBuf>,
+    pub range: Option<(f64, f64)>,
+    pub still_len: f64,
+    pub xfade: bool,
 }
 
 const TAG: Vec2 = vec2(13.0, 14.0);
@@ -116,7 +132,8 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, en
     None
 }
 
-/// Open the menu for a right-click anywhere in the timeline and keep showing it while open.
+/// Open the menu for a right-click anywhere in the timeline (or `drop`, a right-drag of media released at a point)
+/// and keep showing it while open.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn menu(
     ui: &Ui,
@@ -128,12 +145,16 @@ pub(super) fn menu(
     sel: &mut Selection,
     st: &mut TlState,
     env_on: bool,
+    drop: Option<(Pos2, DropReq)>,
+    drops: &mut crate::ui::FileDrag,
 ) {
     let tid = ui.id().with("ctx_target");
     let clicked = ui.input(|i| i.pointer.button_clicked(PointerButton::Secondary).then(|| i.pointer.interact_pos()).flatten());
-    let open_at = clicked
-        .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
-        .and_then(|p| target(g, rows, project, sel, p, env_on).map(|t| (p, t)));
+    let open_at = drop.map(|(p, r)| (p, Target::Drop(r))).or_else(|| {
+        clicked
+            .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
+            .and_then(|p| target(g, rows, project, sel, p, env_on).map(|t| (p, t)))
+    });
     if let Some((_, tg)) = &open_at {
         ui.data_mut(|d| d.insert_temp(tid, tg.clone()));
         st.env_text = None;
@@ -243,7 +264,33 @@ pub(super) fn menu(
         Target::LoopBar => menus::show(ui, LOOP_BAR),
         Target::Ruler => menus::show(ui, menus::RULER_MENU),
         Target::TimeDisplay => menus::show(ui, TIME_DISPLAY),
+        Target::Drop(ref req) => drop_menu(ui, project, history, sel, drops, req),
     });
+}
+
+/// Right-drag drop menu: the media is added only once a choice is made (one undo step; the new events selected).
+/// Add as Takes over an event adds the media to it as takes; elsewhere it makes a new event with them. Explorer
+/// files go to the app (`dropped_at`), which places them the same way once probed.
+fn drop_menu(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Selection, drops: &mut crate::ui::FileDrag, req: &DropReq) {
+    use edit::DropMode::*;
+    for (label, mode) in [("Add Across &Time", AcrossTime), ("Add Across T&racks", AcrossTracks), ("Add as Ta&kes", AsTakes)] {
+        if entry(ui, label, "", true, Mark::None) {
+            if !req.files.is_empty() {
+                let track = req.target.and_then(|(v, i)| project.timeline.tracks(v).get(i)).map(|t| t.id.clone());
+                drops.dropped_at = Some((req.files.clone(), track, req.time, mode));
+                continue;
+            }
+            let before = project.clone();
+            let ids = edit::drop_media_as(project, &req.idxs, req.range, req.target, req.time, req.still_len, req.xfade, mode);
+            if !ids.is_empty() {
+
+                history.push(before);
+                (sel.clips, sel.list_focus, sel.env) = (ids, false, None);
+            }
+        }
+    }
+    sep(ui);
+    entry(ui, "&Cancel", "", true, Mark::None);
 }
 
 /// Mute / Solo / Lock (and Show in Preview on video) for one track.
@@ -628,7 +675,7 @@ const EVENT_TAIL: &[M] = &[
         V23(&K("Auto Normalize", false)),
         V23(&R("Optical Flow", false)),
     ]),
-    Sub("T&ake", &[X("&Rename Active"), X("&Choose Active..."), S, C("&Next Take", NextTake), C("&Previous Take", PrevTake)]),
+    Sub("T&ake", menus::TAKE),
     Sub("&Group", &[C("Create &New", Group), S, C("&Remove From", RemoveFromGroup), C("&Clear", ClearGroup), C("&Select All", SelectGroup)]),
     Sub("&Stream", &[X("Stream &1")]),
     Sub("&Synchronize", &[X("By Moving"), X("By Slipping")]),

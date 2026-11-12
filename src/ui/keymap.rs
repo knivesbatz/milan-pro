@@ -56,6 +56,7 @@ pub enum Command {
     KeyboardShortcuts, CheckForUpdates, About,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
+    ChooseActiveTake, DeleteActiveTake, DeleteTake,
     /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
     ToggleEnvelope(crate::project::EnvKind),
     /// Edit › Editing Tool items and the transport tool radios.

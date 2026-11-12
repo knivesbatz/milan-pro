@@ -53,6 +53,8 @@ pub struct CmdState {
     pub clip_locked: bool,
     /// The focus event's Switches › Mute.
     pub clip_muted: bool,
+    /// A selected event has inactive takes.
+    pub takes: bool,
     pub n_sel: usize,
     /// Tracks exist / are selected; the track list had the last click.
     pub any_tracks: bool,
@@ -102,7 +104,8 @@ impl CmdState {
             Redo => self.can_redo,
             ClearHistory => self.can_undo || self.can_redo,
             TrimStart | TrimEnd | EventLock | SelEventStart | SelEventEnd | EventOpenInTrimmer | EventSelectInMedia
-            | EventProperties | EventReverse | EventMute => self.clip,
+            | EventProperties | EventReverse | EventMute | RenameEvent => self.clip,
+            NextTake | PrevTake | ChooseActiveTake | DeleteActiveTake | DeleteTake => self.takes,
             // With nothing selected, Split splits every event under the cursor.
             Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
             // With Auto Ripple, Delete with only a time selection deletes that time.
@@ -493,15 +496,16 @@ const SWITCHES: &[M] = &[
     V23(&R("Optical Flow", false)),
 ];
 
-const TAKE: &[M] = &[
-    X("&Rename Active"),
-    X("&Choose Active..."),
+/// Edit › Take and the event menu's Take ▸; Choose Active... and Delete... open the Take Chooser.
+pub const TAKE: &[M] = &[
+    C("&Rename Active", RenameEvent),
+    C("&Choose Active...", ChooseActiveTake),
     S,
     C("&Next Take", NextTake),
     C("&Previous Take", PrevTake),
     S,
-    X("Delete &Active"),
-    X("&Delete..."),
+    C("Delete &Active", DeleteActiveTake),
+    C("&Delete...", DeleteTake),
 ];
 
 const GROUP: &[M] = &[
@@ -1078,6 +1082,11 @@ mod tests {
         assert_eq!(st.checked(EventMute), Some(false));
         st.clip_muted = true;
         assert_eq!((st.checked(EventMute), st.checked(EventReverse)), (Some(true), None));
+        // Take items: Rename and Properties need an event, the rest an event with takes.
+        assert!(st.enabled(RenameEvent) && st.enabled(EventProperties) && !st.enabled(NextTake) && !st.enabled(DeleteActiveTake) && !st.enabled(DeleteTake));
+        st.takes = true;
+        assert!(st.enabled(NextTake) && st.enabled(PrevTake) && st.enabled(ChooseActiveTake) && st.enabled(DeleteActiveTake) && st.enabled(DeleteTake));
+
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the
