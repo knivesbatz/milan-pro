@@ -820,6 +820,8 @@ impl Job {
         std::thread::Builder::new()
             .name("milan-render".into())
             .spawn(move || {
+                // R19: a render composes below normal priority, as its encoder runs, so editing stays responsive.
+                crate::proc::below_normal_thread();
                 let status = match work(&c) {
                     Ok(()) => Status::Done,
                     Err(_) if c.cancelled() => Status::Cancelled,

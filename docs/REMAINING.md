@@ -35,15 +35,15 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 234 |
-| PARTIAL | 121 |
-| MISSING | 65 |
+| DONE | 239 |
+| PARTIAL | 117 |
+| MISSING | 64 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
 - **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). A `.mnle` project is media, a nested timeline played and rendered through the engine, with a cycle guard (R6a); Create Nested Timeline, Open Nested / Open Parent Timeline and Edit Source Project work in the window, and nested events have thumbnails, waveforms and a Trimmer view made by the engine (R6b). Events line up by their sound (refusing weak matches), media timecode or date/time stamp, and Project Media lays out tracks by either (R17a). Multicamera editing works: Create Multicamera Track, the take grid in the Video Preview with takes chosen by click or number key (also while playing, each one undoable), Expand to Multiple Tracks, Edit Multicamera Audio with Video and Show Full Frame in External Monitor (R17b). Smart Split, command markers, Audio CD track regions and indexes (on their own bars, and in Edit Details), Open (Copy) in Audio Editor with reload on save, Rebuild Audio Peaks, event media markers, View › Event Length, the Metronome, the Credit Roll and Test Pattern generators and Shift+F10 are in (R18a). Adjustment Tracks and Adjustment Events, Insert Slideshow, Insert Time, Insert Audio Transition, Cut / Copy over a time selection and Paste Insert's split, Resize Generated Media and video track Set Default Track Properties are in (R18b), which finishes tier 2: no control waits on a batch of tiers 0-2 any more (test `no_control_waits_on_tiers_0_to_2`). What is still greyed belongs to later batches or the R57-R60 long tail.
-- **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
+- **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path and no RAM preview or prerender. Adjust Size and Quality for Optimal Playback, the measured frame rate and playback statistics, and the benchmark report `docs/PERFORMANCE.md` (written by `tools/bench.ps1`) are in (R19).
 - **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Missing: hardware encoders (R22).
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
@@ -215,9 +215,9 @@ What matters most:
 | 6.21 | Half resolution | DONE | `Size::Half` |
 | 6.22 | Quarter resolution | DONE | `Size::Quarter` |
 | 6.23 | Draft | DONE | `Quality::Draft` |
-| 6.24 | Automatic adaptive quality | MISSING | `Size::Auto` only fits the window (`decode.rs:47-58`). Nothing lowers quality when frames drop. "Adjust Size and Quality for Optimal Playback" is greyed (`preview.rs:166`). → R19 |
+| 6.24 | Automatic adaptive quality | DONE | R19: the Video Preview's right-click Adjust Size and Quality for Optimal Playback (on, as in VEGAS; `decode::Adapt`, `decode::ladder`): while playing, more than 2 % of frames dropped over 2 s steps the preview down (Full, Half, Quarter, then Draft), 10 s without a drop steps it back up, a failed step up doubles the next wait (hysteresis, up to 160 s), and counting waits for the decoders to spin up after each change. Stopped, the preview is at the chosen quality again; the render never uses it. Tests `adaptive_quality_steps_down_then_up_without_oscillating`, `adaptive_quality_restores_when_playback_keeps_up`, ffmpeg-backed `bench_adaptive_quality` (`docs/PERFORMANCE.md`) |
 | 6.25 | Expensive work cannot freeze the UI | DONE | Worker threads; render on its own thread |
-| 6.26 | Performance benchmarks; measured stability | PARTIAL | `bench_playback` and `bench_scrub` exist as `#[ignore]` tests (`worker.rs:576-640`). No published results; stats never shown (`engine/mod.rs:54` shortcut). → R19 |
+| 6.26 | Performance benchmarks; measured stability | DONE | R19: `tools/bench.ps1` makes the synthetic media with ffmpeg lavfi, runs the ignored benches one at a time in release and writes `docs/PERFORMANCE.md` (machine, method, 1-4 layers: fps, dropped %, play start, A/V offset; scrub p50/p95; Adjust Size and Quality off and on). The Video Preview shows the frame rate it plays at in its Display value (`warning_text` when frames drop, as VEGAS), and Show Playback Statistics (right-click, off by default) adds a line: frame rate (target), dropped frames, live decoders, cache hits and the adjusted setting (`engine::Shows`, `engine::Stats`) |
 
 ### 2.7 Section 7: formats
 
@@ -512,7 +512,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 17.1 | CPU thread scheduling | PARTIAL | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. R12: a render's encoder runs at BELOW_NORMAL priority (`proc::below_normal`, checked in `render_queue_e2e`); the composing threads still compete with the UI. → R19 |
+| 17.1 | CPU thread scheduling | DONE | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. R12: a render's encoder runs at BELOW_NORMAL priority (`proc::below_normal`, checked in `render_queue_e2e`). R19: the render thread and its compose stripes run below normal too (`proc::below_normal_thread`, `composite::par_rows`; test `render_threads_run_below_normal`), so the preview and UI come first |
 | 17.2 | GPU acceleration | MISSING | → R21a |
 | 17.3 | Hardware video decoding | PARTIAL | → R22 |
 | 17.4 | Hardware encoding | MISSING | → R22 |
@@ -540,7 +540,7 @@ What matters most:
 | 18.5 | Logging | MISSING | → R44 |
 | 18.6 | Automated tests | DONE | 319 unit tests |
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
-| 18.8 | Performance tests | PARTIAL | `bench_playback`/`bench_scrub` are ignored and never run in CI → R19, R51 |
+| 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
 | 18.9 | Memory-safety-conscious design | DONE | `unsafe` only in `windows-sys` calls (`main.rs`, `proc.rs`) |
 | 18.10 | Documentation | PARTIAL | → R52-R56 |
 | 18.11 | Dependency licensing review | MISSING | → R56 |
@@ -550,8 +550,8 @@ What matters most:
 | 18.15 | Never leave non-functional controls without marking them unfinished | DONE | R0: `menus::Why` on every greyed row, combo, checkbox and inert button; Help > Unfinished Features (`ui/dialogs/unfinished.rs`); tests `every_greyed_command_says_why` and `every_reason_names_a_batch_of_remaining_md` (`ui/menus.rs`). |
 | 19.1 | Test media import | PARTIAL | `media.rs` unit tests; real files only in ignored tests → R37 |
 | 19.2 | Test media decoding | PARTIAL | `vdecode.rs` ignored tests → R37 |
-| 19.3 | Test playback | PARTIAL | `worker.rs` ignored bench → R19 |
-| 19.4 | Test audio synchronization | PARTIAL | Mixer clock unit tests; (R9) the latency-compensation test with a fake timestamp. No automated A/V offset measurement → R19 |
+| 19.3 | Test playback | DONE | R19: playback benches at 1-4 layers, with scopes, the multicam grid and through the Video Preview with adaptive quality (`worker.rs`, `engine/mod.rs`), run by `tools/bench.ps1`; `engine_show_and_play`, `jump_cut_plays_exact_frames` |
+| 19.4 | Test audio synchronization | DONE | Mixer clock unit tests; (R9) the latency-compensation test with a fake timestamp; (R19) every playback bench measures how far each frame shown is behind the audio clock (p50 / p95 / max in `docs/PERFORMANCE.md`) |
 | 19.5 | Test timeline editing | DONE | `edit.rs` tests |
 | 19.6 | Test multiple video tracks | DONE | Compositor and plan tests |
 | 19.7 | Test multiple audio tracks | DONE | `mix.rs` tests |
@@ -1518,6 +1518,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R19: Performance harness, stats and adaptive quality (M)
+
+**Status: DONE.** Built as VEGAS has it where VEGAS has the feature, which differs from the design below in places:
+- Adjust Size and Quality for Optimal Playback is the Video Preview's right-click toggle, on by default as in VEGAS (`Preview.adjust`, not saved, like the preview quality). The ladder is the design's (`decode::ladder`): the size halves to Quarter, then Draft (Quarter); Auto starts from the size it picks. The controller (`decode::Adapt`) steps down on more than 2 % dropped over 2 s and up after 10 s without a drop; for hysteresis a step up that drops again within 10 s doubles the next wait (up to 160 s), and after each change or seek counting waits until the new session has spun up (1 s and 15 frames, or 4 s), because a size change reopens the decoders and on GOP-250 media that stalls 1-3 s. The level resets when playback stops or the chosen setting changes; paused frames and the render always use the chosen setting.
+- The frame rate readout is VEGAS's: the Display value of the status block ends with the rate shown while playing (`warning_text` when frames drop; VP23 appends it while playing), measured as the project rate times the share of frames shown (`engine::Shows`). The design's status line (VEGAS's "Frame rate: x (target y)" plus dropped frames, live decoders, cache hits and the adjusted setting, which is the "badge") is an extra, so it is the right-click option Show Playback Statistics, off by default. The Preview value turns `warning_text` while the setting is adjusted.
+- `tools/bench.ps1` writes `docs/PERFORMANCE.md` with 1-4 layers (not only 1/2/4), the A/V offset of the preview (rows 19.3, 19.4) and an off/on run of the adaptive quality through `decode::Preview` (`bench_adaptive_quality`: 37.7 % dropped off, 19.5 % on over 60 s, 0 % over the last 10 s, on the machine in that file). Benches read `MILAN_BENCH_DIR` for their media.
+- Row 17.1: the render thread and its compose stripes run below normal priority (`proc::below_normal_thread`).
+- Not built: proxies in the bench (R20 measures scrub on proxies), CI runs of the benches (R51).
+- Tests: `adaptive_quality_steps_down_then_up_without_oscillating` and `adaptive_quality_restores_when_playback_keeps_up` (the acceptance tests, against a simulated slow worker, including a 2.5 s spin-up stall per change), `adjust_ladder`, `shows_count_drops_and_rate`, `render_threads_run_below_normal`, `stays_under_budget_least_recent_first` (cache hit counting); ffmpeg-backed `bench_playback`, `bench_scrub`, `bench_playback_with_scopes`, `bench_playback_multicam_grid` and `bench_adaptive_quality` pass through `tools/bench.ps1`.
 
 **Scope**
 - A preview status line (VEGAS shows "Frame rate: x.xx (target y)"): fps, dropped frames, live decoders, cache hits. This removes the `engine/mod.rs:54` shortcut.

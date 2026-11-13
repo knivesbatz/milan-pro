@@ -7,14 +7,28 @@ pub struct ByteLru<K, V> {
     budget: usize,
     used: usize,
     tick: u64,
+    /// R19: lookups through `get` that found / missed their entry, for the playback statistics.
+    pub hits: u64,
+    pub misses: u64,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> ByteLru<K, V> {
     pub fn new(budget: usize) -> Self {
-        Self { map: HashMap::new(), budget, used: 0, tick: 0 }
+        Self { map: HashMap::new(), budget, used: 0, tick: 0, hits: 0, misses: 0 }
     }
 
     pub fn get(&mut self, k: &K) -> Option<V> {
+        let v = self.touch(k);
+        if v.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        v
+    }
+
+    /// `get` without counting it as a lookup (pre-warm checks).
+    pub fn touch(&mut self, k: &K) -> Option<V> {
         self.tick += 1;
         let e = self.map.get_mut(k)?;
         e.2 = self.tick;
@@ -70,6 +84,12 @@ mod tests {
             c.insert(k, 0, 20);
         }
         assert!(c.get(&"still").is_none() && c.used() <= 100);
+        // R19: lookups are counted, pre-warm touches are not.
+        let (h, m) = (c.hits, c.misses);
+        c.touch(&"k");
+        c.get(&"k");
+        c.get(&"nope");
+        assert_eq!((c.hits, c.misses), (h + 1, m + 1));
         c.clear();
         assert_eq!(c.used(), 0);
     }

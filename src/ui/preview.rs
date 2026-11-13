@@ -5,7 +5,7 @@ use crate::decode::{Isolate, Preview, Quality, Size};
 use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
-use super::menus::{Later, MenuAction};
+use super::menus::MenuAction;
 use super::theme::{self, UiLook};
 use super::toolbar::{arrow_menu, split_button, text_menu, tool_button};
 use super::transport::{Cmd, Playback, cmd_button, cmd_menu};
@@ -19,6 +19,8 @@ pub struct PreviewView {
     pub safe_areas: bool,
     pub show_status: bool,
     pub show_transport: bool,
+    /// R19: a line of playback statistics under the status block (not in VEGAS: off by default).
+    pub show_stats: bool,
     /// Simulate Device Aspect Ratio: the frame is shown at the project's pixel aspect ratio, not square pixels.
     pub simulate_par: bool,
     /// R16b: Split-Screen View, its mode, and the part of the frame (0-1 of the unrotated frame: x0, y0, x1, y1)
@@ -42,6 +44,7 @@ impl Default for PreviewView {
             safe_areas: false,
             show_status: true,
             show_transport: true,
+            show_stats: false,
             simulate_par: false,
             split: false,
             split_clipboard: false,
@@ -221,6 +224,8 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         (true, false) => 2.0 * line_h + 6.0,
         (true, true) => line_h + 8.0,
     };
+    let stats_h = if view.show_stats { line_h + 4.0 } else { 0.0 };
+    let status_h = status_h + stats_h;
     let transport_h = if view.show_transport { 28.0 } else { 0.0 };
     let video = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - status_h - transport_h));
 
@@ -310,7 +315,10 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
             view.zoom = None;
             ui.close_menu();
         }
-        ui.add_enabled(false, Button::new("Adjust Size and Quality for Optimal Playback")).on_disabled_hover_text(Later("R19").text());
+        // R19: while playing, the preview steps down its size, then to Draft, when frames drop, and back up when they stop.
+        if ui.checkbox(&mut preview.adjust, "Adjust Size and Quality for Optimal Playback").clicked() {
+            ui.close_menu();
+        }
         if ui.button("Display at Project Size").clicked() {
             (view.zoom, preview.size) = (Some(1.0), Size::Full);
             ui.close_menu();
@@ -318,6 +326,7 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         ui.separator();
         ui.checkbox(&mut view.show_status, "Show Status Bar");
         ui.checkbox(&mut view.show_transport, "Show Transport Bar");
+        ui.checkbox(&mut view.show_stats, "Show Playback Statistics");
         if v16_menu {
             super::menus::cmd(ui, "Make spacebar and F12 Play/Pause instead of Play/Stop", super::keymap::Command::SpacePlayPause);
         }
@@ -337,11 +346,39 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         arrow_menu(&row, &more, |ui| cmd_menu(ui, project, pb));
     }
     if view.show_status {
-        status_block(&p, rect, status_h, line_h, frame, project, preview, v23);
+        let r = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - stats_h));
+        status_block(&p, r, status_h - stats_h, line_h, frame, project, preview, v23);
+    }
+    if view.show_stats {
+        let at = pos2(rect.min.x + 6.0, rect.max.y - stats_h + 2.0);
+        p.text(at, Align2::LEFT_TOP, stats_line(project, preview), t.font(t.font.ui), t.text_value);
     }
 }
 
-/// "Project / Preview" left, "Frame / Display" right (§5.8).
+/// R19: the Show Playback Statistics line: VEGAS's "Frame rate: x (target y)", then dropped frames, live decoders,
+/// cache hits and the setting Adjust Size and Quality for Optimal Playback has stepped down to.
+fn stats_line(project: &Project, preview: &Preview) -> String {
+    let fps = project.settings.frame_rate;
+    let Some((shows, stats)) = preview.playback() else {
+        return format!("Frame rate: stopped (target {fps:.3})");
+    };
+    let rate = shows.fps.map_or("-".to_owned(), |f| format!("{f:.3}"));
+    let pct = 100.0 * shows.dropped as f64 / (shows.shown + shows.dropped).max(1) as f64;
+    let mut line = format!(
+        "Frame rate: {rate} (target {fps:.3})   Dropped: {} ({pct:.1} %)   Decoders: {}   Cache hits: {} %",
+        shows.dropped,
+        stats.live_decoders.load(std::sync::atomic::Ordering::Relaxed),
+        stats.cache_hit_pct.load(std::sync::atomic::Ordering::Relaxed),
+    );
+    let (q, size) = preview.effective(project.settings.width);
+    if (q, size) != (preview.quality, preview.size) {
+        line += &format!("   Adjusted to {q:?} ({size:?})");
+    }
+    line
+}
+
+/// "Project / Preview" left, "Frame / Display" right (§5.8). Display ends with the frame rate shown (the measured
+/// one while playing, in `warning_text` when frames drop, as VEGAS shows it).
 #[allow(clippy::too_many_arguments)]
 fn status_block(p: &Painter, rect: Rect, status_h: f32, line_h: f32, frame: Rect, project: &Project, preview: &Preview, v23: bool) {
     let t = theme::get();
@@ -351,13 +388,16 @@ fn status_block(p: &Painter, rect: Rect, status_h: f32, line_h: f32, frame: Rect
     let ph = (pw as f64 * s.height as f64 / s.width.max(1) as f64).round() as u32;
     let frame_no = (project.timeline.cursor_position * fps).round() as u64;
     let font = t.font(t.font.ui);
+    let shown_fps = preview.playback().and_then(|(sh, _)| sh.fps);
+    let slow = shown_fps.is_some_and(|f| f + 0.001 < fps);
+    let reduced = preview.effective(s.width) != (preview.quality, preview.size);
     if v23 {
         // light2026: page "1920x1080, 30.000p" · blue square "480x270, 30.000p" · frame "0" · display "748x421".
         let items = [
             (Icon::New, format!("{}x{}, {fps:.3}p", s.width, s.height), t.text_value),
             (Icon::StatusPreview, format!("{pw}x{ph}, {fps:.3}p"), t.warning_text),
             (Icon::StatusFrame, frame_no.to_string(), t.text_value),
-            (Icon::StatusDisplay, format!("{}x{}", frame.width() as u32, frame.height() as u32), t.warning_text),
+            (Icon::StatusDisplay, format!("{}x{}{}", frame.width() as u32, frame.height() as u32, shown_fps.map_or(String::new(), |f| format!(", {f:.3}"))), t.warning_text),
         ];
         let galleys: Vec<_> = items.iter().map(|(_, s, c)| p.layout_no_wrap(s.clone(), font.clone(), *c)).collect();
         let (icon_w, gap, sep) = (14.0, 6.0, 30.0);
@@ -375,17 +415,17 @@ fn status_block(p: &Painter, rect: Rect, status_h: f32, line_h: f32, frame: Rect
     }
     let rows = [
         ("Project:", format!("{}x{}x32; {fps:.3}p", s.width, s.height), "Frame:", frame_no.to_string()),
-        ("Preview:", format!("{pw}x{ph}x32; {fps:.3}p"), "Display:", format!("{}x{}x32", frame.width() as u32, frame.height() as u32)),
+        ("Preview:", format!("{pw}x{ph}x32; {fps:.3}p"), "Display:", format!("{}x{}x32; {:.3}", frame.width() as u32, frame.height() as u32, shown_fps.unwrap_or(fps))),
     ];
     let y0 = rect.max.y - status_h + 2.0;
     let half = rect.min.x + (rect.width() * 0.5).max(220.0);
     for (k, (l1, v1, l2, v2)) in rows.into_iter().enumerate() {
         let y = y0 + k as f32 * line_h;
-        let warn = v23 && k == 1;
+        let colour = |warn: bool| if warn { t.warning_text } else { t.text_value };
         p.text(pos2(rect.min.x + 6.0, y), Align2::LEFT_TOP, l1, font.clone(), t.text_label);
-        p.text(pos2(rect.min.x + 64.0, y), Align2::LEFT_TOP, v1, font.clone(), if warn { t.warning_text } else { t.text_value });
+        p.text(pos2(rect.min.x + 64.0, y), Align2::LEFT_TOP, v1, font.clone(), colour(k == 1 && reduced));
         p.text(pos2(half, y), Align2::LEFT_TOP, l2, font.clone(), t.text_label);
-        p.text(pos2(half + 58.0, y), Align2::LEFT_TOP, v2, font.clone(), if warn { t.warning_text } else { t.text_value });
+        p.text(pos2(half + 58.0, y), Align2::LEFT_TOP, v2, font.clone(), colour(k == 1 && slow));
     }
 }
 

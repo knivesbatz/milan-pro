@@ -2588,6 +2588,8 @@ impl MeridianApp {
                     Err(e) => self.message = Some(e),
                 }
             }
+            // R19: the Video Preview with Show Playback Statistics on (stopped: the harness never plays sound).
+            "playback-stats" => self.preview_view.show_stats = true,
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "props-audio" => self.settings.open_tab(&self.project, 1),

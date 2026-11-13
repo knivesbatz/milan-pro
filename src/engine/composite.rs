@@ -82,11 +82,17 @@ pub(crate) fn par_rows(px: &mut [Color32], w: usize, k: usize, f: impl Fn(usize,
         px.chunks_mut(w).enumerate().for_each(|(y, r)| f(y, r));
         return;
     }
-    let per = rows.div_ceil(k);
+    let (per, low) = (rows.div_ceil(k), crate::proc::is_below_normal());
     let f = &f;
     std::thread::scope(|s| {
         for (i, chunk) in px.chunks_mut(per * w).enumerate() {
-            s.spawn(move || chunk.chunks_mut(w).enumerate().for_each(|(j, r)| f(i * per + j, r)));
+            s.spawn(move || {
+                // R19: a render's stripes run at its below-normal priority.
+                if low {
+                    crate::proc::below_normal_thread();
+                }
+                chunk.chunks_mut(w).enumerate().for_each(|(j, r)| f(i * per + j, r))
+            });
         }
     });
 }

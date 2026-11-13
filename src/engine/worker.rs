@@ -234,7 +234,7 @@ impl Worker {
         for (src, dw, dh) in composite::requests(fp, w as usize, h as usize) {
             let key = src_key(&self.pool, src, dw, q);
             // Generated media render when drawn; there is nothing to open ahead.
-            if src.generator.is_some() || self.sources.get(&key).is_some() || self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
+            if src.generator.is_some() || self.sources.touch(&key).is_some() || self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
                 continue;
             }
             match src.sf {
@@ -316,7 +316,7 @@ impl Worker {
         stats: &Stats,
     ) -> Option<VCmd> {
         let mut u = from_n;
-        let (mut since, mut frames, mut warmed) = (Instant::now(), 0u32, None::<Instant>);
+        let (mut since, mut frames, mut warmed, mut looked) = (Instant::now(), 0u32, None::<Instant>, self.lookups());
         loop {
             for c in rx.try_iter() {
                 match c {
@@ -354,7 +354,12 @@ impl Worker {
                 stats.fps_x100.store((frames as f64 / secs * 100.0) as u32, Relaxed);
                 stats.dropped.store(self.pool.dropped, Relaxed);
                 stats.live_decoders.store(self.pool.live() as u32, Relaxed);
-                (since, frames) = (Instant::now(), 0);
+                let now = self.lookups();
+                let (hits, all) = (now.0 - looked.0, now.1 - looked.1);
+                if all > 0 {
+                    stats.cache_hit_pct.store((hits * 100 / all) as u32, Relaxed);
+                }
+                (since, frames, looked) = (Instant::now(), 0, now);
             }
             // The first frame waits for its decoders; later ones hold a late layer's last frame.
             let deadline = (u > from_n).then(|| Instant::now() + LATE);
@@ -365,6 +370,12 @@ impl Worker {
             frames += 1;
             u += 1;
         }
+    }
+
+    /// (hits, lookups) of the source and composite caches so far.
+    fn lookups(&self) -> (u64, u64) {
+        let (s, c) = (&self.sources, &self.composites);
+        (s.hits + c.hits, s.hits + s.misses + c.hits + c.misses)
     }
 
     pub fn prune(&mut self) {
@@ -408,7 +419,7 @@ pub fn run(rx: Receiver<VCmd>, latest: Arc<Mutex<Option<Shown>>>, clock: Arc<Ato
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::project::{Clip, Track, TrackKind};
     use std::sync::mpsc;
@@ -601,9 +612,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `n` 1080p H.264 clips of `secs` seconds (cached between runs), on `n` tracks at Level 0.5 so every layer blends.
-    fn bench_project(n: usize, secs: u32) -> Project {
-        let dir = std::env::temp_dir().join("milan-bench");
+    /// `n` 1080p H.264 clips of `secs` seconds (cached between runs in `MILAN_BENCH_DIR`, else `%TEMP%\milan-bench`), on
+    /// `n` tracks at Level 0.5 so every layer blends. `tools/bench.ps1` runs the benches below and writes PERFORMANCE.md.
+    pub(crate) fn bench_project(n: usize, secs: u32) -> Project {
+        let dir = std::env::var_os("MILAN_BENCH_DIR").map_or_else(|| std::env::temp_dir().join("milan-bench"), std::path::PathBuf::from);
         std::fs::create_dir_all(&dir).unwrap();
         let mut p = Project::new("bench");
         p.timeline.video_tracks.clear();
@@ -634,10 +646,11 @@ mod tests {
     #[ignore]
     fn bench_playback() {
         for layers in 1..=4 {
-            let (fps, skipped, dropped) = play_layers(layers);
+            let r = play_layers(layers);
             let unpaced = unpaced_fps(layers);
-            println!("bench_playback {layers} layer(s): {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames; {unpaced:.1} fps unpaced");
-            assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{layers} layers: {fps:.2} fps, {skipped} skipped");
+            println!("bench_playback {layers} layer(s): {r}; {unpaced:.1} fps unpaced");
+            println!("BENCH playback layers={layers} {} unpaced_fps={unpaced:.1}", r.fields());
+            assert!(r.fps >= 29.5 && r.drop_pct() < 1.0, "{layers} layers: {r}");
         }
     }
 
@@ -663,9 +676,10 @@ mod tests {
             n
         });
         for layers in 1..=4 {
-            let (fps, skipped, dropped) = play_layers(layers);
-            println!("bench_playback_with_scopes {layers} layer(s): {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames");
-            assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{layers} layers: {fps:.2} fps, {skipped} skipped");
+            let r = play_layers(layers);
+            println!("bench_playback_with_scopes {layers} layer(s): {r}");
+            println!("BENCH scopes layers={layers} {}", r.fields());
+            assert!(r.fps >= 29.5 && r.drop_pct() < 1.0, "{layers} layers: {r}");
         }
         stop.store(true, Relaxed);
         println!("bench_playback_with_scopes: {} analyses", scopes.join().unwrap());
@@ -693,33 +707,85 @@ mod tests {
         crate::edit::create_multicam(&mut p, &ids).unwrap();
         assert_eq!(p.timeline.video_tracks[0].clips[0].takes.len(), 3);
         let grid = crate::engine::multicam::grid(&p);
-        let (fps, skipped, dropped) = play_project(&grid);
-        println!("bench_playback_multicam_grid 4 takes: {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames");
-        assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{fps:.2} fps, {skipped} skipped");
+        let r = play_project(&grid);
+        println!("bench_playback_multicam_grid 4 takes: {r}");
+        println!("BENCH multicam takes=4 {}", r.fields());
+        assert!(r.fps >= 29.5 && r.drop_pct() < 1.0, "{r}");
     }
 
-    /// `layers` blended 1080p layers at Preview (960×540) against a 29.97 fps clock: (fps shown, frames skipped, late layer frames).
-    fn play_layers(layers: usize) -> (f64, i64, u64) {
+    /// R19: one measured playback of 240 frames.
+    pub(crate) struct Played {
+        /// Frames shown per second of wall time.
+        pub fps: f64,
+        pub shown: i64,
+        /// Frames never shown: the worker skipped them to catch up with the clock, or a newer one was due first.
+        pub skipped: i64,
+        /// Late or read-past layer frames (`Stats::dropped`).
+        pub late_layers: u64,
+        /// From Play to the first frame.
+        pub start_ms: f64,
+        /// How far each frame shown was behind the clock when it went on screen (video behind audio): p50, p95, max.
+        pub av_ms: [f64; 3],
+    }
+
+    impl Played {
+        pub fn drop_pct(&self) -> f64 {
+            100.0 * self.skipped as f64 / (self.shown + self.skipped).max(1) as f64
+        }
+
+        /// key=value fields for `tools/bench.ps1`.
+        pub fn fields(&self) -> String {
+            let [a, b, c] = self.av_ms;
+            format!(
+                "fps={:.2} drop_pct={:.2} late_layer_frames={} start_ms={:.0} av_p50_ms={a:.1} av_p95_ms={b:.1} av_max_ms={c:.1}",
+                self.fps,
+                self.drop_pct(),
+                self.late_layers,
+                self.start_ms
+            )
+        }
+    }
+
+    impl std::fmt::Display for Played {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            let [a, b, _] = self.av_ms;
+            let (fps, skipped, pct, late, start) = (self.fps, self.skipped, self.drop_pct(), self.late_layers, self.start_ms);
+            write!(f, "{fps:.2} fps real time, {skipped} skipped ({pct:.2} %), {late} late or read-past layer frames, first frame {start:.0} ms, video behind the clock p50 {a:.1} ms p95 {b:.1} ms")
+        }
+    }
+
+    /// p50, p95 and max of `v` (sorted in place).
+    pub(crate) fn percentiles(v: &mut [f64]) -> [f64; 3] {
+        v.sort_by(f64::total_cmp);
+        let pct = |p: f64| v.get(((v.len().max(1) - 1) as f64 * p).round() as usize).copied().unwrap_or(0.0);
+        [pct(0.5), pct(0.95), pct(1.0)]
+    }
+
+    /// `layers` blended 1080p layers at Preview (960×540) against a 29.97 fps clock.
+    fn play_layers(layers: usize) -> Played {
         play_project(&bench_project(layers, 12))
     }
 
-    /// `p` played at Preview (960×540) against a 29.97 fps clock: (fps shown, frames skipped, late layer frames).
-    fn play_project(p: &Project) -> (f64, i64, u64) {
+    /// `p` played at Preview (960×540) against a 29.97 fps clock.
+    fn play_project(p: &Project) -> Played {
         let mut wk = Worker::new();
         wk.set_plan(Arc::new(plan::compile(p)));
         let (tx, frames) = mpsc::sync_channel(4);
         let (_cmd_tx, cmd_rx) = mpsc::channel();
         let (clock, stats) = (Arc::new(AtomicI64::new(0)), Arc::new(Stats::default()));
         let (c2, s2) = (clock.clone(), stats.clone());
+        let asked = Instant::now();
         let player = std::thread::spawn(move || wk.play(0, 960, 540, Quality::Preview, None, &tx, &cmd_rx, &c2, &s2));
         // A 29.97 fps clock from the first frame on, as audio would drive it. Like the UI, a frame is shown once its
         // number is due; a frame that arrives after a newer one is due is skipped.
         let first = frames.recv().unwrap();
+        let start_ms = asked.elapsed().as_secs_f64() * 1000.0;
         assert_eq!(first.0, 0);
-        let (start, total) = (Instant::now(), 240i64);
-        let (mut shown, mut skipped, mut on_screen, mut ahead) = (1i64, 0i64, 0i64, None);
+        let (start, total, fps) = (Instant::now(), 240i64, 30000.0 / 1001.0);
+        let (mut shown, mut skipped, mut on_screen, mut ahead, mut behind) = (1i64, 0i64, 0i64, None, Vec::new());
         while on_screen < total {
-            let now = (start.elapsed().as_secs_f64() * 30000.0 / 1001.0) as i64;
+            let t = start.elapsed().as_secs_f64();
+            let now = (t * fps) as i64;
             clock.store(now, Relaxed);
             let mut due = 0;
             loop {
@@ -729,13 +795,16 @@ mod tests {
                     _ => break,
                 }
             }
+            if due > 0 {
+                behind.push((t - on_screen as f64 / fps) * 1000.0);
+            }
             (shown, skipped) = (shown + due.min(1), skipped + (due - 1).max(0));
             std::thread::sleep(Duration::from_millis(1));
         }
         let secs = start.elapsed().as_secs_f64();
         drop(frames);
         let _ = player.join();
-        (shown as f64 / secs, skipped, stats.dropped.load(Relaxed))
+        Played { fps: shown as f64 / secs, shown, skipped, late_layers: stats.dropped.load(Relaxed), start_ms, av_ms: percentiles(&mut behind) }
     }
 
     /// Needs ffmpeg. A jump cut inside one file (1 s removed): the frames after the cut are the new shot, not the old one held.
@@ -806,8 +875,8 @@ mod tests {
             assert!(err.is_none(), "{err:?}");
             times.push(t.elapsed().as_secs_f64() * 1000.0);
         }
-        times.sort_by(f64::total_cmp);
-        let pct = |p: f64| times[((times.len() - 1) as f64 * p).round() as usize];
-        println!("bench_scrub: p50 {:.1} ms, p95 {:.1} ms, max {:.1} ms", pct(0.5), pct(0.95), pct(1.0));
+        let [p50, p95, max] = percentiles(&mut times);
+        println!("bench_scrub: p50 {p50:.1} ms, p95 {p95:.1} ms, max {max:.1} ms");
+        println!("BENCH scrub p50_ms={p50:.1} p95_ms={p95:.1} max_ms={max:.1}");
     }
 }

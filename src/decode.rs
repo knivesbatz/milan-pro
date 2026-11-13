@@ -104,18 +104,130 @@ struct Bypass {
     texture: Option<TextureHandle>,
 }
 
+/// Auto as the size it picks: the largest of Full / Half / Quarter that fits the display, as VEGAS reports it.
+fn resolve(size: Size, full_w: u32, display_w: u32) -> Size {
+    let full = full_w.max(2);
+    match size {
+        Size::Auto => [(full, Size::Full), (full / 2, Size::Half)].into_iter().find(|&(w, _)| w <= display_w).map_or(Size::Quarter, |(_, s)| s),
+        s => s,
+    }
+}
+
 /// Preview frame width for a project `full_w` wide shown in a `display_w` wide frame.
-/// Auto picks the largest of Full / Half / Quarter that fits the display, as VEGAS reports it.
 pub fn preview_width(q: Quality, size: Size, full_w: u32, display_w: u32) -> u32 {
     let full = full_w.max(2);
-    let w = match size {
-        Size::Full => full,
+    let w = match resolve(size, full_w, display_w) {
         Size::Half => full / 2,
         Size::Quarter => full / 4,
-        Size::Auto => [full, full / 2].into_iter().find(|&w| w <= display_w).unwrap_or(full / 4),
+        _ => full,
     };
     let w = if q == Quality::Draft { w / 2 } else { w };
     (w / 2 * 2).max(16)
+}
+
+/// R19: the settings "Adjust Size and Quality for Optimal Playback" steps through below `q` (`size`), the chosen one
+/// first: the size halves down to Quarter, then the quality drops to Draft.
+pub fn ladder(q: Quality, size: Size, full_w: u32, display_w: u32) -> Vec<(Quality, Size)> {
+    let mut s = resolve(size, full_w, display_w);
+    let mut rungs = vec![(q, size)];
+    while let Some(next) = match s {
+        Size::Full => Some(Size::Half),
+        Size::Half => Some(Size::Quarter),
+        _ => None,
+    } {
+        s = next;
+        rungs.push((q, s));
+    }
+    if q != Quality::Draft {
+        rungs.push((Quality::Draft, Size::Quarter));
+    }
+    rungs
+}
+
+/// R19: the "Adjust Size and Quality for Optimal Playback" controller. While playing, more than 2 % of frames dropped
+/// over 2 s steps one rung down the `ladder`; 10 s without a drop steps one back up. A step up that drops again within
+/// 10 s doubles the clean time the next one needs (up to 160 s), so a setting that cannot keep up is not retried
+/// every few seconds. After every change and play start, counting waits until the new session has spun up (its
+/// decoders open and seek, which can take seconds on long-GOP media): 1 s and 15 frames shown, or 4 s.
+/// Times are seconds on any clock; counts are a playback's totals (`engine::Shows`).
+#[derive(Default, Debug)]
+pub struct Adapt {
+    /// Rungs below the chosen setting (0 = as chosen).
+    pub level: usize,
+    /// Start of the measuring window and the (shown, dropped) totals at it.
+    window: Option<(f64, u64, u64)>,
+    /// The dropped total last seen, and since when it has not grown.
+    last_dropped: u64,
+    clean: f64,
+    /// Clean seconds the next step up needs (0 = not set yet, `CLEAN`).
+    hold: f64,
+    /// When the last step up happened, until it has held for `CLEAN`.
+    raised: Option<f64>,
+    /// When the session (re)started, and the shown total at the first update after it: counting waits for the spin-up.
+    settling: Option<(f64, Option<u64>)>,
+}
+
+impl Adapt {
+    const WINDOW: f64 = 2.0;
+    const DROP: f64 = 0.02;
+    const CLEAN: f64 = 10.0;
+    const SETTLE: f64 = 1.0;
+    const SETTLE_FRAMES: u64 = 15;
+    const MAX_SETTLE: f64 = 4.0;
+    const MAX_HOLD: f64 = 160.0;
+
+    /// Playback (re)started at `now` (a seek, a loop change): the level is kept, counting starts after the spin-up.
+    pub fn restart(&mut self, now: f64) {
+        (self.settling, self.window) = (Some((now, None)), None);
+    }
+
+    /// One update while playing, with the playback's totals and the rungs below the chosen setting (`ladder` length
+    /// less one). Returns whether the level changed.
+    pub fn tick(&mut self, now: f64, shown: u64, dropped: u64, rungs: usize) -> bool {
+        self.level = self.level.min(rungs);
+        if self.hold == 0.0 {
+            self.hold = Self::CLEAN;
+        }
+        if let Some((t, s0)) = &mut self.settling {
+            let s0 = *s0.get_or_insert(shown);
+            if now - *t < Self::SETTLE || (shown < s0 + Self::SETTLE_FRAMES && now - *t < Self::MAX_SETTLE) {
+                return false;
+            }
+            self.settling = None;
+        }
+        let Some((t0, s0, d0)) = self.window else {
+            (self.window, self.last_dropped, self.clean) = (Some((now, shown, dropped)), dropped, now);
+            return false;
+        };
+        if dropped > self.last_dropped {
+            (self.last_dropped, self.clean) = (dropped, now);
+        }
+        if self.raised.is_some_and(|t| now - t >= Self::CLEAN) {
+            // The step up held: the next one waits the usual time.
+            (self.raised, self.hold) = (None, Self::CLEAN);
+        }
+        if now - t0 >= Self::WINDOW {
+            let (s, d) = (shown.saturating_sub(s0), dropped.saturating_sub(d0));
+            self.window = Some((now, shown, dropped));
+            if self.level < rungs && d as f64 > Self::DROP * (s + d) as f64 {
+                if self.raised.take().is_some() {
+                    self.hold = (self.hold * 2.0).min(Self::MAX_HOLD);
+                }
+                return self.change(now, self.level + 1);
+            }
+        }
+        if self.level > 0 && now - self.clean >= self.hold {
+            self.raised = Some(now);
+            return self.change(now, self.level - 1);
+        }
+        false
+    }
+
+    fn change(&mut self, now: f64, level: usize) -> bool {
+        self.level = level;
+        self.restart(now);
+        true
+    }
 }
 
 struct FrameRequest {
@@ -262,6 +374,11 @@ pub struct Preview {
     /// makes the timeline's own picture for the external monitor.
     pub ext_full: bool,
     full: Option<Bypass>,
+    /// R19: Adjust Size and Quality for Optimal Playback (on, as in VEGAS).
+    pub adjust: bool,
+    /// Its controller, and the chosen quality and size it was started for.
+    adapt: Option<(Adapt, (Quality, Size))>,
+    epoch: std::time::Instant,
 }
 
 impl Preview {
@@ -307,6 +424,9 @@ impl Preview {
             multicam: false,
             ext_full: false,
             full: None,
+            adjust: true,
+            adapt: None,
+            epoch: std::time::Instant::now(),
         }
     }
 
@@ -331,7 +451,26 @@ impl Preview {
 
     /// Decode width for a project `full_w` wide at the current quality and size.
     pub fn width(&self, full_w: u32) -> u32 {
-        preview_width(self.quality, self.size, full_w, self.display_w)
+        let (q, s) = self.effective(full_w);
+        preview_width(q, s, full_w, self.display_w)
+    }
+
+    /// R19: the quality (size) the preview runs at: the chosen one, or the rung "Adjust Size and Quality for Optimal
+    /// Playback" has stepped down to while playing.
+    pub fn effective(&self, full_w: u32) -> (Quality, Size) {
+        match self.adapt.as_ref().filter(|a| self.adjust && self.playing.is_some() && a.0.level > 0) {
+            Some(a) => {
+                let l = ladder(self.quality, self.size, full_w, self.display_w);
+                l[a.0.level.min(l.len() - 1)]
+            }
+            None => (self.quality, self.size),
+        }
+    }
+
+    /// R19: the timeline playback's figures while playing: what the preview showed and skipped, and the worker's.
+    pub fn playback(&self) -> Option<(crate::engine::Shows, &crate::engine::Stats)> {
+        let e = self.engine.as_ref().filter(|_| self.playing.is_some())?;
+        Some((e.shows, &e.stats))
     }
 
     /// A requested frame has not arrived yet.
@@ -345,15 +484,34 @@ impl Preview {
     /// Timeline preview, once per UI frame: the frame at the cursor (paused) or the due frame (playing).
     pub fn update(&mut self, ctx: &egui::Context, project: &Project) {
         let s = &project.settings;
+        // R19: a new chosen setting (or the option turned off) starts the controller again.
+        let chosen = (self.quality, self.size);
+        if !self.adjust || self.adapt.as_ref().is_some_and(|a| a.1 != chosen) {
+            self.adapt = None;
+        }
         let w = self.width(s.width);
         let h = ((w as f64 * s.height as f64 / s.width.max(1) as f64 / 2.0).round() as u32 * 2).max(2);
-        let (q, visible) = (self.quality, self.visible);
+        let (q, visible) = (self.effective(s.width).0, self.visible);
         let Some(e) = &mut self.engine else { return };
         e.grid = self.multicam;
-        if let Some((img, err)) = e.update(project, w, h, q, visible) {
+        let got = e.update(project, w, h, q, visible);
+        let shows = e.shows;
+        if let Some((img, err)) = got {
             // A failed layer still shows the others; the error goes to the status bar.
             self.error = err;
             self.set_image(ctx, img);
+        }
+        if self.adjust && self.playing.is_some() && visible {
+            let now = self.epoch.elapsed().as_secs_f64();
+            let rungs = ladder(chosen.0, chosen.1, s.width, self.display_w).len() - 1;
+            let a = self.adapt.get_or_insert_with(|| {
+                let mut a = Adapt::default();
+                a.restart(now);
+                (a, chosen)
+            });
+            if a.0.tick(now, shows.shown, shows.dropped, rungs) {
+                ctx.request_repaint();
+            }
         }
         // R16b: the FX Bypassed engine runs only while that split is on (it composes every frame a second time); R17b:
         // the external monitor's full frame only while the grid shows there.
@@ -398,6 +556,11 @@ impl Preview {
 
     /// Play the timeline from the cursor (again, after a seek), looping over `loop_` if set.
     pub fn play(&mut self, loop_: Option<(f64, f64)>) {
+        // R19: a seek while playing keeps the adjusted rung; counting waits for the new session.
+        let now = self.epoch.elapsed().as_secs_f64();
+        if let Some(a) = &mut self.adapt {
+            a.0.restart(now);
+        }
         self.playing = Some(loop_);
         for e in self.engines() {
             e.play(loop_);
@@ -405,6 +568,8 @@ impl Preview {
     }
 
     pub fn stop(&mut self) {
+        // R19: stopped, the preview is back at the chosen quality; the next playback starts from it.
+        self.adapt = None;
         self.playing = None;
         for e in self.engines() {
             e.stop();
@@ -639,6 +804,92 @@ mod tests {
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 748), 480);
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 1000), 960);
         assert_eq!(preview_width(Preview, Size::Auto, 1920, 2000), 1920);
+    }
+
+    /// R19: Adjust Size and Quality steps the size down to Quarter, then to Draft; Auto starts from the size it picks.
+    #[test]
+    fn adjust_ladder() {
+        use Quality::*;
+        use Size::*;
+        assert_eq!(ladder(Best, Full, 1920, 500), [(Best, Full), (Best, Half), (Best, Quarter), (Draft, Quarter)]);
+        assert_eq!(ladder(Preview, Auto, 1920, 1000), [(Preview, Auto), (Preview, Quarter), (Draft, Quarter)]);
+        assert_eq!(ladder(Draft, Half, 1920, 1000), [(Draft, Half), (Draft, Quarter)]);
+        assert_eq!(ladder(Draft, Quarter, 1920, 1000), [(Draft, Quarter)]);
+        let w: Vec<u32> = ladder(Good, Full, 1920, 500).iter().map(|&(q, s)| preview_width(q, s, 1920, 500)).collect();
+        assert_eq!(w, [1920, 960, 480, 240]);
+    }
+
+    /// Plays `secs` of 30 fps against the controller, ticked at 60 Hz, with a simulated worker that drops the share
+    /// `cost(level, t)` of its frames. Returns every (time, new level).
+    fn simulate(cost: impl Fn(usize, f64) -> f64, secs: f64, rungs: usize) -> Vec<(f64, usize)> {
+        simulate_with_stall(cost, secs, rungs, 0.0)
+    }
+
+    /// `simulate`, where every change (and the start) first stalls `stall` seconds while the new session's decoders
+    /// open and seek: nothing shows, then the frames missed count as dropped at once.
+    fn simulate_with_stall(cost: impl Fn(usize, f64) -> f64, secs: f64, rungs: usize, stall: f64) -> Vec<(f64, usize)> {
+        let mut a = Adapt::default();
+        a.restart(0.0);
+        let (mut shown, mut dropped, mut debt, mut changes, mut stall_until, mut missed) = (0u64, 0u64, 0.0, Vec::new(), stall, 0);
+        for k in 1..=(secs * 60.0) as u64 {
+            let t = k as f64 / 60.0;
+            if k % 2 == 0 && t < stall_until {
+                missed += 1;
+            } else if k % 2 == 0 {
+                dropped += std::mem::take(&mut missed);
+                debt += cost(a.level, t);
+                if debt >= 1.0 {
+                    (debt, dropped) = (debt - 1.0, dropped + 1);
+                } else {
+                    shown += 1;
+                }
+            }
+            if a.tick(t, shown, dropped, rungs) {
+                changes.push((t, a.level));
+                stall_until = t + stall;
+            }
+        }
+        changes
+    }
+
+    /// R19 acceptance: the chosen setting drops 10 % of frames and one rung down none. The controller steps down
+    /// after the 1 s settle and one 2 s window, retries the chosen setting after 10 s clean, and each failed retry
+    /// doubles the wait: over 10 minutes the playback drops frames for under 25 s and never goes two rungs down.
+    #[test]
+    fn adaptive_quality_steps_down_then_up_without_oscillating() {
+        let ch = simulate(|level, _| if level == 0 { 0.1 } else { 0.0 }, 600.0, 3);
+        assert_eq!(ch[0].1, 1);
+        assert!(ch[0].0 <= 3.1, "down after 2 s of drops: {ch:?}");
+        assert!(ch.iter().all(|c| c.1 <= 1), "{ch:?}");
+        assert!((ch[1].0 - ch[0].0 - 11.0).abs() < 0.1, "up after 10 s clean (after the 1 s settle): {ch:?}");
+        let ups: Vec<f64> = ch.iter().filter(|c| c.1 == 0).map(|c| c.0).collect();
+        let gaps: Vec<f64> = ups.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.windows(2).all(|g| g[1] >= g[0] - 0.1), "retries back off: {gaps:?}");
+        assert!((3..=7).contains(&ups.len()), "{ups:?}");
+        let mut at_top = ch[0].0;
+        for w in ch.windows(2).filter(|w| w[0].1 == 0) {
+            at_top += w[1].0 - w[0].0;
+        }
+        assert!(at_top < 25.0, "{at_top} s at the setting that drops frames: {ch:?}");
+    }
+
+    /// R19: the heavy part ends at 20 s: the chosen setting comes back and stays.
+    #[test]
+    fn adaptive_quality_restores_when_playback_keeps_up() {
+        let ch = simulate(|level, t| if level == 0 && t < 20.0 { 0.1 } else { 0.0 }, 120.0, 3);
+        assert_eq!(ch.last().unwrap().1, 0, "{ch:?}");
+        assert!(ch.last().unwrap().0 < 60.0, "{ch:?}");
+        // Several heavy rungs: one step per settle and window, down to the last rung, and no further.
+        let ch = simulate(|_, _| 0.5, 60.0, 3);
+        assert_eq!(ch.iter().map(|c| c.1).collect::<Vec<_>>(), [1, 2, 3], "{ch:?}");
+        assert!(ch[2].0 <= 9.1, "{ch:?}");
+        // Under 2 % dropped: no change, either way.
+        assert!(simulate(|_, _| 0.015, 120.0, 3).is_empty());
+        // Nothing to step down to (Draft (Quarter) chosen): no change.
+        assert!(simulate(|_, _| 0.5, 60.0, 0).is_empty());
+        // Each change stalls 2.5 s while long-GOP decoders seek: the stall is not taken for the new rung dropping.
+        let ch = simulate_with_stall(|level, _| if level == 0 { 0.1 } else { 0.0 }, 120.0, 3, 2.5);
+        assert!(ch[0].1 == 1 && ch.iter().all(|c| c.1 <= 1), "{ch:?}");
     }
 
     /// ffmpeg's -ss gives the first frame at or after it: the seek must land inside the frame before the one on screen

@@ -58,14 +58,43 @@ pub type Shown = (u64, Arc<ColorImage>, Option<String>);
 /// (unwrapped frame number, frame, first decode error)
 pub type Played = (i64, Arc<ColorImage>, Option<String>);
 
-/// Playback figures, refreshed every 0.5 s while playing.
-// shortcut: read only by the bench tests until a UI shows them (a later Preview status item).
-#[allow(dead_code)]
+/// The worker's playback figures, refreshed every 0.5 s while playing (R19: the Video Preview's playback statistics).
 #[derive(Default)]
 pub struct Stats {
+    /// Frames composed per second.
     pub fps_x100: AtomicU32,
+    /// Late or read-past layer frames so far.
     pub dropped: AtomicU64,
     pub live_decoders: AtomicU32,
+    /// Source and composite cache lookups that hit, in the last half second.
+    pub cache_hit_pct: AtomicU32,
+}
+
+/// R19: frames the Video Preview showed and skipped in one playback, and the frame rate it shows at.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct Shows {
+    pub shown: u64,
+    pub dropped: u64,
+    /// Frames shown per second of timeline played over the last second (the project rate when none dropped).
+    pub fps: Option<f64>,
+    /// (shown, dropped, frame) when the current second of timeline started.
+    window: (u64, u64, i64),
+}
+
+impl Shows {
+    /// Frame `u` (unwrapped) goes on screen after frame `prev` of the same session; the frames between were skipped.
+    fn show(&mut self, prev: Option<i64>, u: i64, fps: f64) {
+        self.dropped += prev.map_or(0, |p| (u - p - 1).max(0) as u64);
+        self.shown += 1;
+        let (s0, d0, u0) = self.window;
+        if prev.is_none() || u < u0 {
+            self.window = (self.shown, self.dropped, u);
+        } else if (u - u0) as f64 >= fps {
+            let (s, d) = (self.shown - s0, self.dropped - d0);
+            self.fps = Some(fps * s as f64 / (s + d).max(1) as f64);
+            self.window = (self.shown, self.dropped, u);
+        }
+    }
 }
 
 /// What the picture depends on: settings, timeline and media (cursor, zoom and scroll are not serialized).
@@ -97,8 +126,11 @@ pub struct VideoEngine {
     ahead: Option<Played>,
     /// The frame on screen while playing (unwrapped over loop passes), read by the worker.
     clock_frame: Arc<AtomicI64>,
-    #[allow(dead_code)]
     pub stats: Arc<Stats>,
+    /// R19: what this playback showed (reset when playback starts).
+    pub shows: Shows,
+    /// The last frame shown in this play session.
+    last_shown: Option<i64>,
     sent_hash: u64,
     fps: f64,
     want: Option<(i64, u32, Quality)>,
@@ -148,6 +180,8 @@ impl VideoEngine {
             ahead: None,
             clock_frame,
             stats,
+            shows: Shows::default(),
+            last_shown: None,
             sent_hash: 0,
             fps: 30.0,
             want: None,
@@ -165,6 +199,9 @@ impl VideoEngine {
 
     /// Start (or restart, after a seek) playback at the cursor, looping over `lp` if set.
     pub fn play(&mut self, lp: Option<(f64, f64)>) {
+        if self.play.is_none() {
+            self.shows = Shows::default();
+        }
         self.play = Some(lp);
         // Dropping the receiver ends the worker's current session.
         (self.play_rx, self.ahead) = (None, None);
@@ -217,7 +254,7 @@ impl VideoEngine {
             let (tx, rx) = mpsc::sync_channel(4);
             self.clock_frame.store(clock, Relaxed);
             let _ = self.tx.send(VCmd::Play { from_n: clock, w, h, q, lp, tx });
-            (self.play_rx, self.ahead, self.session) = (Some(rx), None, Some((w, q)));
+            (self.play_rx, self.ahead, self.session, self.last_shown) = (Some(rx), None, Some((w, q)), None);
             (self.loop_n, self.wraps, self.last_clock) = (lp.map(|l| plan::loop_frames(l, self.fps)), 0, clock);
         }
         // Seeks restart the session, so the clock only goes back when the app wraps the loop.
@@ -239,7 +276,11 @@ impl VideoEngine {
                 _ => break,
             }
         }
-        due.map(|(_, img, err)| (img, err))
+        due.map(|(u, img, err)| {
+            self.shows.show(self.last_shown, u, self.fps);
+            self.last_shown = Some(u);
+            (img, err)
+        })
     }
 }
 
@@ -270,6 +311,24 @@ mod tests {
         }
     }
 
+    /// R19: frames skipped between two shown are dropped, and the rate shown is the project rate times the share shown.
+    #[test]
+    fn shows_count_drops_and_rate() {
+        let mut s = Shows::default();
+        s.show(None, 10, 30.0);
+        for u in 11..=40 {
+            s.show(Some(u - 1), u, 30.0);
+        }
+        assert_eq!((s.shown, s.dropped, s.fps), (31, 0, Some(30.0)));
+        for u in (42..=100).step_by(2) {
+            s.show(Some(u - 2), u, 30.0);
+        }
+        assert_eq!((s.shown, s.dropped, s.fps), (61, 30, Some(15.0)));
+        // A new session (a seek): no drop across it.
+        s.show(None, 5, 30.0);
+        assert_eq!(s.dropped, 30);
+    }
+
     /// R16b: Split-Screen View › FX Bypassed composes the project without event, track and Video Output FX.
     #[test]
     fn fx_bypassed_plan_has_no_video_fx() {
@@ -282,6 +341,60 @@ mod tests {
         assert!(q.timeline.video_tracks[0].clips[0].fx.is_empty() && q.timeline.video_tracks[0].fx.is_empty() && q.timeline.master.video_fx.is_empty());
         assert_eq!(q.timeline.video_tracks[0].clips.len(), 1);
         assert_eq!(p.timeline.master.video_fx.len(), 1, "the project keeps its FX");
+    }
+
+    /// R19, needs ffmpeg; CPU heavy. Four blended 1080p layers at Best (Full), looped over their 12 s for 60 s, played
+    /// through the Video Preview (`Preview`, a 60 Hz UI against a wall clock as audio drives it), with Adjust Size and
+    /// Quality for Optimal Playback off and then on. `cargo test --release -- --ignored --nocapture bench_adaptive_quality`
+    #[test]
+    #[ignore]
+    fn bench_adaptive_quality() {
+        use crate::decode::{Preview, Size};
+        use std::time::{Duration, Instant};
+        let base = worker::tests::bench_project(4, 12);
+        let run = |adjust: bool| {
+            let ctx = egui::Context::default();
+            let mut pv = Preview::timeline(&ctx);
+            (pv.quality, pv.size, pv.display_w, pv.visible, pv.adjust) = (Quality::Best, Size::Full, 1920, true, adjust);
+            let mut p = base.clone();
+            let (start, mut at50, mut changes, mut setting) = (Instant::now(), None, Vec::new(), (Quality::Best, Size::Full));
+            pv.play(Some((0.0, 12.0)));
+            let mut shows = Shows::default();
+            loop {
+                let t = start.elapsed().as_secs_f64();
+                if t >= 60.0 {
+                    break;
+                }
+                p.timeline.cursor_position = t % 12.0;
+                pv.update(&ctx, &p);
+                // Drain the texture uploads as a UI frame would.
+                let _ = ctx.run(egui::RawInput::default(), |_| {});
+                shows = pv.playback().unwrap().0;
+                if t >= 50.0 && at50.is_none() {
+                    at50 = Some(shows);
+                }
+                if pv.effective(1920) != setting {
+                    setting = pv.effective(1920);
+                    changes.push(format!("{t:.1} s {:?} ({:?})", setting.0, setting.1));
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            pv.stop();
+            let pct = |s: u64, d: u64| 100.0 * d as f64 / (s + d).max(1) as f64;
+            let a = at50.unwrap();
+            let (all, last) = (pct(shows.shown, shows.dropped), pct(shows.shown - a.shown, shows.dropped - a.dropped));
+            let name = if adjust { "on" } else { "off" };
+            println!("bench_adaptive_quality adjust {name}: {all:.1} % dropped over 60 s, {last:.1} % over the last 10 s, settings {changes:?}");
+            println!("BENCH adaptive adjust={name} drop_pct={all:.2} last10_drop_pct={last:.2} changes={} final={:?}({:?})", changes.len(), setting.0, setting.1);
+            (all, last, changes.len())
+        };
+        let off = run(false);
+        let on = run(true);
+        assert_eq!(off.2, 0, "the setting never changes with the option off");
+        if off.1 > 2.0 {
+            assert!(on.1 < off.1 && on.2 >= 1, "adjusting drops fewer frames: off {off:?}, on {on:?}");
+        }
+        assert!(on.2 <= 6, "failed retries back off (10 s, 20 s, 40 s): {on:?}");
     }
 
     /// Needs ffmpeg. The engine end to end: a paused frame arrives, then playback delivers frames in order.

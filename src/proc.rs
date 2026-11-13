@@ -52,6 +52,29 @@ pub fn below_normal(child: &Child) {
     let _ = child;
 }
 
+thread_local! {
+    static LOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// R19: run the calling thread (a render's) at below-normal priority, so its composing does not compete with the
+/// editor; `composite::par_rows` stripes started from it follow it.
+pub fn below_normal_thread() {
+    LOW.set(true);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+        // SAFETY: the pseudo-handle of the calling thread.
+        if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) } == 0 {
+            eprintln!("proc: SetThreadPriority failed: {}", io::Error::last_os_error());
+        }
+    }
+}
+
+/// The calling thread was lowered by [`below_normal_thread`].
+pub fn is_below_normal() -> bool {
+    LOW.get()
+}
+
 /// `cmd.output()` through [`spawn`], so a probe hung on a dead share still dies with Milan.
 pub fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
     spawn(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()
@@ -103,6 +126,33 @@ mod job {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R19: a lowered thread's compose stripes run below normal priority too; other threads stay normal.
+    #[cfg(windows)]
+    #[test]
+    fn render_threads_run_below_normal() {
+        use eframe::egui::Color32;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL};
+        let prio = || unsafe { GetThreadPriority(GetCurrentThread()) };
+        let stripes = |low: bool| {
+            std::thread::spawn(move || {
+                if low {
+                    below_normal_thread();
+                }
+                let seen = std::sync::Mutex::new(Vec::new());
+                let mut px = vec![Color32::BLACK; 256 * 256];
+                crate::engine::composite::par_rows(&mut px, 256, 4, |_, _| seen.lock().unwrap().push((prio(), is_below_normal())));
+                (prio(), seen.into_inner().unwrap())
+            })
+            .join()
+            .unwrap()
+        };
+        let (own, rows) = stripes(true);
+        assert_eq!(own, THREAD_PRIORITY_BELOW_NORMAL);
+        assert!(rows.len() == 256 && rows.iter().all(|&r| r == (THREAD_PRIORITY_BELOW_NORMAL, true)));
+        let (own, rows) = stripes(false);
+        assert!(own == THREAD_PRIORITY_NORMAL && rows.iter().all(|&r| r == (THREAD_PRIORITY_NORMAL, false)));
+    }
 
     #[test]
     fn tool_error_text() {
