@@ -1734,6 +1734,7 @@ pub fn paste_attrs(project: &mut Project, from: &[(bool, usize, Clip)], ids: &[S
                 }
                 if a.pan_crop && video {
                     c.pan_crop = src.pan_crop.clone();
+                    c.masks = src.masks.clone(); // the Pan/Crop window's Mask goes with its Position
                 }
                 if a.envelopes {
                     c.envelopes = src.envelopes.clone();
@@ -1826,6 +1827,7 @@ pub fn env_range(kind: EnvKind) -> (f32, f32) {
         EnvKind::Volume => (-120.0, 6.0),
         EnvKind::Pan | EnvKind::FadeToColor => (-1.0, 1.0),
         EnvKind::Velocity => (crate::engine::velocity::MIN, crate::engine::velocity::MAX),
+        EnvKind::Supersampling => (0.0, 8.0),
         _ => (0.0, 1.0),
     }
 }
@@ -2095,6 +2097,56 @@ pub fn set_composite(project: &mut Project, track: &str, mode: Composite) -> boo
     changed(project, done)
 }
 
+/// A compositor from the Compositors window on the unlocked video tracks `ids`: their mode becomes Custom.
+pub fn set_compositor(project: &mut Project, ids: &[String], fx: &Fx) -> bool {
+    let mut done = false;
+    for t in project.timeline.video_tracks.iter_mut().filter(|t| ids.contains(&t.id) && !t.locked) {
+        (t.composite, t.compositor) = (Composite::Custom, Some(Fx { id: uuid::Uuid::new_v4().to_string(), ..fx.clone() }));
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// Make Compositing Child (`child`) or Make Compositing Parent (not `child`) on the unlocked video tracks `ids`. The
+/// top track has no parent above it, so it cannot be a child.
+pub fn set_child(project: &mut Project, ids: &[String], child: bool) -> bool {
+    let mut done = false;
+    for (i, t) in project.timeline.video_tracks.iter_mut().enumerate() {
+        if ids.contains(&t.id) && !t.locked && t.child != child && (i > 0 || !child) {
+            t.child = child;
+            done = true;
+        }
+    }
+    changed(project, done)
+}
+
+/// The Parent Composite Mode of video track `track` (unless it is locked).
+pub fn set_parent_mode(project: &mut Project, track: &str, mode: Composite) -> bool {
+    let Some((true, i)) = project.find_track(track) else { return false };
+    let t = &mut project.timeline.video_tracks[i];
+    let done = !t.locked && t.parent_mode != mode;
+    if done {
+        t.parent_mode = mode;
+    }
+    changed(project, done)
+}
+
+/// Video track `i` is a compositing parent: the track below it is its child.
+pub fn is_parent(tl: &Timeline, i: usize) -> bool {
+    !tl.video_tracks.get(i).is_none_or(|t| t.child) && tl.video_tracks.get(i + 1).is_some_and(|t| t.child)
+}
+
+/// Insert/Remove Envelope on the Video Bus Track: Fade to Color, Motion Blur Amount or Video Supersampling.
+pub fn toggle_bus_envelope(project: &mut Project, kind: EnvKind) -> bool {
+    let envs = &mut project.timeline.master.video_envelopes;
+    let n = envs.len();
+    envs.retain(|e| e.kind != kind);
+    if envs.len() == n {
+        envs.push(new_envelope(kind));
+    }
+    changed(project, true)
+}
+
 /// Add a point at `t` holding `v`; it takes its left neighbour's curve (Mute points hold). Returns its index.
 pub fn env_insert(env: &mut Envelope, t: f64, v: f32) -> usize {
     let keys = &mut env.points.keys;
@@ -2213,6 +2265,9 @@ pub fn shift_clip_keys(clip: &mut Clip, dt: f64) {
         shift_keys(&mut e.points, dt);
     }
     shift_keys(&mut clip.pan_crop, dt);
+    for m in &mut clip.masks {
+        shift_keys(&mut m.path, dt);
+    }
     for k in clip.fx.iter_mut().flat_map(|f| f.params.values_mut()) {
         shift_keys(k, dt);
     }
@@ -2391,6 +2446,8 @@ pub enum FxTarget {
     Media(String),
     /// The transition into this event.
     Transition(String),
+    /// A video track's Custom compositing mode: its compositor.
+    Compositor(String),
 }
 
 /// The FX chain `target` names; None when it is gone, locked, or not a chain (Media, Transition).
@@ -2410,7 +2467,7 @@ pub fn fx_chain_mut<'a>(p: &'a mut Project, target: &FxTarget) -> Option<&'a mut
         }
         FxTarget::VideoOutput => Some(&mut p.timeline.master.video_fx),
         FxTarget::AudioMaster => Some(&mut p.timeline.master.audio_fx),
-        FxTarget::Media(_) | FxTarget::Transition(_) => None,
+        FxTarget::Media(_) | FxTarget::Transition(_) | FxTarget::Compositor(_) => None,
     }
 }
 
@@ -2439,6 +2496,10 @@ pub fn fx_list(p: &Project, target: &FxTarget) -> Option<(Vec<Fx>, bool)> {
         FxTarget::VideoOutput => Some((p.timeline.master.video_fx.clone(), true)),
         FxTarget::AudioMaster => Some((p.timeline.master.audio_fx.clone(), true)),
         FxTarget::Media(id) => p.media_pool.iter().find(|m| m.id == *id)?.generator.clone().map(|g| (vec![g], true)),
+        FxTarget::Compositor(id) => p.find_track(id).and_then(|(_, i)| {
+            let t = p.timeline.video_tracks.get(i)?;
+            Some((vec![t.compositor.clone()?], !t.locked))
+        }),
         FxTarget::Transition(owner) => {
             let (id, out) = split_owner(owner);
             clip(id).and_then(|(c, free)| Some((vec![fx_of_transition(if out { &c.transition_out } else { &c.transition }.as_ref()?)], free)))
@@ -2458,6 +2519,17 @@ pub fn set_fx_list(p: &mut Project, target: &FxTarget, list: Vec<Fx>) -> bool {
             (Some(m), Some(g)) if m.generator.is_some() && m.generator.as_ref() != Some(&g) => {
                 m.generator = Some(g);
                 true
+            }
+            _ => false,
+        },
+        FxTarget::Compositor(id) => match (p.find_track(id), list.into_iter().next()) {
+            (Some((true, i)), Some(f)) => {
+                let t = &mut p.timeline.video_tracks[i];
+                let ok = !t.locked && t.compositor.is_some() && t.compositor.as_ref() != Some(&f);
+                if ok {
+                    t.compositor = Some(f);
+                }
+                ok
             }
             _ => false,
         },
@@ -4363,6 +4435,38 @@ mod tests {
         // Saved and loaded with the project.
         let back: Project = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
         assert_eq!(back.timeline.video_tracks[0].composite, Composite::Screen);
+    }
+
+    /// R7: Make Compositing Child / Parent, the Parent Composite Mode, a compositor from the Compositors window and its
+    /// FX window target, the Video Bus Track's envelopes, and mask keys that stay put through a split.
+    #[test]
+    fn compositing_parent_child_compositor_bus_and_masks() {
+        let mut p = Project::new("t");
+        p.timeline.add_video_track();
+        let (top, below) = (p.timeline.video_tracks[0].id.clone(), p.timeline.video_tracks[1].id.clone());
+        assert!(!set_child(&mut p, std::slice::from_ref(&top), true), "the top track has no parent");
+        assert!(set_child(&mut p, std::slice::from_ref(&below), true) && is_parent(&p.timeline, 0) && !is_parent(&p.timeline, 1));
+        assert!(set_parent_mode(&mut p, &top, Composite::Add) && p.timeline.video_tracks[0].parent_mode == Composite::Add);
+        assert!(set_child(&mut p, std::slice::from_ref(&below), false) && !is_parent(&p.timeline, 0));
+        let bump = fx("milan.comp.bump_map");
+        assert!(set_compositor(&mut p, std::slice::from_ref(&top), &bump));
+        let t = &p.timeline.video_tracks[0];
+        assert!(t.composite == Composite::Custom && t.compositor.as_ref().is_some_and(|c| c.plugin == bump.plugin && c.id != bump.id));
+        let target = FxTarget::Compositor(top.clone());
+        let (mut list, free) = fx_list(&p, &target).unwrap();
+        list[0].params.insert("height".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.9, curve: Curve::Linear }] });
+        assert!(free && set_fx_list(&mut p, &target, list.clone()) && !set_fx_list(&mut p, &target, list));
+        assert!(toggle_bus_envelope(&mut p, EnvKind::MotionBlur) && p.timeline.master.video_envelopes[0].kind == EnvKind::MotionBlur);
+        toggle_bus_envelope(&mut p, EnvKind::MotionBlur);
+        assert!(p.timeline.master.video_envelopes.is_empty());
+        // A mask keyed at 1 s and 3 s of an event split at 2 s: the right half's keys move 2 s earlier.
+        let mut c = Clip::new("c", 0.0, 4.0);
+        let path = |x: f32| vec![[x, 0.0, 0.0, 0.0, 0.0, 0.0]; 3];
+        let key = |t, x| Keyframe { t, v: path(x), curve: Curve::Linear };
+        c.masks = vec![crate::project::Mask { path: Keyframes { keys: vec![key(1.0, 0.0), key(3.0, 1.0)] }, mode: crate::project::MaskMode::Positive, opacity: 1.0, feather: 0.0 }];
+        shift_clip_keys(&mut c, -2.0);
+        assert_eq!(c.masks[0].path.times(), vec![0.0, 1.0]);
+        assert!((c.masks[0].path.at(0.0)[0][0] - 0.5).abs() < 1e-6);
     }
 
     fn fx(plugin: &str) -> Fx {

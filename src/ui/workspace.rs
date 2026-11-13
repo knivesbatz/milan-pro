@@ -62,7 +62,7 @@ impl BoxKey for Motion {
         BoxPx { c: pos2((0.5 + self.x) * s.x, (0.5 + self.y) * s.y), size: vec2(self.w * s.x, self.h * s.y), rot: self.rot }
     }
     fn from_box(b: &BoxPx, s: Vec2) -> Self {
-        Motion { x: b.c.x / s.x - 0.5, y: b.c.y / s.y - 0.5, w: b.size.x / s.x, h: b.size.y / s.y, rot: b.rot }
+        Motion { x: b.c.x / s.x - 0.5, y: b.c.y / s.y - 0.5, w: b.size.x / s.x, h: b.size.y / s.y, rot: b.rot, ..Motion::default() }
     }
 }
 
@@ -199,6 +199,16 @@ impl Workspace {
                 *on = !*on;
             }
         }
+    }
+
+    /// Screen point `s` in workspace pixels, as the last `show` in `rect` laid it out.
+    pub fn to_px(&self, rect: Rect, s: Pos2) -> Option<Pos2> {
+        self.view.map(|v| v.to_px(rect, s))
+    }
+
+    /// Screen pixels per workspace pixel.
+    pub fn zoom(&self) -> f32 {
+        self.view.map_or(1.0, |v| v.zoom)
     }
 
     /// Draw the workspace in `rect` for a pixel space `size` big, with `backdrop` (given the workspace→screen mapping)
@@ -377,7 +387,7 @@ mod tests {
         assert_eq!((b.c, b.size), (pos2(320.0, 540.0), vec2(-640.0, 270.0)));
         assert_eq!(PanCrop::from_box(&b, src), pc);
         let frame = vec2(1920.0, 1080.0);
-        let m = Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.25, rot: -45.0 };
+        let m = Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.25, rot: -45.0, ..Default::default() };
         let b = m.to_box(frame);
         assert!(close(b.c, pos2(1152.0, 324.0)) && b.size == vec2(960.0, 270.0));
         let back = Motion::from_box(&b, frame);

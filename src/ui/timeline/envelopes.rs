@@ -151,7 +151,8 @@ pub(super) fn paint(p: &Painter, t: &Theme, g: &Geo, rows: &[Row], project: &Pro
         let lane = Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(row.top, row.top + row.h - 2.0)).intersect(g.lanes);
         let p = p.with_clip_rect(lane);
         if row.is_video && hidden & EnvView::TrackKeyframes.bit() == 0 {
-            let keys = tr.motion.keys.iter().map(|k| k.t).chain(tr.fx.iter().flat_map(|f| f.params.values()).flat_map(|k| k.keys.iter().map(|k| k.t)));
+            let halos = [&tr.shadow, &tr.glow].into_iter().filter(|h| h.on).flat_map(|h| h.keys.times());
+            let keys = tr.motion.keys.iter().chain(&tr.parent_motion.keys).map(|k| k.t).chain(halos).chain(tr.fx.iter().flat_map(|f| f.params.values()).flat_map(|k| k.keys.iter().map(|k| k.t)));
             let y = row.top + row.h - 7.0;
             for x in keys.map(|k| g.to_x(k).round()).filter(|x| *x >= lane.min.x - 4.0 && *x <= lane.max.x + 4.0) {
                 let d = [pos2(x, y - 3.0), pos2(x + 3.0, y), pos2(x, y + 3.0), pos2(x - 3.0, y)];
@@ -199,6 +200,8 @@ pub(super) fn value_text(kind: EnvKind, v: f32) -> String {
         EnvKind::TransitionProgress => format!("Progress {:.1} %", v * 100.0),
         EnvKind::FadeToColor if v.abs() < 0.0005 => "No Fade".into(),
         EnvKind::FadeToColor => format!("{:.1}% {}", v.abs() * 100.0, if v < 0.0 { "Bottom" } else { "Top" }),
+        EnvKind::MotionBlur => format!("Motion Blur {v:.3} s"),
+        EnvKind::Supersampling => format!("Supersampling {}", v.round()),
         _ => format!("{:.1} %", v * 100.0),
     }
 }
@@ -233,7 +236,7 @@ pub(super) fn parse_value(kind: EnvKind, s: &str) -> Option<f32> {
     Some(match kind {
         EnvKind::Volume => n,
         EnvKind::Pan | EnvKind::FadeToColor => (if left { -n.abs() } else { n }) / 100.0,
-        EnvKind::Mute => n,
+        EnvKind::Mute | EnvKind::MotionBlur | EnvKind::Supersampling => n,
         _ => n / 100.0,
     })
 }

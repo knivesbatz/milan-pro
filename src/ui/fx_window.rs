@@ -67,7 +67,7 @@ pub fn key_time(p: &Project, target: &FxTarget) -> Option<(f64, f64, f64)> {
     let cur = p.timeline.cursor_position;
     match target {
         FxTarget::Event(id) => p.clip(id).map(|c| ((cur - c.position).clamp(0.0, c.duration), c.duration, c.position)),
-        FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
+        FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster | FxTarget::Compositor(_) => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
         FxTarget::Media(_) | FxTarget::Transition(_) => None,
     }
 }
@@ -198,6 +198,7 @@ impl FxWindow {
             FxTarget::AudioMaster => "Audio Master FX".into(),
             FxTarget::Media(id) => format!("Video Media Generators: {}", p.media_pool.iter().find(|m| m.id == *id).map_or("", |m| m.name.as_str())),
             FxTarget::Transition(id) => format!("Transition: {}", clip(edit::split_owner(id).0)),
+            FxTarget::Compositor(id) => format!("Compositor: Track {}", p.find_track(id).map_or(0, |t| t.1 + 1)),
         }
     }
 

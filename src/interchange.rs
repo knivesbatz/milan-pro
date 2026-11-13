@@ -184,16 +184,23 @@ fn pan_crop(k: &VPanKey, (sw, sh): (f64, f64)) -> PanCrop {
 
 fn composite(mode: &str) -> Option<Composite> {
     Some(match mode {
-        // SrcAlpha3D is Source Alpha with 3D track motion, which is reported separately.
-        "" | "SrcAlpha" | "SrcAlpha3D" => Composite::SourceAlpha,
+        "" | "SrcAlpha" => Composite::SourceAlpha,
+        // The 3D track motion itself is reported separately (R25).
+        "SrcAlpha3D" => Composite::ThreeD,
         "Add" => Composite::Add,
         "Subtract" => Composite::Subtract,
+        "Cut" => Composite::Cut,
         "Multiply" => Composite::Multiply,
         "Screen" => Composite::Screen,
         "Overlay" => Composite::Overlay,
+        "HardLight" => Composite::HardLight,
+        "Dodge" => Composite::Dodge,
+        "Burn" => Composite::Burn,
         "Darken" => Composite::Darken,
         "Lighten" => Composite::Lighten,
         "Difference" => Composite::Difference,
+        "DifferenceSquared" => Composite::DifferenceSquared,
+        // Custom needs its compositor plug-in, which the export does not carry.
         _ => return None,
     })
 }
@@ -523,6 +530,16 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    /// R7: every VEGAS compositing mode but Custom (its compositor is not exported) maps onto Milan's.
+    #[test]
+    fn vegas_compositing_modes_map() {
+        use Composite::*;
+        for (name, mode) in [("SrcAlpha3D", ThreeD), ("Cut", Cut), ("HardLight", HardLight), ("Dodge", Dodge), ("Burn", Burn), ("DifferenceSquared", DifferenceSquared), ("Multiply", Multiply)] {
+            assert_eq!(composite(name), Some(mode), "{name}");
+        }
+        assert_eq!(composite("Custom"), None);
     }
 
     #[test]

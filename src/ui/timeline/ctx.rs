@@ -529,9 +529,16 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         return;
     }
     if v {
-        // The hidden video buttons (§5.9.3): Track Motion and, in VP16, Track FX and Compositing Mode.
+        // The hidden video buttons (§5.9.3): Bypass Motion Blur, Track Motion and, in VP16, Track FX and Compositing
+        // Mode; then Make Compositing Parent / Child, and a parent's Parent Composite Mode and Parent Motion.
         let tr = &project.timeline.video_tracks[i];
-        let (id, cur, locked) = (tr.id.clone(), tr.composite, tr.locked);
+        let (id, cur, locked, bypass, child, pmode) = (tr.id.clone(), tr.composite, tr.locked, tr.bypass_blur, tr.child, tr.parent_mode);
+        let parent = edit::is_parent(&project.timeline, i);
+        if entry(ui, "&Bypass Motion Blur", "", !locked, Mark::Check(bypass)) {
+            history.push(project.clone());
+            project.timeline.video_tracks[i].bypass_blur = !bypass;
+            project.mark_modified();
+        }
         if entry(ui, "Track &Motion...", "", true, Mark::None) {
             crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::TrackMotion(id.clone()));
         }
@@ -548,6 +555,29 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
                     }
                 }
             });
+        }
+        // Make Compositing Child joins the parent above (the top track has none); Make Compositing Parent leaves it.
+        let ids = if sel.tracks.contains(&id) { sel.tracks.clone() } else { vec![id.clone()] };
+        for (label, to_child, on) in [("Make Compositing &Parent", false, child), ("Make Compositing &Child", true, !child && i > 0)] {
+            if entry(ui, label, "", on && !locked, Mark::None) {
+                let before = project.clone();
+                if edit::set_child(project, &ids, to_child) {
+                    history.push(before);
+                }
+            }
+        }
+        if parent {
+            sub(ui, "Parent Composite Mo&de", !locked, |ui| {
+                if let Some(m) = crate::ui::trackmotion::composite_menu(ui, pmode, !locked) {
+                    let before = project.clone();
+                    if edit::set_parent_mode(project, &id, m) {
+                        history.push(before);
+                    }
+                }
+            });
+            if entry(ui, "Parent M&otion...", "", true, Mark::None) {
+                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::ParentMotion(id.clone()));
+            }
         }
         sep(ui);
     } else {

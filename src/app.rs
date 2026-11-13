@@ -92,7 +92,7 @@ pub struct MeridianApp {
     // Dock window state.
     media_view: ui::MediaView,
     explorer: ui::Explorer,
-    choosers: [ui::Chooser; 3],
+    choosers: [ui::Chooser; 4],
     trimmer: ui::Trimmer,
     preview_view: ui::PreviewView,
     master_view: ui::MasterView,
@@ -269,7 +269,7 @@ impl MeridianApp {
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
-            choosers: [PluginKind::Transition, PluginKind::VideoFx, PluginKind::Generator].map(ui::Chooser::new),
+            choosers: [PluginKind::Transition, PluginKind::VideoFx, PluginKind::Generator, PluginKind::Compositor].map(ui::Chooser::new),
             trimmer,
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
@@ -501,11 +501,12 @@ impl eframe::App for MeridianApp {
                     ui::draw_explorer_toolbar(bar, &mut self.explorer);
                     ui::draw_explorer(body, &mut self.explorer, &mut actions);
                 }
-                Panel::Transitions | Panel::VideoFx | Panel::MediaGenerators => {
+                Panel::Transitions | Panel::VideoFx | Panel::MediaGenerators | Panel::Compositors => {
                     let k = match panel {
                         Panel::Transitions => 0,
                         Panel::VideoFx => 1,
-                        _ => 2,
+                        Panel::MediaGenerators => 2,
+                        _ => 3,
                     };
                     ui::draw_chooser_toolbar(bar, &mut self.choosers[k]);
                     let out = ui::draw_chooser(body, &mut self.choosers[k], &self.user_presets, &mut self.prefs.fx_favorites);
@@ -660,6 +661,7 @@ impl eframe::App for MeridianApp {
         match ui::take_tool(ctx) {
             Some(ui::ToolWin::PanCrop(id)) => self.pan_crop = ui::PanCropWin::open(&self.project, &id),
             Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
+            Some(ui::ToolWin::ParentMotion(id)) => self.track_motion = ui::TrackMotionWin::open_parent(&self.project, &id),
             Some(ui::ToolWin::Fx(target)) => self.open_fx(target),
             None => {}
         }

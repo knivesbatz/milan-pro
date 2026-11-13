@@ -1,5 +1,5 @@
 //! Keyframe and envelope maths (pure): curve shapes, interpolation and key editing.
-use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes, Motion, PanCrop, smooth_fade};
+use crate::project::{Curve, EnvKind, Envelope, Halo, Keyframe, Keyframes, Motion, PanCrop, smooth_fade};
 
 impl Curve {
     /// Progress 0..=1 through a segment, shaped: shape(0) = 0, shape(1) = 1, monotonic.
@@ -65,8 +65,24 @@ impl Lerp for PanCrop {
 
 impl Lerp for Motion {
     fn lerp(&self, b: &Self, s: f32) -> Self {
-        let [x, y, w, h, rot] = [self.x, self.y, self.w, self.h, self.rot].lerp(&[b.x, b.y, b.w, b.h, b.rot], s);
-        Motion { x, y, w, h, rot }
+        let v = |m: &Motion| [m.x, m.y, m.w, m.h, m.rot, m.z, m.rx, m.ry];
+        let [x, y, w, h, rot, z, rx, ry] = v(self).lerp(&v(b), s);
+        Motion { x, y, w, h, rot, z, rx, ry }
+    }
+}
+
+impl Lerp for Halo {
+    fn lerp(&self, b: &Self, s: f32) -> Self {
+        let v = |h: &Halo| [h.x, h.y, h.blur, h.intensity, h.color[0], h.color[1], h.color[2]];
+        let [x, y, blur, intensity, r, g, bl] = v(self).lerp(&v(b), s);
+        Halo { x, y, blur, intensity, color: [r, g, bl] }
+    }
+}
+
+/// A mask path: point by point when both keys have as many anchors, else held until the next key.
+impl Lerp for Vec<[f32; 6]> {
+    fn lerp(&self, b: &Self, s: f32) -> Self {
+        if self.len() == b.len() { self.iter().zip(b).map(|(p, q)| p.lerp(q, s)).collect() } else { self.clone() }
     }
 }
 
@@ -136,7 +152,7 @@ impl EnvKind {
     /// The value of an envelope with no points.
     pub fn neutral(self) -> f32 {
         match self {
-            EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress => 0.0,
+            EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress | EnvKind::MotionBlur | EnvKind::Supersampling => 0.0,
             EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::Opacity | EnvKind::Velocity | EnvKind::Unknown => 1.0,
         }
     }

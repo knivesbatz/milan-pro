@@ -140,6 +140,9 @@ pub struct CmdState {
     pub quickfade: bool,
     /// Options › Audio Follows Video Velocity (the project's).
     pub audio_follows_velocity: bool,
+    /// View › Video Bus Track; Preferences › Video › extra blend modes.
+    pub video_bus: bool,
+    pub extra_modes: bool,
 }
 
 impl CmdState {
@@ -214,7 +217,7 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
-            Quickfade | AudioFollowsVelocity => true,
+            Quickfade | AudioFollowsVelocity | VideoBusTrack => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -253,6 +256,7 @@ impl CmdState {
             SetStream(n) => self.stream == n,
             Quickfade => self.quickfade,
             AudioFollowsVelocity => self.audio_follows_velocity,
+            VideoBusTrack => self.video_bus,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             ToggleVideoEnvelope(k) => self.focus_venvs.contains(&k),
@@ -264,7 +268,7 @@ impl CmdState {
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            BusTracks | VideoBusTrack | MediaMarkers | Multicam | ExternalMonitor => false,
+            BusTracks | MediaMarkers | Multicam | ExternalMonitor => false,
             _ => return None,
         })
     }
@@ -337,7 +341,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
-        VideoBusTrack => Later("R7"),
         DimMaster | BusTracks | MixingConsole => Later("R8b"),
         NextFxEnvelope | PrevFxEnvelope => Later("R8c"),
         SurroundPanner => Later("R10b"),
@@ -807,7 +810,7 @@ const WINDOWS: &[M] = &[
     C("&Transitions", Window(Panel::Transitions)),
     C("V&ideo FX", Window(Panel::VideoFx)),
     C("Media &Generators", Window(Panel::MediaGenerators)),
-    X("Compositors", Later("R7")),
+    C("Compositors", Window(Panel::Compositors)),
     C("&Plug-In Manager", PluginManager),
     C("Video &Scopes", VideoScopes),
     C("S&urround Panner", SurroundPanner),
@@ -836,8 +839,8 @@ const VIDEO_ENV_VIEW: &[M] = &[
     C("Event &Velocity", ViewEnvelope(EnvView::Velocity)),
     C("Transition &Progress", ViewEnvelope(EnvView::TransitionProgress)),
     S,
-    K("Motion &Blur Amount", true, Later("R7")),
-    K("Video &Supersampling", true, Later("R7")),
+    C("Motion &Blur Amount", ViewEnvelope(EnvView::MotionBlur)),
+    C("Video &Supersampling", ViewEnvelope(EnvView::Supersampling)),
 ];
 
 pub const VIEW: &[M] = &[

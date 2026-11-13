@@ -43,6 +43,13 @@ pub fn eval_thumb(kind: PluginKind, e: &FxEval, p: f32) -> ColorImage {
             transition::mix(e, &a, &b, p, 1)
         }
         PluginKind::Generator => generate::render(e, W as u32, H as u32, 0.0),
+        // The sample through the compositor, with a radial gradient as its map.
+        PluginKind::Compositor => {
+            let mut img = sample();
+            let map = fill(W, H, |x, y| Color32::from_gray((255.0 * (1.0 - (x as f32 - 50.0).hypot(y as f32 - 30.0) / 50.0).clamp(0.0, 1.0)) as u8));
+            vfx::compositor(&mut img, &map, e, 1.0, 1);
+            img
+        }
         // Audio FX have no chooser.
         PluginKind::AudioFx => sample(),
     }

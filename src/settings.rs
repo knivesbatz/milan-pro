@@ -55,6 +55,10 @@ pub struct Prefs {
     pub lock_envelopes: bool,
     /// Preferences › Video: create video proxies for 4K, HEVC and AV1 media as it is imported.
     pub auto_proxy: bool,
+    /// Preferences › Video: the compositing-mode lists also offer Milan Pro's blend modes VEGAS has not (off).
+    pub extra_blend_modes: bool,
+    /// View › Video Bus Track.
+    pub video_bus: bool,
     /// VP23 plug-in chooser favourites (plug-in ids).
     pub fx_favorites: Vec<String>,
     /// Preferences › Editing: "Cut-to-overlap conversion" length (seconds) a transition dropped on a cut makes.
@@ -86,6 +90,9 @@ pub enum EnvView {
     TrackKeyframes,
     Velocity,
     TransitionProgress,
+    /// The Video Bus Track's Motion Blur Amount and Video Supersampling.
+    MotionBlur,
+    Supersampling,
 }
 
 impl EnvView {
@@ -101,6 +108,8 @@ impl EnvView {
             (FadeToColor, true) => EnvView::FadeToColor,
             (Velocity, true) => EnvView::Velocity,
             (TransitionProgress, true) => EnvView::TransitionProgress,
+            (MotionBlur, true) => EnvView::MotionBlur,
+            (Supersampling, true) => EnvView::Supersampling,
             _ => return None,
         })
     }
@@ -161,6 +170,8 @@ impl Default for Prefs {
             hidden_envelopes: Vec::new(),
             lock_envelopes: true,
             auto_proxy: false,
+            extra_blend_modes: false,
+            video_bus: false,
             fx_favorites: Vec::new(),
             cut_overlap: 1.0,
             cursor_preview: 3.0,
@@ -395,14 +406,24 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
         ("View transform:", "Off", Later("R40b")),
         ("Full-resolution rendering quality:", "Good", Later("R11")),
-        ("Motion blur type:", "Gaussian", Later("R7")),
         ("Deinterlace method:", "Blend fields", Later("R11")),
     ];
     if v23 {
         grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
         grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
     }
+    let blur_at = grid.len() - 1; // VEGAS lists Motion blur type above Deinterlace method
     for (k, (label, value, why)) in grid.into_iter().enumerate() {
+        if k == blur_at {
+            dialogs::row(ui, "Motion blur type:", 175.0, true, |ui| {
+                use crate::project::BlurType;
+                egui::ComboBox::from_id_salt("pp_blur").width(200.0).selected_text(d.motion_blur.name()).show_ui(ui, |ui| {
+                    for b in BlurType::ALL {
+                        ui.selectable_value(&mut d.motion_blur, b, b.name());
+                    }
+                });
+            });
+        }
         dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
     dialogs::row(ui, "Resample mode:", 175.0, true, |ui| {

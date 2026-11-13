@@ -374,6 +374,16 @@ mod tests {
             p.timeline.video_tracks[1].fade_colors[1] = [0, 128, 255];
             let t = &mut p.timeline.video_tracks[0].clips[0];
             (t.fade_out, t.transition_out) = (1.0, Some(Transition { plugin: "milan.tr.linear_wipe".into(), ..Default::default() }));
+            // R7: a feathered negative mask on the top event and a 2D Glow on its track; Hard Light on the middle track;
+            // the bottom track moving under a Video Bus Track Motion Blur Amount.
+            let path = vec![[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.4, 0.0, 0.0, 0.0, 0.0, 0.0], [0.3, 1.0, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]];
+            let mask = crate::project::Mask { path: Keyframes { keys: vec![Keyframe { t: 0.0, v: path, curve: Curve::Linear }] }, mode: crate::project::MaskMode::Negative, opacity: 1.0, feather: 0.05 };
+            p.timeline.video_tracks[0].clips[0].masks = vec![mask];
+            p.timeline.video_tracks[0].glow.on = true;
+            p.timeline.video_tracks[1].composite = crate::project::Composite::HardLight;
+            let m = |x| crate::project::Motion { x, w: 0.8, h: 0.8, ..Default::default() };
+            p.timeline.video_tracks[2].motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: m(-0.1), curve: Curve::Linear }, Keyframe { t: 3.0, v: m(0.1), curve: Curve::Linear }] };
+            p.timeline.master.video_envelopes = vec![env(EnvKind::MotionBlur, &[(0.0, 0.1, Curve::Linear)])];
         }
         assert_eq!(content_end(&p), 3.0);
         let run = |p: &Project, preset: &'static Preset, name: &str, range: (f64, f64)| {

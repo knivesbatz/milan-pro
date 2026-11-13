@@ -294,7 +294,12 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         // A video FX tile dropped on a video track's header goes on the track's FX (one undo step), and its FX window opens.
         if let Some(d) = crate::ui::plugin_dropped(&br) {
             let (target, before) = (edit::FxTarget::Track(tid.clone()), project.clone());
-            if row.is_video && d.kind == crate::engine::plugins::PluginKind::VideoFx && edit::add_fx(project, &target, d.fx.clone()) {
+            let comp = d.kind == crate::engine::plugins::PluginKind::Compositor;
+            // A compositor sets the track's Custom compositing mode.
+            if row.is_video && comp && edit::set_compositor(project, std::slice::from_ref(&tid), &d.fx) {
+                history.push(before);
+                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Compositor(tid.clone())));
+            } else if row.is_video && d.kind == crate::engine::plugins::PluginKind::VideoFx && edit::add_fx(project, &target, d.fx.clone()) {
                 history.push(before);
                 crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
             } else {
@@ -533,6 +538,11 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
             line(l.body.min.y, t.track_header_sel_top);
             line(l.body.max.y - 1.0, t.track_header_sel_bottom);
+        }
+        // A compositing child: a bar down its left edge ties it to the parent above.
+        // shortcut: VEGAS indents a child's whole header; a marker bar only, until the header layout takes an indent.
+        if row.is_video && tr.child && row.idx > 0 {
+            p.rect_filled(Rect::from_min_size(l.body.min, vec2(3.0, l.body.height())), 0.0, t.accent);
         }
         // No track name: the scribble strip is off by default in both looks.
         let font = t.font(t.font.ui);

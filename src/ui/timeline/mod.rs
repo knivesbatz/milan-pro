@@ -1,5 +1,6 @@
 //! Custom-painted timeline (§5.9): time display, loop/marker/ruler band, track headers, lanes with events,
 //! playhead, snap indicators and scrollbars. Interaction runs first and painting after, so edits show this frame.
+mod bus;
 mod ctx;
 mod envelopes;
 mod events;
@@ -258,11 +259,13 @@ pub fn draw_timeline(
     let frame = 1.0 / fps.max(1.0);
     // Quantize to Frames also puts a clicked cursor on a frame, as in VEGAS.
     let cursor_at = |t: f64| if quantize { edit::quantize(t.max(0.0), fps) } else { t.max(0.0) };
+    // The Video Bus Track docks under the tracks, above the scrollbar.
+    let bus_h = if opts.video_bus { bus::BUS_H.min((rect.height() - t.m.band_h - t.m.hscroll_h - 40.0).max(0.0)) } else { 0.0 };
     let make_geo = |project: &Project| {
         let tl = &project.timeline;
         let clips_left = rect.min.x + header_w + gap;
         let rows_top = rect.min.y + t.m.band_h;
-        let lanes = Rect::from_min_max(pos2(clips_left, rows_top), pos2(rect.max.x - t.m.scrollbar_w, rect.max.y - t.m.hscroll_h));
+        let lanes = Rect::from_min_max(pos2(clips_left, rows_top), pos2(rect.max.x - t.m.scrollbar_w, rect.max.y - t.m.hscroll_h - bus_h));
         Geo {
             rect,
             header_w,
@@ -270,7 +273,7 @@ pub fn draw_timeline(
             band: Rect::from_min_max(pos2(clips_left, rect.min.y), pos2(lanes.max.x, rows_top)),
             lanes,
             vscroll: Rect::from_min_max(pos2(lanes.max.x, rect.min.y), pos2(rect.max.x, lanes.max.y)),
-            hscroll: Rect::from_min_max(pos2(clips_left, lanes.max.y), rect.max),
+            hscroll: Rect::from_min_max(pos2(clips_left, rect.max.y - t.m.hscroll_h), rect.max),
             pps: tl.zoom * BASE_PPS,
             scroll_x: tl.scroll_x,
             grid: ruler::grid_line(opts.grid, &project.settings, tl.zoom * BASE_PPS),
@@ -819,6 +822,10 @@ pub fn draw_timeline(
                     let why = if track.is_some() { "The track is locked." } else { "Drop generated media on a video track." };
                     (id.and_then(|id| project.clip(&id)?.media_id.clone()).map(edit::FxTarget::Media), why)
                 }
+                PluginKind::Compositor => {
+                    let done = track.clone().filter(|id| edit::set_compositor(project, std::slice::from_ref(id), &d.fx));
+                    (done.map(edit::FxTarget::Compositor), "Drop a compositor on an unlocked video track.")
+                }
                 PluginKind::AudioFx => (None, "Audio plug-ins are added with fx+ in an FX window."),
             };
             match target {
@@ -1100,6 +1107,9 @@ pub fn draw_timeline(
         }
     }
     scroll::paint(&painter, &g, content, project, *scroll_y);
+    if bus_h > 0.0 {
+        bus::show(ui, &g, project, history, opts.hidden_envs);
+    }
 
     rename_box(ui, &g, &rows, &heads, project, history, &mut st);
     ui.data_mut(|d| d.insert_temp(sid, st));

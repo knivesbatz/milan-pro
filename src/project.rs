@@ -27,6 +27,30 @@ pub struct ProjectSettings {
     /// Project Properties › Resample mode. A project saved before R3b never blended frames, so it opens with Disable.
     #[serde(default = "Resample::disable", deserialize_with = "lenient")]
     pub resample: Resample,
+    /// Project Properties › Motion blur type: the weighting of the sub-frames the Video Bus Track's Motion Blur Amount
+    /// envelope mixes.
+    #[serde(default, deserialize_with = "lenient")]
+    pub motion_blur: BlurType,
+}
+
+/// Project Properties › Motion blur type (VEGAS's six): symmetric about the frame, or asymmetric (trailing only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlurType {
+    #[default]
+    Gaussian,
+    Pyramid,
+    Box,
+    AsymmetricGaussian,
+    AsymmetricPyramid,
+    AsymmetricBox,
+}
+
+impl BlurType {
+    pub const ALL: [BlurType; 6] = [BlurType::Gaussian, BlurType::Pyramid, BlurType::Box, BlurType::AsymmetricGaussian, BlurType::AsymmetricPyramid, BlurType::AsymmetricBox];
+
+    pub fn name(self) -> &'static str {
+        ["Gaussian", "Pyramid", "Box", "Asymmetric Gaussian", "Asymmetric Pyramid", "Asymmetric Box"][self as usize]
+    }
 }
 
 /// Project Properties › Resample mode and the video event Switches' resample radios (an event's None is Use Project
@@ -290,6 +314,26 @@ pub struct Track {
     /// Track header › Hide: the row is left out of the timeline (it still plays).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Make Compositing Child (video): the track composites into its parent, the nearest non-child track above it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub child: bool,
+    /// A compositing parent's Parent Composite Mode and Parent Motion: how the parent and its children, composited
+    /// together, go onto the tracks below, and where.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Composite::is_default")]
+    pub parent_mode: Composite,
+    #[serde(default, skip_serializing_if = "Keyframes::is_empty")]
+    pub parent_motion: Keyframes<Motion>,
+    /// The Custom compositing mode's compositor plug-in (Compositors window).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compositor: Option<Fx>,
+    /// Track Motion 2D Shadow and 2D Glow.
+    #[serde(default, skip_serializing_if = "Halo2D::is_off")]
+    pub shadow: Halo2D,
+    #[serde(default, skip_serializing_if = "Halo2D::is_off")]
+    pub glow: Halo2D,
+    /// Bypass Motion Blur: the Video Bus Track's motion blur and supersampling leave this track alone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bypass_blur: bool,
     /// Armed for recording (audio): this session only.
     #[serde(skip)]
     pub armed: bool,
@@ -393,6 +437,78 @@ pub struct Clip {
     /// Down keys: = and - a semitone, with Ctrl a cent, with Shift an octave).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub pitch_cents: f32,
+    /// Event Pan/Crop › Mask (video): Bezier paths over the source picture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<Mask>,
+}
+
+/// One Pan/Crop mask path. Positive shows inside it, Negative hides inside it; the positive paths add together, the
+/// negative ones cut out of them (with only negative paths, everything outside them shows), as in VEGAS.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mask {
+    /// Closed Bezier path, keyed event-relative: each anchor is [x, y, in dx, in dy, out dx, out dy], normalised to the
+    /// source picture (the handles relative to their anchor).
+    #[serde(default)]
+    pub path: Keyframes<Vec<[f32; 6]>>,
+    #[serde(default, deserialize_with = "lenient")]
+    pub mode: MaskMode,
+    /// 0..=1.
+    #[serde(default = "one32")]
+    pub opacity: f32,
+    /// Soft edge, a fraction of the source height.
+    #[serde(default)]
+    pub feather: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MaskMode {
+    #[default]
+    Positive,
+    Negative,
+    Disabled,
+}
+
+/// Track Motion 2D Shadow or 2D Glow: a blurred, coloured copy of the track's picture under it (the shadow offset).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Halo2D {
+    #[serde(default)]
+    pub on: bool,
+    #[serde(default)]
+    pub keys: Keyframes<Halo>,
+}
+
+impl Halo2D {
+    fn is_off(&self) -> bool {
+        !self.on && self.keys.is_empty()
+    }
+}
+
+/// One 2D Shadow / Glow key: offset (frame sizes), blur (a fraction of the frame height), intensity 0..=1, colour.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Halo {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub intensity: f32,
+    pub color: [f32; 3],
+}
+
+impl Default for Halo {
+    /// The 2D Shadow's: down and right, soft, black.
+    fn default() -> Self {
+        Self { x: 0.02, y: 0.03, blur: 0.02, intensity: 0.75, color: [0.0; 3] }
+    }
+}
+
+impl Halo {
+    /// The 2D Glow's: around the picture, white.
+    pub fn glow() -> Self {
+        Self { x: 0.0, y: 0.0, blur: 0.03, intensity: 1.0, color: [1.0; 3] }
+    }
+}
+
+fn one32() -> f32 {
+    1.0
 }
 
 fn is_zero(v: &f32) -> bool {
@@ -565,6 +681,10 @@ pub enum EnvKind {
     FadeToColor,
     /// Transition Progress, 0..=1 (kept on the `Transition`, its keys over the transition's length 0..=1).
     TransitionProgress,
+    /// Video Bus Track: Motion Blur Amount, the length of the blur in seconds (0..=1), and Video Supersampling, the
+    /// sub-frames rendered per frame (0..=8).
+    MotionBlur,
+    Supersampling,
     /// A kind written by a later version: loads (instead of failing the whole project) and is ignored.
     #[serde(other)]
     Unknown,
@@ -624,7 +744,8 @@ impl Default for PanCrop {
     }
 }
 
-/// Track Motion, normalised to the project frame.
+/// Track Motion, normalised to the project frame. `z` (frame widths towards the viewer) and the X / Y rotations
+/// (degrees) are the 3D Source Alpha mode's; other modes ignore them.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Motion {
     pub x: f32,
@@ -632,15 +753,22 @@ pub struct Motion {
     pub w: f32,
     pub h: f32,
     pub rot: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub z: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rx: f32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ry: f32,
 }
 
 impl Default for Motion {
     fn default() -> Self {
-        Self { x: 0.0, y: 0.0, w: 1.0, h: 1.0, rot: 0.0 }
+        Self { x: 0.0, y: 0.0, w: 1.0, h: 1.0, rot: 0.0, z: 0.0, rx: 0.0, ry: 0.0 }
     }
 }
 
-/// Video track compositing mode.
+/// Video track compositing mode. The first block is VEGAS's list; Soft Light .. Luminosity are Milan Pro's extras,
+/// offered only with Preferences › Video › "Extra blend modes" (off by default), and always played.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Composite {
     #[default]
@@ -653,6 +781,34 @@ pub enum Composite {
     Darken,
     Lighten,
     Difference,
+    /// Source Alpha with 3D Track Motion (position in depth, rotation about X and Y).
+    ThreeD,
+    /// The source's alpha cuts a hole in what is below.
+    Cut,
+    HardLight,
+    Dodge,
+    Burn,
+    DifferenceSquared,
+    /// A compositor plug-in (`Track::compositor`).
+    Custom,
+    SoftLight,
+    Exclusion,
+    HardMix,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl Composite {
+    fn is_default(&self) -> bool {
+        *self == Composite::SourceAlpha
+    }
+
+    /// Not a VEGAS mode.
+    pub fn extra(self) -> bool {
+        self as u8 >= Composite::SoftLight as u8
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -669,11 +825,15 @@ pub struct MasterBus {
     pub gain: [f32; 2],
     pub audio_fx: Vec<Fx>,
     pub video_fx: Vec<Fx>,
+    /// The Video Bus Track's envelopes (Fade to Color, Motion Blur Amount, Video Supersampling) and its Fade Colors.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub video_envelopes: Vec<Envelope>,
+    pub fade_colors: [[u8; 3]; 2],
 }
 
 impl Default for MasterBus {
     fn default() -> Self {
-        Self { gain: [1.0, 1.0], audio_fx: Vec::new(), video_fx: Vec::new() }
+        Self { gain: [1.0, 1.0], audio_fx: Vec::new(), video_fx: Vec::new(), video_envelopes: Vec::new(), fade_colors: fade_colors() }
     }
 }
 
@@ -799,6 +959,7 @@ impl Default for ProjectSettings {
             sample_rate: 48000,
             ruler: Ruler::default(),
             resample: Resample::Smart,
+            motion_blur: BlurType::Gaussian,
         }
     }
 }
@@ -955,6 +1116,13 @@ impl Track {
             invert: false,
             fade_colors: fade_colors(),
             hidden: false,
+            child: false,
+            parent_mode: Composite::SourceAlpha,
+            parent_motion: Keyframes::default(),
+            compositor: None,
+            shadow: Halo2D::default(),
+            glow: Halo2D::default(),
+            bypass_blur: false,
             armed: false,
         }
     }
@@ -1000,6 +1168,7 @@ impl Clip {
             resample: None,
             undersample: None,
             pitch_cents: 0.0,
+            masks: Vec::new(),
         }
     }
 
@@ -1435,6 +1604,21 @@ mod tests {
         assert!(m.subclip.is_none() && m.file_time(2.0) == 2.0);
         assert_eq!((m.audio_streams, m.streams(false)), (0, 1));
         assert!(serde_json::to_value(&p).unwrap()["media_pool"][0].get("subclip").is_none(), "nothing written for a whole file");
+        // R7: no masks, no parent/child compositing, no Custom compositor, 2D Shadow and Glow off, motion blur on, no
+        // Video Bus Track envelopes (white over black Fade Colors), Gaussian motion blur, 2D Track Motion; none written.
+        assert!(c.masks.is_empty() && !t.child && t.parent_mode == Composite::SourceAlpha && t.parent_motion.is_empty() && t.compositor.is_none());
+        assert!(!t.shadow.on && !t.glow.on && !t.bypass_blur && tl.master.video_envelopes.is_empty());
+        assert_eq!((tl.master.fade_colors, back.settings.motion_blur), ([[255, 255, 255], [0, 0, 0]], BlurType::Gaussian));
+        let vt = &v["timeline"]["video_tracks"][0];
+        for k in ["child", "parent_mode", "parent_motion", "compositor", "shadow", "glow", "bypass_blur"] {
+            assert!(vt.get(k).is_none(), "{k} written");
+        }
+        assert!(vt["clips"][0].get("masks").is_none() && v["timeline"]["master"].get("video_envelopes").is_none());
+        let m: Motion = serde_json::from_str(r#"{"x":0.1,"y":0,"w":1,"h":1,"rot":0}"#).unwrap();
+        assert_eq!((m.z, m.rx, m.ry), (0.0, 0.0, 0.0));
+        assert!(serde_json::to_value(Motion::default()).unwrap().get("z").is_none());
+        let mk: Mask = serde_json::from_str(r#"{"path":{"keys":[]}}"#).unwrap();
+        assert_eq!((mk.mode, mk.opacity, mk.feather), (MaskMode::Positive, 1.0, 0.0));
     }
 
     #[test]
@@ -1467,7 +1651,7 @@ mod tests {
         c.pitch_cents = -1250.0;
         let t = &mut p.timeline.video_tracks[0];
         t.composite = Composite::Screen;
-        t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0 }, curve: Curve::Smooth }] };
+        t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0, ..Default::default() }, curve: Curve::Smooth }] };
         t.fx = vec![fx("milan.fx.grade")];
         t.envelopes = vec![env(EnvKind::CompositeLevel), env(EnvKind::Opacity), env(EnvKind::Mute), env(EnvKind::FadeToColor)];
         t.fade_colors = [[10, 20, 30], [200, 100, 50]];
@@ -1475,7 +1659,25 @@ mod tests {
         p.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Pan), env(EnvKind::Mute)];
         p.timeline.audio_tracks[0].invert = true;
         p.settings.resample = Resample::Force;
-        p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
+        p.timeline.master = MasterBus {
+            gain: [0.5, 0.75],
+            audio_fx: vec![fx("milan.afx.eq")],
+            video_fx: vec![fx("milan.fx.lut")],
+            video_envelopes: vec![env(EnvKind::MotionBlur), env(EnvKind::Supersampling), env(EnvKind::FadeToColor)],
+            fade_colors: [[1, 2, 3], [4, 5, 6]],
+        };
+        p.settings.motion_blur = BlurType::AsymmetricPyramid;
+        {
+            let c = &mut p.timeline.video_tracks[0].clips[0];
+            let path = Keyframes { keys: vec![Keyframe { t: 0.0, v: vec![[0.1, 0.2, 0.0, 0.0, 0.05, 0.0], [0.5, 0.9, -0.1, 0.0, 0.1, 0.0]], curve: Curve::Linear }] };
+            c.masks = vec![Mask { path, mode: MaskMode::Negative, opacity: 0.5, feather: 0.02 }];
+            let t = &mut p.timeline.video_tracks[0];
+            (t.child, t.parent_mode, t.bypass_blur, t.composite) = (true, Composite::Cut, true, Composite::Custom);
+            t.parent_motion = Keyframes { keys: vec![Keyframe { t: 1.0, v: Motion { z: 0.5, rx: 10.0, ry: -20.0, ..Default::default() }, curve: Curve::Linear }] };
+            t.compositor = Some(fx("milan.comp.displacement"));
+            t.shadow = Halo2D { on: true, keys: Keyframes { keys: vec![Keyframe { t: 0.0, v: Halo { x: 0.1, ..Halo::glow() }, curve: Curve::Linear }] } };
+            t.glow.on = true;
+        }
         p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
         p.timeline.audio_follows_velocity = true;
         p.timeline.audio_tracks[0].hidden = true;
@@ -1636,7 +1838,7 @@ mod tests {
             #[serde(deserialize_with = "lenient")]
             c: Composite,
         }
-        let c = serde_json::from_str::<T>(r#"{"c":"HardLight"}"#).unwrap().c;
+        let c = serde_json::from_str::<T>(r#"{"c":"LinearLight"}"#).unwrap().c;
         let k = serde_json::from_str::<Keyframe<f32>>(r#"{"t":0,"v":1,"curve":"Bezier"}"#).unwrap().curve;
         let m: MediaType = serde_json::from_str(r#""Vector""#).unwrap();
         assert_eq!((c, k, m), (Composite::SourceAlpha, Curve::Smooth, MediaType::Unknown));

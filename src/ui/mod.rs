@@ -64,6 +64,8 @@ pub enum WinAction {
 pub enum ToolWin {
     PanCrop(String),
     TrackMotion(String),
+    /// A compositing parent's Parent Motion.
+    ParentMotion(String),
     Fx(crate::edit::FxTarget),
 }
 
@@ -251,6 +253,8 @@ pub struct EditOpts {
     pub cut_overlap: f64,
     /// Waveform vertical zoom (Shift+Up / Shift+Down), 1 = full scale.
     pub wave_zoom: f32,
+    /// View › Video Bus Track.
+    pub video_bus: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

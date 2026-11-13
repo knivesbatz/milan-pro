@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::engine::composite::{mul255, over, par_rows};
 use crate::engine::lut::{self, Cube};
 use crate::engine::plugins::{FxEval, GRADING};
+use crate::engine::raster;
 
 /// Rec.709 luma weights.
 const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
@@ -184,8 +185,144 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
             });
         }
         "milan.fx.chroma_key" => chroma_key(img, e, px(e.f("blur")), k),
+        "milan.fx.exposure" => {
+            let (gain, off, g) = (2f32.powf(e.f("exposure")), e.f("offset"), 1.0 / e.f("gamma").max(0.01));
+            color_op(img, &ColorOp::tone(|_, x| to_srgb((to_linear(x) * gain + off).max(0.0).powf(g))), k);
+        }
+        "milan.fx.cookie_cutter" => cookie_cutter(img, e, k),
+        "milan.fx.bezier_mask" => bezier_mask(img, e, k),
         GRADING => Grade::new(e).apply(img, k),
         _ => {}
+    }
+}
+
+/// sRGB to linear light, 0..1.
+pub fn to_linear(x: f32) -> f32 {
+    if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Linear light to sRGB, 0..1 (clamped).
+pub fn to_srgb(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.0031308 { x * 12.92 } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// Cookie Cutter: the picture inside a shape (circle, square, diamond, star) at a centre and size, with an optional
+/// feather and a coloured border; Invert keeps the outside instead.
+fn cookie_cutter(img: &mut ColorImage, e: &FxEval, k: usize) {
+    let [w, h] = img.size;
+    let (hf, wf) = (h as f32, w as f32);
+    let (cx, cy, size) = (e.f("x") * wf, e.f("y") * hf, e.f("size") * hf * 0.5);
+    let shape = |r: f32| -> Vec<(f32, f32)> {
+        let n = match e.i("shape") {
+            0 => 96,
+            1 | 2 => 4,
+            _ => 10,
+        };
+        let turn = if e.i("shape") == 1 { std::f32::consts::FRAC_PI_4 } else { -std::f32::consts::FRAC_PI_2 };
+        (0..n)
+            .map(|i| {
+                let a = turn + i as f32 / n as f32 * std::f32::consts::TAU;
+                // A square's corners sit out on the diagonal; a star's inner points halfway in.
+                let rr = match e.i("shape") {
+                    1 => r * std::f32::consts::SQRT_2,
+                    3 if i % 2 == 1 => r * 0.45,
+                    _ => r,
+                };
+                (cx + rr * a.cos(), cy + rr * a.sin())
+            })
+            .collect()
+    };
+    let outer = raster::coverage(&shape(size), w, h);
+    let border = e.f("border") * hf;
+    let mut inner = if border > 0.0 { raster::coverage(&shape((size - border).max(0.0)), w, h) } else { outer.clone() };
+    let mut outer = outer;
+    let f = e.f("feather") * hf;
+    raster::feather(&mut outer, w, h, f, k);
+    raster::feather(&mut inner, w, h, f, k);
+    let invert = e.on("invert");
+    let bc = premul(e.c("border_color"));
+    par_rows(&mut img.pixels, w, k, |y, row| {
+        for (x, p) in row.iter_mut().enumerate() {
+            let (o, i) = (outer[y * w + x].min(1.0), inner[y * w + x].min(1.0));
+            let keep = if invert { 1.0 - o } else { i };
+            let mut q = scale8(*p, (keep * 255.0).round() as u8);
+            let b = ((o - i).max(0.0) * 255.0).round() as u32;
+            if b > 0 {
+                q = over(q, bc, b);
+            }
+            *p = q;
+        }
+    });
+}
+
+/// Bezier Masking: a closed path through up to 8 keyframable points (smooth or straight), positive or negative, with
+/// feather and opacity.
+fn bezier_mask(img: &mut ColorImage, e: &FxEval, k: usize) {
+    let n = e.i("points").clamp(3, 8);
+    let pts: Vec<(f32, f32)> = (1..=n).map(|i| (e.f(&format!("x{i}")), e.f(&format!("y{i}")))).collect();
+    let m = raster::MaskPlan { path: raster::smooth_path(&pts, e.on("smooth")), negative: e.i("mode") == 1, opacity: e.f("opacity"), feather: e.f("feather") };
+    raster::apply(img, &[m], k);
+}
+
+/// A Custom compositing mode: compositor `e` with the layer above as its map, applied to `acc` (the tracks below, or
+/// a parent's children) at `opacity`.
+pub fn compositor(acc: &mut ColorImage, map: &ColorImage, e: &FxEval, opacity: f32, k: usize) {
+    let [w, h] = acc.size;
+    if map.size != acc.size || w == 0 || h == 0 {
+        return;
+    }
+    let src = acc.clone();
+    let luma = |p: Color32| {
+        let c = unpremul(p);
+        (LUMA[0] * c[0] + LUMA[1] * c[1] + LUMA[2] * c[2]) * p.a() as f32 / 255.0
+    };
+    let at = |x: isize, y: isize| src.pixels[y.clamp(0, h as isize - 1) as usize * w + x.clamp(0, w as isize - 1) as usize];
+    let o = opacity.clamp(0.0, 1.0);
+    match e.id {
+        // Displacement Map: the map's red moves pixels across, its green up and down (mid grey moves nothing).
+        "milan.comp.displacement" => {
+            let (ax, ay) = (e.f("horizontal") * w as f32, e.f("vertical") * h as f32);
+            par_rows(&mut acc.pixels, w, k, |y, row| {
+                for (x, p) in row.iter_mut().enumerate() {
+                    let m = map.pixels[y * w + x];
+                    let (c, a) = (unpremul(m), m.a() as f32 / 255.0 * o);
+                    let (dx, dy) = ((c[0] - 0.5) * 2.0 * ax * a, (c[1] - 0.5) * 2.0 * ay * a);
+                    *p = at(x as isize + dx.round() as isize, y as isize + dy.round() as isize);
+                }
+            });
+        }
+        // Height Map: the map's brightness moves pixels along a direction.
+        "milan.comp.height_map" => {
+            let (s, c) = e.f("angle").to_radians().sin_cos();
+            let amount = e.f("amount") * h as f32;
+            par_rows(&mut acc.pixels, w, k, |y, row| {
+                for (x, p) in row.iter_mut().enumerate() {
+                    let d = luma(map.pixels[y * w + x]) * amount * o;
+                    *p = at(x as isize + (d * c).round() as isize, y as isize - (d * s).round() as isize);
+                }
+            });
+        }
+        // Bump Map: the map's brightness is a relief lit from a direction.
+        _ => {
+            let (s, c) = e.f("angle").to_radians().sin_cos();
+            let (height, light) = (e.f("height") * 8.0, e.f("intensity"));
+            let lum_at = |x: usize, y: usize| luma(map.pixels[y.min(h - 1) * w + x.min(w - 1)]);
+            par_rows(&mut acc.pixels, w, k, |y, row| {
+                for (x, p) in row.iter_mut().enumerate() {
+                    let (gx, gy) = (lum_at(x + 1, y) - lum_at(x.saturating_sub(1), y), lum_at(x, y + 1) - lum_at(x, y.saturating_sub(1)));
+                    // How much the slope faces the light: brighter towards it, darker away.
+                    let shade = 1.0 + (-(gx * c) + gy * s) * height * light * o;
+                    let q = p.to_array();
+                    *p = Color32::from_rgba_premultiplied(
+                        (q[0] as f32 * shade).round().clamp(0.0, q[3] as f32) as u8,
+                        (q[1] as f32 * shade).round().clamp(0.0, q[3] as f32) as u8,
+                        (q[2] as f32 * shade).round().clamp(0.0, q[3] as f32) as u8,
+                        q[3],
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -324,7 +461,20 @@ fn cbcr(c: [f32; 3]) -> (f32, f32) {
     (-0.168736 * c[0] - 0.331264 * c[1] + 0.5 * c[2], 0.5 * c[0] - 0.418688 * c[1] - 0.081312 * c[2])
 }
 
-/// Alpha from the chroma distance to the key colour: 0 below `low`, 1 above `high`, smooth between. No spill suppression.
+/// Spill suppression: the key colour's strongest channel is pulled down, by `amount`, to the larger of the other two
+/// (a green screen's green cast on hair and edges goes; neutral colours keep theirs).
+pub fn despill(c: [f32; 3], key: [f32; 4], amount: f32) -> [f32; 3] {
+    let d = (0..3).max_by(|&a, &b| key[a].total_cmp(&key[b])).unwrap_or(1);
+    let limit = (0..3).filter(|&i| i != d).map(|i| c[i]).fold(0.0, f32::max);
+    let mut o = c;
+    if c[d] > limit {
+        o[d] = c[d] - amount.clamp(0.0, 1.0) * (c[d] - limit);
+    }
+    o
+}
+
+/// Alpha from the chroma distance to the key colour: 0 below `low`, 1 above `high`, smooth between; then spill
+/// suppression (Milan Pro's; 0, off, by default, as VEGAS's keyer has none).
 fn chroma_key(img: &mut ColorImage, e: &FxEval, r: usize, k: usize) {
     let [w, _] = img.size;
     let key = e.c("color");
@@ -340,9 +490,17 @@ fn chroma_key(img: &mut ColorImage, e: &FxEval, r: usize, k: usize) {
     });
     blur(&mut mask, r, r, k);
     let mask_only = e.on("mask_only");
+    let spill = e.f("spill");
     par_rows(&mut img.pixels, w, k, |y, row| {
         for (p, m) in row.iter_mut().zip(&mask.pixels[y * w..]) {
-            *p = if mask_only { Color32::from_gray(m.a()) } else { scale8(*p, m.a()) };
+            *p = if mask_only {
+                Color32::from_gray(m.a())
+            } else if spill > 0.0 && p.a() > 0 {
+                let q = scale8(*p, m.a());
+                repremul(despill(unpremul(q), key, spill), q.a())
+            } else {
+                scale8(*p, m.a())
+            };
         }
     });
 }
@@ -636,6 +794,78 @@ mod tests {
         assert_eq!(k.pixels[1], img.pixels[1]);
         let mask = run("milan.fx.chroma_key", &[("mask_only", 1.0)], &img);
         assert_eq!((mask.pixels[0], mask.pixels[1]), (Color32::BLACK, Color32::WHITE));
+    }
+
+    /// R7 acceptance: Exposure +1 doubles linear values (and -1 halves them).
+    #[test]
+    fn exposure_doubles_linear_light() {
+        // Mid-tones: 8 bits are too coarse in the shadows to measure a ratio.
+        for v in [60u8, 100, 150] {
+            let img = ColorImage::new([1, 1], Color32::from_gray(v));
+            let lin = |p: Color32| to_linear(p.r() as f32 / 255.0);
+            let up = lin(run("milan.fx.exposure", &[("exposure", 1.0)], &img).pixels[0]);
+            assert!((up / lin(img.pixels[0]) - 2.0).abs() < 0.03, "{v}: {up}");
+            let down = lin(run("milan.fx.exposure", &[("exposure", -1.0)], &img).pixels[0]);
+            assert!((down / lin(img.pixels[0]) - 0.5).abs() < 0.03, "{v}: {down}");
+        }
+        assert!(run("milan.fx.exposure", &[], &picture(32, 20)).pixels.iter().zip(&picture(32, 20).pixels).all(|(a, b)| a.to_array().iter().zip(b.to_array()).all(|(x, y)| x.abs_diff(y) <= 1)));
+    }
+
+    /// R7: spill suppression pulls a green cast down to the other channels (off by default); neutral colours stay.
+    #[test]
+    fn chroma_key_spill_suppression() {
+        let key = [0.0, 0.7, 0.25, 1.0];
+        assert_eq!(despill([0.6, 0.9, 0.5], key, 1.0), [0.6, 0.6, 0.5]);
+        assert_eq!(despill([0.6, 0.9, 0.5], key, 0.5), [0.6, 0.75, 0.5]);
+        assert_eq!(despill([0.5, 0.5, 0.5], key, 1.0), [0.5, 0.5, 0.5]);
+        let img = ColorImage::new([1, 1], Color32::from_rgb(220, 235, 110)); // kept (far from the key), greenish
+        let vals = [("color.r", 0.0), ("color.g", 0.7), ("color.b", 0.25)];
+        assert_eq!(run("milan.fx.chroma_key", &vals, &img).pixels[0], img.pixels[0], "off by default");
+        let out = run("milan.fx.chroma_key", &[vals[0], vals[1], vals[2], ("spill", 1.0)], &img).pixels[0];
+        assert_eq!(out.to_array(), [220, 220, 110, 255]);
+    }
+
+    /// R7: Cookie Cutter keeps the inside of its shape (Invert the outside); Bezier Masking masks by its points.
+    #[test]
+    fn cookie_cutter_and_bezier_masking() {
+        let img = ColorImage::new([40, 40], Color32::WHITE);
+        let c = run("milan.fx.cookie_cutter", &[("size", 0.5)], &img); // a circle 20 px across in the middle
+        assert_eq!((c.pixels[20 * 40 + 20].a(), c.pixels[2 * 40 + 2].a()), (255, 0));
+        let inv = run("milan.fx.cookie_cutter", &[("size", 0.5), ("invert", 1.0)], &img);
+        assert_eq!((inv.pixels[20 * 40 + 20].a(), inv.pixels[2 * 40 + 2].a()), (0, 255));
+        let b = run("milan.fx.cookie_cutter", &[("size", 0.5), ("border", 0.1)], &ColorImage::new([40, 40], Color32::BLACK));
+        assert_eq!(b.pixels[20 * 40 + 28], Color32::WHITE, "the border ring is the border colour");
+        // Default Bezier Masking: a smooth shape through (0.5, 0.2), (0.8, 0.5), (0.5, 0.8), (0.2, 0.5).
+        let m = run("milan.fx.bezier_mask", &[], &img);
+        assert_eq!((m.pixels[20 * 40 + 20].a(), m.pixels[1 * 40 + 1].a()), (255, 0));
+        let n = run("milan.fx.bezier_mask", &[("mode", 1.0)], &img);
+        assert_eq!((n.pixels[20 * 40 + 20].a(), n.pixels[1 * 40 + 1].a()), (0, 255));
+    }
+
+    /// R7: the compositors. A mid-grey Displacement map moves nothing, a red one moves pixels across; a flat Bump Map
+    /// leaves the picture; Height Map moves by brightness.
+    #[test]
+    fn compositors() {
+        let ramp = ColorImage { size: [20, 4], pixels: (0..80).map(|i| Color32::from_gray((i % 20 * 10) as u8)).collect() };
+        let e = |id: &str, vals: &[(&str, f32)]| {
+            let mut f = new_fx(find(id).unwrap(), None);
+            for (k, v) in vals {
+                f.params.insert(k.to_string(), Keyframes { keys: vec![Keyframe { t: 0.0, v: *v, curve: Curve::Linear }] });
+            }
+            eval(&f, 0.0).unwrap()
+        };
+        let mut a = ramp.clone();
+        compositor(&mut a, &ColorImage::new([20, 4], Color32::from_gray(128)), &e("milan.comp.displacement", &[("horizontal", 0.5), ("vertical", 0.0)]), 1.0, 1);
+        assert!(a.pixels.iter().zip(&ramp.pixels).all(|(x, y)| x.r().abs_diff(y.r()) <= 10));
+        let mut b = ramp.clone();
+        compositor(&mut b, &ColorImage::new([20, 4], Color32::from_rgb(255, 128, 0)), &e("milan.comp.displacement", &[("horizontal", 0.25), ("vertical", 0.0)]), 1.0, 1);
+        assert_eq!(b.pixels[2].r(), ramp.pixels[7].r(), "5 px across (a quarter of 20, full red)");
+        let mut c = ramp.clone();
+        compositor(&mut c, &ColorImage::new([20, 4], Color32::from_gray(90)), &e("milan.comp.bump_map", &[]), 1.0, 1);
+        assert!(c.pixels == ramp.pixels, "a flat map has no relief");
+        let mut d = ramp.clone();
+        compositor(&mut d, &ColorImage::new([20, 4], Color32::WHITE), &e("milan.comp.height_map", &[("angle", 0.0), ("amount", 0.5)]), 1.0, 1);
+        assert_eq!(d.pixels[0].r(), ramp.pixels[2].r(), "white moves 0.5 x 4 px = 2 px along 0°");
     }
 
     #[test]

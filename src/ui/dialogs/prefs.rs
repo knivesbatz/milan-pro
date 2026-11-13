@@ -140,8 +140,11 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
     // VEGAS creates proxies for 4K video automatically; Milan Pro makes that opt-in (off by default, per the plan),
     // besides Project Media › Create Video Proxy.
     ui.checkbox(&mut d.auto_proxy, "Automatically create video proxies for 4K, HEVC and AV1 media on import");
+    // Milan Pro's own, off by default: compositing modes VEGAS does not have.
+    ui.checkbox(&mut d.extra_blend_modes, "Offer extra blend modes (Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color, Luminosity)")
+        .on_hover_text("Not VEGAS modes: a project using them looks different in VEGAS");
     if default_all(ui) {
-        d.auto_proxy = false;
+        (d.auto_proxy, d.extra_blend_modes) = (false, false);
     }
 }
 

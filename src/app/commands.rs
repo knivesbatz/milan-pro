@@ -124,6 +124,8 @@ impl MeridianApp {
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
             quickfade: self.prefs.quickfade,
             audio_follows_velocity: tl.audio_follows_velocity,
+            video_bus: self.prefs.video_bus,
+            extra_modes: self.prefs.extra_blend_modes,
         }
     }
 
@@ -325,6 +327,7 @@ impl MeridianApp {
             hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes),
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
+            video_bus: p.video_bus,
         }
     }
 
@@ -434,6 +437,11 @@ impl MeridianApp {
                 PluginKind::Generator => {
                     inserted = edit::insert_generated(p, track, at, d.fx.clone(), &d.name, len);
                     inserted.as_ref().and_then(|id| p.clip(id)?.media_id.clone()).map(FxTarget::Media)
+                }
+                // The Compositors window: the focus video track's mode becomes Custom with this compositor.
+                PluginKind::Compositor => {
+                    let id = track.and_then(|i| p.timeline.video_tracks.get(i)).map(|t| t.id.clone());
+                    id.filter(|id| edit::set_compositor(p, std::slice::from_ref(id), &d.fx)).map(FxTarget::Compositor)
                 }
                 // No chooser offers audio FX.
                 PluginKind::AudioFx => None,
@@ -1172,6 +1180,10 @@ impl MeridianApp {
                 let on = !self.project.timeline.audio_follows_velocity;
                 self.edit(|p| edit::set_audio_follows_velocity(p, on));
             }
+            VideoBusTrack => {
+                self.prefs.video_bus = !self.prefs.video_bus;
+                self.save_prefs();
+            }
             ShowEnvelopes | LockEnvelopes => {
                 let p = &mut self.prefs;
                 if c == ShowEnvelopes {
@@ -1898,6 +1910,14 @@ impl MeridianApp {
                 self.exec(ctx, TrackMotion);
             }
             "about" => self.about = true,
+            "video-bus" => {
+                // The bus row with a Motion Blur Amount ramp and a Fade to Color envelope on it.
+                use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes};
+                let env = |kind, keys: &[(f64, f32)]| Envelope { kind, points: Keyframes { keys: keys.iter().map(|&(t, v)| Keyframe { t, v, curve: Curve::Linear }).collect() } };
+                self.project.timeline.master.video_envelopes = vec![env(EnvKind::MotionBlur, &[(0.0, 0.0), (4.0, 0.5), (8.0, 0.1)]), env(EnvKind::FadeToColor, &[(0.0, 0.0), (10.0, -1.0)])];
+                self.exec(ctx, VideoBusTrack);
+            }
+            "compositors" => self.exec(ctx, ShowWindow(crate::ui::dock::Panel::Compositors)),
             "layout-as" => self.exec(ctx, SaveLayoutAs),
             "vegas-report" => {
                 let lines = ["Track 1, event at 00:00:01;00: event FX (VEGAS Gaussian Blur)", r"Media offline: D:\Footage\interview.mxf (file not found)"];

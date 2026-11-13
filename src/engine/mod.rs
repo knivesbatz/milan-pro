@@ -20,6 +20,7 @@ pub mod mix;
 pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;
+pub mod raster;
 pub mod render;
 pub mod resample;
 #[allow(dead_code)]

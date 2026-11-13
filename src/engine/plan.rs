@@ -10,7 +10,8 @@ use crate::edit::src_time;
 use crate::engine::composite::Affine;
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
-use crate::project::{ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project, Resample};
+use crate::engine::raster::MaskPlan;
+use crate::project::{BlurType, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, PanCrop, Project, Resample};
 
 /// A picture source as the decoders need it.
 #[derive(Debug, Clone)]
@@ -59,6 +60,10 @@ pub struct VideoPlan {
     pub tracks: Vec<VTrack>,
     /// Video Output FX.
     out_fx: Vec<Fx>,
+    /// The Video Bus Track's envelopes and Fade Colors; Project Properties › Motion blur type.
+    bus_envs: Vec<Envelope>,
+    bus_colors: [[u8; 3]; 2],
+    blur_type: BlurType,
     /// Content end (seconds).
     pub end: f64,
 }
@@ -66,6 +71,14 @@ pub struct VideoPlan {
 #[derive(Debug)]
 pub struct VTrack {
     composite: Composite,
+    compositor: Option<Fx>,
+    /// A compositing child (composited into the parent above), and a parent (the track below is its child) with its
+    /// Parent Composite Mode and Parent Motion.
+    child: bool,
+    parent: Option<(Composite, Keyframes<Motion>)>,
+    shadow: Option<Keyframes<Halo>>,
+    glow: Option<Keyframes<Halo>>,
+    bypass_blur: bool,
     level: f32,
     level_env: Option<Envelope>,
     /// Track Mute envelope (1 shown, 0 hidden) and Fade to Color envelope with the [top, bottom] Fade Colors.
@@ -95,6 +108,11 @@ struct VEvent {
 pub struct FramePlan {
     pub layers: Vec<TrackPlan>,
     pub out_fx: Vec<FxEval>,
+    /// The Video Bus Track's Fade to Color, after the Video Output FX.
+    pub fade: Option<([u8; 3], f32)>,
+    /// Motion blur and supersampling: the frame is the weighted mean of the frame planned at these time offsets
+    /// (`frame_plan_at`); empty = this plan alone.
+    pub samples: Vec<(f64, f32)>,
 }
 
 #[derive(Debug)]
@@ -103,10 +121,23 @@ pub struct TrackPlan {
     pub opacity: f32,
     /// Track Motion in normalised frame coordinates.
     pub motion: Affine,
+    /// 3D Source Alpha with depth or X / Y rotation: the track's frame (0..1) to the output frame (0..1), projective
+    /// (row-major 3x3). It replaces `motion` for drawing.
+    pub persp: Option<[f64; 9]>,
     /// Track FX, applied before Track Motion.
     pub fx: Vec<FxEval>,
     /// Fade to Color: the track's picture (after its FX and Track Motion) goes this far (0..=1) to this colour.
     pub fade: Option<([u8; 3], f32)>,
+    /// The Custom mode's compositor.
+    pub compositor: Option<FxEval>,
+    /// Composited into the group of the parent above it, not onto the tracks below.
+    pub child: bool,
+    /// A compositing parent: its children are composited first, then this track over them with `mode`; the group
+    /// then goes through Parent Motion onto the tracks below with the Parent Composite Mode.
+    pub parent: Option<(Composite, Affine)>,
+    /// Track Motion 2D Shadow and 2D Glow.
+    pub shadow: Option<Halo>,
+    pub glow: Option<Halo>,
     pub items: Vec<Item>,
 }
 
@@ -130,6 +161,8 @@ pub struct EventPlan {
     pub next: Option<(i64, f32)>,
     /// Switches › Reduce Interlace Flicker: a vertical 1-2-1 blur of the source, before the FX.
     pub flicker: bool,
+    /// Pan/Crop masks, applied to the source after its FX.
+    pub masks: Vec<MaskPlan>,
 }
 
 #[derive(Debug)]
@@ -159,6 +192,7 @@ impl FramePlan {
         let mut v: Vec<&FxEval> = self.out_fx.iter().collect();
         for l in &self.layers {
             v.extend(&l.fx);
+            v.extend(&l.compositor);
             for i in &l.items {
                 match i {
                     Item::Event(e) => v.extend(&e.fx),
@@ -260,11 +294,18 @@ pub fn compile(p: &Project) -> VideoPlan {
     let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
     let refs: HashMap<&str, (Arc<MediaRef>, &MediaItem)> =
         p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h))?), m)))).collect();
+    // Parent / child in the whole list (a muted parent leaves its children to composite on their own); the top track
+    // cannot be a child.
+    // shortcut: one level of compositing children (VEGAS nests further); add a parent stack if nested groups are asked for.
+    let all = &p.timeline.video_tracks;
+    let is_child = |i: usize| all[i].child && all[..i].iter().any(|t| !t.child);
+    let is_parent = |i: usize| !is_child(i) && all.get(i + 1).is_some_and(|_| is_child(i + 1));
     let tracks = p
         .timeline
         .shown_video_tracks()
         .rev()
         .map(|t| {
+            let i = all.iter().position(|x| x.id == t.id).unwrap_or(0);
             let mut events: Vec<VEvent> = t
                 .clips
                 .iter()
@@ -277,8 +318,15 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
             let env = |kind| t.envelopes.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
+            let halo = |h: &crate::project::Halo2D| h.on.then(|| h.keys.clone());
             VTrack {
                 composite: t.composite,
+                compositor: t.compositor.clone().filter(|_| t.composite == Composite::Custom),
+                child: is_child(i),
+                parent: is_parent(i).then(|| (t.parent_mode, t.parent_motion.clone())),
+                shadow: halo(&t.shadow),
+                glow: halo(&t.glow),
+                bypass_blur: t.bypass_blur,
                 level: t.volume.clamp(0.0, 1.0),
                 level_env: t.envelopes.iter().find(|e| e.kind == EnvKind::CompositeLevel).cloned(),
                 mute_env: env(EnvKind::Mute),
@@ -297,6 +345,9 @@ pub fn compile(p: &Project) -> VideoPlan {
         fps_str: crate::render::fps_str(fps),
         tracks,
         out_fx: p.timeline.master.video_fx.clone(),
+        bus_envs: p.timeline.master.video_envelopes.iter().filter(|e| !e.points.keys.is_empty()).cloned().collect(),
+        bus_colors: p.timeline.master.fade_colors,
+        blur_type: s.motion_blur,
         end: crate::render::content_end(p),
     }
 }
@@ -354,34 +405,108 @@ pub fn motion(m: Motion, (w, h): (f64, f64)) -> Affine {
         .then(Affine::scale(1.0 / w, 1.0 / h))
 }
 
+/// 3D Track Motion (3D Source Alpha): the track's frame (0..1) to the output frame (0..1) through a camera `w` (one
+/// frame width) in front of the frame, as a row-major projective 3x3; None when there is no depth or X / Y rotation
+/// (`motion` is exact then).
+// shortcut: the camera distance is one frame width (VEGAS's is not documented); measure it against VEGAS if it matters.
+pub fn motion3d(m: Motion, (w, h): (f64, f64)) -> Option<[f64; 9]> {
+    if m.z == 0.0 && m.rx == 0.0 && m.ry == 0.0 {
+        return None;
+    }
+    let d = w;
+    let (sz, cz) = (m.rot as f64).to_radians().sin_cos();
+    let (sy, cy) = (m.ry as f64).to_radians().sin_cos();
+    let (sx, cx) = (m.rx as f64).to_radians().sin_cos();
+    // Rx · Ry · Rz applied to a point in the track's plane (z = 0).
+    let rot = |x: f64, y: f64| {
+        let (x, y) = (cz * x - sz * y, sz * x + cz * y);
+        let (x, z) = (cy * x, -sy * x);
+        let (y, z) = (cx * y - sx * z, sx * y + cx * z);
+        [x, y, z]
+    };
+    let (pw, ph) = (w * m.w as f64, h * m.h as f64);
+    let (c0, c1) = (rot(pw, 0.0), rot(0.0, ph));
+    let o = rot(-pw / 2.0, -ph / 2.0);
+    let c2 = [o[0] + m.x as f64 * w, o[1] + m.y as f64 * h, o[2] - m.z as f64 * w];
+    // Screen: (d X + w/2 (d + Z), d Y + h/2 (d + Z), d + Z), in output frames.
+    let col = |c: [f64; 3], one: f64| [(d * c[0] + w / 2.0 * (c[2] + d * one)) / w, (d * c[1] + h / 2.0 * (c[2] + d * one)) / h, c[2] + d * one];
+    let (a, b, c) = (col(c0, 0.0), col(c1, 0.0), col(c2, 1.0));
+    Some([a[0], b[0], c[0], a[1], b[1], c[1], a[2], b[2], c[2]])
+}
+
+/// The motion blur and supersampling sub-frames at time `t`: (offset in seconds, weight), or none. Motion Blur Amount
+/// is the blur's length in seconds, centred on the frame (trailing it for the asymmetric types); Video Supersampling
+/// adds that many sub-frames per frame (alone, they spread over the frame's own time).
+pub fn blur_samples(p: &VideoPlan, t: f64) -> Vec<(f64, f32)> {
+    let env = |k| p.bus_envs.iter().find(|e| e.kind == k).map_or(0.0, |e| e.at(t));
+    let (amount, ss) = (env(EnvKind::MotionBlur).clamp(0.0, 1.0) as f64, env(EnvKind::Supersampling).clamp(0.0, 8.0).round() as usize);
+    let frame = 1.0 / p.fps;
+    if amount * p.fps < 0.05 && ss == 0 {
+        return Vec::new();
+    }
+    let (len, kind) = if amount * p.fps < 0.05 { (frame, BlurType::Box) } else { (amount, p.blur_type) };
+    let n = ((len * p.fps - 1e-6).ceil() as usize * (ss + 1)).clamp(2, 32);
+    let asym = matches!(kind, BlurType::AsymmetricGaussian | BlurType::AsymmetricPyramid | BlurType::AsymmetricBox);
+    (0..n)
+        .map(|i| {
+            let u = (i as f64 + 0.5) / n as f64; // 0..1 across the window
+            // x: distance from the frame's own time, 0..1 of the half window (of the whole one when asymmetric).
+            let (dt, x) = if asym { (-len * u, u) } else { (len * (u - 0.5), (2.0 * u - 1.0).abs()) };
+            let w = match kind {
+                BlurType::Gaussian | BlurType::AsymmetricGaussian => (-0.5 * (x * 2.5).powi(2)).exp(),
+                BlurType::Pyramid | BlurType::AsymmetricPyramid => 1.0 - x,
+                BlurType::Box | BlurType::AsymmetricBox => 1.0,
+            };
+            (dt, w as f32)
+        })
+        .collect()
+}
+
 /// Frames `a..b` seconds cover, to render: [round(a), round(b)) on the exact grid.
 pub fn frame_range((a, b): (f64, f64), fps: f64) -> (i64, i64) {
     let fps = crate::project::exact_fps(fps);
     ((a * fps).round() as i64, (b * fps).round() as i64)
 }
 
+/// Frame `n`, with its motion blur / supersampling sub-frames (`samples`) when the Video Bus Track asks for them.
 pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
+    let mut fp = frame_plan_at(p, n, 0.0);
+    fp.samples = blur_samples(p, crate::project::frame_time(n, p.fps));
+    fp
+}
+
+/// Frame `n` with everything that animates (Track Motion, Pan/Crop, envelopes, FX, generated media) taken `dt`
+/// seconds from the frame's time: the events and source frames stay the frame's own (VEGAS blurs motion made in the
+/// project, not motion inside the footage). Tracks with Bypass Motion Blur ignore `dt`.
+pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
     let t = crate::project::frame_time(n, p.fps);
     let te = t + 1e-6; // positions snapped to frames sit on, not after, the frame time
     let size = (p.w as f64, p.h as f64);
+    let tb = t + dt;
     let layers = p
         .tracks
         .iter()
         .filter_map(|tr| {
-            let shown = tr.mute_env.as_ref().is_none_or(|e| e.at(t) >= 0.5);
-            let opacity = if shown { tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(t).clamp(0.0, 1.0)) } else { 0.0 };
+            // Animated values are taken at `ta`; which events show and their source frames at `t`.
+            let ta = if tr.bypass_blur { t } else { tb };
+            let dt = ta - t;
+            let shown = tr.mute_env.as_ref().is_none_or(|e| e.at(ta) >= 0.5);
+            let opacity = if shown { tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(ta).clamp(0.0, 1.0)) } else { 0.0 };
             let live: Vec<&VEvent> = tr.events.iter().filter(|e| e.c.position <= te && te < e.c.position + e.c.duration).collect();
-            if opacity <= 0.0 || live.is_empty() {
+            // A parent stays even without a picture of its own: its children's group goes through it.
+            if tr.parent.is_none() && (opacity <= 0.0 || live.is_empty()) {
                 return None;
             }
             let mut items: Vec<Item> = Vec::new();
-            for (i, e) in live.iter().enumerate() {
+            for (i, e) in live.iter().enumerate().filter(|_| opacity > 0.0) {
                 let c = &e.c;
                 let local = t - c.position;
+                // Animated values inside the event: Pan/Crop, masks, envelopes, FX, fades.
+                let la = local + dt;
                 // Decision 0.9: an event overlapped by a later one stays at full alpha (a dissolve, not a dip).
                 let last = i + 1 == live.len();
                 let fade_out = if !last { 1.0 } else { fade(c.fade_out_curve, c.duration - local, c.fade_out) };
-                let level = env_at(&c.envelopes, EnvKind::Opacity, local);
+                let level = env_at(&c.envelopes, EnvKind::Opacity, la);
                 let alpha = fade_out * level;
                 // Undersample rate: the event shows a new frame every 1 / r project frames, holding each in between.
                 let tq = match c.undersample.filter(|r| *r > 0.0 && *r < 1.0) {
@@ -403,17 +528,25 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 let next = sf.filter(|_| e.blend).map(|n| (n + 1, (ft * e.m.grid - n as f64).clamp(0.0, 1.0) as f32)).filter(|n| n.1 >= 1.0 / 512.0);
                 // A generator is evaluated at its media time; one that does not animate always at 0.
                 let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
-                    let gt = if generate::animated(&g) { st } else { 0.0 };
+                    let gt = if generate::animated(&g) { st + dt } else { 0.0 };
                     (g, gt)
                 });
-                let fx = evals(&c.fx, local);
+                let fx = evals(&c.fx, la);
+                let masks: Vec<MaskPlan> = c
+                    .masks
+                    .iter()
+                    .filter(|m| m.mode != MaskMode::Disabled)
+                    .map(|m| MaskPlan { path: m.path.at(la), negative: m.mode == MaskMode::Negative, opacity: m.opacity, feather: m.feather })
+                    .filter(|m| m.path.len() >= 3)
+                    .collect();
                 let plan = |alpha| EventPlan {
                     src: SrcAt { m: e.m.clone(), sf, generator: generator.clone() },
-                    place: place(c.pan_crop.at(local), (e.m.w as f64, e.m.h as f64), size, c.keep_aspect),
+                    place: place(c.pan_crop.at(la), (e.m.w as f64, e.m.h as f64), size, c.keep_aspect),
                     alpha,
                     fx: fx.clone(),
                     next,
                     flicker: c.reduce_flicker,
+                    masks: masks.clone(),
                 };
                 let kind = |tr: &crate::project::Transition| plugins::eval_transition(tr);
                 // Progress through a transition `x` (0..1) of the way along: its Transition Progress envelope, else x.
@@ -444,11 +577,33 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 }
             }
             // Fade to Color: towards the top colour above 0, the bottom colour below.
-            let fade = tr.fade_env.as_ref().map(|e| e.at(t).clamp(-1.0, 1.0)).filter(|v| v.abs() >= 1.0 / 512.0).map(|v| (tr.fade_colors[(v < 0.0) as usize], v.abs()));
-            Some(TrackPlan { mode: tr.composite, opacity, motion: motion(tr.motion.at(t), size), fx: evals(&tr.fx, t), fade, items })
+            let fade = fade_to(tr.fade_env.as_ref(), tr.fade_colors, ta);
+            let m = tr.motion.at(ta);
+            // No keys yet: the 2D Shadow's or 2D Glow's own defaults.
+            let halo = |h: &Option<Keyframes<Halo>>, d: Halo| h.as_ref().map(|k| if k.is_empty() { d } else { k.at(ta) });
+            Some(TrackPlan {
+                mode: tr.composite,
+                opacity,
+                motion: motion(m, size),
+                persp: if tr.composite == Composite::ThreeD { motion3d(m, size) } else { None },
+                fx: evals(&tr.fx, ta),
+                fade,
+                compositor: tr.compositor.as_ref().and_then(|f| plugins::eval(f, ta)),
+                child: tr.child,
+                parent: tr.parent.as_ref().map(|(mode, keys)| (*mode, motion(keys.at(ta), size))),
+                shadow: halo(&tr.shadow, Halo::default()),
+                glow: halo(&tr.glow, Halo::glow()),
+                items,
+            })
         })
         .collect();
-    FramePlan { layers, out_fx: evals(&p.out_fx, t) }
+    let bus_fade = p.bus_envs.iter().find(|e| e.kind == EnvKind::FadeToColor);
+    FramePlan { layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
+}
+
+/// Fade to Color at `t`: towards the top colour above 0, the bottom colour below; None at 0.
+fn fade_to(env: Option<&Envelope>, colors: [[u8; 3]; 2], t: f64) -> Option<([u8; 3], f32)> {
+    env.map(|e| e.at(t).clamp(-1.0, 1.0)).filter(|v| v.abs() >= 1.0 / 512.0).map(|v| (colors[(v < 0.0) as usize], v.abs()))
 }
 
 /// First frames of events that start in (n0, n1], for decoder pre-warming.
@@ -1054,6 +1209,78 @@ mod tests {
         t.envelopes.push(Envelope { kind: EnvKind::CompositeLevel, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.5, curve: Curve::Linear }] } });
         let vp = compile(&p);
         assert_eq!(frame_plan(&vp, 330).layers[0].opacity, 0.25);
+    }
+
+    /// R7: Make Compositing Child marks the track below a parent; the parent stays in the plan without a picture of
+    /// its own; a child of a parent that does not show composites on its own; Custom carries its compositor.
+    #[test]
+    fn parent_child_and_custom_in_the_plan() {
+        let mut p = project(); // track 0 (a: 10..15 s) over track 1 (b: 0..20 s)
+        p.timeline.video_tracks[1].child = true;
+        p.timeline.video_tracks[0].parent_mode = Composite::Add;
+        let flags = |p: &Project, t: f64| frame_plan(&compile(p), frame_at(t, 30.0)).layers.iter().map(|l| (l.child, l.parent.map(|x| x.0), l.items.len())).collect::<Vec<_>>();
+        assert_eq!(flags(&p, 11.0), [(true, None, 1), (false, Some(Composite::Add), 1)]);
+        assert_eq!(flags(&p, 5.0), [(true, None, 1), (false, Some(Composite::Add), 0)], "the parent stays without its event");
+        p.timeline.video_tracks[0].muted = true;
+        assert_eq!(flags(&p, 11.0), [(true, None, 1)]);
+        // The top track cannot be a child.
+        let mut q = project();
+        q.timeline.video_tracks[0].child = true;
+        assert_eq!(flags(&q, 11.0), [(false, None, 1), (false, None, 1)]);
+        let t = &mut q.timeline.video_tracks[0];
+        (t.composite, t.compositor) = (Composite::Custom, Some(plugins::new_fx(plugins::find("milan.comp.bump_map").unwrap(), None)));
+        assert_eq!(frame_plan(&compile(&q), 330).layers[1].compositor.as_ref().map(|c| c.id), Some("milan.comp.bump_map"));
+    }
+
+    /// R7: the Video Bus Track's Motion Blur Amount gives weighted sub-frames over its length (asymmetric types trail the
+    /// frame); Supersampling alone spreads them over the frame; sub-frames move Track Motion and Pan/Crop but keep the
+    /// source frame, and Bypass Motion Blur keeps a track still.
+    #[test]
+    fn motion_blur_samples_and_sub_frames() {
+        let mut p = project();
+        let env = |kind, v| Envelope { kind, points: Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] } };
+        assert!(frame_plan(&compile(&p), 330).samples.is_empty());
+        p.timeline.master.video_envelopes = vec![env(EnvKind::MotionBlur, 0.2)];
+        let s = frame_plan(&compile(&p), 330).samples;
+        assert_eq!(s.len(), 6); // 0.2 s at 30 fps
+        assert!(s.iter().all(|x| x.0.abs() <= 0.1) && s[0].1 < s[2].1, "centred, Gaussian: {s:?}");
+        p.settings.motion_blur = BlurType::AsymmetricBox;
+        let s = frame_plan(&compile(&p), 330).samples;
+        assert!(s.iter().all(|x| x.0 <= 0.0 && x.0 >= -0.2 && x.1 == 1.0), "{s:?}");
+        p.timeline.master.video_envelopes = vec![env(EnvKind::Supersampling, 3.0)];
+        let s = frame_plan(&compile(&p), 330).samples;
+        assert!(s.len() == 4 && s.iter().all(|x| x.0.abs() < 0.5 / 30.0), "{s:?}");
+        // Track Motion keyed across the second: sub-frames move it; the source frame stays.
+        let t = &mut p.timeline.video_tracks[0];
+        t.motion = Keyframes { keys: vec![Keyframe { t: 10.0, v: Motion::default(), curve: Curve::Linear }, Keyframe { t: 12.0, v: Motion { x: 1.0, ..Default::default() }, curve: Curve::Linear }] };
+        let vp = compile(&p);
+        let (a, b) = (frame_plan_at(&vp, 330, 0.0), frame_plan_at(&vp, 330, 0.5));
+        assert!((b.layers[1].motion.tx - a.layers[1].motion.tx - 0.25).abs() < 1e-9);
+        let item_sf = |fp: &FramePlan| match &fp.layers[1].items[0] {
+            Item::Event(e) => e.src.sf,
+            _ => None,
+        };
+        assert_eq!(item_sf(&a), item_sf(&b));
+        p.timeline.video_tracks[0].bypass_blur = true;
+        let vp = compile(&p);
+        assert_eq!(frame_plan_at(&vp, 330, 0.5).layers[1].motion, frame_plan_at(&vp, 330, 0.0).layers[1].motion);
+        // The bus Fade to Color, towards its bottom colour.
+        p.timeline.master.video_envelopes = vec![env(EnvKind::FadeToColor, -0.5)];
+        p.timeline.master.fade_colors[1] = [10, 20, 30];
+        assert_eq!(frame_plan(&compile(&p), 330).fade, Some(([10, 20, 30], 0.5)));
+    }
+
+    /// R7: Pan/Crop masks reach the event plan at the frame's time (disabled ones and paths under 3 points do not).
+    #[test]
+    fn masks_reach_the_event_plan() {
+        use crate::project::Mask;
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        let path = vec![[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0, 0.0, 0.0]];
+        let m = |mode| Mask { path: Keyframes { keys: vec![Keyframe { t: 0.0, v: path.clone(), curve: Curve::Linear }] }, mode, opacity: 0.5, feather: 0.1 };
+        p.timeline.video_tracks[0].clips[0].masks = vec![m(MaskMode::Negative), m(MaskMode::Disabled), Mask { path: Keyframes::default(), ..m(MaskMode::Positive) }];
+        let e = event_at(&p, 11.0);
+        assert_eq!(e.masks, vec![MaskPlan { path, negative: true, opacity: 0.5, feather: 0.1 }]);
     }
 
     #[test]

@@ -245,7 +245,15 @@ impl Worker {
         self.take_stills();
         let fp = plan::frame_plan(&self.plan, n);
         self.check_files(&fp, w, h);
-        let key = (fp.key(), w, h, q);
+        // Motion blur / supersampling: the frame is the mean of sub-frames, so all of them name the picture.
+        let subs: Vec<plan::FramePlan> = fp.samples.iter().map(|s| plan::frame_plan_at(&self.plan, n, s.0)).collect();
+        let mut fk = fp.key();
+        for s in &subs {
+            let mut hs = DefaultHasher::new();
+            (fk, s.key()).hash(&mut hs);
+            fk = hs.finish();
+        }
+        let key = (fk, w, h, q);
         if let Some(img) = self.composites.get(&key) {
             return (img, None);
         }
@@ -266,7 +274,17 @@ impl Worker {
             exact: true,
             err: None,
         };
-        let img = Arc::new(composite::compose(&fp, &mut live, w as usize, h as usize, q != Quality::Draft, self.k));
+        let (wu, hu, bilinear) = (w as usize, h as usize, q != Quality::Draft);
+        let img = Arc::new(if subs.is_empty() {
+            composite::compose(&fp, &mut live, wu, hu, bilinear, self.k)
+        } else {
+            let mut frames = Vec::new();
+            for s in &subs {
+                live.drawn.clear(); // each sub-frame draws the same layers: they hold the same pictures
+                frames.push(composite::compose(s, &mut live, wu, hu, bilinear, self.k));
+            }
+            composite::mean(&frames, &fp.samples.iter().map(|s| s.1).collect::<Vec<_>>())
+        });
         let (exact, mut err, shown) = (live.exact, live.err, live.shown);
         // A LUT that cannot load draws ungraded: say so in the preview, and fail a render like a missing file.
         err = err.or_else(|| fp.fx().into_iter().find_map(lut::error));
@@ -421,6 +439,36 @@ mod tests {
         wk.set_plan(Arc::new(plan::compile(&p)));
         let (img, _) = wk.frame(30, 320, 180, Quality::Good, None);
         assert!(img.pixels.iter().all(|p| *p == eframe::egui::Color32::from_rgb(0, 255, 255)));
+    }
+
+    /// R7: the Video Bus Track's Motion Blur Amount smears a picture that Track Motion moves (the sub-frames average),
+    /// and an edit that only changes a sub-frame still reaches the cached frame.
+    #[test]
+    fn motion_blur_smears_track_motion() {
+        use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes, Motion};
+        use eframe::egui::Color32;
+        let mut p = generated(red());
+        p.settings.frame_rate = 30.0;
+        let t = &mut p.timeline.video_tracks[0];
+        // Half size, sweeping left to right over 2 s.
+        let m = |x| Motion { x, w: 0.25, h: 0.25, ..Default::default() };
+        t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: m(-0.5), curve: Curve::Linear }, Keyframe { t: 2.0, v: m(0.5), curve: Curve::Linear }] };
+        let mut wk = Worker::new();
+        let frame = |wk: &mut Worker, p: &Project| {
+            wk.set_plan(Arc::new(plan::compile(p)));
+            wk.frame(30, 192, 108, Quality::Good, None).0
+        };
+        let sharp = frame(&mut wk, &p);
+        let partial = |img: &ColorImage| img.pixels.iter().filter(|c| c.r() > 10 && c.r() < 245).count();
+        assert!(partial(&sharp) < 60, "a sharp edge: {}", partial(&sharp));
+        let env = |kind, v| Envelope { kind, points: Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] } };
+        p.timeline.master.video_envelopes = vec![env(EnvKind::MotionBlur, 0.2)];
+        let blurred = frame(&mut wk, &p);
+        assert!(partial(&blurred) > 200, "smeared along the motion: {}", partial(&blurred));
+        assert_eq!(blurred.pixels[54 * 192 + 96], Color32::RED, "the middle of the box is covered at every sub-frame");
+        // Bypass Motion Blur on the track: sharp again.
+        p.timeline.video_tracks[0].bypass_blur = true;
+        assert!(frame(&mut wk, &p).pixels == sharp.pixels);
     }
 
     /// Generated media render at the project size: a new aspect must not reuse the old picture from the source cache.

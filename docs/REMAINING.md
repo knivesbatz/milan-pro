@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 190 |
-| PARTIAL | 147 |
-| MISSING | 83 |
+| DONE | 196 |
+| PARTIAL | 143 |
+| MISSING | 81 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). The gaps are masks, nested timelines, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). The gaps are nested timelines, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -153,7 +153,7 @@ What matters most:
 | 5.4 | Video track visibility | DONE | Switches › Show in Preview (`Track.visible`, `Timeline::shown_video_tracks`) takes a video track out of preview and render, and its events are drawn dimmed like a muted track's; the audio track header's Hide takes a row off the timeline (`Track.hidden`, it still plays; the track list's empty-area menu has Show Hidden Tracks) (R5) |
 | 5.5 | Track locking | DONE | `Track.locked` |
 | 5.6 | Track muting | DONE | |
-| 5.7 | Compositing and blending | PARTIAL | 9 modes (`project.rs:347`). VEGAS also has Hard Light, Soft Light, Dodge, Burn, Exclusion and others, which load as Source Alpha with a warning (`interchange.rs:285`). The Compositors window is greyed. Parent/child compositing is missing. → R7 |
+| 5.7 | Compositing and blending | DONE | R7: all 15 VEGAS modes (3D Source Alpha, Cut, Hard Light, Dodge, Burn, Difference Squared added; `composite::blend`), Custom with the Compositors window (Bump Map, Displacement Map, Height Map), Make Compositing Parent / Child with Parent Composite Mode and Parent Motion (`composite::compose`). Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color and Luminosity are Milan Pro extras behind Preferences › Video (off). |
 | 5.8 | Video track-level effects | DONE | Track FX (`FxTarget::Track`) |
 | 5.9 | Track opacity | DONE | Composite level and envelope |
 | 5.10 | Track grouping | DONE | `Timeline.track_groups`, `edit::group_tracks` / `ungroup_tracks` / `toggle_track_groups` / `tidy_track_groups`; group header rows with ▾, name, M / S (`ui/timeline/tracks.rs`); Track Group ▸ menu (`ctx.rs::track_group`) (R5) |
@@ -305,7 +305,7 @@ What matters most:
 | 8.10 | Transitions | MISSING | Listed as unsupported in the README → R25 |
 | 8.11 | Effects | MISSING | Event, track, output and media FX are not exported. → R25 |
 | 8.12 | Track properties | PARTIAL | Mute, solo, volume, pan and compositing mode come across. Track FX, Track Motion, parent/child compositing and colour do not. → R25 |
-| 8.13 | Compositing | PARTIAL | Modes without an equivalent fall back to Source Alpha (`interchange.rs:285`). → R7, R25 |
+| 8.13 | Compositing | PARTIAL | R7: every VEGAS mode name maps (`interchange::composite`) but Custom, whose compositor the export does not carry; the 3D Track Motion values and parent/child nesting are not exported yet. → R25 |
 | 8.14 | Keyframes | PARTIAL | Pan/Crop keys come across. FX and Track Motion keyframes do not. → R25 |
 | 8.15 | Envelopes | PARTIAL | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::envelope`). Event velocity and event envelopes are not exported by the VEGAS script yet. → R25 |
 | 8.16 | Markers | DONE | |
@@ -368,21 +368,21 @@ What matters most:
 | 11.4 | Color grading | DONE | `ui/color_grading.rs` (lift/gamma/gain, curves, .cube LUTs) |
 | 11.5 | Brightness and contrast | DONE | `milan.fx.brightness_contrast` |
 | 11.6 | Saturation | DONE | HSL FX |
-| 11.7 | Exposure | MISSING | No exposure control anywhere (`grep -i exposure` finds nothing). → R7 |
+| 11.7 | Exposure | DONE | R7: Exposure FX, stops in linear light plus offset and gamma (`milan.fx.exposure`; +1 doubles linear values, tested). |
 | 11.8 | Curves | DONE | Color Grading curves |
 | 11.9 | Levels | DONE | `milan.fx.levels` |
 | 11.10 | Sharpening | DONE | `milan.fx.sharpen` |
 | 11.11 | Blur | DONE | `milan.fx.gaussian_blur` |
 | 11.12 | Chroma key | DONE | `milan.fx.chroma_key` |
-| 11.13 | Green screen | PARTIAL | The chroma key exists, but there is no spill suppression, matte view or despill. → R7 |
-| 11.14 | Masks | MISSING | → R7 |
+| 11.13 | Green screen | DONE | Chroma Keyer with Show mask only (matte view) and, R7, Spill suppression (`vfx::despill`; Milan Pro's own, 0 = off by default as VEGAS's keyer has none). |
+| 11.14 | Masks | DONE | R7: Event Pan/Crop Mask (keyframed Bezier paths, Positive / Negative / Disabled, opacity, feather; `engine/raster.rs`, `ui/pancrop.rs`), Bezier Masking FX and Cookie Cutter FX. VEGAS's In/Out feather types are not built (feather is centred on the edge). |
 | 11.15 | Transform controls | DONE | Pan/Crop, Track Motion (`ui/pancrop.rs`, `ui/trackmotion.rs`) |
 | 11.16 | Crop | DONE | `milan.fx.crop`, Pan/Crop |
 | 11.17 | Pan and zoom | DONE | Pan/Crop keyframes |
 | 11.18 | Opacity | DONE | |
-| 11.19 | Blending modes | PARTIAL | 9 modes → R7 |
+| 11.19 | Blending modes | DONE | R7: VEGAS's 15 plus Custom; 7 extra W3C modes behind a preference (off). |
 | 11.20 | Compositing | DONE | `engine/composite.rs` |
-| 11.21 | Motion effects | PARTIAL | Track Motion 2D works. 2D shadow/glow, 3D, parenting and motion blur are deferred (`FEATURE_PLAN.md:1806`). → R7 |
+| 11.21 | Motion effects | DONE | R7: Track Motion 2D Shadow and 2D Glow, 3D Source Alpha (Z position, X / Y rotation; camera one frame width away, an estimate), Parent Motion, Video Bus Track Motion Blur Amount and Video Supersampling envelopes with Project Properties › Motion blur type, Bypass Motion Blur (`plan::blur_samples`, `worker::frame`). |
 | 11.22 | Keyframe animation | DONE | `engine/keyframes.rs`, `ui/keyframes.rs` |
 | 11.23 | Transitions | DONE | 8 transitions (`milan.tr.*`) |
 | 11.24 | Generators | PARTIAL | Solid, gradient, checkerboard, noise and text. Credit Roll and Test Pattern are deferred (`FEATURE_PLAN.md:1807`). → R18a |
@@ -581,7 +581,7 @@ What matters most:
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
 | Professional audio editing system | PARTIAL | R8-R10 |
 | Professional rendering engine | PARTIAL | R11, R12, R22 |
-| Modular effects and transitions system | DONE | R7 for masks |
+| Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
 | VEGAS project import/interchange | PARTIAL | R25-R30 |
 | Automatic GitHub updater | PARTIAL | R46 |
@@ -626,7 +626,7 @@ The inventory as found before R0:
 | Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
-| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7, R18a, R13 |
+| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7 (DONE), R18a, R13 |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
 | Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b, R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
@@ -755,7 +755,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R3b: the resample switches (Use Project Resample Mode, Force Resample, Disable Resample, Optical Flow), Project Properties Resample mode, Event Properties Undersample rate, Options > Quickfade Audio Edits (not implemented today).
 - R4a: video track Mute envelope, View > Video Envelopes filters (Track Mute, Fade to Color, Keyframes, Velocity, Transition Progress).
 - R5: track header Cut/Copy/Paste/Delete.
-- R7: Motion Blur Amount and Video Supersampling envelopes, Project Properties Motion blur type, the compositing modes 3D Source Alpha, Cut and Difference Squared.
+- R7 (DONE): Motion Blur Amount and Video Supersampling envelopes, Project Properties Motion blur type, the compositing modes 3D Source Alpha, Cut and Difference Squared.
 - R8b: the ripple mode "Affected Tracks, Markers, and Regions" (the same as the mode above it until bus tracks exist).
 - R8c: audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
@@ -1040,6 +1040,15 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R7: Masks, blend modes, exposure, keying polish, motion extras (L)
+
+**Status: DONE.** Built as designed below, plus the items R0 assigned (3D Source Alpha, Cut, Difference Squared, the Motion Blur Amount and Video Supersampling envelopes, Project Properties › Motion blur type), except where VEGAS differs:
+- Compositing modes are VEGAS's 15 in its menu order, plus Custom… (opens the Compositors window). Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color and Luminosity are not VEGAS modes: they are listed only with Preferences › Video › "Offer extra blend modes" (off by default), and always played. Formulas are W3C's (Hard Mix is Photoshop's, Difference Squared VEGAS's (Cb - Cs)²); Cut takes the source's alpha out of what is below. The opaque-backdrop integer path of the 9 old modes is unchanged; the rest use a float path.
+- Masks follow VEGAS: each Pan/Crop path is Positive, Negative or Disabled (not add/subtract/intersect); positive paths add, negative ones cut out, only-negative paths keep the outside. `Clip.masks: Vec<Mask { path: Keyframes<Vec<[f32; 6]>>, mode, opacity, feather }>`, keyed event-relative (they move with trims and splits and paste with Pan/Crop). The Pan/Crop window's Mask row edits them: a click adds a point, a drag from it pulls out its curve, Ctrl+drag on a point pulls its handles out, the right-click menu deletes points and paths. Coverage is exact across each row on 4 sub-scanlines (`engine/raster.rs`); feather is the FX blur, centred on the edge (VEGAS's In / Out feather types are not built). Bezier Masking is an FX with up to 8 keyframable points (smooth or straight) edited in its parameter grid, not on the preview; Cookie Cutter has Circle, Square, Diamond and Star, feather, a border and Invert.
+- Parent/child (VEGAS's way): Make Compositing Child joins a track to the nearest non-child track above, Make Compositing Parent takes it out (the track's ≡ menu). The children are composited together, then the parent over them with its own mode (Multiply (Mask) there masks by the parent's luminance times its alpha; a parent with no event at that time masks nothing), then the group goes through Parent Motion onto the tracks below with the Parent Composite Mode. One level of nesting (VEGAS allows more); a child shows a bar on its header instead of VEGAS's indent.
+- Custom mode: compositor plug-ins (`PluginKind::Compositor`: Bump Map, Displacement Map, Height Map), with the layer above as the map; the View › Window › Compositors chooser drops them on a track header (or double-click for the focus track) and the FX window edits them (`FxTarget::Compositor`). VEGAS's Mask Generator compositor is not built.
+- Exposure FX: stops in linear light (sRGB curves), plus offset and gamma. Chroma Keyer › Spill suppression is Milan Pro's own (0, off, by default); Show mask only was already there.
+- Track Motion window rows Position, 2D Shadow and 2D Glow, each with its check box and keys (`Track.shadow` / `glow: Halo2D`): offset (shadow), blur, intensity, colour. 3D Source Alpha adds Z, X angle and Y angle (`Motion.z/rx/ry`), drawn through a perspective camera one frame width in front (an estimate: VEGAS's is not documented).
+- Video Bus Track (View › Video Bus Track, Ctrl+Shift+B): a row docked under the tracks with the Video Output FX button and the Fade to Color, Motion Blur Amount (seconds) and Video Supersampling (0-8) envelopes (`MasterBus.video_envelopes`); its Fade Colors stay white over black (no picker yet). Motion blur blends sub-frames of what moves in the project (Track Motion, Pan/Crop, envelopes, FX, generated media) over the blur's length with the Motion blur type's weights (symmetric or trailing), not footage's own motion, as in VEGAS; Bypass Motion Blur (track ≡ menu) keeps a track still. Preview and render share `Worker::frame`, so they match (render_e2e checks a mask, Hard Light, a 2D Glow and motion blur).
 
 **Scope**
 - Pan/Crop Mask mode: Bezier paths with keyframes, feather, invert, add/subtract/intersect.

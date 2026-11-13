@@ -17,10 +17,12 @@ pub enum Panel {
     VideoPreview,
     Trimmer,
     MasterBus,
+    /// View › Window › Compositors (not in a default layout, as in VEGAS).
+    Compositors,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 10] = [
+    pub const ALL: [Panel; 11] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -31,6 +33,7 @@ impl Panel {
         Panel::VideoPreview,
         Panel::Trimmer,
         Panel::MasterBus,
+        Panel::Compositors,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -46,6 +49,7 @@ impl Panel {
             Panel::VideoPreview => "Video Preview",
             Panel::Trimmer => "Trimmer",
             Panel::MasterBus => "Master Bus",
+            Panel::Compositors => "Compositors",
         }
     }
 
