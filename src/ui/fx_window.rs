@@ -5,6 +5,7 @@
 use eframe::egui::*;
 use std::collections::HashSet;
 use crate::edit::{self, FxTarget};
+use crate::engine::ofx;
 use crate::engine::plugins::{self, FxEval, ParamKind, PluginInfo, PluginKind, UserPreset, Val};
 use crate::history::History;
 use crate::project::{AutoMode, Curve, Fx, Keyframe, Keyframes, Project};
@@ -43,6 +44,11 @@ pub struct FxWindow {
     drag: Option<usize>,
     /// Installed fonts, read the first time a Font parameter shows.
     fonts: Option<Vec<String>>,
+}
+
+/// The name a chain shows for plug-in `id`: its name, or (an OFX plug-in that does not run) what is known of it.
+fn chain_name(id: &str) -> String {
+    plugins::find(id).map(|i| i.name.to_string()).or_else(|| ofx::label(id)).unwrap_or_else(|| id.to_string())
 }
 
 /// Some parameter is keyed over time (a key off 0, or several).
@@ -275,7 +281,7 @@ impl FxWindow {
                             op = Some(ChainOp::Enable(i, on));
                         }
                     }
-                    let name = plugins::find(&f.plugin).map_or(f.plugin.clone(), |i| i.name.to_string());
+                    let name = chain_name(&f.plugin);
                     let sense = if chain && editable { Sense::click_and_drag() } else { Sense::click() };
                     let r = ui.add(Button::new(name).selected(i == self.sel).sense(sense));
                     if r.clicked() {
@@ -330,16 +336,22 @@ impl FxWindow {
                 .iter()
                 .enumerate()
                 .filter(|&(i, _)| i != self.sel)
-                .map(|(i, f)| (i, plugins::find(&f.plugin).map_or(f.plugin.clone(), |p| p.name.to_string()), lane(f, fps).iter().map(|k| k.0).collect()))
+                .map(|(i, f)| (i, chain_name(&f.plugin), lane(f, fps).iter().map(|k| k.0).collect()))
                 .collect();
             let Some(fx) = list.get_mut(self.sel) else {
                 ui.label(if audio { "No plug-ins. Use fx+ to add one." } else { "No plug-ins. Drag one here from the Video FX window, or use fx+." });
                 return;
             };
+            // R33a: an OFX plug-in that is missing, turned off or failed says why it is bypassed; its settings stay.
+            let why = ofx::bypassed_because(&fx.plugin);
             let Some(info) = plugins::find(&fx.plugin) else {
-                ui.label(format!("\"{}\" is not available in this version of Milan Pro. It is kept, and bypassed.", fx.plugin));
+                let why = why.unwrap_or_else(|| format!("\"{}\" is not available in this version of Milan Pro. It is kept, and bypassed.", fx.plugin));
+                ui.add(Label::new(RichText::new(why).color(super::theme::get().warning_text)).wrap());
                 return;
             };
+            if let Some(why) = why {
+                ui.add(Label::new(RichText::new(why).color(super::theme::get().warning_text)).wrap());
+            }
 
             // ---- Preset row ----
             ui.horizontal(|ui| {
@@ -568,6 +580,48 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
 mod tests {
     use super::*;
     use crate::project::Clip;
+
+    /// R33a acceptance: a project using an OFX plug-in that is not installed loads with that FX and every saved
+    /// parameter (keys, curves, text) untouched; the FX window shows why it is bypassed without changing anything; it
+    /// renders as if absent; a save writes it back as it was.
+    #[test]
+    fn a_project_with_a_missing_ofx_plugin_keeps_its_parameters() {
+        use eframe::egui::{Context, RawInput};
+        let (mut p, id) = project();
+        let mut gone = Fx { plugin: "ofx:com.example.notinstalled@2".into(), ..plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None) };
+        gone.params.insert("gain".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.25, curve: Curve::Linear }, Keyframe { t: 1.0, v: 3.5, curve: Curve::Smooth }] });
+        gone.params.insert("tint.r".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.7, curve: Curve::Linear }] });
+        gone.text.insert("lut".into(), r"C:\looks\film.cube".into());
+        let fx = vec![p.clip(&id).unwrap().fx[0].clone(), gone.clone()];
+        p.timeline.video_tracks[0].clips[0].fx = fx.clone();
+        let dir = std::env::temp_dir().join("milan-agent").join("ofx").join(format!("missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("uses an OFX plug-in.mnle");
+        p.save(&path).unwrap();
+        let mut back = Project::load(&path).unwrap();
+        assert_eq!(back.clip(&id).unwrap().fx, fx);
+        assert!(plugins::eval(&gone, 0.0).is_none(), "bypassed");
+        let why = ofx::bypassed_because(&gone.plugin).unwrap();
+        assert!(why.contains("com.example.notinstalled") && why.contains("version 2") && why.contains("kept"), "{why}");
+        assert_eq!(chain_name(&gone.plugin), "com.example.notinstalled (missing)");
+        let (mut h, mut users) = (History::default(), Vec::new());
+        let ctx = Context::default();
+        crate::ui::fonts::install(&ctx);
+        for sel in 0..2 {
+            let mut w = FxWindow::open(&back, FxTarget::Event(id.clone())).unwrap();
+            w.sel = sel;
+            let _ = ctx.run(RawInput::default(), |ctx| assert!(w.show(ctx, &mut back, &mut h, &mut users).0));
+        }
+        assert_eq!((h.lens(), &back.clip(&id).unwrap().fx), ((0, 0), &fx));
+        // It plans and composes as if it were not there.
+        let vp = crate::engine::plan::compile(&back);
+        let fp = crate::engine::plan::frame_plan(&vp, (2.5 * vp.fps) as i64);
+        assert!(fp.fx().iter().all(|e| !e.id.starts_with("ofx:")));
+        back.save(&path).unwrap();
+        assert_eq!(Project::load(&path).unwrap().clip(&id).unwrap().fx, fx);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn project() -> (Project, String) {
         let mut p = Project::new("t");

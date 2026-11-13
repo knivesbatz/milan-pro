@@ -93,7 +93,8 @@ impl PrefsDialog {
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
-        "VST Effects" => Later("R31"),
+        // R31 built the OFX folders (Plug-In Manager › Folders); VST folders come with the VST3 host.
+        "VST Effects" => Later("R34a"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
         _ => Later("R49"), // File I/O, Deprecated Features
     }

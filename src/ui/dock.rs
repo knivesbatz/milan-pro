@@ -32,10 +32,12 @@ pub enum Panel {
     VideoScopes,
     /// R16c: View › Window › Loudness Meters (not in a default layout).
     LoudnessMeters,
+    /// R31: View › Window › Plug-In Manager (not in a default layout).
+    PluginManager,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 16] = [
+    pub const ALL: [Panel; 17] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -52,6 +54,7 @@ impl Panel {
         Panel::ProjectNotes,
         Panel::VideoScopes,
         Panel::LoudnessMeters,
+        Panel::PluginManager,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -73,6 +76,7 @@ impl Panel {
             Panel::ProjectNotes => "Project Notes",
             Panel::VideoScopes => "Video Scopes",
             Panel::LoudnessMeters => "Loudness Meters",
+            Panel::PluginManager => "Plug-In Manager",
         }
     }
 

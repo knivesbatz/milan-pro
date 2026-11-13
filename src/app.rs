@@ -128,6 +128,8 @@ pub struct MeridianApp {
     edit_details: ui::EditDetails,
     /// R16b: the Video Scopes window's thread and plots (its choices are in `prefs.scopes`).
     scopes: ui::Scopes,
+    /// R31: the OFX plug-ins found, their scan and the Plug-In Manager's view (its choices are in `prefs.ofx`).
+    plugin_mgr: ui::PluginManager,
     /// R16c: the Loudness Meters' measuring thread (its options are in `prefs.loudness`), and Tools › Generate Loudness
     /// Log running.
     loudness: ui::Loudness,
@@ -304,6 +306,21 @@ impl MeridianApp {
         let mut queue_win = ui::render_queue::QueueWindow::default();
         queue_win.open = queue.jobs.iter().any(|j| matches!(j.state, render::JobState::Queued | render::JobState::Interrupted));
         let offscreen = crate::offscreen_run(launch.screenshot.is_some());
+        // R31: the OFX plug-ins of the last scan at once, then the folders searched again in the background (unchanged
+        // binaries keep their entries, new ones are described in a plug-in host). The harness never reads or writes the
+        // user's plug-in list: it searches only MILAN_OFX_DIR, before its screenshot.
+        let harness = launch.demo || launch.screenshot.is_some();
+        let mut plugin_mgr = if harness {
+            ui::PluginManager::new(None, Some(std::env::var_os("MILAN_OFX_DIR").map(std::path::PathBuf::from).into_iter().collect()))
+        } else {
+            ui::PluginManager::new(crate::engine::ofx::scan::cache_path(), None)
+        };
+        if launch.screenshot.is_some() {
+            plugin_mgr.rescan_now(&prefs.ofx);
+        } else {
+            plugin_mgr.rescan(Some(&cc.egui_ctx), &prefs.ofx, false);
+        }
+        crate::engine::ofx::set_registry(&plugin_mgr.cache, &prefs.ofx.disabled);
         let mut app = Self {
             project,
             history: History::default(),
@@ -371,6 +388,7 @@ impl MeridianApp {
             console: ui::ConsoleView::default(),
             edit_details: ui::EditDetails::default(),
             scopes: ui::Scopes::default(),
+            plugin_mgr,
             loudness: ui::Loudness::default(),
             loud_log: None,
             syncing: None,
@@ -581,6 +599,13 @@ impl eframe::App for MeridianApp {
         self.tick_loudness_log();
         self.tick_sync();
         self.tick_audio_editor(ctx);
+        // R31-R33b: a plug-in scan that finished; a plug-in that failed while rendering (it is bypassed).
+        if self.plugin_mgr.poll() {
+            crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx.disabled);
+        }
+        if let Some(m) = self.plugin_mgr.message.take().or_else(|| crate::engine::ofx::take_events().pop()) {
+            self.message = Some(m);
+        }
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -629,6 +654,7 @@ impl eframe::App for MeridianApp {
             ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             let mut scopes_prefs = false;
+            let (mut plugin_rescan, mut ofx_changed) = (false, false);
             let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
             // R16a: Edit Details edits as the timeline does; its last edit's ripple, for Post-Edit Ripple.
             let (details_opts, mut details_edit) = (self.edit_opts(), None);
@@ -734,12 +760,28 @@ impl eframe::App for MeridianApp {
                     scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
                 }
                 Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
+                Panel::PluginManager => {
+                    let a = ui::plugin_manager_toolbar(bar, &mut self.plugin_mgr, &mut self.prefs.ofx);
+                    let b = ui::plugin_manager(body, &mut self.plugin_mgr, &mut self.prefs.ofx);
+                    plugin_rescan |= a.rescan || b.rescan;
+                    ofx_changed |= a.prefs_changed || b.prefs_changed;
+                }
                 }
             };
             self.dock.show(ui, a.dock, &mut content);
             self.dock.show_floating(ctx, self.offscreen, float_dock, &mut content);
             if let Some(ops) = details_edit {
                 self.last_edit = (self.history.generation(), ops);
+            }
+            // R31: Rescan reads every OFX plug-in again; a plug-in turned on or off changes what the choosers offer and
+            // what renders; a folder added or removed is searched.
+            if ofx_changed {
+                self.save_prefs();
+                crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx.disabled);
+                crate::engine::ofx::clear_failures();
+            }
+            if plugin_rescan || ofx_changed {
+                self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, plugin_rescan);
             }
             if console_prefs || scopes_prefs {
                 self.save_prefs();

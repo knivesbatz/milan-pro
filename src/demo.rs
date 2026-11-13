@@ -3,6 +3,8 @@
 //! - `MILAN_DEMO=1`: demo project on generated media (cached in %TEMP%\milan-demo); no autosave or prefs writes.
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
+//! - `MILAN_OFX_DIR=<folder>` (with `MILAN_DEMO` or `MILAN_SCREENSHOT`): the only OFX folder searched (otherwise none),
+//!   scanned before the screenshot; the user's plug-in list is never read or written.
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 use eframe::egui::{self, ColorImage};

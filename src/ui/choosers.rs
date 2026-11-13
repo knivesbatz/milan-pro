@@ -5,7 +5,7 @@
 use eframe::egui::*;
 use std::collections::HashMap;
 use crate::engine::plugins::{self, PluginInfo, PluginKind, UserPreset};
-use crate::engine::thumbs;
+use crate::engine::{ofx, thumbs};
 use super::icons::{Icon, paint_icon};
 use super::theme::{self, UiLook};
 use super::{PluginDrag, widgets};
@@ -41,7 +41,10 @@ impl Tile<'_> {
 }
 
 pub struct Chooser {
+    kind: PluginKind,
+    /// The built-ins, then the OFX plug-ins found (R33a) as of registry change `generation`.
     plugins: Vec<&'static PluginInfo>,
+    generation: u64,
     query: String,
     /// None = the "All" node.
     plugin: Option<usize>,
@@ -61,8 +64,26 @@ type ThumbKey = (&'static str, (bool, String));
 
 impl Chooser {
     pub fn new(kind: PluginKind) -> Self {
+        let generation = ofx::generation();
         let plugins: Vec<_> = plugins::catalog(kind).collect();
-        Self { plugins, query: String::new(), plugin: Some(0), preset: None, chip: 0, tree_w: 166.0, thumbs: HashMap::new(), hover: None, users: Vec::new() }
+        Self { kind, plugins, generation, query: String::new(), plugin: Some(0), preset: None, chip: 0, tree_w: 166.0, thumbs: HashMap::new(), hover: None, users: Vec::new() }
+    }
+
+    /// R33a: after a plug-in scan, or a plug-in turned on or off, list the plug-ins again (keeping the one selected).
+    fn refresh(&mut self) {
+        if self.generation == ofx::generation() {
+            return;
+        }
+        self.generation = ofx::generation();
+        let was = self.plugin.and_then(|i| self.plugins.get(i)).map(|p| p.id);
+        self.plugins = plugins::catalog(self.kind).collect();
+        if let Some(id) = was {
+            let at = self.plugins.iter().position(|p| p.id == id);
+            if at.is_none() {
+                self.preset = None;
+            }
+            self.plugin = at.or(Some(0));
+        }
     }
 
     fn visible(&self, i: usize, favorites: &[String]) -> bool {
@@ -132,6 +153,7 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     let (left, right) = widgets::pane_split(ui, body, &mut tree_w, "chooser_tree");
     c.tree_w = tree_w;
     let mut out = ChooserOut::default();
+    c.refresh();
     if c.users != users {
         c.thumbs.retain(|k, _| !k.1.0);
         c.hover = None;
@@ -146,11 +168,18 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
             }
         }
         let shown: Vec<usize> = (0..c.plugins.len()).filter(|&i| c.visible(i, favorites)).collect();
+        let mut folder = None;
         for i in shown {
             let (id, name) = (c.plugins[i].id, c.plugins[i].name);
             let sel = c.plugin == Some(i);
+            // R33a: OFX plug-ins under a folder per grouping ("Spektrafilm"), after the built-ins.
+            let ext = id.starts_with(ofx::PREFIX);
+            if v16 && ext && folder != Some(c.plugins[i].group) {
+                folder = Some(c.plugins[i].group);
+                widgets::tree_row(ui, 1, Some(true), Some(Icon::Folder), c.plugins[i].group, false);
+            }
             let r = if v16 {
-                widgets::tree_row(ui, 1, None, Some(Icon::FxBadge), name, sel).0
+                widgets::tree_row(ui, 1 + ext as usize, None, Some(Icon::FxBadge), name, sel).0
             } else {
                 let r = widgets::list_row(ui, 26.0, sel);
                 let p = ui.painter();
@@ -184,7 +213,12 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     let p = ui.painter();
     p.rect_filled(strip, 0.0, t.toolbar_bg);
     if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)) {
-        let text = format!("{}: {}, Grouping: Milan\\{}, Version 1.0", info.name, info.desc, info.group);
+        let text = if info.id.starts_with(ofx::PREFIX) {
+            let v = info.id.rsplit_once('@').map_or("", |v| v.1);
+            format!("{}{}, Grouping: {}, OFX plug-in version {v}", info.name, if info.desc.is_empty() { String::new() } else { format!(": {}", info.desc) }, info.group)
+        } else {
+            format!("{}: {}, Grouping: Milan\\{}, Version 1.0", info.name, info.desc, info.group)
+        };
         p.with_clip_rect(strip.intersect(ui.clip_rect())).text(pos2(strip.min.x + 6.0, strip.center().y), Align2::LEFT_CENTER, text, t.font(t.font.ui), t.text);
     }
     out
@@ -257,6 +291,10 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
 }
 
 fn thumb_image(info: &'static PluginInfo, preset: &Tile, p: f32) -> ColorImage {
+    // An OFX plug-in's tile is the sample as it is: tiles are drawn on the UI thread, plug-ins run in their host.
+    if info.id.starts_with(ofx::PREFIX) {
+        return thumbs::sample();
+    }
     match preset {
         Tile::Builtin(k) => thumbs::preset_thumb(info, info.presets.get(*k), p),
         Tile::User(u) => plugins::eval(&plugins::new_user_fx(info, u), 0.0).map_or_else(|| ColorImage::new([thumbs::W, thumbs::H], Color32::BLACK), |e| thumbs::eval_thumb(info.kind, &e, p)),

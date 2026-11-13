@@ -21,6 +21,7 @@ pub mod monitors;
 pub mod render_queue;
 mod mixer;
 mod pancrop;
+mod plugin_manager;
 mod preview;
 mod project_notes;
 mod properties;
@@ -51,6 +52,7 @@ pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_co
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
 pub use pancrop::PanCropWin;
+pub use plugin_manager::{PluginManager, plugin_manager, plugin_manager_toolbar};
 pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use scopes::{ScopePrefs, ScopeView, Scopes, draw_scopes, scopes_toolbar};

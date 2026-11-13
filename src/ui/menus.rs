@@ -424,7 +424,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
         Prerender | RamPreview => Later("R23"),
-        PluginManager => Later("R31"),
         Help | WhatsThis => Later("R53"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
         SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => ALWAYS_ON,
@@ -879,7 +878,7 @@ const WINDOWS: &[M] = &[
     C("V&ideo FX", Window(Panel::VideoFx)),
     C("Media &Generators", Window(Panel::MediaGenerators)),
     C("Compositors", Window(Panel::Compositors)),
-    C("&Plug-In Manager", PluginManager),
+    C("&Plug-In Manager", Window(Panel::PluginManager)),
     C("Video &Scopes", Window(Panel::VideoScopes)),
     C("S&urround Panner", SurroundPanner),
     C("Mixing Console", Window(Panel::MixingConsole)),
@@ -1627,6 +1626,30 @@ mod tests {
         commands(TOOLS, &mut tools);
         commands(OPTIONS, &mut tools);
         assert!(tools.contains(&GenerateLoudnessLog) && tools.contains(&Loudness(L::ResetEngine)));
+    }
+
+    /// R31: View › Window › Plug-In Manager (Ctrl+Alt+1) works in both looks with its check mark, and nothing in the
+    /// menus waits on R31 any more.
+    #[test]
+    fn plugin_manager_works() {
+        let c = Window(Panel::PluginManager);
+        let mut st = CmdState::default();
+        assert!(unfinished(c).is_none() && st.enabled(c) && st.checked(c) == Some(false));
+        st.look = UiLook::Vegas23;
+        assert!(st.enabled(c));
+        st.open_panels.push(Panel::PluginManager);
+        assert_eq!(st.checked(c), Some(true));
+        assert_eq!(keymap::default_keys(c, UiLook::Vegas16), ["Ctrl+Alt+1"]);
+        let mut cmds = Vec::new();
+        commands(WINDOWS, &mut cmds);
+        assert!(cmds.contains(&c));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R31")), "{rows:?}");
+        let src = include_str!("dialogs/prefs.rs");
+        assert!(!src.contains(&format!("Later(\"R3{}\")", 1)), "nothing in Preferences waits on R31");
     }
 
     /// R6a: Tools › Rebuild Offline Nested Audio works, and nothing in the menus waits on R6a any more.

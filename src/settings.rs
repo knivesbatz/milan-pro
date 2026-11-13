@@ -139,6 +139,8 @@ pub struct Prefs {
     pub media_markers: bool,
     pub marker_labels: bool,
     pub event_length: bool,
+    /// R31: the OFX plug-in folders the user added and the plug-ins turned off in the Plug-In Manager.
+    pub ofx: crate::engine::ofx::OfxPrefs,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -291,6 +293,7 @@ impl Default for Prefs {
             media_markers: false,
             marker_labels: false,
             event_length: false,
+            ofx: Default::default(),
         }
     }
 }
