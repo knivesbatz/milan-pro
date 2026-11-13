@@ -36,6 +36,8 @@ const TREE23: [(&str, u8, Option<bool>); 14] = [
 
 pub struct RenderDialog {
     pub open: bool,
+    /// Options › Quickfade Audio Edits, set by the app: renders apply it as playback does.
+    pub quickfade: bool,
     preset: usize,
     job: Option<Job>,
     /// "Render loop region only" (used while the loop region is set).
@@ -56,6 +58,7 @@ impl Default for RenderDialog {
         let folder = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Videos")).filter(|p| p.is_dir()).unwrap_or_else(std::env::temp_dir);
         Self {
             open: false,
+            quickfade: true,
             preset: 0,
             job: None,
             // VEGAS: on whenever there is a loop region; an untick is kept for the session.
@@ -389,7 +392,7 @@ impl RenderDialog {
         {
             return;
         }
-        self.job = Some(crate::engine::render::start(project, &PRESETS[self.preset], out, self.range(project), ctx.clone()));
+        self.job = Some(crate::engine::render::start(project, &PRESETS[self.preset], out, self.range(project), self.quickfade, ctx.clone()));
     }
 }
 

@@ -45,6 +45,8 @@ pub struct MeridianApp {
     pub preview: Preview,
     pub audio: Player,
     pub waves: Waveforms,
+    /// Switches › Normalize: the peak scans.
+    normalizer: crate::audio::Normalizer,
     pub thumbs: Thumbs,
     /// Create Video Proxy jobs; they belong to files, so they carry on through New and Open.
     proxies: crate::proxy::ProxyJobs,
@@ -232,6 +234,7 @@ impl MeridianApp {
             preview: Preview::timeline(&cc.egui_ctx),
             audio: Player::new(),
             waves: Waveforms::new(&cc.egui_ctx),
+            normalizer: crate::audio::Normalizer::new(),
             thumbs: Thumbs::new(&cc.egui_ctx),
             proxies: Default::default(),
             render: RenderDialog::default(),
@@ -701,6 +704,8 @@ impl eframe::App for MeridianApp {
         if self.proxies.busy() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
+        self.normalizer.tick(ctx, &mut self.project);
+        self.render.quickfade = self.prefs.quickfade;
         self.render.show(ctx, &self.project);
         self.settings.show(ctx, &mut self.project, &mut self.history);
         if !self.demo {
@@ -733,7 +738,7 @@ impl eframe::App for MeridianApp {
         // Video and audio play on through loop wraps (both wrap themselves); a seek or a new loop region restarts them.
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
-        self.audio.bypass_fx = self.bypass_audio_fx;
+        (self.audio.bypass_fx, self.audio.quickfade) = (self.bypass_audio_fx, self.prefs.quickfade);
         if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
             self.audio.stop();
             if self.playing {

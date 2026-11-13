@@ -10,7 +10,7 @@ use crate::edit::src_time;
 use crate::engine::composite::Affine;
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
-use crate::project::{Clip, Composite, Curve, EnvKind, Envelope, Fx, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project};
+use crate::project::{ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Keyframes, MediaItem, MediaType, Motion, PanCrop, Project, Resample};
 
 /// A picture source as the decoders need it.
 #[derive(Debug, Clone)]
@@ -36,6 +36,10 @@ pub struct MediaRef {
     pub grid: f64,
     /// Where a subclip starts in its file (0 for a whole file): `sf` counts from the file's start.
     pub offset: f64,
+    /// The file's video stream decoded (`-map 0:v:N`, Stream ▸).
+    pub stream: u32,
+    /// Optical Flow: frames are motion-interpolated onto the grid (ffmpeg minterpolate) instead of repeated.
+    pub flow: bool,
 }
 
 impl MediaRef {
@@ -78,6 +82,8 @@ struct VEvent {
     generator: Option<Fx>,
     /// The media length the event repeats (`edit::loop_len`).
     looped: Option<f64>,
+    /// Resampled: the two source frames around each frame's time are blended (`m.grid` is the source's rate).
+    blend: bool,
 }
 
 /// One frame, resolved: tracks bottom to top.
@@ -113,6 +119,10 @@ pub struct EventPlan {
     pub alpha: f32,
     /// Event FX, applied to the source before Pan/Crop.
     pub fx: Vec<FxEval>,
+    /// Resampling: the next source frame and its weight, blended into `src` before the FX.
+    pub next: Option<(i64, f32)>,
+    /// Switches › Reduce Interlace Flicker: a vertical 1-2-1 blur of the source, before the FX.
+    pub flicker: bool,
 }
 
 #[derive(Debug)]
@@ -197,7 +207,42 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
         proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
         grid: 0.0,
         offset: m.file_time(0.0),
+        stream: 0,
+        flow: false,
     })
+}
+
+/// How event `c` shows source `m` in a project at `fps`: the source variant to decode (its grid, stream and Optical
+/// Flow) and whether neighbouring source frames are blended (Switches › resample radios, Project Properties › Resample
+/// mode). Smart (and Optical Flow) act when the source rate differs from the project's or the event plays off speed.
+fn event_source(m: &Arc<MediaRef>, item: &MediaItem, c: &Clip, mode: Resample, fps: f64) -> (Arc<MediaRef>, bool) {
+    let off_speed = (c.rate - 1.0).abs() > 1e-9;
+    let moving = !m.still && m.fps > 0.0;
+    let off_rate = moving && ((m.fps - fps).abs() > fps * 1e-3 || off_speed);
+    let flow = mode == Resample::OpticalFlow && off_rate;
+    // A 60p source at normal speed in a 30p project lands on whole source frames: there is nothing between to blend.
+    let ratio = m.fps / fps;
+    let aligned = !off_speed && ratio >= 1.0 - 1e-6 && (ratio - ratio.round()).abs() < 1e-6;
+    let blend = !flow && moving && !aligned && match mode {
+        Resample::Force => true,
+        Resample::Smart => off_rate,
+        _ => false,
+    };
+    // Off normal speed, a source with more frames than the project is read on its own frame grid, as is a blended one;
+    // Optical Flow makes the frames slow motion shows (the project rate over the playback rate).
+    let fine = moving && m.fps > fps * 1.001 && off_speed;
+    let grid = if flow { if off_speed { fps / c.rate } else { 0.0 } } else if blend || fine { m.fps } else { 0.0 };
+    // A stream or Optical Flow is another picture of the file: its own id keeps its decoders and cached frames apart.
+    let stream = if m.still { 0 } else { c.stream.min(item.streams(true) - 1) };
+    let m = if grid == m.grid && stream == 0 && !flow {
+        m.clone()
+    } else {
+        let id: Arc<str> = if stream > 0 || flow { format!("{}#{stream}{}", m.id, if flow { "f" } else { "" }).into() } else { m.id.clone() };
+        // A proxy is made from the first video stream.
+        let proxy = m.proxy.clone().filter(|_| stream == 0);
+        Arc::new(MediaRef { id, grid, stream, flow, proxy, ..(**m).clone() })
+    };
+    (m, blend)
 }
 
 pub fn compile(p: &Project) -> VideoPlan {
@@ -219,10 +264,8 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .filter(|c| !c.muted && c.duration > 0.0)
                 .filter_map(|c| {
                     let (m, item) = refs.get(c.media_id.as_deref()?)?;
-                    // Off normal speed, a source with more frames than the project is read on its own frame grid.
-                    let fine = !m.still && m.fps > fps * 1.001 && (c.rate - 1.0).abs() > 1e-9;
-                    let m = if fine { Arc::new(MediaRef { grid: m.fps, ..(**m).clone() }) } else { m.clone() };
-                    Some(VEvent { m, generator: item.generator.clone(), looped: crate::edit::loop_len(c, item), c: c.clone() })
+                    let (m, blend) = event_source(m, item, c, c.resample.unwrap_or(s.resample), fps);
+                    Some(VEvent { m, blend, generator: item.generator.clone(), looped: crate::edit::loop_len(c, item), c: c.clone() })
                 })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
@@ -276,15 +319,16 @@ fn env_at(envs: &[Envelope], kind: EnvKind, t: f64) -> f32 {
     envs.iter().find(|e| e.kind == kind).map_or(1.0, |e| e.at(t).clamp(0.0, 1.0))
 }
 
-/// Pan/Crop: the crop rectangle (normalised to the source, negative size = flip, `rot` degrees) fitted into the frame.
-pub fn place(pc: PanCrop, (sw, sh): (f64, f64), (w, h): (f64, f64)) -> Affine {
+/// Pan/Crop: the crop rectangle (normalised to the source, negative size = flip, `rot` degrees) fitted into the frame;
+/// with `keep_aspect` off (Switches › Maintain Aspect Ratio) stretched to fill it.
+pub fn place(pc: PanCrop, (sw, sh): (f64, f64), (w, h): (f64, f64), keep_aspect: bool) -> Affine {
     let (cw, ch) = ((pc.w.abs() as f64 * sw).max(1e-6), (pc.h.abs() as f64 * sh).max(1e-6));
-    let s = (w / cw).min(h / ch);
+    let (sx, sy) = if keep_aspect { ((w / cw).min(h / ch), (w / cw).min(h / ch)) } else { (w / cw, h / ch) };
     Affine::scale(sw, sh)
         .then(Affine::translate(-pc.cx as f64 * sw, -pc.cy as f64 * sh))
         // The crop frame turns one way, so the picture turns the other.
         .then(Affine::rotate(-pc.rot as f64))
-        .then(Affine::scale(s * pc.w.signum() as f64, s * pc.h.signum() as f64))
+        .then(Affine::scale(sx * pc.w.signum() as f64, sy * pc.h.signum() as f64))
         .then(Affine::translate(w / 2.0, h / 2.0))
         .then(Affine::scale(1.0 / w, 1.0 / h))
 }
@@ -325,8 +369,13 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 // Decision 0.9: an event overlapped by a later one stays at full alpha (a dissolve, not a dip).
                 let fade_out = if i + 1 < live.len() { 1.0 } else { fade(c.fade_out_curve, c.duration - local, c.fade_out) };
                 let alpha = fade_out * env_at(&c.envelopes, EnvKind::Opacity, local);
+                // Undersample rate: the event shows a new frame every 1 / r project frames, holding each in between.
+                let tq = match c.undersample.filter(|r| *r > 0.0 && *r < 1.0) {
+                    Some(r) => c.position + ((local * p.fps * r + 1e-6).floor() / (p.fps * r)).min(local),
+                    None => t,
+                };
                 // Reversed, a frame samples where it ends (its start, mirrored), so it shows exactly the forward frames backwards.
-                let mut st = src_time(c, if c.reverse { t + 1.0 / p.fps } else { t });
+                let mut st = src_time(c, if c.reverse { tq + 1.0 / p.fps } else { tq });
                 // A looping event repeats its media past the end; otherwise the last frame holds.
                 if let Some(len) = e.looped {
                     st = crate::edit::loop_time(st, len);
@@ -336,6 +385,8 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 }
                 let ft = st + e.m.offset;
                 let sf = (!e.m.still).then(|| if e.m.grid > 0.0 { (ft * e.m.grid + 1e-6).floor() as i64 } else { (ft * p.fps).round() as i64 });
+                // Resampled: the frame after `sf` too, weighted by how far between the two this frame's time falls.
+                let next = sf.filter(|_| e.blend).map(|n| (n + 1, (ft * e.m.grid - n as f64).clamp(0.0, 1.0) as f32)).filter(|n| n.1 >= 1.0 / 512.0);
                 // A generator is evaluated at its media time; one that does not animate always at 0.
                 let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
                     let gt = if generate::animated(&g) { st } else { 0.0 };
@@ -344,9 +395,11 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 let fx = evals(&c.fx, local);
                 let plan = |alpha| EventPlan {
                     src: SrcAt { m: e.m.clone(), sf, generator: generator.clone() },
-                    place: place(c.pan_crop.at(local), (e.m.w as f64, e.m.h as f64), size),
+                    place: place(c.pan_crop.at(local), (e.m.w as f64, e.m.h as f64), size, c.keep_aspect),
                     alpha,
                     fx: fx.clone(),
+                    next,
+                    flicker: c.reduce_flicker,
                 };
                 let kind = c.transition.as_ref().and_then(plugins::eval_transition);
                 match &c.transition {
@@ -407,6 +460,8 @@ pub struct ASrc {
     /// Source seconds per timeline second.
     pub rate: f64,
     pub reverse: bool,
+    /// The file's audio stream (`-map 0:a:N`, Stream ▸).
+    pub stream: u32,
 }
 
 #[derive(Debug)]
@@ -417,8 +472,11 @@ pub struct AEvent {
     pub src: ASrc,
     /// What is read: the event, or for a looping event one stream per pass through its media (`edit::loop_passes`).
     pub passes: Vec<ASrc>,
-    /// Event gain, linear.
+    /// Event gain with the Normalize gain, linear.
     pub gain: f32,
+    /// Channels ▸ and Switches › Invert Phase, applied to the PCM as it is read.
+    pub channels: ChannelMap,
+    pub invert: bool,
     pub fade_in: f64,
     pub fade_out: f64,
     pub fade_in_curve: Curve,
@@ -441,6 +499,8 @@ pub struct ATrack {
     pub vol_env: Option<Envelope>,
     pub pan_env: Option<Envelope>,
     pub mute_env: Option<Envelope>,
+    /// Track Switches › Invert Phase.
+    pub invert: bool,
     pub events: Vec<AEvent>,
 }
 
@@ -452,7 +512,13 @@ pub struct AudioPlan {
     pub master_fx: Vec<Fx>,
     /// Options › Bypass All Audio FX (playback only; a render never sets it).
     pub bypass_fx: bool,
+    /// Options › Quickfade Audio Edits: seconds of linear fade at each event edge that has no fade of its own (0 = off).
+    /// Playback and render both set it from the option.
+    pub quickfade: f64,
 }
+
+/// The quickfade length (VEGAS's Preferences › Editing default, 10 ms).
+pub const QUICKFADE: f64 = 0.010;
 
 pub fn compile_audio(p: &Project) -> AudioPlan {
     let media: HashMap<&str, &MediaItem> = p.media_pool.iter().filter(|m| m.sample_rate.is_some() && m.generator.is_none()).map(|m| (m.id.as_str(), m)).collect();
@@ -471,13 +537,16 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 .filter_map(|c| {
                     let m = media.get(c.media_id.as_deref()?)?;
                     // In the file: a subclip starts part way in.
-                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse };
+                    let stream = c.stream.min(m.streams(false) - 1);
+                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream };
                     Some(AEvent {
                         id: c.id.clone(),
                         fx: c.fx.clone(),
                         passes: crate::edit::loop_passes(c, crate::edit::loop_len(c, m)).into_iter().map(|(pos, dur, in_point)| src(pos, dur, in_point)).collect(),
                         src: src(c.position, c.duration, c.in_point),
-                        gain: crate::engine::keyframes::db_to_gain(c.gain_db),
+                        gain: crate::engine::keyframes::db_to_gain(c.gain_db + crate::edit::normalize_gain(c)),
+                        channels: c.channels,
+                        invert: c.invert,
                         fade_in: c.fade_in,
                         fade_out: c.fade_out,
                         fade_in_curve: c.fade_in_curve,
@@ -495,11 +564,25 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 vol_env: env(e, EnvKind::Volume),
                 pan_env: env(e, EnvKind::Pan),
                 mute_env: env(e, EnvKind::Mute),
+                invert: t.invert,
                 events,
             })
         })
         .collect();
-    AudioPlan { tracks, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false }
+    AudioPlan { tracks, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0 }
+}
+
+/// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it
+/// plays, or the whole file when it loops past the end; None without audio media.
+pub fn norm_source(p: &Project, c: &Clip) -> Option<(ASrc, f64)> {
+    let m = p.media_pool.iter().find(|m| Some(&m.id) == c.media_id.as_ref() && m.sample_rate.is_some() && m.generator.is_none())?;
+    let span = c.duration * c.rate;
+    let (from, len) = match crate::edit::loop_len(c, m) {
+        Some(l) if c.in_point + span > l => (0.0, l),
+        _ => (c.in_point, span.min(m.duration - c.in_point).max(0.0)),
+    };
+    let stream = c.stream.min(m.streams(false) - 1);
+    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream }, len))
 }
 
 #[cfg(test)]
@@ -550,7 +633,9 @@ mod tests {
     fn project() -> Project {
         let mut p = Project::new("t");
         p.settings.frame_rate = 30.0;
-        let (a, b, img) = (media("a", MediaType::Video), media("b", MediaType::Video), media("i", MediaType::Image));
+        // Source frames as decoded, unblended (the resample tests turn it on).
+        p.settings.resample = Resample::Disable;
+        let (a, b, img) =(media("a", MediaType::Video), media("b", MediaType::Video), media("i", MediaType::Image));
         p.timeline.video_tracks[0].clips.push(clip(&a, 10.0, 5.0, 2.0));
         p.timeline.video_tracks.push(Track::new("Video 2", TrackKind::Video));
         p.timeline.video_tracks[1].clips.push(clip(&b, 0.0, 20.0, 0.0));
@@ -668,6 +753,81 @@ mod tests {
         let passes: Vec<(f64, f64, f64)> = a.tracks[0].events[0].passes.iter().map(|s| (s.pos, s.dur, s.in_point)).collect();
         assert_eq!(passes, [(0.0, 8.0, 0.0), (8.0, 8.0, 0.0), (16.0, 4.0, 0.0)]);
         assert_eq!((a.tracks[0].events[0].src.pos, a.tracks[0].events[0].src.dur), (0.0, 20.0), "fades span the whole event");
+    }
+
+    /// The video event of `drawn` at `t`, as planned.
+    fn event_at(p: &Project, t: f64) -> EventPlan {
+        let vp = compile(p);
+        let mut fp = frame_plan(&vp, frame_at(t, vp.fps));
+        match fp.layers.pop().and_then(|mut l| l.items.pop()) {
+            Some(Item::Event(e)) => e,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// R3b: a 25p source in a 30p project is resampled (Smart): each frame blends the two source frames around its
+    /// time, read on the source's own grid. Disable shows the latest frame; Force blends whenever frames fall between
+    /// source frames, and Optical Flow interpolates instead.
+    #[test]
+    fn resample_blends_neighbouring_source_frames() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        p.media_pool[0].frame_rate = Some(25.0);
+        p.settings.resample = Resample::Smart;
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        c.in_point = 0.0; // a: 10..15 s, source 0..5 s
+        // Frame 301 is 10.0333 s, source 1/30 s: 25p frame 0.8333.
+        let e = event_at(&p, 301.0 / 30.0);
+        assert_eq!((e.src.m.grid, e.src.sf), (25.0, Some(0)));
+        let (n, w) = e.next.unwrap();
+        assert!(n == 1 && (w - 5.0 / 6.0).abs() < 1e-4, "{n} {w}");
+        p.timeline.video_tracks[0].clips[0].resample = Some(Resample::Disable);
+        let e = event_at(&p, 301.0 / 30.0);
+        assert!(e.next.is_none() && e.src.m.grid == 0.0 && e.src.sf == Some(1), "the project grid, the frame at or before");
+        // A 30p source at normal speed: Smart leaves it, Force blends (on frame times: nothing to blend).
+        p.media_pool[0].frame_rate = Some(30.0);
+        p.timeline.video_tracks[0].clips[0].resample = None;
+        assert!(event_at(&p, 10.5).next.is_none() && event_at(&p, 10.5).src.m.grid == 0.0);
+        p.media_pool[0].frame_rate = Some(60.0); // every project frame is a whole 60p frame: read as before
+        assert!(event_at(&p, 301.0 / 30.0).next.is_none() && event_at(&p, 301.0 / 30.0).src.m.grid == 0.0);
+        p.media_pool[0].frame_rate = Some(30.0);
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.resample, c.rate) = (Some(Resample::Force), 0.5);
+        let e = event_at(&p, 301.0 / 30.0); // half speed: source 1/60 s, between frames 0 and 1
+        assert_eq!(e.src.sf, Some(0));
+        assert!(e.next.is_some_and(|(n, w)| n == 1 && (w - 0.5).abs() < 1e-4), "{:?}", e.next);
+        // Optical Flow: the slow motion is interpolated onto a 60 fps grid of its own (another decoder), not blended.
+        p.timeline.video_tracks[0].clips[0].resample = Some(Resample::OpticalFlow);
+        let e = event_at(&p, 301.0 / 30.0);
+        assert!(e.next.is_none() && e.src.m.flow && e.src.m.grid == 60.0 && &*e.src.m.id == "a#0f", "{:?}", e.src.m);
+        assert_eq!(e.src.sf, Some(1));
+        // An old project opens with resampling off.
+        let old: Project = serde_json::from_str(&serde_json::to_string(&Project::new("o")).unwrap().replace(r#","resample":"Smart""#, "")).unwrap();
+        assert_eq!(old.settings.resample, Resample::Disable);
+    }
+
+    /// R3b: Stream ▸ decodes another video stream under its own id; the Undersample rate holds frames; Maintain Aspect
+    /// Ratio off stretches; Reduce Interlace Flicker reaches the compositor.
+    #[test]
+    fn stream_undersample_aspect_and_flicker() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        p.media_pool[0].video_streams = 2;
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.stream, c.reduce_flicker) = (1, true);
+        let e = event_at(&p, 11.0);
+        assert_eq!((&*e.src.m.id, e.src.m.stream, e.src.m.proxy.is_none(), e.flicker), ("a#1", 1, true, true));
+        // Half the frame rate: each source frame shows for two project frames.
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.stream, c.undersample) = (0, Some(0.5));
+        let sfs: Vec<_> = (300..306).map(|n| event_at(&p, n as f64 / 30.0).src.sf.unwrap()).collect();
+        assert_eq!(sfs, [60, 60, 62, 62, 64, 64]);
+        // 1920x1080 media in a 4:3 project: fitted (letterboxed) or stretched to the full frame.
+        (p.settings.width, p.settings.height) = (1440, 1080);
+        let fit = event_at(&p, 11.0).place;
+        p.timeline.video_tracks[0].clips[0].keep_aspect = false;
+        let stretch = event_at(&p, 11.0).place;
+        assert_eq!((fit.apply(0.0, 0.0).1 > 0.1, stretch.apply(0.0, 0.0), stretch.apply(1.0, 1.0)), (true, (0.0, 0.0), (1.0, 1.0)));
     }
 
     /// An odd size (an imported VEGAS project) is composed one pixel smaller, as 4:2:0 encoders need.

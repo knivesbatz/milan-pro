@@ -566,6 +566,8 @@ mod tests {
                 proxy,
                 grid: 0.0,
                 offset: 0.0,
+                stream: 0,
+                flow: false,
             };
             // Same quality (scaler) for both: Preview reads the proxy when there is one, else the source.
             let (with, without) = (media(Some(proxy.clone())), media(None));

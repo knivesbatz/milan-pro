@@ -238,6 +238,120 @@ pub fn loop_clips(project: &mut Project, ids: &[String]) -> bool {
     switch_clips(project, ids, |c| &mut c.looping)
 }
 
+/// The R3b event switches of Edit › Switches and the event menus; each acts on events of its kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Invert,
+    Normalize,
+    AutoNormalize,
+    KeepAspect,
+    ReduceFlicker,
+}
+
+impl Switch {
+    /// A video event switch (else an audio one).
+    pub fn video(self) -> bool {
+        matches!(self, Switch::KeepAspect | Switch::ReduceFlicker)
+    }
+
+    pub fn get(self, c: &Clip) -> bool {
+        match self {
+            Switch::Invert => c.invert,
+            Switch::Normalize => c.normalize,
+            Switch::AutoNormalize => c.auto_normalize,
+            Switch::KeepAspect => c.keep_aspect,
+            Switch::ReduceFlicker => c.reduce_flicker,
+        }
+    }
+
+    pub fn of(self, c: &mut Clip) -> &mut bool {
+        match self {
+            Switch::Invert => &mut c.invert,
+            Switch::Normalize => &mut c.normalize,
+            Switch::AutoNormalize => &mut c.auto_normalize,
+            Switch::KeepAspect => &mut c.keep_aspect,
+            Switch::ReduceFlicker => &mut c.reduce_flicker,
+        }
+    }
+}
+
+/// The unlocked events `ids` of one kind on unlocked tracks, in timeline order, and the focus one's index among them:
+/// the last listed of the kind, or (that one locked) the last of them.
+fn events_of<'a>(project: &'a mut Project, ids: &[String], video: bool) -> (Vec<&'a mut Clip>, Option<usize>) {
+    let focus = ids.iter().rev().find(|id| project.find_clip(id).is_some_and(|r| r.is_video == video)).cloned();
+    let v: Vec<&mut Clip> = project.timeline.tracks_mut(video).iter_mut().filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(|c| !c.locked && ids.contains(&c.id)).collect();
+    let at = focus.and_then(|f| v.iter().position(|c| c.id == f)).or(v.len().checked_sub(1));
+    (v, at)
+}
+
+/// Edit › Switches (R3b): the events of the switch's kind take the opposite of the focus event's state. Turning
+/// Normalize or Auto Normalize on measures the peak again.
+pub fn set_switch(project: &mut Project, ids: &[String], s: Switch) -> bool {
+    let (mut v, Some(at)) = events_of(project, ids, s.video()) else { return false };
+    let on = !s.get(v[at]);
+    for c in &mut v {
+        *s.of(c) = on;
+        if on && matches!(s, Switch::Normalize | Switch::AutoNormalize) {
+            c.normalized = None;
+        }
+    }
+    changed(project, true)
+}
+
+/// Switches › resample radios on the video events `ids`.
+pub fn set_resample(project: &mut Project, ids: &[String], r: Option<Resample>) -> bool {
+    let (mut v, _) = events_of(project, ids, true);
+    let done = v.iter().any(|c| c.resample != r);
+    v.iter_mut().for_each(|c| c.resample = r);
+    changed(project, done)
+}
+
+/// Channels ▸ on the audio events `ids`.
+pub fn set_channels(project: &mut Project, ids: &[String], ch: ChannelMap) -> bool {
+    let (mut v, _) = events_of(project, ids, false);
+    let done = v.iter().any(|c| c.channels != ch);
+    v.iter_mut().for_each(|c| c.channels = ch);
+    changed(project, done)
+}
+
+/// Stream ▸: stream `n` of their media for the events `ids` of one kind that have it.
+pub fn set_stream(project: &mut Project, ids: &[String], video: bool, n: u32) -> bool {
+    let counts: HashMap<String, u32> = project.media_pool.iter().map(|m| (m.id.clone(), m.streams(video))).collect();
+    let (mut v, _) = events_of(project, ids, video);
+    let mut done = false;
+    for c in v.iter_mut().filter(|c| c.stream != n && c.media_id.as_ref().and_then(|m| counts.get(m)).is_some_and(|&k| n < k)) {
+        c.stream = n;
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// Preferences › Audio "Normalize peak level" (VEGAS's default).
+pub const NORMALIZE_PEAK_DB: f32 = -0.1;
+
+/// The Normalize gain (dB) that takes a measured `peak` (linear) to `NORMALIZE_PEAK_DB`; silence gets none.
+pub fn normalize_db(peak: f32) -> f32 {
+    if peak > 1e-6 { NORMALIZE_PEAK_DB - 20.0 * peak.log10() } else { 0.0 }
+}
+
+/// The audio event `c` plays, as its Normalize gain is measured on.
+pub fn norm_span(c: &Clip) -> NormSpan {
+    NormSpan { media: c.media_id.clone(), stream: c.stream, channels: c.channels, in_point: c.in_point, duration: c.duration, rate: c.rate }
+}
+
+/// Normalize or Auto Normalize is on and the gain is not measured yet, or (Auto Normalize) was measured on audio the
+/// event no longer plays. Plain Normalize keeps its gain through trims, as in VEGAS (Event Properties › Recalculate).
+pub fn needs_normalize(c: &Clip) -> bool {
+    (c.normalize || c.auto_normalize)
+        && c.media_id.is_some()
+        && c.normalized.as_ref().is_none_or(|n| c.auto_normalize && n.span != norm_span(c))
+}
+
+/// The Normalize gain the event plays with (dB), 0 when Normalize is off or not measured yet.
+pub fn normalize_gain(c: &Clip) -> f32 {
+    c.normalized.as_ref().filter(|_| c.normalize || c.auto_normalize).map_or(0.0, |n| n.db)
+}
+
 fn switch_clips(project: &mut Project, ids: &[String], switch: impl Fn(&mut Clip) -> &mut bool) -> bool {
     let Some(on) = ids.last().and_then(|id| project.clip(id)).cloned().map(|mut c| !*switch(&mut c)) else { return false };
     for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips).filter(|c| ids.contains(&c.id)) {
@@ -1554,6 +1668,10 @@ pub fn apply_props(project: &mut Project, id: &str, mut draft: Clip) -> bool {
     }
     if *cur == draft {
         return false;
+    }
+    // Normalize turned on is measured again, as from the Switches menu.
+    if (draft.normalize && !cur.normalize) || (draft.auto_normalize && !cur.auto_normalize) {
+        draft.normalized = None;
     }
 
     let frame = 1.0 / project.settings.frame_rate.max(1.0);
@@ -4039,5 +4157,43 @@ mod tests {
         assert_eq!(muted(&p), [false, false, false]);
         assert!(exclusive_tracks(&mut p, &v1, true));
         assert!(p.timeline.video_tracks[0].solo && !p.timeline.audio_tracks[0].solo);
+    }
+
+    /// R3b: each switch acts on events of its kind and follows the focus event; Normalize turned on is measured again;
+    /// Stream ▸ only picks streams the media has; locked events keep theirs.
+    #[test]
+    fn event_switches_channels_and_streams() {
+        let (mut p, ids) = three_events(); // video, video, audio (focus)
+        assert!(set_switch(&mut p, &ids, Switch::Invert));
+        let tl = &p.timeline;
+        assert!(tl.audio_tracks[0].clips[0].invert && !tl.video_tracks[0].clips[0].invert);
+        assert!(set_switch(&mut p, &ids, Switch::KeepAspect)); // the focus video event keeps aspect: all turn it off
+        assert!(p.timeline.video_tracks.iter().all(|t| !t.clips[0].keep_aspect));
+        p.timeline.video_tracks[1].clips[0].locked = true;
+        assert!(set_switch(&mut p, &ids, Switch::ReduceFlicker));
+        assert!(p.timeline.video_tracks[0].clips[0].reduce_flicker && !p.timeline.video_tracks[1].clips[0].reduce_flicker);
+        assert!(set_resample(&mut p, &ids, Some(Resample::Force)) && !set_resample(&mut p, &ids, Some(Resample::Force)));
+        assert!(set_channels(&mut p, &ids, ChannelMap::Swap));
+        assert_eq!(p.timeline.audio_tracks[0].clips[0].channels, ChannelMap::Swap);
+        // Normalize: measured once, kept through a trim; Auto Normalize measures the new span again.
+        let a = &mut p.timeline.audio_tracks[0].clips[0];
+        a.media_id = Some("m".into());
+        a.normalized = Some(Normalized { db: 3.0, span: norm_span(a) });
+        assert!(!needs_normalize(a) && normalize_gain(a) == 0.0, "off: not measured, not applied");
+        assert!(set_switch(&mut p, &ids, Switch::Normalize));
+        let a = &mut p.timeline.audio_tracks[0].clips[0];
+        assert!(a.normalized.is_none() && needs_normalize(a), "turned on: measured again");
+        a.normalized = Some(Normalized { db: 3.0, span: norm_span(a) });
+        a.duration = 1.0;
+        assert!(!needs_normalize(a) && normalize_gain(a) == 3.0);
+        a.auto_normalize = true;
+        assert!(needs_normalize(a));
+        assert_eq!(normalize_db(1.0), NORMALIZE_PEAK_DB);
+        assert!((crate::engine::keyframes::db_to_gain(normalize_db(0.5)) * 0.5 - 0.98855).abs() < 1e-4);
+        // Stream ▸: the media has two audio streams.
+        p.media_pool.push(MediaItem { id: "m".into(), audio_streams: 2, ..Default::default() });
+        assert!(!set_stream(&mut p, &ids, false, 2) && set_stream(&mut p, &ids, false, 1));
+        assert_eq!(p.timeline.audio_tracks[0].clips[0].stream, 1);
+        assert!(!set_stream(&mut p, &ids, true, 1), "the video events have no media with a second stream");
     }
 }

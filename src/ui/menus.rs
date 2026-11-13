@@ -10,7 +10,7 @@ use crate::decode::Quality;
 use crate::history::History;
 use crate::media::Importer;
 use crate::project::*;
-use crate::edit::RippleMode;
+use crate::edit::{RippleMode, Switch};
 use super::chrome;
 use super::EditTool;
 use super::dock::Panel;
@@ -118,6 +118,16 @@ pub struct CmdState {
     /// Options › Mute All Audio / Mute All Video.
     pub mute_audio: bool,
     pub mute_video: bool,
+    /// The R3b switches that are on: audio ones of the focus audio event, video ones of the focus video event; the
+    /// focus video event's resample radio and the focus audio event's Channels.
+    pub switches: Vec<crate::edit::Switch>,
+    pub resample: Option<Resample>,
+    pub channels: ChannelMap,
+    /// Stream ▸: the focus event's stream, and how many of its kind its media has.
+    pub stream: u32,
+    pub streams: u32,
+    /// Options › Quickfade Audio Edits.
+    pub quickfade: bool,
 }
 
 impl CmdState {
@@ -182,6 +192,11 @@ impl CmdState {
             PasteRepeat => self.clipboard,
             MuteExclusive | SoloExclusive => self.tracks_sel,
             ToggleListFocus => self.any_tracks,
+            EventSwitch(s) => if s.video() { self.video_clip } else { self.audio_clip },
+            SetResample(_) => self.video_clip,
+            SetChannels(_) => self.audio_clip,
+            SetStream(n) => self.clip && n < self.streams,
+            Quickfade => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -214,6 +229,11 @@ impl CmdState {
             BypassAudioFx => self.bypass_audio_fx,
             MuteAllAudio => self.mute_audio,
             MuteAllVideo => self.mute_video,
+            EventSwitch(s) => self.switches.contains(&s),
+            SetResample(r) => self.resample == r,
+            SetChannels(ch) => self.channels == ch,
+            SetStream(n) => self.stream == n,
+            Quickfade => self.quickfade,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             LayoutUser(n) => self.layout_slot == Some(n),
@@ -410,7 +430,10 @@ fn row(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark, why:
 /// A row for `cmd`: state from the published `CmdState`, shortcut from the keymap; sends it when chosen.
 pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
-    let radio = matches!(c, PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_));
+    let radio = matches!(
+        c,
+        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+    );
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
         Some(on) => Mark::Check(on),
@@ -466,6 +489,8 @@ pub enum M {
     Recent,
     /// View › Window Layouts: user slots 0-9 with their names.
     UserLayouts,
+    /// Stream ▸: a radio per stream of the focus event's media (Stream 1, Stream 2...).
+    Streams,
 }
 
 use M::*;
@@ -502,6 +527,11 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
             let st = state(ui.ctx());
             for (n, name) in st.layouts.iter().enumerate() {
                 cmd(ui, &format!("&{n} {}", name.as_ref().map_or("<EMPTY>".into(), |s| s.replace('&', "&&"))), LayoutUser(n));
+            }
+        }
+        Streams => {
+            for n in 0..state(ui.ctx()).streams.max(1) {
+                cmd(ui, &format!("Stream &{}", n + 1), SetStream(n));
             }
         }
     }
@@ -637,17 +667,27 @@ const SWITCHES: &[M] = &[
     C("&Lock", EventLock),
     C("L&oop", EventLoop),
     S,
-    K("&Invert Phase", false, Later("R3b")),
-    K("&Normalize", false, Later("R3b")),
-    V23(&K("Auto Normalize", false, Later("R3b"))),
+    Inline(AUDIO_SWITCHES),
     S,
-    K("Maintain &Aspect Ratio", true, Later("R3b")),
-    K("Reduce Interlace &Flicker", false, Later("R3b")),
+    Inline(VIDEO_SWITCHES),
+];
+
+/// The audio event switches (Edit › Switches and the audio event menu).
+pub const AUDIO_SWITCHES: &[M] = &[
+    C("&Invert Phase", EventSwitch(Switch::Invert)),
+    C("&Normalize", EventSwitch(Switch::Normalize)),
+    V23(&C("Auto Normalize", EventSwitch(Switch::AutoNormalize))),
+];
+
+/// The video event switches (Edit › Switches and the video event menu).
+pub const VIDEO_SWITCHES: &[M] = &[
+    C("Maintain &Aspect Ratio", EventSwitch(Switch::KeepAspect)),
+    C("Reduce Interlace &Flicker", EventSwitch(Switch::ReduceFlicker)),
     S,
-    R("Use P&roject Resample Mode", true, Later("R3b")),
-    R("Force Re&sample", false, Later("R3b")),
-    R("&Disable Resample", false, Later("R3b")),
-    V23(&R("Optical Flow", false, Later("R3b"))),
+    C("Use P&roject Resample Mode", SetResample(None)),
+    C("Force Re&sample", SetResample(Some(Resample::Force))),
+    C("&Disable Resample", SetResample(Some(Resample::Disable))),
+    V23(&C("Optical Flow", SetResample(Some(Resample::OpticalFlow)))),
 ];
 
 /// Edit › Take and the event menu's Take ▸; Choose Active... and Delete... open the Take Chooser.
@@ -676,14 +716,14 @@ pub const GROUP: &[M] = &[
 ];
 
 pub const CHANNELS: &[M] = &[
-    R("&Both", true, Later("R3b")),
-    R("&Left Only", false, Later("R3b")),
-    R("&Right Only", false, Later("R3b")),
-    R("&Combine", false, Later("R3b")),
-    R("&Swap", false, Later("R3b")),
+    C("&Both", SetChannels(ChannelMap::Both)),
+    C("&Left Only", SetChannels(ChannelMap::LeftOnly)),
+    C("&Right Only", SetChannels(ChannelMap::RightOnly)),
+    C("&Combine", SetChannels(ChannelMap::Combine)),
+    C("&Swap", SetChannels(ChannelMap::Swap)),
 ];
 
-pub const STREAM: &[M] = &[X("Stream &1", Later("R3b"))];
+pub const STREAM: &[M] = &[Streams];
 
 pub const EDIT: &[M] = &[
     C("&Undo", Undo),
@@ -986,7 +1026,7 @@ pub const OPTIONS: &[M] = &[
     Sub("Ruler &Format", RULER_MENU),
     S,
     C("&Automatic Crossfades", AutoCrossfade),
-    K("Q&uickfade Audio Edits", true, Later("R3b")),
+    C("Q&uickfade Audio Edits", Quickfade),
     C("Auto &Ripple", AutoRipple),
     Sub("&Ripple", &[
         C("Auto &Ripple", AutoRipple),
@@ -1099,7 +1139,7 @@ pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
                 greyed(std::slice::from_ref(*i), out);
                 None
             }
-            S | Recent | UserLayouts => None,
+            S | Recent | UserLayouts | Streams => None,
         };
         if let Some((l, w)) = row {
             let l = keymap::mnemonic(l).0;
@@ -1390,6 +1430,42 @@ mod tests {
             greyed(items, &mut rows);
         }
         assert!(!rows.iter().any(|(_, w)| *w == Later("R3a")), "{rows:?}");
+    }
+
+    /// R3b: the audio and video event switches, resample radios, Channels and Stream follow the focus events and wait
+    /// for an event of their kind; Quickfade is an option; nothing in the menus waits on R3b any more.
+    #[test]
+    fn event_switches_channels_streams_and_quickfade_work() {
+        let r3b = [
+            EventSwitch(Switch::Invert),
+            EventSwitch(Switch::Normalize),
+            EventSwitch(Switch::AutoNormalize),
+            EventSwitch(Switch::KeepAspect),
+            EventSwitch(Switch::ReduceFlicker),
+            SetResample(None),
+            SetResample(Some(Resample::OpticalFlow)),
+            SetChannels(ChannelMap::Swap),
+            SetStream(0),
+            Quickfade,
+        ];
+        let mut st = CmdState::default();
+        for c in r3b {
+            assert!(unfinished(c).is_none(), "{c:?}");
+            assert_eq!(st.enabled(c), c == Quickfade, "{c:?}");
+        }
+        st.audio_clip = true;
+        assert!(st.enabled(EventSwitch(Switch::Normalize)) && st.enabled(SetChannels(ChannelMap::Both)) && !st.enabled(EventSwitch(Switch::KeepAspect)));
+        (st.video_clip, st.clip, st.streams) = (true, true, 2);
+        assert!(r3b.iter().all(|c| st.enabled(*c)) && !st.enabled(SetStream(2)));
+        (st.switches, st.resample, st.channels, st.stream, st.quickfade) = (vec![Switch::KeepAspect], Some(Resample::Force), ChannelMap::LeftOnly, 1, true);
+        assert_eq!((st.checked(EventSwitch(Switch::KeepAspect)), st.checked(EventSwitch(Switch::Invert))), (Some(true), Some(false)));
+        assert_eq!((st.checked(SetResample(None)), st.checked(SetResample(Some(Resample::Force)))), (Some(false), Some(true)));
+        assert_eq!((st.checked(SetChannels(ChannelMap::LeftOnly)), st.checked(SetStream(1)), st.checked(Quickfade)), (Some(true), Some(true), Some(true)));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R3b")), "{rows:?}");
     }
 
     #[test]

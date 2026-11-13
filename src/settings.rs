@@ -35,6 +35,8 @@ pub struct Prefs {
     pub still_len: f64,
     /// Options › Automatic Crossfades: overlapping events on a track crossfade.
     pub auto_crossfade: bool,
+    /// Options › Quickfade Audio Edits: a 10 ms fade at audio event edges without one, in playback and render.
+    pub quickfade: bool,
     /// Options › Snap to Grid, Snap to All Events (event edges on every track, not only the dragged event's own)
     /// and Grid Spacing.
     pub snap_grid: bool,
@@ -103,6 +105,7 @@ impl Default for Prefs {
             quantize: true,
             still_len: 5.0,
             auto_crossfade: true,
+            quickfade: true,
             snap_grid: false,
             snap_all: false,
             grid: crate::project::GridSpacing::RulerMarks,
@@ -348,7 +351,6 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         ("Full-resolution rendering quality:", "Good", Later("R11")),
         ("Motion blur type:", "Gaussian", Later("R7")),
         ("Deinterlace method:", "Blend fields", Later("R11")),
-        ("Resample mode:", if v23 { "Disable resampling" } else { "Smart resample" }, Later("R3b")),
     ];
     if v23 {
         grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
@@ -357,6 +359,16 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     for (k, (label, value, why)) in grid.into_iter().enumerate() {
         dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
+    dialogs::row(ui, "Resample mode:", 175.0, true, |ui| {
+        use crate::project::Resample::*;
+        // VEGAS 23 calls Smart "Frame blend" and offers Optical Flow in place of Force.
+        let modes = if v23 { [Smart, OpticalFlow, Disable] } else { [Smart, Force, Disable] };
+        egui::ComboBox::from_id_salt("pp_resample").width(200.0).selected_text(resample_name(d.resample, v23)).show_ui(ui, |ui| {
+            for m in modes {
+                ui.selectable_value(&mut d.resample, m, resample_name(m, v23));
+            }
+        });
+    });
     ui.add_enabled(false, egui::Checkbox::new(&mut true, "Adjust source media to better match project or render settings"))
         .on_disabled_hover_text(Later("R11").text());
     ui.add_enabled_ui(false, |ui| {
@@ -368,6 +380,19 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         });
         ui.add(egui::Checkbox::new(&mut false, "Start all new projects with these settings")).on_disabled_hover_text(Later("R49").text());
     });
+}
+
+/// Project Properties › Resample mode, as each look names it.
+fn resample_name(r: crate::project::Resample, v23: bool) -> &'static str {
+    use crate::project::Resample::*;
+    match (r, v23) {
+        (Smart, false) => "Smart resample",
+        (Smart, true) => "Frame blend",
+        (Force, _) => "Force resample",
+        (Disable, false) => "Disable resample",
+        (Disable, true) => "Disable resampling",
+        (OpticalFlow, _) => "Optical Flow",
+    }
 }
 
 /// The Ruler page: start time (typed in the ruler's format), format, tempo, meter and beat note.
@@ -421,7 +446,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
-        assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
+        assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping, d.quickfade), (true, false, crate::edit::RippleMode::Affected, false, true));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);

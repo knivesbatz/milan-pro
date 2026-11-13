@@ -127,6 +127,39 @@ fn whole_pixel(m: Affine) -> Option<(i64, i64)> {
         .then(|| (m.tx.round() as i64, m.ty.round() as i64))
 }
 
+/// Resampling: `a` becomes (1 - w) a + w b, per premultiplied channel (pictures of one size).
+pub fn blend_frames(a: &mut ColorImage, b: &ColorImage, w: f32, k: usize) {
+    if a.size != b.size {
+        return;
+    }
+    let (w8, cols) = ((w.clamp(0.0, 1.0) * 256.0).round() as u32, a.size[0]);
+    par_rows(&mut a.pixels, cols, k, |y, row| {
+        for (p, q) in row.iter_mut().zip(&b.pixels[y * cols..(y + 1) * cols]) {
+            let (x, z) = (p.to_array(), q.to_array());
+            let o: [u8; 4] = std::array::from_fn(|i| ((x[i] as u32 * (256 - w8) + z[i] as u32 * w8 + 128) >> 8) as u8);
+            *p = Color32::from_rgba_premultiplied(o[0], o[1], o[2], o[3]);
+        }
+    });
+}
+
+/// Reduce Interlace Flicker: each row becomes (above + 2 x row + below) / 4, the edge rows repeated.
+pub fn reduce_flicker(img: &mut ColorImage, k: usize) {
+    let [w, h] = img.size;
+    if h < 2 {
+        return;
+    }
+    let src = img.pixels.clone();
+    par_rows(&mut img.pixels, w, k, |y, row| {
+        let line = |y: usize| &src[y * w..(y + 1) * w];
+        let (up, mid, down) = (line(y.saturating_sub(1)), line(y), line((y + 1).min(h - 1)));
+        for (x, p) in row.iter_mut().enumerate() {
+            let (u, m, d) = (up[x].to_array(), mid[x].to_array(), down[x].to_array());
+            let o: [u8; 4] = std::array::from_fn(|i| ((u[i] as u32 + 2 * m[i] as u32 + d[i] as u32 + 2) >> 2) as u8);
+            *p = Color32::from_rgba_premultiplied(o[0], o[1], o[2], o[3]);
+        }
+    });
+}
+
 /// Draw `src` through `m` (source pixel edges -> destination pixel edges) at `alpha` onto `dst`, source-over.
 /// Outside the source rectangle nothing is drawn, so letterbox bars stay as they were.
 pub fn draw(dst: &mut ColorImage, src: &ColorImage, m: Affine, alpha: f32, bilinear: bool, k: usize) {
@@ -263,6 +296,14 @@ fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out
     }
     let (dw, dh) = decode_size(e, to_out);
     let Some(mut img) = src.get(&e.src, dw, dh) else { return };
+    if let Some((n, w)) = e.next {
+        if let Some(b) = src.get(&SrcAt { m: e.src.m.clone(), sf: Some(n), generator: None }, dw, dh) {
+            blend_frames(Arc::make_mut(&mut img), &b, w, k);
+        }
+    }
+    if e.flicker {
+        reduce_flicker(Arc::make_mut(&mut img), k);
+    }
     for f in &e.fx {
         vfx::apply(Arc::make_mut(&mut img), f, k);
     }
@@ -363,6 +404,8 @@ mod tests {
             proxy: None,
             grid: 0.0,
             offset: 0.0,
+            stream: 0,
+            flow: false,
         })
     }
 
@@ -376,7 +419,7 @@ mod tests {
     }
 
     fn event(m: &Arc<MediaRef>, pc: PanCrop, alpha: f32) -> EventPlan {
-        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0)), alpha, fx: Vec::new() }
+        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0), true), alpha, fx: Vec::new(), next: None, flicker: false }
     }
 
     fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
@@ -501,6 +544,44 @@ mod tests {
             assert_eq!(px(&scratch, W - 25, y), [255, 0, 0, 255]);
             assert_eq!(px(&scratch, W - 24, y)[3], 0);
         }
+    }
+
+    /// R3b: Maintain Aspect Ratio off stretches the 4:3 picture over the whole 16:9 frame (no bars).
+    #[test]
+    fn stretched_events_fill_the_frame() {
+        let m = media(640, 480);
+        let mut e = event(&m, PanCrop::default(), 1.0);
+        e.place = plan::place(PanCrop::default(), (640.0, 480.0), (1920.0, 1080.0), false);
+        let l = layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default());
+        let mut scratch = ColorImage::new([W, H], Color32::TRANSPARENT);
+        draw_items(&mut scratch, &mut Halves(Color32::RED, Color32::BLUE), &l, 1.0, true, 1, true);
+        assert_eq!((px(&scratch, 0, 0), px(&scratch, W - 1, H - 1)), ([255, 0, 0, 255], [0, 0, 255, 255]));
+        assert_eq!(px(&scratch, W / 2 - 2, H / 2), [255, 0, 0, 255], "the source's middle lands in the frame's middle");
+    }
+
+    /// R3b: resampling mixes two frames by weight; Reduce Interlace Flicker is a vertical 1-2-1 blur.
+    #[test]
+    fn frame_blend_and_flicker_filter() {
+        let mut a = ColorImage::new([2, 1], Color32::from_gray(0));
+        blend_frames(&mut a, &ColorImage::new([2, 1], Color32::from_gray(200)), 0.25, 1);
+        assert_eq!(a.pixels[0].to_array(), [50, 50, 50, 255]);
+        // Alternating white and black lines (interlace twitter) become steady grey inside; edge rows repeat.
+        let mut img = ColorImage { size: [1, 4], pixels: [255, 0, 255, 0].map(Color32::from_gray).to_vec() };
+        reduce_flicker(&mut img, 1);
+        let rows: Vec<u8> = img.pixels.iter().map(|p| p.r()).collect();
+        assert_eq!(rows, [191, 128, 128, 64]);
+        // Through compose: the event's next frame at weight 0.5, from a source that answers per frame.
+        struct PerFrame;
+        impl Sources for PerFrame {
+            fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
+                Some(Arc::new(ColorImage::new([w as usize, h as usize], Color32::from_gray(if s.sf == Some(0) { 100 } else { 200 }))))
+            }
+        }
+        let m = media(1920, 1080);
+        let mut e = event(&m, PanCrop::default(), 1.0);
+        e.next = Some((1, 0.5));
+        let out = compose(&FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] }, &mut PerFrame, W, H, true, 1);
+        assert_eq!(px(&out, W / 2, H / 2), [150, 150, 150, 255]);
     }
 
     #[test]

@@ -144,8 +144,12 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
 
     let streams = info["streams"].as_array().map(Vec::as_slice).unwrap_or_default();
     // Cover art in audio files is a video stream flagged attached_pic: not a picture track.
-    let video = streams.iter().find(|s| s["codec_type"] == "video" && s["disposition"]["attached_pic"].as_i64() != Some(1));
+    let is_video = |s: &&serde_json::Value| s["codec_type"] == "video" && s["disposition"]["attached_pic"].as_i64() != Some(1);
+    let video = streams.iter().find(is_video);
     let audio = streams.iter().find(|s| s["codec_type"] == "audio");
+    // Stream ▸ lists the streams of each kind (`-map 0:v:N` / `0:a:N`); cover art is not a picture stream.
+    item.video_streams = streams.iter().filter(is_video).count() as u32;
+    item.audio_streams = streams.iter().filter(|s| s["codec_type"] == "audio").count() as u32;
 
     if let Some(s) = video {
         let (w, h) = (s["width"].as_u64().map(|v| v as u32), s["height"].as_u64().map(|v| v as u32));
@@ -286,5 +290,14 @@ mod tests {
         let m = parse("png", r#"{"streams":[{"codec_type":"video","codec_name":"png","width":64,"height":64}]}"#);
         assert_eq!(m.media_type, MediaType::Image);
         assert_eq!(parse("xyz", "{}").media_type, MediaType::Unknown);
+    }
+
+    /// R3b: Stream ▸ offers each audio and picture stream; cover art is not one.
+    #[test]
+    fn streams_are_counted_by_kind() {
+        let m = parse("mov", r#"{"streams":[{"codec_type":"video"},{"codec_type":"audio"},{"codec_type":"audio"},{"codec_type":"data"},
+            {"codec_type":"video","disposition":{"attached_pic":1}},{"codec_type":"audio"}]}"#);
+        assert_eq!((m.video_streams, m.audio_streams, m.streams(true), m.streams(false)), (1, 3, 1, 3));
+        assert_eq!(MediaItem::default().streams(false), 1, "an item probed before R3b has one");
     }
 }

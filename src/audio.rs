@@ -10,8 +10,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use crate::engine::mix::{self, Mixer, frame};
-use crate::engine::plan::{AudioPlan, compile_audio};
-use crate::project::{MediaItem, Project, Track};
+use crate::engine::plan::{AudioPlan, QUICKFADE, compile_audio};
+use crate::edit;
+use crate::project::{MediaItem, NormSpan, Normalized, Project, Track};
 
 pub const RATE: u32 = 48_000;
 pub const PEAKS_PER_SEC: f64 = 100.0;
@@ -165,9 +166,9 @@ struct Session {
     calls: Arc<AtomicU64>,
     watch: (u64, Instant),
     stop: Arc<AtomicBool>,
-    /// The plan the mixer reads once per block, and the content hash and bypass it was compiled with.
+    /// The plan the mixer reads once per block, and the content hash, bypass and quickfade it was compiled with.
     slot: Arc<Mutex<Arc<AudioPlan>>>,
-    hash: (u64, bool),
+    hash: (u64, bool, bool),
 }
 
 pub struct Player {
@@ -183,6 +184,8 @@ pub struct Player {
     pub master: Arc<Master>,
     /// Options › Bypass All Audio FX: the plans this player compiles skip every audio plug-in.
     pub bypass_fx: bool,
+    /// Options › Quickfade Audio Edits.
+    pub quickfade: bool,
 }
 
 impl Drop for Player {
@@ -203,6 +206,7 @@ impl Player {
             error: Arc::new(Mutex::new(None)),
             master: Arc::new(Master::new()),
             bypass_fx: false,
+            quickfade: true,
         };
         p.open();
         p
@@ -282,18 +286,18 @@ impl Player {
                 })
             })
             .expect("spawn milan-mix");
-        let hash = (crate::engine::content_hash(project), self.bypass_fx);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade);
         self.session = Some(Session { clock, calls, watch: (0, Instant::now()), stop, slot, hash });
     }
 
     fn plan(&self, project: &Project) -> AudioPlan {
-        AudioPlan { bypass_fx: self.bypass_fx, ..compile_audio(project) }
+        AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, ..compile_audio(project) }
     }
 
     /// While playing: give the mixer the project's new plan after an edit (or a Bypass All Audio FX toggle). It is
     /// heard within about 150 ms.
     pub fn set_plan(&mut self, project: &Project) {
-        let hash = (crate::engine::content_hash(project), self.bypass_fx);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade);
         if self.session.as_ref().is_none_or(|s| s.hash == hash) {
             return;
         }
@@ -337,19 +341,80 @@ impl Player {
 }
 
 
+// ---- Normalize ----
+
+/// Switches › Normalize: measures the peak of each audio event that needs its Normalize gain (`edit::needs_normalize`)
+/// on a thread of its own, and sets the gain when it arrives. Not an undo step of its own: the switch's edit is.
+pub struct Normalizer {
+    /// To the measuring thread, one event at a time (a Select All and Normalize is not a hundred decoders at once).
+    tx: Sender<(String, NormSpan, crate::engine::plan::ASrc, f64, egui::Context)>,
+    rx: Receiver<(String, NormSpan, f32)>,
+    /// Events being measured.
+    pending: std::collections::HashSet<String>,
+}
+
+impl Normalizer {
+    pub fn new() -> Self {
+        let (tx, req) = mpsc::channel::<(String, NormSpan, crate::engine::plan::ASrc, f64, egui::Context)>();
+        let (done, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for (id, span, src, len, ctx) in req {
+                // Unreadable audio measures as silence (no gain), so it is not tried again every frame.
+                let peak = mix::peak(&src, len, span.channels).unwrap_or(0.0);
+                if done.send((id, span, peak)).is_err() {
+                    break;
+                }
+                ctx.request_repaint();
+            }
+        });
+        Self { tx, rx, pending: Default::default() }
+    }
+
+    /// Set the gains measured since the last call (on events still playing that audio) and start measuring the events
+    /// that need it. True when the project changed.
+    pub fn tick(&mut self, ctx: &egui::Context, p: &mut Project) -> bool {
+        let mut done = false;
+        for (id, span, peak) in self.rx.try_iter() {
+            self.pending.remove(&id);
+            let Some(r) = p.find_clip(&id) else { continue };
+            let c = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx].clips[r.clip_idx];
+            // An event edited while it was measured is measured again.
+            if edit::needs_normalize(c) && edit::norm_span(c) == span {
+                c.normalized = Some(Normalized { db: edit::normalize_db(peak), span });
+                done = true;
+            }
+        }
+        let pending = &mut self.pending;
+        for c in p.timeline.audio_tracks.iter().flat_map(|t| &t.clips).filter(|c| edit::needs_normalize(c)) {
+            if pending.contains(&c.id) {
+                continue;
+            }
+            let Some((src, len)) = crate::engine::plan::norm_source(p, c) else { continue };
+            pending.insert(c.id.clone());
+            let _ = self.tx.send((c.id.clone(), edit::norm_span(c), src, len, ctx.clone()));
+        }
+        if done {
+            p.mark_modified();
+        }
+        done
+    }
+}
+
 // ---- Waveforms ----
 
-/// Audio channels of the first audio stream, if ffprobe can tell.
-pub(crate) fn channel_count(path: &Path) -> Option<usize> {
+/// Audio channels of audio stream `stream`, if ffprobe can tell.
+pub(crate) fn channel_count(path: &Path, stream: u32) -> Option<usize> {
     let mut cmd = crate::proc::ffprobe();
-    cmd.args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(path);
+    cmd.args(["-v", "error", "-select_streams", &format!("a:{stream}"), "-show_entries", "stream=channels", "-of", "csv=p=0"]).arg(path);
     crate::proc::output(&mut cmd).ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
 }
 
 /// Peaks per 1/PEAKS_PER_SEC s of the source, 0..=1, one list per channel: stereo (or more, folded to 2) gives
 /// L and R, as VEGAS draws two stacked waveforms; mono gives one.
+// shortcut: the first audio stream only; an event playing another (Stream ▸) draws the first one's waveform. Key the
+// cache by stream if multi-stream files become common.
 fn peaks(path: &Path) -> Vec<Vec<f32>> {
-    let ch = channel_count(path).unwrap_or(1).clamp(1, 2);
+    let ch = channel_count(path, 0).unwrap_or(1).clamp(1, 2);
     let child = crate::proc::spawn(
         ffmpeg()
             .arg("-i")

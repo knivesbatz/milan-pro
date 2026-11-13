@@ -36,13 +36,13 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 | Status | Rows |
 |---|---|
 | DONE | 186 |
-| PARTIAL | 149 |
-| MISSING | 85 |
+| PARTIAL | 150 |
+| MISSING | 84 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The gaps are velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). The gaps are velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -122,7 +122,7 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate and (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) are editable. 17 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R8a, R11, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable. 16 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R8a, R11, R40b |
 | 4.12 | Render / export controls | PARTIAL | `ui/dialogs/render.rs`: 5 presets. "Customize Template..." and the render options are greyed. → R11 |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
@@ -283,11 +283,11 @@ What matters most:
 | 7.58 | HDR media | MISSING | Transfer (PQ/HLG) and BT.2020 are not probed. HDR sources are converted as if SDR, which washes them out. That breaks the "never incorrectly interpret" rule. → R40a |
 | 7.59 | Variable frame rate media | DONE | `avg_frame_rate` rule plus the `fps` filter conform (`media.rs:166-171`, `vdecode.rs:48`) |
 | 7.60 | Interlaced video | DONE | `field_order` probe plus yadif (`media.rs:176`, `vdecode.rs:49`) |
-| 7.61 | Multichannel audio (media) | MISSING | Only the first audio stream is used, downmixed to stereo. The Stream submenu is greyed (`menus.rs:592`). → R10a, R10b |
+| 7.61 | Multichannel audio (media) | PARTIAL | R3b: Stream ▸ plays any audio (or video) stream of a multi-stream file (`Clip.stream`, `-map 0:a:N` in `engine/mix.rs`, `0:v:N` in `engine/vdecode.rs`; streams counted at import, `media.rs`); Channels ▸ Both / Left Only / Right Only / Combine / Swap (`mix::map_channels`). Tests `invert_phase_and_channels`, `streams_are_counted_by_kind`, `ffmpeg_second_stream_and_peak` (ignored, ffmpeg). Missing: sources are still downmixed to stereo, and nothing offers the extra streams on import. → R10a, R10b |
 | 7.62 | Professional camera formats | PARTIAL | AVCHD, XAVC and MXF decode through FFmpeg; untested. No spanned-clip joining. Media timecode not read. → R41 |
 | 7.63 | Format compatibility system; every supported format tested | MISSING | No capability probe, no test corpus, no format report. → R37 |
 | 7.64 | Limitations, external dependencies and licensing documented | MISSING | → R37, R56 |
-| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). Extra audio streams and channels are dropped silently. → R37, R40a, R10b |
+| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). Extra audio streams can be picked with Stream ▸ (R3b) but are not offered on import, and extra channels are dropped silently. → R37, R40a, R10b |
 
 ### 2.8 Section 8: VEGAS project import
 
@@ -891,6 +891,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R3b: Audio event switches and channels (M)
+
+**Status: DONE.** Built as designed below, plus the items R0 assigned (resample switches, Project Properties Resample mode, Undersample rate, Quickfade Audio Edits), except:
+- Normalize is `Clip.normalize` / `auto_normalize` plus `Clip.normalized: Option<Normalized>` (gain and the span it was measured on). The peak is read by decoding the event's audio as the mixer does, through its channel map (`mix::peak`), on one background thread (`audio::Normalizer`), not `astats`; the gain takes the peak to -0.1 dBFS (VEGAS's default "Normalize peak level", not a preference yet). Setting the measured gain is not an undo step of its own. Plain Normalize keeps its gain through trims and splits (Event Properties › Recalculate measures again), as in VEGAS; VP23 Auto Normalize measures again whenever the event's media, stream, channels, in point, length or rate change. A render started before a measurement finishes plays that event without the gain.
+- Resampling blends the two source frames around each frame's time, read on the source's own frame grid (`plan::event_source`, `EventPlan.next`, `composite::blend_frames`). Smart (VP23 "Frame blend") acts when the source rate differs from the project's or the event plays off speed; a source that lands on whole frames (60p at normal speed in 30p) is read as before. Optical Flow decodes through ffmpeg `minterpolate` (mci) on its own grid: correct but a few 1080p frames a second (shortcut in `vdecode.rs`). New projects resample Smart (VP16), the VP23 Welcome screen's projects start with resampling off, and a project saved before R3b opens with Disable so its renders do not change. Event Properties has no resample control (the Switches radios are it).
+- Maintain Aspect Ratio off stretches the crop to the frame (`plan::place`); Reduce Interlace Flicker is a vertical 1-2-1 blur of the source before the event FX (`composite::reduce_flicker`); Undersample rate holds each frame for 1/r project frames (Event Properties, 0.05-0.99).
+- Channels and Invert Phase act on the PCM as it is read, before the event FX; Combine is the mean of both sides. The audio track header's Switches › Invert Phase is built too (`Track.invert`).
+- Stream ▸ lists the focus event's streams (`MediaItem.audio_streams` / `video_streams`, counted at import; media probed before R3b counts as one stream until imported again) and sets them on the selected events of that kind. Another video stream, or Optical Flow, is decoded under its own source id; proxies are only used for stream 1. Waveforms still show the first audio stream (shortcut in `audio.rs`). R10b keeps the import warning and "add all streams as tracks".
+- Options › Quickfade Audio Edits (on by default, a preference): a 10 ms linear fade at each audio event edge that has no fade of its own, in playback and render alike (`AudioPlan.quickfade`).
 
 **Scope**
 - Invert Phase, Normalize (and VP23 Auto Normalize), Maintain Aspect Ratio and Reduce Interlace Flicker switches.
@@ -1677,7 +1685,7 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R10b: Surround Panner and stream selection UI (M)
 
-**Scope:** the Surround Panner window (a 2D puck per track with keyframes → pan envelopes per channel); the Stream submenu UI for multi-stream media; a "Media has N audio streams" warning on import with an option to add all streams as separate tracks (as VEGAS does).
+**Scope:** the Surround Panner window (a 2D puck per track with keyframes → pan envelopes per channel); the Stream submenu itself was built in R3b; a "Media has N audio streams" warning on import with an option to add all streams as separate tracks (as VEGAS does).
 
 **Files:** `ui/surround.rs` (new), `ui/timeline/ctx.rs`, `ui/menus.rs`, `app/drop.rs`, `edit.rs`.
 

@@ -83,6 +83,13 @@ pub enum Command {
     SetRuler(crate::project::RulerFormat),
     SetTimeAtCursor,
     ProjectTempo,
+    /// Switches › Invert Phase, Normalize, Auto Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker; the resample
+    /// radios (None = Use Project Resample Mode); Channels ▸; Stream ▸ (from 0); Options › Quickfade Audio Edits.
+    EventSwitch(crate::edit::Switch),
+    SetResample(Option<crate::project::Resample>),
+    SetChannels(crate::project::ChannelMap),
+    SetStream(u32),
+    Quickfade,
 }
 
 use Command::*;

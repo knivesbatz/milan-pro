@@ -609,7 +609,7 @@ mod tests {
         for (tl, tr, bl) in cases {
             let pc = pan_crop(&VPanKey { tl, tr, bl, ..Default::default() }, (sw, sh));
             let size = (((tr[0] - tl[0]) as f64).hypot(tr[1] - tl[1]), ((bl[0] - tl[0]) as f64).hypot(bl[1] - tl[1]));
-            let a = crate::engine::plan::place(pc, (sw, sh), size);
+            let a = crate::engine::plan::place(pc, (sw, sh), size, true);
             for (p, want) in [(tl, (0.0, 0.0)), (tr, (1.0, 0.0)), (bl, (0.0, 1.0))] {
                 let got = a.apply(p[0] / sw, p[1] / sh);
                 assert!((got.0 - want.0).abs() < 1e-4 && (got.1 - want.1).abs() < 1e-4, "{tl:?} {tr:?} {bl:?}: {pc:?} put {p:?} at {got:?}");

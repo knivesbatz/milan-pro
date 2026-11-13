@@ -112,19 +112,42 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         ui.checkbox(&mut d.locked, "Lock");
         ui.add_enabled(on, Checkbox::new(&mut d.looping, "Loop"));
     });
-    // VEGAS switches Milan Pro does not have.
-    ui.add_enabled_ui(false, |ui| {
-        ui.horizontal(|ui| {
-            let r3b = Later("R3b").text();
-            if is_video {
-                ui.checkbox(&mut true, "Maintain aspect ratio").on_disabled_hover_text(&r3b);
-                ui.checkbox(&mut false, "Undersample rate").on_disabled_hover_text(&r3b);
-            } else {
-                ui.checkbox(&mut false, "Normalize").on_disabled_hover_text(&r3b);
-                ui.checkbox(&mut false, "Pitch change").on_disabled_hover_text(Later("R4b").text());
+    ui.horizontal(|ui| {
+        if is_video {
+            ui.add_enabled(on, Checkbox::new(&mut d.keep_aspect, "Maintain aspect ratio"));
+            ui.add_enabled(on, Checkbox::new(&mut d.reduce_flicker, "Reduce interlace flicker"));
+        } else {
+            ui.add_enabled(on, Checkbox::new(&mut d.invert, "Invert phase"));
+            ui.add_enabled(on, Checkbox::new(&mut d.normalize, "Normalize"));
+            if crate::ui::theme::get().look() == crate::ui::theme::UiLook::Vegas23 {
+                ui.add_enabled(on, Checkbox::new(&mut d.auto_normalize, "Auto normalize"));
+            }
+        }
+    });
+    if is_video {
+        // Undersample rate: the event plays at this share of the project frame rate.
+        ui.add_enabled_ui(on, |ui| ui.horizontal(|ui| {
+            let mut under = d.undersample.is_some();
+            if ui.checkbox(&mut under, "Undersample rate").changed() {
+                d.undersample = under.then_some(0.5);
+            }
+            if let Some(r) = &mut d.undersample {
+                ui.add(DragValue::new(r).range(0.05..=0.99).speed(0.01).fixed_decimals(2));
+            }
+        }));
+    } else {
+        super::row(ui, "Normalize gain:", W, on && (d.normalize || d.auto_normalize), |ui| {
+            ui.label(match &d.normalized {
+                Some(n) => format!("{:.2} dB", n.db),
+                None => "-".into(),
+            });
+            // Measured again (in the background) after OK.
+            if ui.button("Recalculate").clicked() {
+                d.normalized = None;
             }
         });
-    });
+        ui.add_enabled(false, Checkbox::new(&mut false, "Pitch change")).on_disabled_hover_text(Later("R4b").text());
+    }
 }
 
 fn curve_combo(ui: &mut Ui, id: &str, c: &mut Curve) {

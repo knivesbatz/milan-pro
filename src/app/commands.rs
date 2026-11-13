@@ -104,6 +104,20 @@ impl MeridianApp {
             edge_mode: self.sel.edge.is_some(),
             mute_audio: self.mute_audio,
             mute_video: self.mute_video,
+            switches: {
+                let (a, v) = (self.focus_clip(false), self.focus_clip(true));
+                let (a, v) = (a.and_then(|id| self.project.clip(&id)), v.and_then(|id| self.project.clip(&id)));
+                use edit::Switch::*;
+                [Invert, Normalize, AutoNormalize, KeepAspect, ReduceFlicker]
+                    .into_iter()
+                    .filter(|s| if s.video() { v } else { a }.is_some_and(|c| s.get(c)))
+                    .collect()
+            },
+            resample: self.focus_clip(true).and_then(|id| self.project.clip(&id)).and_then(|c| c.resample),
+            channels: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map(|c| c.channels).unwrap_or_default(),
+            stream: clip.map_or(0, |c| c.stream),
+            streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
+            quickfade: self.prefs.quickfade,
         }
     }
 
@@ -773,6 +787,18 @@ impl MeridianApp {
                     _ => edit::loop_clips(p, &ids),
                 });
             }
+            EventSwitch(_) | SetResample(_) | SetChannels(_) | SetStream(_) => {
+                let ids = self.sel.clips.clone();
+                // Stream ▸ lists the focus event's streams, for the selected events of its kind.
+                let video = self.selected_clip.as_ref().is_some_and(|r| r.is_video);
+                self.edit(|p| match c {
+                    EventSwitch(s) => edit::set_switch(p, &ids, s),
+                    SetResample(r) => edit::set_resample(p, &ids, r),
+                    SetChannels(ch) => edit::set_channels(p, &ids, ch),
+                    SetStream(n) => edit::set_stream(p, &ids, video, n),
+                    _ => false,
+                });
+            }
             CreateSubclip => {
                 let Some(id) = self.sel.clips.last().cloned() else { return };
                 let mut sub = None;
@@ -1120,10 +1146,11 @@ impl MeridianApp {
                 let tl = &mut self.project.timeline;
                 tl.cursor_position = edit::grid_step(tl.cursor_position, grid, c == GridRight);
             }
-            AutoCrossfade | AutoRipple | IgnoreGrouping | RippleMode(_) => {
+            AutoCrossfade | AutoRipple | IgnoreGrouping | RippleMode(_) | Quickfade => {
                 let p = &mut self.prefs;
                 match c {
                     AutoCrossfade => p.auto_crossfade = !p.auto_crossfade,
+                    Quickfade => p.quickfade = !p.quickfade,
                     AutoRipple => p.auto_ripple = !p.auto_ripple,
                     IgnoreGrouping => p.ignore_grouping = !p.ignore_grouping,
                     RippleMode(m) => p.ripple_mode = m,

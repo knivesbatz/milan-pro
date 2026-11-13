@@ -368,7 +368,7 @@ fn switches(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, 
     toggle(ui, "&Mute", tr.muted, |t| t.muted = !t.muted);
     toggle(ui, "&Solo", tr.solo, |t| t.solo = !t.solo);
     if !v {
-        inert(ui, "&Invert Phase", Mark::Check(false), Later("R3b"));
+        toggle(ui, "&Invert Phase", tr.invert, |t| t.invert = !t.invert);
     }
     // Milan Pro's own switches.
     toggle(ui, "&Lock", tr.locked, |t| t.locked = !t.locked);
@@ -772,17 +772,9 @@ const EVENT_SHARED: &[M] = &[
     S,
 ];
 
+const EVENT_SWITCHES: &[M] = &[C("&Mute", EventMute), C("&Lock", EventLock), C("L&oop", EventLoop), S];
+
 const EVENT_TAIL: &[M] = &[
-    S,
-    Sub("Switc&hes", &[
-        C("&Mute", EventMute),
-        C("&Lock", EventLock),
-        C("L&oop", EventLoop),
-        S,
-        K("Maintain &Aspect Ratio", true, Later("R3b")),
-        V23(&K("Auto Normalize", false, Later("R3b"))),
-        V23(&R("Optical Flow", false, Later("R3b"))),
-    ]),
     Sub("T&ake", menus::TAKE),
     Sub("&Group", menus::GROUP),
     Sub("&Stream", menus::STREAM),
@@ -818,6 +810,8 @@ const VIDEO_EVENT: &[M] = &[
         X("Freeze Frame at Cursor", Later("R4a")),
         X("Transition Progress", Later("R4a")),
     ]),
+    S,
+    Sub("Switc&hes", &[Inline(EVENT_SWITCHES), Inline(menus::VIDEO_SWITCHES)]),
     Inline(EVENT_TAIL),
 ];
 
@@ -838,6 +832,8 @@ const AUDIO_EVENT: &[M] = &[
     C("Select Events to E&nd", SelectEventsToEnd),
     Sub("Insert/Remove &Envelope", &[X("Volume", Later("R8c")), X("Pan", Later("R8c")), X("Mute", Later("R8c"))]),
     Sub("Channe&ls", menus::CHANNELS),
+    S,
+    Sub("Switc&hes", &[Inline(EVENT_SWITCHES), Inline(menus::AUDIO_SWITCHES)]),
     Inline(EVENT_TAIL),
 ];
 

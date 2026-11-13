@@ -32,22 +32,30 @@ pub struct DecSpec<'a> {
     pub hw: bool,
     pub matrix: Option<&'static str>,
     pub interlaced: bool,
+    /// The video stream (`-map 0:v:N`).
+    pub stream: u32,
+    /// Optical Flow: motion-interpolated frames (minterpolate) instead of the latest source frame.
+    pub flow: bool,
 }
 
 /// ffmpeg arguments (after `-nostdin`) streaming frames `sf - lead`, ... on the project-fps grid.
 /// Each frame is the latest source frame at or before its time (`round=up`), as VEGAS shows a 25p clip in a 29.97 project;
-/// `-ss` alone would skip that frame whenever the seek time falls inside it.
+/// `-ss` alone would skip that frame whenever the seek time falls inside it. With Optical Flow the frames between are
+/// motion-interpolated instead.
+// shortcut: minterpolate runs on the CPU at a few 1080p frames a second (VEGAS's Optical Flow is slow too); move it to
+// the GPU path (R21) if real-time Optical Flow previews are wanted.
 pub fn args(s: &DecSpec) -> Vec<String> {
     let mut a: Vec<String> = ["-v", "error", "-threads", "2"].map(String::from).to_vec();
     if s.hw {
         a.extend(["-hwaccel", "auto"].map(String::from));
     }
     a.extend(["-ss".into(), format!("{:.6}", (s.sf - s.lead) as f64 / s.fps), "-i".into(), s.path.to_string_lossy().into_owned()]);
-    a.extend(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf"].map(String::from));
+    a.extend(["-map".into(), format!("0:v:{}", s.stream)]);
+    a.extend(["-an", "-sn", "-dn", "-vf"].map(String::from));
+    let rate = if s.flow { format!("minterpolate=fps={}:mi_mode=mci", s.fps_str) } else { format!("fps={}:round=up:start_time=0", s.fps_str) };
     a.push(format!(
-        "{}fps={}:round=up:start_time=0,scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
+        "{}{rate},scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
         if s.interlaced { "yadif=deint=interlaced," } else { "" },
-        s.fps_str,
         s.w,
         s.h,
         s.scaler,
@@ -208,7 +216,7 @@ impl DecoderPool {
         let (path, hw) = (proxy.unwrap_or(&m.path), hw && proxy.is_none());
         // The proxy was deinterlaced when it was made.
         let interlaced = m.interlaced && proxy.is_none();
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, interlaced };
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, interlaced, stream: m.stream, flow: m.flow };
         let s = spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
         if self.streams.len() >= MAX_STREAMS {
             if let Some(i) = (0..self.streams.len()).min_by_key(|&i| self.streams[i].used) {
@@ -358,7 +366,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), interlaced: false }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), interlaced: false, stream: 0, flow: false }
     }
 
     #[test]
@@ -371,6 +379,9 @@ mod tests {
         let a = args(&DecSpec { hw: true, interlaced: true, matrix: None, ..spec(p) });
         assert_eq!(a[4..6], ["-hwaccel", "auto"]);
         assert!(a.iter().any(|x| x.starts_with("yadif=deint=interlaced,fps=") && x.contains("in_color_matrix=auto")));
+        // R3b: Stream 2 and Optical Flow.
+        let a = args(&DecSpec { stream: 1, flow: true, ..spec(p) }).join(" ");
+        assert!(a.contains("-map 0:v:1 ") && a.contains("-vf minterpolate=fps=30000/1001:mi_mode=mci,scale="), "{a}");
     }
 
     #[test]
@@ -391,6 +402,8 @@ mod tests {
             proxy: None,
             grid: 0.0,
             offset: 0.0,
+            stream: 0,
+            flow: false,
         };
         assert!(!pool.wants_hw(&m("h264", 1920)));
         assert!(pool.wants_hw(&m("hevc", 1920)) && pool.wants_hw(&m("av1", 1920)) && pool.wants_hw(&m("h264", 2560)));
@@ -427,7 +440,7 @@ mod tests {
                 .unwrap()
                 .success();
             assert!(ok);
-            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0 };
+            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false };
             let mut pool = DecoderPool::default();
             let fps = 30000.0 / 1001.0;
             pool.set_rate(fps, "30000/1001");
@@ -468,7 +481,7 @@ mod tests {
 
     /// A 64x64 30 fps video, for the ramp clips.
     fn ramp_ref() -> MediaRef {
-        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0 }
+        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false }
     }
 
     fn gray(p: Pull) -> Option<u8> {
@@ -477,6 +490,25 @@ mod tests {
             Pull::Held(None) => None,
             Pull::Err(e) => panic!("{e}"),
         }
+    }
+
+    /// Needs ffmpeg. R3b Optical Flow: half-speed frames on a 60 fps grid are the source frames at whole source times and
+    /// made-up frames between them.
+    #[test]
+    #[ignore]
+    fn optical_flow_interpolates_between_source_frames() {
+        let dir = std::env::temp_dir().join(format!("milan-vflow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = MediaRef { grid: 60.0, flow: true, id: "ramp#0f".into(), ..ramp(&dir, 2, 2.0) };
+        let mut pool = DecoderPool::default();
+        pool.set_rate(30.0, "30");
+        let g: Vec<f64> = (0..6).map(|sf| gray(pool.frame(&m, sf, 64, 64, Quality::Best, None)).unwrap() as f64).collect();
+        for k in 0..3 {
+            assert!((g[2 * k] - level(k as i64)).abs() <= 1.5, "frame {}: {} vs {}", 2 * k, g[2 * k], level(k as i64));
+            assert!(g[2 * k + 1] > level(k as i64) && g[2 * k + 1] < level(k as i64 + 1), "between {k} and {}: {}", k + 1, g[2 * k + 1]);
+        }
+        drop(pool);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Needs ffmpeg. The container lasts 1.2 s (audio) but the video 1 s: later frames show the last video frame.

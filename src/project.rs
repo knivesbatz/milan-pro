@@ -24,6 +24,59 @@ pub struct ProjectSettings {
     /// Project Properties › Ruler (VEGAS keeps the ruler format and tempo with the project).
     #[serde(default)]
     pub ruler: Ruler,
+    /// Project Properties › Resample mode. A project saved before R3b never blended frames, so it opens with Disable.
+    #[serde(default = "Resample::disable", deserialize_with = "lenient")]
+    pub resample: Resample,
+}
+
+/// Project Properties › Resample mode and the video event Switches' resample radios (an event's None is Use Project
+/// Resample Mode). Resampling blends the two source frames around each output frame's time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Resample {
+    /// When the source frame rate differs from the project's, or the event plays off normal speed (VEGAS 23 calls the
+    /// project mode Frame blend).
+    #[default]
+    Smart,
+    Force,
+    Disable,
+    /// Motion-interpolated frames (VEGAS 23), where Smart would blend.
+    OpticalFlow,
+}
+
+impl Resample {
+    fn disable() -> Self {
+        Resample::Disable
+    }
+}
+
+/// The audio event Channels ▸ radios.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelMap {
+    #[default]
+    Both,
+    LeftOnly,
+    RightOnly,
+    /// Both channels mixed, on both sides.
+    Combine,
+    Swap,
+}
+
+/// The audio an event's Normalize gain was measured on: when an Auto Normalize event's differs, it is measured again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NormSpan {
+    pub media: Option<String>,
+    pub stream: u32,
+    pub channels: ChannelMap,
+    pub in_point: f64,
+    pub duration: f64,
+    pub rate: f64,
+}
+
+/// Switches › Normalize: the gain that takes the event's peak to the normalize level, and what it was measured on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Normalized {
+    pub db: f32,
+    pub span: NormSpan,
 }
 
 /// Options › Ruler Format: VEGAS's 15 formats.
@@ -206,6 +259,9 @@ pub struct Track {
     /// Track envelopes; `volume` stays the static Level/Volume and multiplies with them.
     #[serde(default)]
     pub envelopes: Vec<Envelope>,
+    /// Audio track Switches › Invert Phase.
+    #[serde(default)]
+    pub invert: bool,
     /// Armed for recording (audio): this session only.
     #[serde(skip)]
     pub armed: bool,
@@ -271,6 +327,37 @@ pub struct Clip {
     /// Switches › Loop (on by default, as in VEGAS): the event may run past its media's end, which then repeats.
     #[serde(default = "yes")]
     pub looping: bool,
+    /// Switches › Invert Phase (audio).
+    #[serde(default)]
+    pub invert: bool,
+    /// Switches › Normalize (audio), and VEGAS 23's Auto Normalize, which measures again after each edit of the event's
+    /// audio (`edit::needs_normalize`).
+    #[serde(default)]
+    pub normalize: bool,
+    #[serde(default)]
+    pub auto_normalize: bool,
+    /// The Normalize gain, once a background scan has measured the peak.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normalized: Option<Normalized>,
+    /// Channels ▸ (audio).
+    #[serde(default, deserialize_with = "lenient")]
+    pub channels: ChannelMap,
+    /// Stream ▸: which of the media's audio streams (audio event) or video streams (video event) plays, from 0.
+    #[serde(default)]
+    pub stream: u32,
+    /// Switches › Maintain Aspect Ratio (video; on, as in VEGAS): off, the picture is stretched to fill the frame.
+    #[serde(default = "yes")]
+    pub keep_aspect: bool,
+    /// Switches › Reduce Interlace Flicker (video): a light vertical blur.
+    #[serde(default)]
+    pub reduce_flicker: bool,
+    /// Switches › resample radios (video); None = Use Project Resample Mode.
+    #[serde(default, deserialize_with = "lenient")]
+    pub resample: Option<Resample>,
+    /// Event Properties › Undersample rate (video): the event shows `r` x the project frame rate (each frame held 1/r
+    /// frames). None or 1 = off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undersample: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -306,6 +393,11 @@ pub struct MediaItem {
     /// parent's and `duration` the stretch's length.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subclip: Option<Subclip>,
+    /// How many audio and video streams the file has (Stream ▸); 0 = not counted (probed before R3b), taken as 1.
+    #[serde(default)]
+    pub audio_streams: u32,
+    #[serde(default)]
+    pub video_streams: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -343,6 +435,11 @@ impl MediaItem {
     /// Time in the file of time `t` of this item (a subclip starts part way into its file).
     pub fn file_time(&self, t: f64) -> f64 {
         t + self.subclip.as_ref().map_or(0.0, |s| s.start)
+    }
+
+    /// Streams of one kind the Stream ▸ menu lists (at least 1).
+    pub fn streams(&self, video: bool) -> u32 {
+        if video { self.video_streams } else { self.audio_streams }.max(1)
     }
 }
 
@@ -644,6 +741,7 @@ impl Default for ProjectSettings {
             frame_rate: 29.97,
             sample_rate: 48000,
             ruler: Ruler::default(),
+            resample: Resample::Smart,
         }
     }
 }
@@ -769,6 +867,7 @@ impl Track {
                 TrackKind::Video => Vec::new(),
             },
             envelopes: Vec::new(),
+            invert: false,
             armed: false,
         }
     }
@@ -802,6 +901,16 @@ impl Clip {
             group: None,
             takes: Vec::new(),
             looping: true,
+            invert: false,
+            normalize: false,
+            auto_normalize: false,
+            normalized: None,
+            channels: ChannelMap::Both,
+            stream: 0,
+            keep_aspect: true,
+            reduce_flicker: false,
+            resample: None,
+            undersample: None,
         }
     }
 
@@ -1182,12 +1291,13 @@ mod tests {
             }
         };
         strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
-        strip(&mut v["settings"], &["ruler"]);
-        strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes"]);
-        strip(&mut v["timeline"]["audio_tracks"][0], &["fx"]);
+        strip(&mut v["settings"], &["ruler", "resample"]);
+        strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes", "invert"]);
+        strip(&mut v["timeline"]["audio_tracks"][0], &["fx", "invert"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes", "looping"];
-        strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &clip_keys);
-        strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator"]);
+        let r3b_keys = ["invert", "normalize", "auto_normalize", "channels", "stream", "keep_aspect", "reduce_flicker", "resample"];
+        strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &[&clip_keys[..], &r3b_keys].concat());
+        strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator", "audio_streams", "video_streams"]);
         let back: Project = serde_json::from_value(v).unwrap();
         // R1: an old project opens at 120 bpm in 4/4, Time & Frames from 0.
         assert_eq!(back.settings.ruler, Ruler { format: RulerFormat::TimeFrames, offset: 0.0, tempo: 120.0, beats_per_measure: 4, beat_note: 4 });
@@ -1208,9 +1318,17 @@ mod tests {
         assert!(c.group.is_none() && c.takes.is_empty() && c.fx.is_empty() && c.transition.is_none());
         assert!(c.pan_crop.keys.is_empty() && c.envelopes.is_empty());
         assert!(c.looping, "R3a: an old event loops, as VEGAS events do by default");
+        // R3b: switches off (Maintain Aspect Ratio on), both channels, the first stream, the project resample mode;
+        // the project never resampled before, so it opens with resampling off.
+        assert!(!c.invert && !c.normalize && !c.auto_normalize && c.normalized.is_none() && c.keep_aspect && !c.reduce_flicker);
+        assert_eq!((c.channels, c.stream, c.resample, c.undersample), (ChannelMap::Both, 0, None, None));
+        assert!(!t.invert && !tl.audio_tracks[0].invert);
+        assert_eq!(back.settings.resample, Resample::Disable);
+        assert_eq!(Project::new("n").settings.resample, Resample::Smart, "a new project resamples smartly, as VEGAS 16");
         let m = &back.media_pool[0];
         assert!(!m.has_alpha && !m.interlaced && m.rotation == 0 && m.color_matrix.is_none() && m.generator.is_none());
         assert!(m.subclip.is_none() && m.file_time(2.0) == 2.0);
+        assert_eq!((m.audio_streams, m.streams(false)), (0, 1));
         assert!(serde_json::to_value(&p).unwrap()["media_pool"][0].get("subclip").is_none(), "nothing written for a whole file");
     }
 
@@ -1237,6 +1355,9 @@ mod tests {
         c.group = Some("g1".into());
         c.takes = vec![Take { media_id: "m2".into(), in_point: 2.0, name: "Take 2".into() }];
         c.looping = false;
+        (c.invert, c.normalize, c.auto_normalize, c.channels, c.stream) = (true, true, true, ChannelMap::Combine, 2);
+        c.normalized = Some(Normalized { db: 4.5, span: NormSpan { media: Some("m".into()), stream: 2, channels: ChannelMap::Combine, in_point: 1.0, duration: 4.0, rate: 0.5 } });
+        (c.keep_aspect, c.reduce_flicker, c.resample, c.undersample) = (false, true, Some(Resample::OpticalFlow), Some(0.25));
         let t = &mut p.timeline.video_tracks[0];
         t.composite = Composite::Screen;
         t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0 }, curve: Curve::Smooth }] };
@@ -1244,6 +1365,8 @@ mod tests {
         t.envelopes = vec![env(EnvKind::CompositeLevel), env(EnvKind::Opacity)];
         t.clips.push(c);
         p.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Pan), env(EnvKind::Mute)];
+        p.timeline.audio_tracks[0].invert = true;
+        p.settings.resample = Resample::Force;
         p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
         p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
@@ -1257,6 +1380,8 @@ mod tests {
             interlaced: true,
             generator: Some(fx("milan.gen.text")),
             subclip: Some(Subclip { parent: "m".into(), start: 1.25 }),
+            audio_streams: 3,
+            video_streams: 2,
             ..Default::default()
         });
         assert_eq!(p.media_pool[0].file_time(0.5), 1.75);
@@ -1265,6 +1390,10 @@ mod tests {
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
         assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
+        assert_eq!(back.settings, p.settings);
+        // A resample mode or channel map from a newer build loads as the default.
+        let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();
+        assert_eq!((c.resample, c.channels), (None, ChannelMap::Both));
     }
 
     /// Arming is for this session: it is never written, and a loaded track is not armed.

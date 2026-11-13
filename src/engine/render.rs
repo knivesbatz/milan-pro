@@ -19,11 +19,12 @@ use crate::render::{Ctl, Job, Preset, fps_str};
 /// Share of the progress bar the audio pass takes before the video pass.
 const AUDIO_SHARE: f64 = 0.05;
 
-/// Render `range` (seconds) of a snapshot of `project` to `out` with `preset`. The master gain is `timeline.master.gain`.
-pub fn start(project: &Project, preset: &'static Preset, out: PathBuf, range: (f64, f64), ctx: egui::Context) -> Job {
+/// Render `range` (seconds) of a snapshot of `project` to `out` with `preset`. The master gain is `timeline.master.gain`;
+/// `quickfade` is Options › Quickfade Audio Edits, as playback has it.
+pub fn start(project: &Project, preset: &'static Preset, out: PathBuf, range: (f64, f64), quickfade: bool, ctx: egui::Context) -> Job {
     let p = project.clone();
     let target = out.clone();
-    Job::start(out, ctx, move |ctl| render(&p, preset, &target, range, ctl))
+    Job::start(out, ctx, move |ctl| render(&p, preset, &target, range, quickfade, ctl))
 }
 
 /// `<out>.partial`
@@ -79,10 +80,10 @@ pub fn encoder_args(preset: &Preset, (w, h): (u32, u32), fps: &str, sample_rate:
 }
 
 /// Encode into `<out>.partial`, then put it in place of `out`. Nothing but `out` is left behind, whatever happens.
-fn render(p: &Project, preset: &Preset, out: &Path, range: (f64, f64), ctl: &Ctl) -> Result<(), String> {
+fn render(p: &Project, preset: &Preset, out: &Path, range: (f64, f64), quickfade: bool, ctl: &Ctl) -> Result<(), String> {
     let (part, tmp) = (partial(out), temp_audio());
     ctl.set_temp(vec![part.clone(), tmp.clone()]);
-    let r = encode(p, preset, range, &part, &tmp, ctl);
+    let r = encode(p, preset, range, quickfade, &part, &tmp, ctl);
     let _ = std::fs::remove_file(&tmp);
     if r.is_err() || ctl.cancelled() {
         let _ = std::fs::remove_file(&part);
@@ -92,7 +93,7 @@ fn render(p: &Project, preset: &Preset, out: &Path, range: (f64, f64), ctl: &Ctl
     std::fs::rename(&part, out).map_err(|e| format!("The render is finished as {} but could not replace {}: {e}", part.display(), out.display()))
 }
 
-fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &Path, ctl: &Ctl) -> Result<(), String> {
+fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), quickfade: bool, part: &Path, tmp: &Path, ctl: &Ctl) -> Result<(), String> {
     let vp = preset.video.map(|_| plan::compile(p));
     let frames = vp.as_ref().map(|vp| plan::frame_range((a, b), vp.fps));
     if b <= a || frames.is_some_and(|(n0, n1)| n1 <= n0) {
@@ -102,7 +103,7 @@ fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &P
         let file = std::fs::File::create(tmp).map_err(|e| format!("Cannot create the render's temp audio {}: {e}", tmp.display()))?;
         let (mut file, mut err) = (BufWriter::new(file), None);
         // A refused write (disk full) leaves its error in `err`.
-        mix_range(p, (a, b), ctl, AUDIO_SHARE, |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
+        mix_range(p, (a, b), quickfade, ctl, AUDIO_SHARE, |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
         if let Some(e) = err.or_else(|| file.flush().err()) {
             return Err(format!("Cannot write the render's temp audio {}: {e}", tmp.display()));
         }
@@ -120,7 +121,7 @@ fn encode(p: &Project, preset: &Preset, (a, b): (f64, f64), part: &Path, tmp: &P
     let fed = match (vp, frames) {
         (Some(vp), Some(n)) => feed_video(vp, n, stdin, ctl),
         // `move`: stdin closes when the mix ends, which tells the encoder to finish.
-        _ => mix_range(p, (a, b), ctl, 1.0, move |bytes| stdin.write_all(bytes).is_ok()),
+        _ => mix_range(p, (a, b), quickfade, ctl, 1.0, move |bytes| stdin.write_all(bytes).is_ok()),
     };
     // stdin is closed: the encoder finishes, or is killed when the frames stopped short.
     if !matches!(fed, Ok(true)) {
@@ -148,8 +149,8 @@ fn summary(lines: &[String]) -> String {
 /// Mix seconds `a..b` at RATE through the master FX (Bypass All Audio FX never applies to a render), then the master
 /// gain, clamped to [-1, 1], as f32le stereo into `write` (a master limiter's output never reaches the clamp while the
 /// master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`.
-fn mix_range(p: &Project, (a, b): (f64, f64), ctl: &Ctl, share: f64, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
-    let plan = compile_audio(p);
+fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share: f64, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
+    let plan = plan::AudioPlan { quickfade: if quickfade { plan::QUICKFADE } else { 0.0 }, ..compile_audio(p) };
     let gain = p.timeline.master.gain;
     let mut mixer = Mixer::ffmpeg();
     // A render waits for every decoder, however slow, so no gap is baked into the file; Cancel still stops it.
@@ -365,7 +366,7 @@ mod tests {
         assert_eq!(content_end(&p), 3.0);
         let run = |p: &Project, preset: &'static Preset, name: &str, range: (f64, f64)| {
             let out = dir.join(name);
-            let job = start(p, preset, out.clone(), range, egui::Context::default());
+            let job = start(p, preset, out.clone(), range, true, egui::Context::default());
             assert_eq!(wait(&job), Status::Done, "{}", preset.name);
             assert!(!partial(&out).exists());
             out
@@ -436,7 +437,7 @@ mod tests {
         (c.duration, c.out_point) = (600.0, 600.0); // the last frame holds: long enough to still be running
         for (k, drop_it) in [(0, false), (1, true)] {
             let out = dir.join(format!("cancelled{k}.mp4"));
-            let job = start(&long, &PRESETS[1], out.clone(), (0.0, 600.0), egui::Context::default());
+            let job = start(&long, &PRESETS[1], out.clone(), (0.0, 600.0), true, egui::Context::default());
             let until = Instant::now() + Duration::from_secs(30);
             while !(job.fraction() > AUDIO_SHARE as f32 && partial(&out).exists()) {
                 assert!(job.status() == Status::Running && Instant::now() < until, "{:?}", job.status());

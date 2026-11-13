@@ -13,7 +13,7 @@ use crate::audio::RATE;
 use crate::engine::afx::Chain;
 use crate::engine::keyframes::{db_to_gain, ramp};
 use crate::engine::plan::{ASrc, AudioPlan, fade};
-use crate::project::Envelope;
+use crate::project::{ChannelMap, Curve, Envelope};
 
 /// Frames per mixed block (about 21 ms).
 pub const BLOCK: usize = 1024;
@@ -63,7 +63,7 @@ pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
         a.push(format!("{:.6}", src_time(src, at)));
     }
     a.extend(["-i".into(), src.path.to_string_lossy().into_owned()]);
-    a.extend(["-vn", "-map", "0:a:0"].map(String::from));
+    a.extend(["-vn".into(), "-map".into(), format!("0:a:{}", src.stream)]);
     if !mono {
         a.extend(["-ac", "2"].map(String::from));
     }
@@ -191,17 +191,75 @@ fn samples(bytes: &[u8]) -> Vec<f32> {
     bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).map(|v| if v.is_finite() { v } else { 0.0 }).collect()
 }
 
-/// Channel count of `path`'s first audio stream, probed once per file version.
-fn channels(path: &Path) -> Option<usize> {
-    type Probed = HashMap<(PathBuf, Option<SystemTime>), Option<usize>>;
+/// Channel count of `path`'s audio stream `stream`, probed once per file version.
+fn channels(path: &Path, stream: u32) -> Option<usize> {
+    type Probed = HashMap<(PathBuf, u32, Option<SystemTime>), Option<usize>>;
     static CACHE: OnceLock<Mutex<Probed>> = OnceLock::new();
-    let key = (path.to_path_buf(), std::fs::metadata(path).and_then(|m| m.modified()).ok());
+    let key = (path.to_path_buf(), stream, std::fs::metadata(path).and_then(|m| m.modified()).ok());
     if let Some(&c) = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return c;
     }
-    let c = crate::audio::channel_count(path);
+    let c = crate::audio::channel_count(path, stream);
     CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()).insert(key, c);
     c
+}
+
+/// Channels ▸ and Invert Phase on interleaved stereo `pcm`. Combine puts the mean of both sides on both.
+pub fn map_channels(pcm: &mut [f32], ch: ChannelMap, invert: bool) {
+    if ch == ChannelMap::Both && !invert {
+        return;
+    }
+    let s = if invert { -1.0 } else { 1.0 };
+    for f in pcm.chunks_exact_mut(2) {
+        let (l, r) = (f[0], f[1]);
+        let (a, b) = match ch {
+            ChannelMap::Both => (l, r),
+            ChannelMap::LeftOnly => (l, l),
+            ChannelMap::RightOnly => (r, r),
+            ChannelMap::Combine => ((l + r) * 0.5, (l + r) * 0.5),
+            ChannelMap::Swap => (r, l),
+        };
+        (f[0], f[1]) = (a * s, b * s);
+    }
+}
+
+/// Read ffmpeg's f32le stdout in CHUNK-frame blocks into `each` (whole stereo frames, NaN as silence) until it ends
+/// or `each` returns false.
+fn read_pcm(out: &mut impl Read, mut each: impl FnMut(Vec<f32>) -> bool) {
+    let mut bytes = vec![0u8; CHUNK * 8];
+    loop {
+        let mut n = 0;
+        while n < bytes.len() {
+            match out.read(&mut bytes[n..]) {
+                Ok(0) | Err(_) => break,
+                Ok(k) => n += k,
+            }
+        }
+        let pcm = samples(&bytes[..n - n % 8]);
+        if pcm.is_empty() || !each(pcm) || n < bytes.len() {
+            break;
+        }
+    }
+}
+
+/// Switches › Normalize: the peak |sample| of `len` seconds of `src` from its in point, read as the mixer reads it,
+/// through the event's channel map (so Left Only is measured on the left channel).
+pub fn peak(src: &ASrc, len: f64, ch: ChannelMap) -> Result<f32, String> {
+    let mut a = args(src, 0, channels(&src.path, src.stream) == Some(1));
+    a.splice(4..4, ["-t".to_string(), format!("{len:.6}")]); // after "-ss <in point>"
+    let mut cmd = crate::proc::ffmpeg();
+    cmd.args(a).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut child = crate::proc::spawn(&mut cmd).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
+    let mut out = child.stdout.take().expect("piped stdout");
+    let mut peak = 0.0f32;
+    read_pcm(&mut out, |mut pcm| {
+        map_channels(&mut pcm, ch, false);
+        peak = pcm.iter().fold(peak, |m, v| m.max(v.abs()));
+        true
+    });
+    drop(out);
+    let ok = child.wait().is_ok_and(|s| s.success());
+    if ok { Ok(peak) } else { Err("The audio could not be read to normalize it".into()) }
 }
 
 /// A decoder for `src` from `at` frames in. The process is started (about 15 ms on Windows) by the reader thread,
@@ -212,7 +270,7 @@ fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
     let (shared, src) = (proc.clone(), src.clone());
     let err = std::thread::spawn(move || {
         let mut cmd = crate::proc::ffmpeg();
-        cmd.args(args(&src, at, channels(&src.path) == Some(1))).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(args(&src, at, channels(&src.path, src.stream) == Some(1))).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = match crate::proc::spawn(&mut cmd) {
             Ok(c) => c,
             Err(e) => return format!("{}: audio is silent", crate::proc::tool_error(&e, "ffmpeg")),
@@ -226,28 +284,11 @@ fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
             }
             g.1 = Some(child);
         }
-        let mut bytes = vec![0u8; CHUNK * 8];
         let mut cut = false;
-        loop {
-            let mut n = 0;
-            while n < bytes.len() {
-                match out.read(&mut bytes[n..]) {
-                    Ok(0) | Err(_) => break,
-                    Ok(k) => n += k,
-                }
-            }
-            let pcm = samples(&bytes[..n - n % 8]);
-            if pcm.is_empty() {
-                break;
-            }
-            if tx.send(pcm).is_err() {
-                cut = true; // the Stream is gone
-                break;
-            }
-            if n < bytes.len() {
-                break;
-            }
-        }
+        read_pcm(&mut out, |pcm| {
+            cut = tx.send(pcm).is_err(); // the Stream is gone
+            !cut
+        });
         drop(out);
         // Reaped here, unless the Stream took it to kill. `tx` is still held, so the Stream sees the end only once
         // this result is ready.
@@ -290,7 +331,7 @@ impl Live {
         }
         // Forward streams follow the source, not the event: a move or trim during playback that keeps the source time
         // under the playhead keeps the decoder (within one frame of frame rounding).
-        self.src.path == src.path && self.src.rate == src.rate && (self.t - src_time(src, at)).abs() <= src.rate / RATE as f64 + 1e-9
+        self.src.path == src.path && self.src.stream == src.stream && self.src.rate == src.rate && (self.t - src_time(src, at)).abs() <= src.rate / RATE as f64 + 1e-9
     }
 }
 
@@ -437,6 +478,7 @@ impl Mixer {
                         self.error.get_or_insert(err);
                     }
                 }
+                map_channels(&mut pcm, e.channels, e.invert);
                 if fx_on && !e.fx.is_empty() {
                     let mut ch = ev_old.remove(&e.id).unwrap_or_default();
                     ch.run(&e.fx, (a - ps) as f64 / r, &mut pcm);
@@ -456,6 +498,14 @@ impl Mixer {
                     if e.src.dur - local < e.fade_out {
                         g *= fade(e.fade_out_curve, e.src.dur - local, e.fade_out);
                     }
+                    // Quickfade Audio Edits: a short fade at an edge without one of its own, so a cut never clicks.
+                    let qf = plan.quickfade;
+                    if local < qf && e.fade_in <= 0.0 {
+                        g *= fade(Curve::Linear, local, qf);
+                    }
+                    if e.src.dur - local < qf && e.fade_out <= 0.0 {
+                        g *= fade(Curve::Linear, (e.src.dur - local).max(0.0), qf);
+                    }
                     o[0] += x[0] * g;
                     o[1] += x[1] * g;
                 }
@@ -474,7 +524,7 @@ impl Mixer {
             for (i, (o, x)) in out.chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
                 let s = i as f32 / n as f32;
                 let lerp = |a: f32, b: f32| a + (b - a) * s;
-                let g = lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
+                let g = lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0) * if tr.invert { -1.0 } else { 1.0 };
                 // Pan trims the pan envelope (VEGAS); one balance law, the same as audio::track_gain.
                 let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
                 o[0] += x[0] * g * (1.0 - p).min(1.0);
@@ -552,7 +602,7 @@ pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::plan::compile_audio;
+    use crate::engine::plan::{QUICKFADE, compile_audio};
     use crate::project::{Clip, Curve, EnvKind, Keyframe, Keyframes, MediaItem, MediaType, Project};
     use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
@@ -684,6 +734,81 @@ mod tests {
         assert_eq!(out, want);
         let opened = opened.lock().unwrap();
         assert!(opened.iter().all(|&(pos, inp, _)| inp == 0.0 && [0.0, 8.0, 16.0].contains(&pos)), "{opened:?}");
+    }
+
+    /// A decoder whose left channel is 0.25 and right 0.75.
+    fn stereo() -> Mixer {
+        Mixer::new(Box::new(|src: &ASrc, at| {
+            let total = frame(src.pos + src.dur) - frame(src.pos);
+            let (tx, rx) = mpsc::sync_channel(1 << 16);
+            let pcm: Vec<f32> = (at..total).flat_map(|_| [0.25, 0.75]).collect();
+            for c in pcm.chunks(600) {
+                tx.send(c.to_vec()).unwrap();
+            }
+            Ok(Stream::from_rx(rx))
+        }))
+    }
+
+    /// R3b: Invert Phase gives -x (event or track); Left Only puts L on both sides, Right Only R, Combine their mean,
+    /// Swap swaps them.
+    #[test]
+    fn invert_phase_and_channels() {
+        use crate::project::ChannelMap::*;
+        let mut p = solo_track();
+        assert_eq!(mix(&p, &mut stereo(), 0, 1), [0.25, 0.75]);
+        for (ch, want) in [(LeftOnly, [0.25, 0.25]), (RightOnly, [0.75, 0.75]), (Combine, [0.5, 0.5]), (Swap, [0.75, 0.25])] {
+            p.timeline.audio_tracks[0].clips[0].channels = ch;
+            assert_eq!(mix(&p, &mut stereo(), 0, 1), want, "{ch:?}");
+        }
+        p.timeline.audio_tracks[0].clips[0].invert = true;
+        assert_eq!(mix(&p, &mut stereo(), 0, 1), [-0.75, -0.25]);
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        (c.invert, c.channels) = (false, Both);
+        p.timeline.audio_tracks[0].invert = true;
+        assert_eq!(mix(&p, &mut stereo(), 0, 1), [-0.25, -0.75]);
+        // The decoder reads the chosen stream and keeps it apart from another stream of the same file.
+        let mut q = solo_track();
+        (q.media_pool[0].audio_streams, q.timeline.audio_tracks[0].clips[0].stream) = (2, 1);
+        assert_eq!(compile_audio(&q).tracks[0].events[0].src.stream, 1);
+        q.timeline.audio_tracks[0].clips[0].stream = 5;
+        assert_eq!(compile_audio(&q).tracks[0].events[0].src.stream, 1, "a stream the file lacks plays its last");
+    }
+
+    /// R3b: Normalize to -0.1 dBFS scales a 0.5 peak to 0.9886, on top of the event gain.
+    #[test]
+    fn normalize_scales_the_peak_to_the_normalize_level() {
+        let mut p = solo_track();
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        c.normalize = true;
+        c.normalized = Some(crate::project::Normalized { db: crate::edit::normalize_db(0.5), span: crate::edit::norm_span(c) });
+        let out = mix(&p, &mut fake(|_| 0.5), 0, 2);
+        assert!(out.iter().all(|v| (v - 0.9886).abs() < 1e-4), "{out:?}");
+        p.timeline.audio_tracks[0].clips[0].normalize = false; // the gain stays stored but is not applied
+        assert_eq!(mix(&p, &mut fake(|_| 0.5), 0, 1), [0.5, 0.5]);
+    }
+
+    /// R3b: Quickfade Audio Edits fades an edge without a fade over 10 ms, linearly; an edge with its own fade is left alone.
+    #[test]
+    fn quickfade_softens_bare_edges() {
+        let mut p = solo_track();
+        p.timeline.audio_tracks[0].clips[0].duration = 1.0;
+        let q = frame(QUICKFADE);
+        let mut plan = compile_audio(&p);
+        plan.quickfade = QUICKFADE;
+        let mut out = vec![0.0; 2 * frame(1.0) as usize];
+        ones().block(&plan, 0, &mut out);
+        let l = left(&out);
+        assert_eq!((l[0], l[q as usize / 2], l[q as usize], l[frame(0.5) as usize]), (0.0, 0.5, 1.0, 1.0));
+        assert!(l[l.len() - 1] < 0.01 && l[l.len() - 1 - q as usize / 2] > 0.45);
+        // A fade-in of its own: no quickfade at that edge.
+        p.timeline.audio_tracks[0].clips[0].fade_in = 0.5;
+        let mut plan = compile_audio(&p);
+        plan.quickfade = QUICKFADE;
+        let mut with = vec![0.0; 2 * frame(1.0) as usize];
+        ones().block(&plan, 0, &mut with);
+        let mut plain = vec![0.0; 2 * frame(1.0) as usize];
+        ones().block(&compile_audio(&p), 0, &mut plain);
+        assert_eq!(with[..2 * frame(0.5) as usize], plain[..2 * frame(0.5) as usize]);
     }
 
     #[test]
@@ -1013,7 +1138,7 @@ mod tests {
 
     #[test]
     fn decoder_argv() {
-        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false };
+        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0 };
         assert_eq!(
             args(&src, frame(1.0), false).join(" "),
             r"-v error -ss 3.000000 -i C:\a b.wav -vn -map 0:a:0 -ac 2 -ar 48000 -f f32le -"
@@ -1078,7 +1203,7 @@ mod tests {
             path
         };
         let mono = make("mono.wav", "aevalsrc=0.5:s=48000:d=1", &["-c:a", "pcm_s16le"]);
-        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false };
+        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0 };
         let mut s = spawn(&src(&mono, 1.0), 0).unwrap();
         let mut out = vec![0.0; 2 * 4800];
         assert_eq!(s.read(&mut out, true, None), None);
@@ -1097,6 +1222,39 @@ mod tests {
         remove_dir(&dir);
     }
 
+    /// Needs ffmpeg. `cargo test --release -- --ignored ffmpeg_second_stream_and_peak`
+    /// R3b: a file with two audio streams (0.2 and 0.6 DC) plays stream 2 when it is chosen, and Normalize measures the
+    /// chosen stream's peak through the event's channel map.
+    #[test]
+    #[ignore]
+    fn ffmpeg_second_stream_and_peak() {
+        let dir = std::env::temp_dir().join(format!("milan-mixstreams-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("two.mka");
+        let ok = crate::proc::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "aevalsrc=0.2|0.2:s=48000:d=1", "-f", "lavfi", "-i", "aevalsrc=0.6|0.3:s=48000:d=1"])
+            .args(["-map", "0", "-map", "1", "-c:a", "pcm_f32le"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let m = crate::media::probe_media(&path).unwrap();
+        assert_eq!(m.audio_streams, 2);
+        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream };
+        for (stream, want) in [(0, [0.2, 0.2]), (1, [0.6, 0.3])] {
+            let mut s = spawn(&src(stream), 0).unwrap();
+            let mut out = vec![0.0; 2 * 4800];
+            assert_eq!(s.read(&mut out, true, None), None);
+            assert!((out[2000] - want[0]).abs() < 1e-3 && (out[2001] - want[1]).abs() < 1e-3, "stream {stream}: {} {}", out[2000], out[2001]);
+            drop(s);
+        }
+        assert!((peak(&src(1), 1.0, ChannelMap::Both).unwrap() - 0.6).abs() < 1e-3);
+        assert!((peak(&src(1), 1.0, ChannelMap::RightOnly).unwrap() - 0.3).abs() < 1e-3);
+        assert!((peak(&src(0), 0.5, ChannelMap::Both).unwrap() - 0.2).abs() < 1e-3);
+        remove_dir(&dir);
+    }
+
     /// Needs ffmpeg. A real decoder: a reversed 2x event plays the source backwards in half the time.
     #[test]
     #[ignore]
@@ -1112,7 +1270,7 @@ mod tests {
             .unwrap()
             .success();
         assert!(ok);
-        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true };
+        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0 };
         let mut s = spawn(&src, 0).unwrap();
         let mut out = vec![0.0; 2 * 48_000];
         assert_eq!(s.read(&mut out, true, None), None);
