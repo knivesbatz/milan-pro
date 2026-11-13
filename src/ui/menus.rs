@@ -14,7 +14,7 @@ use crate::edit::{RippleMode, Switch};
 use crate::settings::EnvView;
 use super::chrome;
 use super::EditTool;
-use super::dock::Panel;
+use super::dock::{LayoutRef, Panel};
 use super::keymap::{self, Command, Command::*};
 use super::theme::{self, UiLook};
 
@@ -124,8 +124,8 @@ pub struct CmdState {
     pub input_level: Option<f32>,
     /// Names of the saved user layouts 0-9 of this look (None = <EMPTY>).
     pub layouts: [Option<String>; 10],
-    /// The user layout last loaded or saved (Save Layout saves over it); None = the default layout.
-    pub layout_slot: Option<usize>,
+    /// The layout last loaded or saved (its bullet; Save Layout saves over a user slot).
+    pub layout: Option<super::dock::LayoutRef>,
     /// Edge-trimming mode is on (an event edge is selected with [ or ]).
     pub edge_mode: bool,
     /// Options › Mute All Audio / Mute All Video.
@@ -163,7 +163,11 @@ impl CmdState {
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
-            | SaveLayoutUser(_) => true,
+            | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor => true,
+            // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
+            LayoutVp14 => !v23,
+            TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
+            ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
             Welcome => v23,
             OpenRecent(i) => i < self.recent.len(),
@@ -288,8 +292,8 @@ impl CmdState {
             EventEnvelope(k) => self.event_envs.contains(&k),
             OfxEnvelopes => self.ofx_envelopes,
             TransitionProgress => self.progress,
-            LayoutUser(n) => self.layout_slot == Some(n),
-            LayoutDefault => self.layout_slot.is_none(),
+            LayoutUser(n) => self.layout == Some(LayoutRef::User(n)),
+            _ if c.builtin_layout().is_some() => self.layout == c.builtin_layout().map(LayoutRef::Builtin),
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
@@ -367,8 +371,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         SurroundPanner => Later("R10b"),
-        ToggleDocks | TopDock | BottomDock | RightDock | CollapseTrackList | MaximizeTimeline | LayoutVp14 | LayoutAudio | LayoutColor
-        | LayoutSource | LayoutTimelineTop | NextWindow | PrevWindow | FocusTimeline => Later("R13"),
         ExternalMonitor => Later("R14"),
         EditDetails | ProjectNotes => Later("R16a"),
         VideoScopes => Later("R16b"),
@@ -478,7 +480,8 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
     let radio = matches!(
         c,
-        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutVp14 | LayoutAudio
+            | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
     );
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
@@ -803,10 +806,10 @@ pub const EDIT: &[M] = &[
 ];
 
 const LAYOUTS: &[M] = &[
-    X("&Organize Layouts...", Later("R13")),
+    C("&Organize Layouts...", OrganizeLayouts),
     C("&Save Layout", SaveLayout),
     C("Save Layout &As...", SaveLayoutAs),
-    X("R&eload Selected Layout", Later("R13")),
+    C("R&eload Selected Layout", ReloadLayout),
     S,
     C("&Default Layout", LayoutDefault),
     V16(&C("Classic Default Layout", LayoutVp14)),
@@ -1658,10 +1661,17 @@ mod tests {
         st.layouts[3] = Some("Edit".into());
         assert!(st.enabled(LayoutUser(3)) && !st.enabled(LayoutUser(4)) && !st.enabled(LayoutUser(10)));
         // The bullet follows the current layout: Default until a slot is loaded or saved.
+        st.layout = Some(LayoutRef::Builtin(crate::ui::dock::Builtin::Default));
         assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3))), (Some(true), Some(false)));
-        st.layout_slot = Some(3);
+        st.layout = Some(LayoutRef::User(3));
         assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3)), st.checked(LayoutUser(4))), (Some(false), Some(true), Some(false)));
         assert!(!st.enabled(Window(Panel::ColorGrading)) && !st.enabled(LayoutTimelineTop));
+        // R13: the built-in layouts are radios too; VP16 has Classic and one dock area, VP23 Source / Timeline Top.
+        st.layout = Some(LayoutRef::Builtin(crate::ui::dock::Builtin::AudioMixing));
+        assert_eq!((st.checked(LayoutAudio), st.checked(LayoutDefault), st.checked(LayoutUser(3))), (Some(true), Some(false), Some(false)));
+        assert!(st.enabled(LayoutVp14) && !st.enabled(RightDock) && st.enabled(ToggleDocks) && st.enabled(ReloadLayout));
+        st.look = UiLook::Vegas23;
+        assert!(!st.enabled(LayoutVp14) && st.enabled(RightDock) && st.enabled(LayoutSource));
     }
 
     /// R0: a command that stays greyed out with everything selected says why, and a command labelled unfinished is

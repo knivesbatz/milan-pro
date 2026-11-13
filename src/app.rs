@@ -13,7 +13,7 @@ use crate::project::Project;
 use crate::render;
 use crate::settings::{layout_key, Prefs, SettingsDialog};
 use crate::ui::chrome;
-use crate::ui::dock::{Dock, Panel};
+use crate::ui::dock::{Area, Builtin, Dock, LayoutRef, Panel};
 use crate::ui::theme::{self, LookChoice, Theme, UiLook};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
@@ -92,10 +92,13 @@ pub struct MeridianApp {
     about: bool,
     look: LookChoice,
     dock: Dock,
-    /// The user layout slot last loaded or saved in this look (File-style "Save Layout" saves over it).
-    layout_slot: Option<usize>,
+    /// The layout last loaded or saved in this look: Reload Selected Layout goes back to it, Save Layout saves over a
+    /// user slot. None after its slot was deleted.
+    layout: Option<LayoutRef>,
     /// Save Layout As: the name and slot being chosen.
     layout_as: Option<(String, usize)>,
+    /// View › Window Layouts › Organize Layouts..., open.
+    organize: Option<crate::ui::dialogs::OrganizeLayouts>,
     /// `prefs.layouts` keys changed here since the last save; the others are taken from disk (another window's).
     layouts_changed: std::collections::BTreeSet<String>,
     /// Native window decorations are on (VP16) or off (VP23 custom title bar).
@@ -298,8 +301,9 @@ impl MeridianApp {
             about: false,
             look,
             dock,
-            layout_slot: None,
+            layout: Some(LayoutRef::Builtin(Builtin::Default)),
             layout_as: None,
+            organize: None,
             layouts_changed: Default::default(),
             decorated: look.look == UiLook::Vegas16,
             demo: launch.demo,
@@ -490,8 +494,10 @@ impl eframe::App for MeridianApp {
         let mut transport_action = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
             let full = ui.max_rect();
-            let dock_h = self.dock.height.unwrap_or(t.m.dock_h.min(full.height() * t.m.dock_frac));
-            let a = chrome::areas(&t, full, dock_h, self.dock.track_list_w);
+            let hover = ctx.input(|i| i.pointer.hover_pos());
+            let sizes = self.dock.area_sizes(&t, full, self.prefs.auto_hide_docks, hover, ui::menus::any_open(ctx));
+            let a = chrome::areas(&t, full, sizes, self.dock.track_list_w);
+            self.dock.tabs_top = self.prefs.tabs_on_top;
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
             // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
@@ -619,13 +625,30 @@ impl eframe::App for MeridianApp {
             }
             menu_action = menu_action.or(dock_action);
 
-            // Dock / timeline splitter.
-            let split = ui.interact(a.split, ui.id().with("main_split"), egui::Sense::drag());
-            if split.hovered() || split.dragged() {
-                ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            // Docking area / timeline splitters.
+            for area in Area::ALL {
+                let (k, d) = (area as usize, a.dock[area as usize]);
+                if !a.split[k].is_positive() || d.height() < 20.0 {
+                    continue; // none, or an auto-hidden edge
+                }
+                let split = ui.interact(a.split[k], ui.id().with(("main_split", k)), egui::Sense::drag());
+                if split.hovered() || split.dragged() {
+                    ctx.set_cursor_icon(if area.across() { egui::CursorIcon::ResizeVertical } else { egui::CursorIcon::ResizeHorizontal });
+                }
+                if split.dragged() {
+                    let m = split.drag_delta();
+                    let size = match area {
+                        Area::Top => d.height() + m.y,
+                        Area::Bottom => d.height() - m.y,
+                        Area::Left => d.width() + m.x,
+                        Area::Right => d.width() - m.x,
+                    };
+                    *self.dock.size_mut(area) = Some(size.max(ui::dock::MIN_AREA));
+                }
             }
-            if split.dragged() {
-                self.dock.height = Some(a.dock.height() + split.drag_delta().y);
+            // A press in the timeline gives it the focus back (Next/Previous Window go on from there).
+            if ctx.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| a.timeline.contains(p))) {
+                self.dock.focus = None;
             }
 
             let mut tl = ui.new_child(egui::UiBuilder::new().max_rect(a.timeline));
@@ -695,7 +718,7 @@ impl eframe::App for MeridianApp {
             self.look = theme::get().choice;
             self.dock = look_dock(&mut self.prefs, &self.dock, t.look(), &theme::get());
             self.layouts_changed.insert(layout_key(t.look(), "last"));
-            self.layout_slot = None;
+            self.layout = Some(LayoutRef::Builtin(Builtin::Default));
             self.prefs.look = self.look;
             self.save_prefs();
         }

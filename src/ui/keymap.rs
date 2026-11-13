@@ -48,7 +48,7 @@ pub enum Command {
     // Docking and layouts
     ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutDefault, LayoutVp14,
     LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
-    SaveLayoutAs,
+    SaveLayoutAs, OrganizeLayouts, ReloadLayout,
     // Windows
     FocusTimeline, Window(Panel), ShowWindow(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner,
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
@@ -115,6 +115,22 @@ pub enum Command {
 }
 
 use Command::*;
+
+impl Command {
+    /// The built-in window layout this command loads.
+    pub fn builtin_layout(self) -> Option<super::dock::Builtin> {
+        use super::dock::Builtin as B;
+        Some(match self {
+            LayoutDefault => B::Default,
+            LayoutVp14 => B::Classic,
+            LayoutAudio => B::AudioMixing,
+            LayoutColor => B::ColorCorrection,
+            LayoutSource => B::Source,
+            LayoutTimelineTop => B::TimelineTop,
+            _ => return None,
+        })
+    }
+}
 
 /// One row of §7: command, name (Help › Keyboard Shortcuts), VP23 keys, VP16 keys when they differ (`Some(&[])` =
 /// none). A key is "Ctrl+Shift+Z"; a chord is two strokes separated by a space ("Alt+D D"); "Num 5" is a numpad

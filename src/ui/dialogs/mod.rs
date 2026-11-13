@@ -3,6 +3,7 @@
 mod default_track;
 mod event_props;
 mod goto;
+mod organize_layouts;
 mod paste_attrs;
 mod paste_repeat;
 mod prefs;
@@ -19,6 +20,7 @@ mod welcome;
 pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
 pub use goto::TimeEntry;
+pub use organize_layouts::{Organize, OrganizeLayouts};
 pub use paste_attrs::PasteAttrs;
 pub use paste_repeat::PasteRepeat;
 pub use prefs::PrefsDialog;

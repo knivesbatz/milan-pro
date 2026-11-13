@@ -35,8 +35,8 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 228 |
-| PARTIAL | 124 |
+| DONE | 229 |
+| PARTIAL | 123 |
 | MISSING | 68 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
@@ -132,8 +132,8 @@ What matters most:
 | 4.18 | Modern dark theme | DONE | VP16 and VP23 dark (`theme.rs`) |
 | 4.19 | Optional light theme | DONE | VP23 `Variant::White` (`theme.rs:17-21`) |
 | 4.20 | Smooth but restrained animations | PARTIAL | Only egui defaults plus transition-thumbnail animation (`choosers.rs:16`). There is no central animation policy, and the Windows "show animations" setting is not honoured. → R48 |
-| 4.21 | Resizable and dockable panels | PARTIAL | `ui/dock.rs`: dock columns and tab moves. No free docking or floating. Tab overflow is cut off (`dock.rs:357` shortcut). → R13, R14 |
-| 4.22 | Adjustable workspace layouts | PARTIAL | Default layout plus user slots 0-9 per look (`settings.rs`, batch 11). The 5 built-in VEGAS layouts (Audio Mixing, Color Correction, Classic, Source, Timeline Top) are greyed. → R13 |
+| 4.21 | Resizable and dockable panels | PARTIAL | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options. Missing: floating windows and drag-to-edge docking. → R14 |
+| 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 per look (`settings.rs`, batch 11); (R13) the built-in VEGAS layouts Classic (VEGAS Pro 14), Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. Video Scopes joins Color Correction with R16b. |
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R13-R18 |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R14-R18 (R13 DONE) |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -626,9 +626,9 @@ The inventory as found before R0:
 | Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c (DONE) |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
-| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 |
-| Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b (DONE), R59 |
+| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 (DONE) |
+| Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a-c, R31, R10b, R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
@@ -760,7 +760,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R8c (DONE): audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
 - R12: File > Real-Time Render (R12 moved it to R59: it exists for external hardware FX, which Milan Pro does not host; a normal render gives the same file).
-- R13/R14: the Display page docking options.
+- R13/R14: the Display page docking options (R13 DONE: Automatically hide docking area, Display timeline at bottom of main window (VP16), Position tabs at top of docked windows; R14: Allow floating windows to dock).
 - R16a: region Rename (marker bar), Project Properties Summary page.
 - R16b: preview Split-Screen View and the Isolate channel overlays.
 - R18a: View > Event Length (VP23).
@@ -1261,6 +1261,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R13: Built-in layouts and dock commands (M)
 
+**Status: DONE.** Built as designed below, except:
+- The layout files are binary (base64 in XML); their window records were decoded by window id (32219 Explorer ... 32229 Video Scopes, 32238 Mixing Console), tab order, active tab and column rectangles. Classic is the VEGAS Pro 14 layout: the dock area below the timeline, [Project Media group] · Trimmer 610 · Video Preview 613 · Master Bus 125, height 449. Audio Mixing: [Mixing Console + the default group] · Video Preview 511, height 438 (an unidentified second tab behind Video Preview, id 32231, is left out). Color Correction: [group] · Video Scopes 539 · Video Preview 539 · Master Bus 127, height 438; Video Scopes is not built yet, so R16b adds that column; VP23 brings Color Grading to the front [I]. Source Window (VP23) puts the Trimmer and Video Preview side by side; Timeline Top (VP23) puts the default windows in the bottom area [I: no reference shows them].
+- The dock model gains areas (`dock::Area`, `Group.area`, default Top so old layouts load as before): VP23 has four, VP16 one that sits above the timeline or, with "Display timeline at bottom of main window" off (the Classic layout), below it. Layouts save each area's size and which are minimised. Windows move to another area through the tab menu (Dock in Top/Bottom/Left/Right Docking Area, VP23); dragging to an edge comes with R14's drag-out. Groups in the left and right areas are columns too.
+- F11 minimises every area that has windows (again restores them); Maximize Timeline also collapses the track list. Next/Previous Window cycle the timeline and every window of the shown areas, bringing each to the front; a press in a window or the timeline moves that focus. Focus to Timeline also takes the keyboard from a text field.
+- Organize Layouts works on the ten slots themselves (Milan Pro has no layout files): Move Up/Down, Rename, Delete (VEGAS's Clear and Delete Layout in one), Activate; OK writes them. Reload Selected Layout goes back to the built-in or user layout last loaded or saved.
+- The overflow test uses every window (12) in a 400 px group: there are not 30 distinct windows.
+
 **Scope**
 - Layouts Audio Mixing, Color Correction, Classic (VP14) Default, Source Window and Timeline Top. Reproduce them from VEGAS's `Standard Layouts\*.VegasWindowLayout`; if those files are binary, use the VEGAS_UI_SPEC descriptions.
 - Organize Layouts (rename, delete, reorder slots); Reload Selected Layout.
@@ -1326,7 +1333,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R16b: Video Scopes (M)
 
-**Scope:** waveform (luma/RGB parade), vectorscope with 75% targets, histogram and RGB parade. They are computed from the displayed composite on a worker at most 10 times a second, and work on the paused frame.
+**Scope:** waveform (luma/RGB parade), vectorscope with 75% targets, histogram and RGB parade. They are computed from the displayed composite on a worker at most 10 times a second, and work on the paused frame. Add the Video Scopes column (539 px, between the group and Video Preview) to the Color Correction layout (`Dock::builtin`, R13).
 
 **Files:** `engine/scopes.rs` (new, pure), `ui/scopes.rs` (new), `ui/dock.rs`, `ui/menus.rs`.
 

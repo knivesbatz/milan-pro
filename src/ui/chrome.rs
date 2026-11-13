@@ -12,10 +12,11 @@ pub struct Areas {
     pub menu: Rect,
     /// Main toolbar body (VP16: without its bevel rows and bottom line).
     pub toolbar: Rect,
-    /// Dock area: group toolbars, content and tab strips.
-    pub dock: Rect,
-    /// Drag zone of the dock/timeline splitter.
-    pub split: Rect,
+    /// Docking areas by `dock::Area` (top, bottom, left, right): group toolbars, content and tab strips.
+    /// `Rect::NOTHING` when the area is absent.
+    pub dock: [Rect; 4],
+    /// Drag zone of each area's splitter with the timeline.
+    pub split: [Rect; 4],
     /// Time display + ruler band + track rows.
     pub timeline: Rect,
     /// Track-list column of the transport row (Rate slider).
@@ -26,9 +27,11 @@ pub struct Areas {
     pub status: Rect,
 }
 
-/// Lay out the client area. `dock_h`: dock height incl. tab strips; `track_w`: track-list width.
-pub fn areas(t: &Theme, full: Rect, dock_h: f32, track_w: f32) -> Areas {
-    let (x0, x1, w) = (full.min.x, full.max.x, full.width());
+/// Lay out the client area. `docks`: each docking area's height (top, bottom) or width (left, right) incl. tab
+/// strips, 0 = none (`Dock::area_sizes`); `track_w`: track-list width. The bottom area sits under the transport bar,
+/// the side areas beside the timeline between the top and bottom ones.
+pub fn areas(t: &Theme, full: Rect, docks: [f32; 4], track_w: f32) -> Areas {
+    let (x0, x1) = (full.min.x, full.max.x);
     let row = |y0: f32, h: f32, l: f32, r: f32| Rect::from_min_max(pos2(x0 + l, y0), pos2(x1 - r, y0 + h));
     let m = &t.m;
     let g = m.outer_margin;
@@ -52,22 +55,48 @@ pub fn areas(t: &Theme, full: Rect, dock_h: f32, track_w: f32) -> Areas {
     }
     // VP16 transport block: 1 px bevel · 30 · 1 px edge; VP23: 32, with a 1 px frame line above.
     let edges = if v16 { 1.0 } else { 0.0 };
-    let transport_y = transport_bottom - edges - m.transport_h;
+    let sw = m.splitter_w;
+    let [top, bottom, left, right] = docks;
+    // VP16: 2 edge rows + 7 px splitter under the top tab strips; VP23: the tab strip touches the timeline.
+    let top_gap = if v16 { 2.0 + sw } else { 0.0 };
+    // Leave at least 120 px for the timeline when the window is small: the top and bottom areas shrink alike.
+    let gaps = if top > 0.0 { top_gap } else { 0.0 } + if bottom > 0.0 { sw } else { 0.0 };
+    let room = (transport_bottom - dock_top - gaps - edges - m.transport_h - 1.0 - 120.0).max(60.0);
+    let k = if top + bottom > room { room / (top + bottom) } else { 1.0 };
+    let (mut dock, mut split) = ([Rect::NOTHING; 4], [Rect::NOTHING; 4]);
+    let mut timeline_top = dock_top;
+    if top > 0.0 {
+        dock[0] = row(dock_top, (top * k).floor(), g, g);
+        (split[0], timeline_top) = if v16 { (row(dock[0].max.y, top_gap, g, g), dock[0].max.y + top_gap) } else { (row(dock[0].max.y - 4.0, 4.0, g, g), dock[0].max.y) };
+    }
+    let mut mid_bottom = transport_bottom;
+    if bottom > 0.0 {
+        dock[1] = row(transport_bottom - (bottom * k).floor(), (bottom * k).floor(), g, g);
+        split[1] = row(dock[1].min.y - sw, sw, g, g);
+        mid_bottom = split[1].min.y;
+    }
+    // Side areas leave the timeline 300 px past the track list.
+    let (mut xl, mut xr) = (x0 + g, x1 - g);
+    let side_gaps = if left > 0.0 { sw } else { 0.0 } + if right > 0.0 { sw } else { 0.0 };
+    let side_room = (xr - xl - side_gaps - track_w - 300.0).max(0.0);
+    let ks = if left + right > side_room { side_room / (left + right) } else { 1.0 };
+    let col = |a: f32, b: f32| Rect::from_min_max(pos2(a, timeline_top), pos2(b, mid_bottom));
+    if left > 0.0 {
+        dock[2] = col(xl, xl + (left * ks).floor());
+        split[2] = col(dock[2].max.x, dock[2].max.x + sw);
+        xl = split[2].max.x;
+    }
+    if right > 0.0 {
+        dock[3] = col(xr - (right * ks).floor(), xr);
+        split[3] = col(dock[3].min.x - sw, dock[3].min.x);
+        xr = split[3].min.x;
+    }
+    let transport_y = mid_bottom - edges - m.transport_h;
     let timeline_bottom = transport_y - 1.0;
-    // Leave at least 120 px for the timeline when the window is small.
-    let max_dock = (timeline_bottom - dock_top - 120.0).max(60.0);
-    let dock = row(dock_top, dock_h.clamp(60.0, max_dock), g, g);
-    // VP16: 2 edge rows + 7 px splitter under the tab strips; VP23: the tab strip touches the timeline.
-    let (split, timeline_top) = if v16 {
-        let gap = 2.0 + m.splitter_w;
-        (row(dock.max.y, gap, g, g), dock.max.y + gap)
-    } else {
-        (row(dock.max.y - 4.0, 4.0, g, g), dock.max.y)
-    };
-    let timeline = Rect::from_min_max(pos2(x0 + g, timeline_top), pos2(x1 - g, timeline_bottom));
-    let tl = x0 + g + track_w;
-    let rate = Rect::from_min_max(pos2(x0 + g, transport_y - edges), pos2(tl, transport_bottom));
-    let transport = Rect::from_min_max(pos2(tl + m.timeline_gap, transport_y), pos2(x0 + w - g, transport_y + m.transport_h));
+    let timeline = Rect::from_min_max(pos2(xl, timeline_top), pos2(xr, timeline_bottom));
+    let tl = xl + track_w;
+    let rate = Rect::from_min_max(pos2(xl, transport_y - edges), pos2(tl, mid_bottom));
+    let transport = Rect::from_min_max(pos2(tl + m.timeline_gap, transport_y), pos2(xr, transport_y + m.transport_h));
     Areas { menu, toolbar, dock, split, timeline, rate, transport, status }
 }
 
@@ -92,9 +121,12 @@ pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
     hline(p, tb, a.toolbar.min.y - 2.0, t.bevel_hi_1);
     hline(p, tb, a.toolbar.min.y - 1.0, t.bevel_hi_2);
     hline(p, tb, a.toolbar.max.y, t.line_dark);
-    // Under the dock tab strips.
-    hline(p, a.split.x_range(), a.split.min.y, t.line_dark);
-    hline(p, a.split.x_range(), a.split.min.y + 1.0, b.strip_2);
+    // Under the top dock's tab strips.
+    let s = a.split[0];
+    if s.is_positive() {
+        hline(p, s.x_range(), s.min.y, t.line_dark);
+        hline(p, s.x_range(), s.min.y + 1.0, b.strip_2);
+    }
     // Transport row edges.
     let tr = a.transport.x_range();
     hline(p, tr, a.transport.min.y - 1.0, b.transport_top);
@@ -266,17 +298,33 @@ mod tests {
     fn default_bands_match_spec() {
         let full = Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1080.0));
         let t = Theme::new(LookChoice::VEGAS16);
-        let a = areas(&t, full, t.m.dock_h, t.m.track_list_w);
-        assert_eq!((a.menu.max.y, a.toolbar.min.y, a.toolbar.max.y, a.dock.min.y), (20.0, 25.0, 56.0, 59.0));
-        assert_eq!((a.dock.min.x, a.dock.max.x, a.dock.max.y, a.timeline.min.y), (3.0, 1917.0, 655.0, 664.0));
+        let a = areas(&t, full, [t.m.dock_h, 0.0, 0.0, 0.0], t.m.track_list_w);
+        assert_eq!((a.menu.max.y, a.toolbar.min.y, a.toolbar.max.y, a.dock[0].min.y), (20.0, 25.0, 56.0, 59.0));
+        assert_eq!((a.dock[0].min.x, a.dock[0].max.x, a.dock[0].max.y, a.timeline.min.y), (3.0, 1917.0, 655.0, 664.0));
         assert_eq!((a.status.min.y, a.status.max.y, a.transport.min.y, a.transport.max.y), (1062.0, 1079.0, 1028.0, 1058.0));
         assert_eq!((a.rate.max.x, a.transport.min.x), (254.0, 258.0));
+        assert!(!a.dock[1].is_positive() && !a.split[3].is_positive());
 
         let t = Theme::new(LookChoice::VEGAS23);
-        let a = areas(&t, full, t.m.dock_h, t.m.track_list_w);
-        assert_eq!((a.menu.max.y, a.toolbar.max.y, a.dock.min.y, a.dock.max.y), (32.0, 67.0, 72.0, 606.0));
-        assert_eq!((a.dock.min.x, a.timeline.min.y, a.timeline.max.y), (5.0, 606.0, 1020.0));
+        let a = areas(&t, full, [t.m.dock_h, 0.0, 0.0, 0.0], t.m.track_list_w);
+        assert_eq!((a.menu.max.y, a.toolbar.max.y, a.dock[0].min.y, a.dock[0].max.y), (32.0, 67.0, 72.0, 606.0));
+        assert_eq!((a.dock[0].min.x, a.timeline.min.y, a.timeline.max.y), (5.0, 606.0, 1020.0));
         assert_eq!((a.transport.min.y, a.transport.max.y, a.status.min.y, a.status.max.y), (1021.0, 1053.0, 1058.0, 1078.0));
         assert_eq!((a.rate.max.x, a.transport.min.x), (255.0, 260.0));
+    }
+
+    /// R13: the timeline above a bottom docking area (Timeline Top, VP16 Classic), a right area beside it, and docks
+    /// that would leave the timeline under 120 px shrink alike.
+    #[test]
+    fn bottom_and_side_areas() {
+        let full = Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1080.0));
+        let t = Theme::new(LookChoice::VEGAS23);
+        let a = areas(&t, full, [0.0, 449.0, 0.0, 300.0], t.m.track_list_w);
+        assert_eq!((a.timeline.min.y, a.dock[1].max.y, a.dock[1].height()), (72.0, 1053.0, 449.0));
+        assert_eq!(a.transport.max.y, a.split[1].min.y);
+        assert_eq!((a.dock[3].max.x, a.dock[3].width(), a.timeline.max.x, a.transport.max.x), (1915.0, 300.0, 1610.0, 1610.0));
+        assert_eq!((a.dock[3].min.y, a.dock[3].max.y), (72.0, a.split[1].min.y));
+        let a = areas(&t, full, [900.0, 900.0, 0.0, 0.0], t.m.track_list_w);
+        assert!(a.timeline.height() >= 120.0 && (a.dock[0].height() - a.dock[1].height()).abs() < 1.0, "{a:?}");
     }
 }

@@ -28,6 +28,9 @@ pub struct PrefsDialog {
     /// Input and output device names, listed once per opening of the Audio Device page (listing devices is slow).
     inputs: Option<Vec<String>>,
     outputs: Option<Vec<String>>,
+    /// R13 (VP16) Display: "Display timeline at bottom of main window", which the app reads from and applies to the
+    /// dock (the place of its one area is part of the window layout).
+    pub timeline_bottom: bool,
 }
 
 impl PrefsDialog {
@@ -54,7 +57,8 @@ impl PrefsDialog {
 
     /// Show the dialog; returns the preferences to apply on OK / Apply. `latency`: the audio device's output, input and
     /// monitoring round-trip latency in ms (`audio::Player::latency_ms`), shown on the Audio Device page.
-    pub fn show(&mut self, ctx: &Context, current: &Prefs, latency: Option<(f64, f64, f64)>) -> Option<Prefs> {
+    /// `timeline_bottom_now`: where the VP16 dock area is (so a change of it enables Apply).
+    pub fn show(&mut self, ctx: &Context, current: &Prefs, latency: Option<(f64, f64, f64)>, timeline_bottom_now: bool) -> Option<Prefs> {
         let d = self.draft.as_mut()?;
         // Layouts change behind the dialog (Apply on a new look saves the old look's); OK must not hand back stale ones.
         if d.layouts != current.layouts {
@@ -62,8 +66,8 @@ impl PrefsDialog {
         }
         let t = theme::get();
         let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
-        let (tab, track, inputs, outputs) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs);
-        let changed = d != current;
+        let changed = *d != *current || self.timeline_bottom != timeline_bottom_now;
+        let (tab, track, inputs, outputs, bottom) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs, &mut self.timeline_bottom);
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
@@ -71,7 +75,7 @@ impl PrefsDialog {
                 VIDEO => video(ui, d),
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 EDITING => editing(ui, d),
-                DISPLAY => display(ui, d, track),
+                DISPLAY => display(ui, d, track, bottom),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
             ui.add_space(8.0);
@@ -267,7 +271,7 @@ fn default_all(ui: &mut Ui) -> bool {
 
 const COLOR_NAMES: [&str; 8] = ["Color A", "Color B", "Color C", "Color D", "Color E", "Color F", "Color G", "Color H"];
 
-fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
+fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut bool) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     // The look's own palette for this preview, whatever the current override.
@@ -330,16 +334,17 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
         }
     }
     ui.add_space(4.0);
-    ui.add_enabled_ui(false, |ui| {
-        let (r13, r14) = (Later("R13").text(), Later("R14").text());
-        ui.checkbox(&mut false, "Automatically hide docking area").on_disabled_hover_text(&r13);
-        ui.checkbox(&mut true, "Display timeline at bottom of main window").on_disabled_hover_text(&r13);
-        ui.checkbox(&mut false, "Position tabs at top of docked windows").on_disabled_hover_text(&r13);
-        ui.checkbox(&mut !v16, "Allow floating windows to dock (hold Ctrl to override)").on_disabled_hover_text(&r14);
-    });
+    // The docking options (§4.3); VP23 dropped "Display timeline at bottom" (its Timeline Top layout does that).
+    ui.checkbox(&mut d.auto_hide_docks, "Automatically hide docking area");
+    if v16 {
+        ui.checkbox(timeline_bottom, "Display timeline at bottom of main window");
+    }
+    ui.checkbox(&mut d.tabs_on_top, "Position tabs at top of docked windows");
+    ui.add_enabled(false, Checkbox::new(&mut !v16, "Allow floating windows to dock (hold Ctrl to override)")).on_disabled_hover_text(Later("R14").text());
     if default_all(ui) {
         d.track_colors = None;
         d.look.variant = Variant::Dark;
+        (d.auto_hide_docks, d.tabs_on_top, *timeline_bottom) = (false, false, true);
     }
 }
 
@@ -358,7 +363,7 @@ mod tests {
         let l = crate::ui::dock::Dock::new(&theme::Theme::new(LookChoice::VEGAS16)).layout("");
         current.layouts.insert(crate::settings::layout_key(UiLook::Vegas16, "last"), l);
         let ctx = Context::default();
-        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current, None).is_none()));
+        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current, None, true).is_none()));
         assert_eq!(dlg.draft.as_ref(), Some(&current));
     }
 }

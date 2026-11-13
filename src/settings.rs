@@ -97,6 +97,10 @@ pub struct Prefs {
     /// R12: Render Options › Render in the background: Render closes the dialog and the render runs while editing
     /// goes on (progress in the status bar). Off, as VEGAS renders with a progress dialog.
     pub render_background: bool,
+    /// R13: Preferences › Display: "Automatically hide docking area" (an area opens while the pointer is over its
+    /// edge) and "Position tabs at top of docked windows"; both off, as in VEGAS.
+    pub auto_hide_docks: bool,
+    pub tabs_on_top: bool,
 }
 
 /// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
@@ -156,10 +160,15 @@ pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
 }
 
 /// The layouts to save: those on `disk` (another window may have saved some), with this window's `changed` keys
-/// taken from `mine`.
-pub fn merge_layouts(disk: BTreeMap<String, Layout>, mine: BTreeMap<String, Layout>, changed: &BTreeSet<String>) -> BTreeMap<String, Layout> {
+/// taken from `mine` (a changed key `mine` lacks was deleted: Organize Layouts).
+pub fn merge_layouts(disk: BTreeMap<String, Layout>, mut mine: BTreeMap<String, Layout>, changed: &BTreeSet<String>) -> BTreeMap<String, Layout> {
     let mut out = disk;
-    out.extend(mine.into_iter().filter(|(k, _)| changed.contains(k)));
+    for k in changed {
+        match mine.remove(k) {
+            Some(l) => out.insert(k.clone(), l),
+            None => out.remove(k),
+        };
+    }
     out
 }
 
@@ -217,6 +226,8 @@ impl Default for Prefs {
             render_favorites: Vec::new(),
             render_recent: Vec::new(),
             render_background: false,
+            auto_hide_docks: false,
+            tabs_on_top: false,
         }
     }
 }
@@ -609,6 +620,10 @@ mod tests {
         assert!(d.render_templates.is_empty() && d.render_favorites.is_empty() && d.render_recent.is_empty());
         // R12: old preferences render with the progress dialog (VEGAS), not in the background.
         assert!(!d.render_background);
+        // R13: old preferences keep the docking areas shown and the tabs at the bottom (VEGAS's defaults).
+        assert!(!d.auto_hide_docks && !d.tabs_on_top);
+        let k = Prefs { auto_hide_docks: true, tabs_on_top: true, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
         let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
         let t = Prefs { render_templates: vec![mine], render_favorites: vec!["Mine".into()], render_recent: vec!["Web 720p".into()], ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&t).unwrap()).unwrap(), t);
@@ -704,7 +719,10 @@ mod tests {
         let l = |n: &str| crate::ui::dock::Dock::new(&t).layout(n);
         let disk = BTreeMap::from([("vp16:3".to_string(), l("Theirs")), ("vp16:4".to_string(), l("Disk4"))]);
         let mine = BTreeMap::from([("vp16:4".to_string(), l("Mine4")), ("vp16:5".to_string(), l("Stale5"))]);
-        let m = merge_layouts(disk, mine, &BTreeSet::from(["vp16:4".to_string()]));
+        let m = merge_layouts(disk.clone(), mine.clone(), &BTreeSet::from(["vp16:4".to_string()]));
         assert_eq!(m.iter().map(|(k, v)| (k.as_str(), v.name.as_str())).collect::<Vec<_>>(), [("vp16:3", "Theirs"), ("vp16:4", "Mine4")]);
+        // R13: a slot this window deleted (Organize Layouts) goes from the file too.
+        let m = merge_layouts(disk, mine, &BTreeSet::from(["vp16:3".to_string()]));
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["vp16:4"]);
     }
 }
