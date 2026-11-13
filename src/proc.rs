@@ -37,6 +37,21 @@ pub fn spawn(cmd: &mut Command) -> io::Result<Child> {
     Ok(child)
 }
 
+/// Run `child` at below-normal priority (a render's encoder), so the editor stays responsive while it encodes.
+pub fn below_normal(child: &Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, SetPriorityClass};
+        // SAFETY: the handle is the live child's own process handle.
+        if unsafe { SetPriorityClass(child.as_raw_handle() as _, BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
+            eprintln!("proc: SetPriorityClass failed: {}", io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = child;
+}
+
 /// `cmd.output()` through [`spawn`], so a probe hung on a dead share still dies with Milan.
 pub fn output(cmd: &mut Command) -> io::Result<std::process::Output> {
     spawn(cmd.stdout(Stdio::piped()).stderr(Stdio::piped()))?.wait_with_output()

@@ -1,11 +1,13 @@
 //! File › Render As (VP16, light native dialog with a Formats tree) / File › Render (VP23, dark dialog with a
 //! category tree and a template grid), §5.15.1 and §5.15.3. Templates are the built-in delivery templates and the
-//! user's own (kept in the preferences); Customize Template edits a copy. The render runs through the engine
-//! (`engine::render`) and leaves a log.
+//! user's own (kept in the preferences); Customize Template edits a copy. Render puts the render in the render queue
+//! (`render::RenderQueue`, R12), which renders a snapshot of the project through the engine and leaves a log. As in
+//! VEGAS the dialog shows the progress and blocks editing, unless Render in the background is on: then it is a
+//! window, Render closes it and the status bar shows the progress. Also Tools › Render to New Track.
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
 use crate::project::{Project, format_timecode};
-use crate::render::{BUILTIN, Job, Opts, Status, Template, content_end};
+use crate::render::{BUILTIN, JobState, Opts, RenderQueue, Template, content_end};
 use crate::settings::Prefs;
 use super::template::{Closed, Editor};
 use super::super::theme::{self, UiLook};
@@ -42,7 +44,18 @@ pub struct RenderDialog {
     pub quickfade: bool,
     /// The template Render uses: a copy of a listed one, or one changed in Customize Template.
     chosen: Template,
-    job: Option<Job>,
+    /// The render this dialog queued (its id in the render queue).
+    job: Option<String>,
+    /// That render is waiting or rendering (set each frame from the queue).
+    busy: bool,
+    /// Render in the background (the preference, read each frame): a window, not a modal dialog.
+    background: bool,
+    /// Tools › Render to New Track: the file goes on a new track at the start of what was rendered.
+    to_new_track: bool,
+    /// A Render to New Track render just queued: (its id, where to place the file). The app takes it.
+    pub new_track: Option<(String, f64)>,
+    /// The queue could not take the render.
+    error: Option<String>,
     /// "Render loop region only" (used while the loop region is set).
     loop_only: bool,
     /// Render Options: stretch, rotation, markers.
@@ -69,6 +82,11 @@ impl Default for RenderDialog {
             quickfade: true,
             chosen: BUILTIN[0].clone(),
             job: None,
+            busy: false,
+            background: false,
+            to_new_track: false,
+            new_track: None,
+            error: None,
             // VEGAS: on whenever there is a loop region; an untick is kept for the session.
             loop_only: true,
             opts: Opts::default(),
@@ -86,28 +104,62 @@ impl Default for RenderDialog {
 }
 
 impl RenderDialog {
+    /// File › Render As.
+    pub fn open(&mut self, project: &Project) {
+        self.seed(project);
+        if self.to_new_track && self.name == new_track_name(project) {
+            self.name = project.name.clone();
+        }
+        (self.open, self.to_new_track, self.job, self.error) = (true, false, None, None);
+    }
+
+    /// Tools › Render to New Track.
+    pub fn open_new_track(&mut self, project: &Project) {
+        self.seed(project);
+        if self.name == project.name {
+            self.name = new_track_name(project);
+        }
+        (self.open, self.to_new_track, self.job, self.error) = (true, true, None, None);
+    }
+
+    /// Blocks the app (VEGAS's render): open, unless Render in the background is on.
+    pub fn is_modal(&self) -> bool {
+        self.open && !self.background
+    }
+
     /// True when the preferences changed (a favourite, a saved or deleted template, the recent list).
-    pub fn show(&mut self, ctx: &Context, project: &Project, prefs: &mut Prefs) -> bool {
+    pub fn show(&mut self, ctx: &Context, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue) -> bool {
+        self.background = prefs.render_background;
         if !self.open {
             return false;
         }
         self.seed(project);
+        let state = self.job.as_ref().and_then(|id| queue.job(id)).map(|j| j.state.clone());
+        self.busy = matches!(state, Some(JobState::Queued | JobState::Running));
+        if self.to_new_track && state == Some(JobState::Done) {
+            // VEGAS closes the dialog once the file is rendered; the app places it.
+            (self.job, self.open) = (None, false);
+            return false;
+        }
         let mut changed = false;
         let v16 = theme::get().look() == UiLook::Vegas16;
-        let (title, size) = if v16 { ("Render As", vec2(640.0, 700.0)) } else { ("Render", vec2(960.0, 520.0)) };
-        let (render, close) = super::modal(ctx, "render_as", title, size, |ui| if v16 { self.body16(ui, project, prefs, &mut changed) } else { self.body23(ui, project, prefs, &mut changed) });
+        let title = if self.to_new_track { "Render to New Track" } else if v16 { "Render As" } else { "Render" };
+        let size = if v16 { vec2(640.0, 720.0) } else { vec2(960.0, 540.0) };
+        let bg = self.background;
+        let body = |ui: &mut Ui| if v16 { self.body16(ui, project, prefs, queue, &mut changed) } else { self.body23(ui, project, prefs, queue, &mut changed) };
+        let (action, close) = if bg { super::window(ctx, "render_as", title, size, body) } else { super::modal(ctx, "render_as", title, size, body) };
         if let Some(ed) = &mut self.editor {
             match ed.show(ctx, &project.settings, &mut prefs.render_templates, &mut changed) {
                 Some(Closed::Ok(t)) => (self.chosen, self.editor) = (t, None),
                 Some(Closed::Cancel) => self.editor = None,
                 None => {}
             }
-        } else if render {
-            changed |= self.start(ctx, project, prefs);
+        } else if let Some(queued) = action {
+            changed |= self.start(project, prefs, queue, queued);
         } else if close {
-            // Closing the window abandons the render rather than leaving an invisible ffmpeg running.
-            if let Some(j) = &self.job {
-                j.cancel();
+            // VEGAS: closing the progress dialog cancels the render. In the background it carries on.
+            if let (Some(id), true, false) = (&self.job, self.busy, self.background) {
+                queue.cancel(id);
             }
             (self.job, self.open) = (None, false);
         }
@@ -120,7 +172,7 @@ impl RenderDialog {
     }
 
     fn running(&self) -> bool {
-        self.job.as_ref().is_some_and(|j| j.status() == Status::Running)
+        self.busy
     }
 
     /// The time span to render: the loop region when "Render loop region only" is on and one is set, else the whole timeline.
@@ -211,8 +263,9 @@ impl RenderDialog {
         ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
     }
 
-    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers; multichannel waits for R10a.
-    fn options(&mut self, ui: &mut Ui, project: &Project) {
+    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers; multichannel waits for R10a; R12's
+    /// Render in the background (off, as VEGAS).
+    fn options(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) {
         let video = self.chosen.video.is_some();
         ui.add_enabled(video, Checkbox::new(&mut self.opts.stretch, "Stretch video to fill output frame size (do not letterbox)"));
         ui.add_enabled(video && project.settings.rotation != 0, Checkbox::new(&mut self.opts.rotate, "Use project output rotation setting"))
@@ -220,70 +273,89 @@ impl RenderDialog {
         let chapters = self.chosen.container().is_some_and(|c| c.chapters);
         ui.add_enabled(chapters, Checkbox::new(&mut self.opts.markers, "Save project markers in media file")).on_disabled_hover_text("This format cannot hold markers.");
         ui.add_enabled(false, Checkbox::new(&mut false, "Enable multichannel mapping")).on_disabled_hover_text(super::super::menus::Later("R10a").text());
+        *changed |= ui
+            .checkbox(&mut prefs.render_background, "Render in the background (keep editing; progress in the status bar)")
+            .on_hover_text("Renders a copy of the project as it is when Render is clicked: later edits do not change the file.")
+            .changed();
     }
 
-    /// Progress / result block and the bottom buttons. True when Render was clicked.
-    fn footer(&mut self, ui: &mut Ui, project: &Project, render_label: &str) -> bool {
-        match self.job.as_ref().map(|j| (j, j.status())) {
-            Some((j, Status::Running)) => {
-                ui.add(ProgressBar::new(j.fraction()).show_percentage());
-                ui.label(j.eta().map_or("Estimating time remaining...".to_string(), |e| format!("{e:.0} s remaining")));
-            }
-            Some((j, st)) => {
-                ui.horizontal(|ui| {
-                    match &st {
-                        Status::Done => {
-                            ui.label(format!("Rendered {}", j.out.display()));
-                            if ui.button("Open Folder").clicked() {
-                                open_folder(&j.out);
+    /// Progress / result block and the bottom buttons. Some(false) when Render was clicked, Some(true) for Add to
+    /// Render Queue.
+    fn footer(&mut self, ui: &mut Ui, project: &Project, queue: &mut RenderQueue, render_label: &str) -> Option<bool> {
+        if let Some(j) = self.job.as_ref().and_then(|id| queue.job(id)).cloned() {
+            match &j.state {
+                JobState::Running => {
+                    if let Some(r) = queue.running(&j.id) {
+                        ui.add(ProgressBar::new(r.fraction()).show_percentage());
+                        ui.label(r.eta().map_or("Estimating time remaining...".to_string(), |e| format!("{e:.0} s remaining")));
+                    }
+                }
+                JobState::Queued => {
+                    ui.label(format!("Waiting in the render queue: {} render(s) before this one.", queue.ahead(&j.id)));
+                }
+                JobState::Paused => {
+                    ui.label("Paused in the render queue.");
+                }
+                st => {
+                    ui.horizontal(|ui| {
+                        match st {
+                            JobState::Done => {
+                                ui.label(format!("Rendered {}", j.out.display()));
+                                if ui.button("Open Folder").clicked() {
+                                    open_folder(&j.out);
+                                }
+                            }
+                            JobState::Failed(_) => {
+                                ui.colored_label(theme::get().warning_text, "Render failed:");
+                            }
+                            _ => {
+                                ui.label("Render cancelled.");
                             }
                         }
-                        Status::Cancelled => {
-                            ui.label("Render cancelled.");
+                        if let Some(log) = &j.log {
+                            if ui.link("Show log").on_hover_text(log.display().to_string()).clicked() {
+                                open_file(log);
+                            }
                         }
-                        _ => {
-                            ui.colored_label(theme::get().warning_text, "Render failed:");
-                        }
+                    });
+                    if let JobState::Failed(e) = st {
+                        ScrollArea::vertical().max_height(80.0).show(ui, |ui| ui.monospace(e));
                     }
-                    if let Some(log) = j.log() {
-                        if ui.link("Show log").on_hover_text(log.display().to_string()).clicked() {
-                            open_file(&log);
-                        }
-                    }
-                });
-                if let Status::Failed(e) = st {
-                    ScrollArea::vertical().max_height(80.0).show(ui, |ui| ui.monospace(e));
                 }
             }
-            None => {}
         }
         let (a, b) = self.range(project);
         let empty = b <= a;
         let has_loop = project.timeline.loop_region.is_some_and(|(a, b)| b > a);
         let running = self.running();
         let bad = self.out_error().map(String::from).or_else(|| self.chosen.check().err());
-        if let (Some(e), false) = (&bad, running) {
+        let bad = bad.or_else(|| (self.to_new_track && self.chosen.sequence()).then(|| "Render to New Track needs a video or audio file, not an image sequence.".to_string()));
+        if let (Some(e), false) = (bad.as_ref().or(self.error.as_ref()), running) {
             ui.colored_label(theme::get().warning_text, e);
         }
-        let mut render = false;
+        let mut action = None;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             if super::button(ui, "Cancel", true, false).clicked() {
-                if running {
-                    if let Some(j) = &self.job {
-                        j.cancel();
-                    }
-                } else {
-                    (self.open, self.job) = (false, None);
+                match (&self.job, running) {
+                    (Some(id), true) => queue.cancel(id),
+                    _ => (self.open, self.job) = (false, None),
                 }
             }
-            render = super::button(ui, render_label, !empty && !running && bad.is_none(), true).clicked();
+            let ok = !empty && !running && bad.is_none();
+            if super::button(ui, render_label, ok, true).clicked() {
+                action = Some(false);
+            }
+            // R12: rendered while editing goes on (the dialog closes); the Render Queue window lists it.
+            if !self.to_new_track && ui.add_enabled(ok, Button::new("Add to Render Queue").min_size(super::BUTTON)).on_hover_text("Render a copy of the project as it is now, in the background").clicked() {
+                action = Some(true);
+            }
             let mut on = self.loop_only && has_loop;
             if ui.add_enabled(has_loop && !running, Checkbox::new(&mut on, "Render loop region only")).changed() {
                 self.loop_only = on;
             }
         });
-        render
+        action
     }
 
     fn customize_button(&mut self, ui: &mut Ui, label: &str, size: Vec2) {
@@ -292,7 +364,7 @@ impl RenderDialog {
         }
     }
 
-    fn body16(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) -> bool {
+    fn body16(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, changed: &mut bool) -> Option<bool> {
         ui.label("Output File");
         self.output_fields(ui);
         ui.add_space(4.0);
@@ -361,12 +433,12 @@ impl RenderDialog {
         });
         self.customize_button(ui, "Customize Template...", vec2(0.0, 0.0));
         super::group(ui, "Render Options");
-        ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project));
+        ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project, prefs, changed));
         ui.add_space(4.0);
-        self.footer(ui, project, "Render")
+        self.footer(ui, project, queue, "Render")
     }
 
-    fn body23(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) -> bool {
+    fn body23(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, changed: &mut bool) -> Option<bool> {
         let t = theme::get();
         let d = t.dialog();
         ui.horizontal(|ui| {
@@ -389,10 +461,10 @@ impl RenderDialog {
                         ui.close_menu();
                     }
                 });
-                ui.menu_button("⚙ Render options", |ui| ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project)));
+                ui.menu_button("⚙ Render options", |ui| ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project, prefs, changed)));
             });
         });
-        let mut render = false;
+        let mut render = None;
         let listed = self.listed(project, prefs);
         let shown: Vec<&Template> = listed
             .into_iter()
@@ -492,7 +564,7 @@ impl RenderDialog {
                     ui.set_width(ui.available_width());
                     self.output_fields(ui);
                 });
-                render = self.footer(ui, project, "Render...");
+                render = self.footer(ui, project, queue, "Render...");
             });
         });
         if let Some(n) = star_hit {
@@ -515,8 +587,9 @@ impl RenderDialog {
         }
     }
 
-    /// Start the render (after asking before replacing a file). True when the recent list changed.
-    fn start(&mut self, ctx: &Context, project: &Project, prefs: &mut Prefs) -> bool {
+    /// Queue the render (after asking before replacing a file); `queued` (Add to Render Queue) closes the dialog, as
+    /// Render does in the background. True when the recent list changed.
+    fn start(&mut self, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, queued: bool) -> bool {
         let out = self.out_path();
         if out.exists()
             && rfd::MessageDialog::new()
@@ -529,13 +602,33 @@ impl RenderDialog {
             return false;
         }
         let opts = Opts { quickfade: self.quickfade, ..self.opts };
-        self.job = Some(crate::engine::render::start(project, &self.chosen, out, self.range(project), opts, ctx.clone()));
+        let range = self.range(project);
+        match queue.add(project, &self.chosen, out, range, opts) {
+            Ok(id) => {
+                if self.to_new_track {
+                    self.new_track = Some((id.clone(), range.0));
+                }
+                (self.job, self.error) = (Some(id), None);
+                if queued || self.background {
+                    (self.job, self.open) = (None, false);
+                }
+            }
+            Err(e) => {
+                self.error = Some(e);
+                return false;
+            }
+        }
         let name = self.chosen.name.clone();
         prefs.render_recent.retain(|r| *r != name);
         prefs.render_recent.insert(0, name);
         prefs.render_recent.truncate(10);
         true
     }
+}
+
+/// Render to New Track's file name: "<project> (rendered)".
+fn new_track_name(project: &Project) -> String {
+    format!("{} (rendered)", project.name)
 }
 
 fn toggle_favorite(prefs: &mut Prefs, name: String) {
@@ -628,7 +721,7 @@ pub fn open_folder(path: &Path) {
 }
 
 /// Open `path` in its default app (a render log in the text editor).
-fn open_file(path: &Path) {
+pub fn open_file(path: &Path) {
     let mut cmd = std::process::Command::new("explorer");
     #[cfg(windows)]
     {

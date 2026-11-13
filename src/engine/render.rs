@@ -23,8 +23,7 @@ const AUDIO_SHARE: f64 = 0.05;
 /// `timeline.master.gain`. For an image sequence `out` is the first frame (`<name>_000000.<ext>`).
 pub fn start(project: &Project, template: &Template, out: PathBuf, range: (f64, f64), opts: Opts, ctx: egui::Context) -> Job {
     let (p, t) = (project.clone(), template.clone());
-    let target = out.clone();
-    Job::start(out, ctx, move |ctl| render(&p, &t, &target, range, opts, ctl))
+    Job::start(ctx, move |ctl| render(&p, &t, &out, range, opts, ctl))
 }
 
 /// `<out>.partial`
@@ -259,6 +258,7 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(&log.args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = crate::proc::spawn(&mut cmd).map_err(|e| format!("{}: cannot render", crate::proc::tool_error(&e, "ffmpeg")))?;
+    crate::proc::below_normal(&child);
     let (mut stdin, stderr) = (child.stdin.take().expect("piped stdin"), child.stderr.take().expect("piped stderr"));
     ctl.set_child(child);
     // stderr drained on its own thread so a chatty ffmpeg never blocks on a full pipe.
@@ -782,6 +782,117 @@ mod tests {
 
     fn stream<'a>(j: &'a serde_json::Value, kind: &str) -> Option<&'a serde_json::Value> {
         j["streams"].as_array()?.iter().find(|s| s["codec_type"] == kind)
+    }
+
+    /// R12: two short renders through the queue, one after the other, from the snapshots taken when they were queued
+    /// (the project is emptied right after: both still render it), checked with ffprobe; a queued job cancelled before
+    /// its turn never renders, and the encoder runs below normal priority. Needs ffmpeg.
+    /// `cargo test --release -- --ignored render_queue_e2e`
+    #[test]
+    #[ignore]
+    fn render_queue_e2e() {
+        let dir = std::env::temp_dir().join(format!("milan-render-queue-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        let ok = crate::proc::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=d=2:s=320x240:r=30", "-f", "lavfi", "-i", "sine=f=440:d=2"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
+            .arg(&src)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let m = crate::media::probe_media(&src).unwrap();
+        let mut p = Project::new("queue");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+        let mut c = Clip::from_media(&m, 0.0);
+        (c.duration, c.out_point) = (2.0, c.in_point + 2.0);
+        p.timeline.video_tracks[0].clips.push(c.clone());
+        p.timeline.audio_tracks[0].clips.push(c);
+        p.media_pool = vec![m];
+        let ctx = egui::Context::default();
+        let mut q = crate::render::RenderQueue::load(dir.join("queue.json"));
+        let wav = BUILTIN.iter().find(|t| t.name == "WAV audio only").unwrap();
+        let a = q.add(&p, &BUILTIN[0], dir.join("a.mp4"), (0.0, 2.0), Opts::default()).unwrap();
+        let b = q.add(&p, wav, dir.join("b.wav"), (0.0, 1.5), Opts::default()).unwrap();
+        let c = q.add(&p, &BUILTIN[0], dir.join("c.mp4"), (0.0, 2.0), Opts::default()).unwrap();
+        p.timeline.video_tracks[0].clips.clear(); // edits after queueing change nothing queued
+        p.timeline.audio_tracks[0].clips.clear();
+        q.cancel(&c);
+        let until = Instant::now() + Duration::from_secs(120);
+        let (mut done, mut low) = (Vec::new(), false);
+        while q.busy() {
+            assert!(Instant::now() < until, "the queue did not finish");
+            done.extend(q.tick(&ctx));
+            let running: Vec<_> = q.jobs.iter().filter(|j| j.state == crate::render::JobState::Running).collect();
+            assert!(running.len() <= 1, "one render at a time");
+            if q.job(&a).unwrap().state == crate::render::JobState::Running {
+                assert_eq!(q.job(&b).unwrap().state, crate::render::JobState::Queued, "in list order");
+            }
+            low |= below_normal_ffmpeg();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(done, [a.clone(), b.clone()]);
+        assert!(low, "the encoder runs below normal priority");
+        let st = |id: &str| q.job(id).unwrap().state.clone();
+        assert_eq!((st(&a), st(&b), st(&c)), (crate::render::JobState::Done, crate::render::JobState::Done, crate::render::JobState::Cancelled));
+        assert!(!dir.join("c.mp4").exists() && !q.job(&a).unwrap().snapshot.exists());
+        let j = probe(&dir.join("a.mp4"));
+        let v = stream(&j, "video").unwrap();
+        assert_eq!((v["codec_name"].as_str(), v["width"].as_u64(), v["height"].as_u64()), (Some("h264"), Some(320), Some(240)));
+        assert_eq!(stream(&j, "audio").unwrap()["codec_name"], "aac");
+        let d = |j: &serde_json::Value| j["format"]["duration"].as_str().and_then(|d| d.parse::<f64>().ok()).unwrap_or(0.0);
+        assert!((d(&j) - 2.0).abs() < 0.07, "{}", d(&j));
+        let j = probe(&dir.join("b.wav"));
+        assert!(stream(&j, "video").is_none() && stream(&j, "audio").unwrap()["codec_name"].as_str().unwrap().starts_with("pcm_"));
+        assert!((d(&j) - 1.5).abs() < 0.01, "{}", d(&j));
+        assert!(q.jobs.iter().take(2).all(|j| j.log.as_ref().is_some_and(|l| l.exists())), "each render leaves its log");
+        // The saved queue says the same after a restart.
+        q.remove(&c);
+        drop(q);
+        let back = crate::render::RenderQueue::load(dir.join("queue.json"));
+        assert_eq!(back.jobs.iter().map(|j| (&j.id, &j.state)).collect::<Vec<_>>(), [(&a, &crate::render::JobState::Done), (&b, &crate::render::JobState::Done)]);
+        drop(back);
+        std::fs::remove_dir(dir.join("queue")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An ffmpeg child of this process is running at below-normal priority.
+    #[cfg(windows)]
+    fn below_normal_ffmpeg() -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::*;
+        use windows_sys::Win32::System::Threading::*;
+        let me = std::process::id();
+        // SAFETY: a snapshot walked with a correctly sized entry; every handle opened is closed.
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut found = false;
+            let mut ok = Process32FirstW(snap, &mut e) != 0;
+            while ok {
+                let name = String::from_utf16_lossy(&e.szExeFile[..e.szExeFile.iter().position(|&c| c == 0).unwrap_or(0)]);
+                if e.th32ParentProcessID == me && name.eq_ignore_ascii_case("ffmpeg.exe") {
+                    let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID);
+                    if !h.is_null() {
+                        found |= GetPriorityClass(h) == BELOW_NORMAL_PRIORITY_CLASS;
+                        CloseHandle(h);
+                    }
+                }
+                ok = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+            found
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn below_normal_ffmpeg() -> bool {
+        true
     }
 
     /// R11: 2 s with every built-in template, each output checked with ffprobe (codec, size, rate, channels, length to

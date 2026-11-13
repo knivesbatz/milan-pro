@@ -15,6 +15,7 @@ pub mod keymap;
 mod master_bus;
 mod media_panel;
 pub mod menus;
+pub mod render_queue;
 mod mixer;
 mod pancrop;
 mod preview;

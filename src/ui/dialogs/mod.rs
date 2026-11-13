@@ -24,7 +24,7 @@ pub use paste_repeat::PasteRepeat;
 pub use prefs::PrefsDialog;
 pub use recorded::{Recorded, RecordedFiles};
 pub use remove_fx::RemoveAssignableFx;
-pub use render::{RenderDialog, open_folder};
+pub use render::{RenderDialog, open_file, open_folder};
 pub use shortcuts::shortcuts_window;
 pub use take_chooser::TakeChooser;
 pub use unfinished::unfinished_window;

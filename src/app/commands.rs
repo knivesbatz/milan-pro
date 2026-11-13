@@ -31,7 +31,11 @@ impl MeridianApp {
             || self.about
             || self.settings.is_open()
             || self.prefs_dlg.is_open()
-            || self.render.open
+            || self.render.is_modal()
+            || self.queue_win.is_modal()
+            || self.batch.is_some()
+            || self.render_tracks.is_some()
+            || self.render_guard.is_some()
             || self.welcome.is_some()
             || self.shortcuts_open
             || self.unfinished_open
@@ -665,7 +669,11 @@ impl MeridianApp {
                 let r = menus::save_as(&mut self.project);
                 self.save_result(r);
             }
-            RenderAs => self.render.open = true,
+            RenderAs => self.render.open(&self.project),
+            RenderToNewTrack => self.render.open_new_track(&self.project),
+            RenderQueue => self.queue_win.open = true,
+            BatchRender => self.batch = Some(ui::render_queue::BatchRender::new(&self.project)),
+            RenderAudioTracks => self.render_tracks = Some(ui::render_queue::RenderTracks::new(&self.project)),
             ImportMedia => ui::import_media(ctx, &self.importer),
             ImportVegas => {
                 let picked = rfd::FileDialog::new().add_filter("VEGAS Project (Milan Pro export, .veg)", &["json", "veg"]).pick_file();
@@ -1554,6 +1562,11 @@ impl MeridianApp {
 
     /// New/Open/Exit, asking to save first if there are unsaved changes.
     pub(super) fn request(&mut self, ctx: &egui::Context, action: MenuAction) {
+        if action == MenuAction::Exit && self.queue.busy() && self.exit_choice.is_none() {
+            // R12: closing (or an update) would stop the render: ask first.
+            self.render_guard = Some(self.install_on_exit.is_some());
+            return;
+        }
         if self.rec_start.is_some() {
             // A running take goes on the timeline first, so the save prompt covers it.
             self.stop_recording();
@@ -1601,6 +1614,12 @@ impl MeridianApp {
                         return self.message = Some(format!("Could not start the update installer: {e}"));
                     }
                 }
+                // R12: what the render guard chose, now that Milan Pro really closes.
+                match self.exit_choice.take() {
+                    Some(ui::render_queue::Guard::Keep) => self.queue.halt(),
+                    Some(ui::render_queue::Guard::CancelRender) => self.queue.cancel_all(),
+                    _ => {}
+                }
                 // Close (not process::exit) so the app is dropped and a running render's ffmpeg is killed.
                 self.project.modified = false; // changes were saved or discarded; don't prompt again
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1608,6 +1627,7 @@ impl MeridianApp {
             }
         };
         self.project = project;
+        self.project_serial += 1;
         self.history.clear();
         self.sel = ui::Selection::default();
         self.selected_clip = None;
@@ -1708,9 +1728,11 @@ impl MeridianApp {
                 // Forget what the New/Open/Exit was going to use, so a later one doesn't pick it up.
                 (self.pending_open, self.new_settings, self.props_after_new, self.pending_import) = (None, None, false, None);
                 self.install_on_exit = None; // the update waits for the next "Install and restart"
+                self.exit_choice = None; // the renders carry on
             }
         }
         self.show_update(ctx);
+        self.show_render_dialogs(ctx);
         if self.about {
             let (ok, close) = dialogs::modal(ctx, "about", "About Milan Pro", egui::vec2(360.0, 170.0), |ui| {
                 ui.label(egui::RichText::new(format!("Milan Pro v{}", env!("CARGO_PKG_VERSION"))).strong());
@@ -1930,6 +1952,93 @@ impl MeridianApp {
         }
     }
 
+    /// R12: the render queue's progress (a finished Render to New Track file is placed), Exit waiting for it, Batch
+    /// Render, Render Audio Tracks.
+    pub(super) fn tick_renders(&mut self, ctx: &egui::Context) {
+        for id in self.queue.tick(ctx) {
+            self.place_rendered(&id);
+        }
+        // Cancelled or failed Render to New Track renders are not waited for.
+        let queue = &self.queue;
+        self.new_tracks.retain(|(id, ..)| queue.job(id).is_some_and(|j| matches!(j.state, crate::render::JobState::Queued | crate::render::JobState::Paused | crate::render::JobState::Running)));
+        if self.exit_after_render && !self.queue.busy() {
+            self.exit_after_render = false;
+            self.message = None;
+            self.request(ctx, MenuAction::Exit);
+        }
+        if let Some(b) = &mut self.batch {
+            if let Some(ids) = b.show(ctx, &self.project, &self.prefs, &mut self.queue) {
+                self.batch = None;
+                self.batch_started(ids);
+            }
+        }
+        if let Some(r) = &mut self.render_tracks {
+            if let Some(ids) = r.show(ctx, &self.project, &self.prefs, &mut self.queue) {
+                self.render_tracks = None;
+                self.batch_started(ids);
+            }
+        }
+    }
+
+    /// Batch renders show their progress in the Render Queue window (modal, as VEGAS renders a script's renders),
+    /// or in the status bar when Render in the background is on.
+    fn batch_started(&mut self, ids: Vec<String>) {
+        if !ids.is_empty() && !self.prefs.render_background {
+            (self.queue_win.open, self.queue_win.batch) = (true, ids);
+        }
+    }
+
+    /// A finished Render to New Track render: its file into Project Media and onto new tracks where the render began,
+    /// in the project it was rendered from (not one opened since).
+    fn place_rendered(&mut self, id: &str) {
+        let Some(k) = self.new_tracks.iter().position(|(j, ..)| j == id) else { return };
+        let (_, at, serial) = self.new_tracks.remove(k);
+        let Some(out) = self.queue.job(id).map(|j| j.out.clone()) else { return };
+        if serial != self.project_serial {
+            self.message = Some(format!("{} is rendered; the project it was rendered from is closed, so it is not placed.", out.display()));
+            return;
+        }
+        match crate::media::probe_media(&out) {
+            Ok(m) => {
+                let before = self.project.clone();
+                let idx = match self.project.media_pool.iter().position(|x| x.path == m.path) {
+                    Some(i) => i,
+                    None => {
+                        self.project.media_pool.push(m);
+                        self.project.media_pool.len() - 1
+                    }
+                };
+                let ids = edit::place_on_new_tracks(&mut self.project, idx, at);
+                self.history.push(before);
+                (self.sel.clips, self.sel.list_focus) = (ids, false);
+            }
+            Err(e) => self.message = Some(format!("Render to New Track: cannot read {}: {e}", out.display())),
+        }
+    }
+
+    /// The guard asked at Exit (or Install and restart) while a render runs.
+    fn show_render_dialogs(&mut self, ctx: &egui::Context) {
+        let Some(install) = self.render_guard else { return };
+        use crate::ui::render_queue::Guard;
+        match ui::render_queue::guard(ctx, install) {
+            Some(Guard::Wait) => {
+                (self.render_guard, self.exit_after_render) = (None, true);
+                self.message = Some(if install { "The update installs when the render queue has finished." } else { "Milan Pro closes when the render queue has finished." }.into());
+            }
+            // Applied when Milan Pro closes: a cancelled save prompt leaves the renders running.
+            Some(g @ (Guard::CancelRender | Guard::Keep)) => {
+                (self.render_guard, self.exit_choice) = (None, Some(g));
+                self.request(ctx, MenuAction::Exit);
+            }
+            Some(Guard::Back) => {
+                (self.render_guard, self.exit_after_render) = (None, false);
+                self.install_on_exit = None; // the update waits for the next "Install and restart"
+                self.message = None;
+            }
+            None => {}
+        }
+    }
+
     /// J / L shuttle (and the Rate slider) at rates other than normal playback: the sound plays at the shuttle's speed,
     /// varispeed (R4b), and its clock moves the cursor; without a device the frame time does.
     pub(super) fn tick_shuttle(&mut self, ctx: &egui::Context) {
@@ -2073,11 +2182,28 @@ impl MeridianApp {
                 self.exec(ctx, Copy);
                 self.exec(ctx, PasteRepeat);
             }
-            "render" => self.render.open = true,
+            "render" => self.render.open(&self.project),
             "render-template" => {
-                self.render.open = true;
+                self.render.open(&self.project);
                 self.render.customize();
             }
+            "render-new-track" => self.render.open_new_track(&self.project),
+            "render-queue" => {
+                // R12: a queue as a session leaves it (nothing here renders: no job is Queued, nothing is saved).
+                use crate::render::{BUILTIN, JobState, QueuedJob};
+                let dir = std::env::temp_dir();
+                let job = |k: usize, file: &str, state: JobState, range: (f64, f64)| QueuedJob { id: format!("demo{k}"), project: self.project.name.clone(), template: BUILTIN[k].clone(), out: dir.join(file), range, state, ..Default::default() };
+                self.queue.jobs = vec![
+                    job(5, "Show (YouTube).mp4", JobState::Done, (0.0, 12.0)),
+                    job(3, "Show (mix).wav", JobState::Interrupted, (0.0, 12.0)),
+                    job(12, "Show (master).mov", JobState::Paused, (4.0, 8.0)),
+                    job(4, "Show (preview).mp3", JobState::Failed("Cannot write to the folder".into()), (0.0, 12.0)),
+                ];
+                self.exec(ctx, RenderQueue);
+            }
+            "batch-render" => self.exec(ctx, BatchRender),
+            "render-tracks" => self.exec(ctx, RenderAudioTracks),
+            "render-guard" => self.render_guard = Some(false),
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,

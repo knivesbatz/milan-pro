@@ -3273,9 +3273,44 @@ pub fn place_recording(p: &mut Project, path: &std::path::Path, frames: u64, rat
     changed(p, true)
 }
 
+/// Tools › Render to New Track: the rendered file `media_pool[idx]` on new tracks at the top (a new first video track
+/// for its picture, a new first audio track for its sound, grouped), starting at `at`. The new events' ids.
+pub fn place_on_new_tracks(p: &mut Project, idx: usize, at: f64) -> Vec<String> {
+    let Some(m) = p.media_pool.get(idx) else { return Vec::new() };
+    let video = matches!(m.media_type, MediaType::Video | MediaType::Image);
+    let audio = m.media_type == MediaType::Audio || (video && m.sample_rate.is_some());
+    if video {
+        insert_track(p, true, Some(0));
+    }
+    if audio {
+        insert_track(p, false, Some(0));
+    }
+    drop_media_as(p, &[idx], None, Some((video, 0)), at, 5.0, false, DropMode::AcrossTime)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R12: Render to New Track puts the file at the start of what was rendered, on new tracks above the others.
+    #[test]
+    fn rendered_file_goes_on_new_tracks() {
+        let mut p = Project::new("t");
+        p.timeline.audio_tracks[0].clips.push(Clip::new("old", 0.0, 9.0));
+        let av = MediaItem { id: "r".into(), name: "r.mp4".into(), media_type: MediaType::Video, duration: 4.0, sample_rate: Some(48_000), ..Default::default() };
+        let wav = MediaItem { id: "w".into(), name: "w.wav".into(), media_type: MediaType::Audio, duration: 2.0, sample_rate: Some(48_000), ..Default::default() };
+        p.media_pool = vec![av, wav];
+        let ids = place_on_new_tracks(&mut p, 0, 3.0);
+        let tl = &p.timeline;
+        assert_eq!((ids.len(), tl.video_tracks.len(), tl.audio_tracks.len()), (2, 2, 2));
+        let (v, a) = (&tl.video_tracks[0].clips[0], &tl.audio_tracks[0].clips[0]);
+        assert_eq!((v.position, v.duration, a.position, v.media_id.as_deref()), (3.0, 4.0, 3.0, Some("r")));
+        assert!(v.group.is_some() && v.group == a.group && tl.video_tracks[1].clips.is_empty() && tl.audio_tracks[1].clips[0].name == "old");
+        let ids = place_on_new_tracks(&mut p, 1, 1.5);
+        assert_eq!((ids.len(), p.timeline.video_tracks.len(), p.timeline.audio_tracks.len()), (1, 2, 3));
+        assert_eq!(p.timeline.audio_tracks[0].clips[0].position, 1.5);
+        assert!(p.modified);
+    }
 
     #[test]
     fn place_recording_on_armed_unlocked_tracks() {

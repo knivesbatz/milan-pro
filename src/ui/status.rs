@@ -1,5 +1,5 @@
-//! Status bar (§5.11): hovered command / message on the left; background progress (video proxies) and free recording
-//! time on the right.
+//! Status bar (§5.11): hovered command / message on the left; background progress (a render, video proxies) and free
+//! recording time on the right.
 use eframe::egui::*;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -8,9 +8,9 @@ use crate::project::Project;
 use super::{theme, toolbar};
 
 /// `rect` is the status bar body (17 px VP16 / 20 px VP23); edge lines are painted by the frame.
-/// `progress`: a background job's status ("Creating video proxy 2 of 5: 43%"), followed by a Cancel link.
-/// Returns true when Cancel was clicked.
-pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>, progress: Option<&str>) -> bool {
+/// `progress`: a background job's status ("Creating video proxy 2 of 5: 43%"), followed by a Cancel link whose hover
+/// text is the second string. Returns true when Cancel was clicked.
+pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>, progress: Option<(&str, &str)>) -> bool {
     let t = theme::get();
     let p = ui.painter();
     p.rect_filled(rect, 0.0, t.status_bg);
@@ -37,9 +37,9 @@ pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Opti
         put(p.layout_no_wrap(format!("Record Time (2 channels): {r}"), font.clone(), t.text), 36.0);
     }
     let mut cancel = false;
-    if let Some(progress) = progress {
+    if let Some((progress, stop)) = progress {
         let link = put(p.layout_no_wrap("Cancel".into(), font.clone(), t.text), 10.0);
-        let r = ui.interact(link, Id::new("status_job_cancel"), Sense::click()).on_hover_text("Stop creating video proxies");
+        let r = ui.interact(link, Id::new("status_job_cancel"), Sense::click()).on_hover_text(stop);
         if r.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             p.hline(link.x_range(), link.max.y, Stroke::new(1.0_f32, t.text));

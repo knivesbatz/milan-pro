@@ -94,6 +94,9 @@ pub struct Prefs {
     pub render_templates: Vec<crate::render::Template>,
     pub render_favorites: Vec<String>,
     pub render_recent: Vec<String>,
+    /// R12: Render Options › Render in the background: Render closes the dialog and the render runs while editing
+    /// goes on (progress in the status bar). Off, as VEGAS renders with a progress dialog.
+    pub render_background: bool,
 }
 
 /// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
@@ -213,6 +216,7 @@ impl Default for Prefs {
             render_templates: Vec::new(),
             render_favorites: Vec::new(),
             render_recent: Vec::new(),
+            render_background: false,
         }
     }
 }
@@ -603,6 +607,8 @@ mod tests {
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
         // R11: old preferences have no user templates, favourites or recent renders; a saved template reads back.
         assert!(d.render_templates.is_empty() && d.render_favorites.is_empty() && d.render_recent.is_empty());
+        // R12: old preferences render with the progress dialog (VEGAS), not in the background.
+        assert!(!d.render_background);
         let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
         let t = Prefs { render_templates: vec![mine], render_favorites: vec!["Mine".into()], render_recent: vec!["Web 720p".into()], ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&t).unwrap()).unwrap(), t);

@@ -1570,7 +1570,7 @@ pub fn smooth_fade(x: f64) -> f64 {
     (1.0 - (std::f64::consts::PI * x).cos()) * 0.5
 }
 
-fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
+pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
     let tmp = path.with_extension("mnle.tmp");
     let res = std::fs::File::create(&tmp)
         .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))

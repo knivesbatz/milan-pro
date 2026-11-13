@@ -713,9 +713,10 @@ pub fn chapters(p: &Project, (a, b): (f64, f64)) -> Option<String> {
     Some(out)
 }
 
-/// `%LOCALAPPDATA%\MilanPro\logs\render`, where every render leaves its log.
+/// `%LOCALAPPDATA%\MilanPro\logs\render`, where every render leaves its log. Tests write theirs under temp instead.
 pub fn log_dir() -> PathBuf {
-    std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from).join("MilanPro").join("logs").join("render")
+    let base = if cfg!(test) { Some(std::env::temp_dir().join("milan-test-logs")) } else { std::env::var_os("LOCALAPPDATA").map(PathBuf::from) };
+    base.unwrap_or_else(std::env::temp_dir).join("MilanPro").join("logs").join("render")
 }
 
 /// The exact rate for ffmpeg (`project::rate_ratio`): 29.97 renders as 30000/1001, not 2997/100.
@@ -799,14 +800,13 @@ impl Ctl {
 }
 
 pub struct Job {
-    pub out: PathBuf,
     started: Instant,
     ctl: Arc<Ctl>,
 }
 
 impl Job {
     /// Run `work` on a "milan-render" thread. Ok is Done; an error is Cancelled once Cancel was pressed, else Failed.
-    pub fn start(out: PathBuf, ctx: egui::Context, work: impl FnOnce(&Ctl) -> Result<(), String> + Send + 'static) -> Job {
+    pub fn start(ctx: egui::Context, work: impl FnOnce(&Ctl) -> Result<(), String> + Send + 'static) -> Job {
         let ctl = Arc::new(Ctl { state: Mutex::default(), child: Mutex::default(), cancel: Arc::default(), temp: Mutex::default(), log: Mutex::default(), ctx });
         let c = ctl.clone();
         std::thread::Builder::new()
@@ -821,7 +821,7 @@ impl Job {
                 c.ctx.request_repaint();
             })
             .expect("spawn milan-render");
-        Job { out, started: Instant::now(), ctl }
+        Job { started: Instant::now(), ctl }
     }
 
     pub fn status(&self) -> Status {
@@ -873,6 +873,347 @@ impl Drop for Job {
             }
         }
     }
+}
+
+// ---- Render queue (R12) ----
+
+/// Where a queued render stands.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum JobState {
+    #[default]
+    Queued,
+    /// Held: the queue passes it by until it is resumed.
+    Paused,
+    Running,
+    Done,
+    Failed(String),
+    Cancelled,
+    /// Milan Pro closed or crashed while it rendered.
+    Interrupted,
+}
+
+impl JobState {
+    pub fn label(&self) -> String {
+        match self {
+            JobState::Queued => "Queued".into(),
+            JobState::Paused => "Paused".into(),
+            JobState::Running => "Rendering".into(),
+            JobState::Done => "Done".into(),
+            JobState::Failed(e) => format!("Failed: {}", e.lines().next().unwrap_or("")),
+            JobState::Cancelled => "Cancelled".into(),
+            JobState::Interrupted => "Interrupted".into(),
+        }
+    }
+
+    /// Retry puts it back in the queue.
+    pub fn retryable(&self) -> bool {
+        matches!(self, JobState::Failed(_) | JobState::Cancelled | JobState::Interrupted)
+    }
+}
+
+/// One render in the queue: what to render, and the project as it was when it was queued (`snapshot`, a `.mnle`),
+/// so later edits never change it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueuedJob {
+    pub id: String,
+    /// The project's name, for the list.
+    pub project: String,
+    pub template: Template,
+    pub out: PathBuf,
+    pub range: (f64, f64),
+    pub opts: Opts,
+    pub snapshot: PathBuf,
+    pub state: JobState,
+    pub log: Option<PathBuf>,
+}
+
+/// Renders one after another. Kept in `%APPDATA%\MilanPro\queue.json` (the snapshots in `queue\` beside it), so a job
+/// that was rendering when Milan Pro crashed comes back as Interrupted, with Retry.
+#[derive(Default)]
+pub struct RenderQueue {
+    pub jobs: Vec<QueuedJob>,
+    /// queue.json; None: nothing is read or written (the demo harness, tests).
+    file: Option<PathBuf>,
+    /// The job rendering now (its id).
+    running: Option<(String, Job)>,
+    /// Exit chose "keep it in the queue for next start": nothing more starts in this session.
+    halted: bool,
+    /// `queue.lock` beside the file, held open while this window owns the queue.
+    _lock: Option<std::fs::File>,
+}
+
+impl RenderQueue {
+    /// `%APPDATA%\MilanPro\queue.json`
+    pub fn default_file() -> Option<PathBuf> {
+        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("queue.json"))
+    }
+
+    /// The queue saved in `file`; a job that was rendering when it was last saved is Interrupted. One Milan Pro
+    /// window owns the file at a time (`queue.lock`); another one keeps its renders in memory, so two windows never
+    /// render the same job.
+    pub fn load(file: PathBuf) -> Self {
+        let lock = file.with_extension("lock");
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create(true).truncate(false);
+        #[cfg(windows)]
+        std::os::windows::fs::OpenOptionsExt::share_mode(&mut o, 0);
+        let Ok(lock) = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| o.open(&lock)) else {
+            return Self::default();
+        };
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        let mut jobs: Vec<QueuedJob> = serde_json::from_str(text.trim_start_matches('\u{feff}')).unwrap_or_default();
+        for j in jobs.iter_mut().filter(|j| j.state == JobState::Running) {
+            j.state = JobState::Interrupted;
+        }
+        Self { jobs, file: Some(file), _lock: Some(lock), ..Default::default() }
+    }
+
+    fn save(&self) {
+        let Some(f) = &self.file else { return };
+        let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(anyhow::Error::from);
+        if let Err(e) = r.and_then(|()| crate::project::write_atomic(f, &serde_json::to_string_pretty(&self.jobs)?)) {
+            eprintln!("Could not save the render queue {}: {e}", f.display());
+        }
+    }
+
+    fn snapshot_dir(&self) -> PathBuf {
+        match self.file.as_ref().and_then(|f| f.parent()) {
+            Some(d) => d.join("queue"),
+            None => std::env::temp_dir().join(format!("milan-queue-{}", std::process::id())),
+        }
+    }
+
+    /// Queue a render of `range` of `project` (a snapshot is written now) to `out`. Its id.
+    pub fn add(&mut self, project: &Project, template: &Template, out: PathBuf, range: (f64, f64), opts: Opts) -> Result<String, String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir = self.snapshot_dir();
+        let snapshot = dir.join(format!("{id}.mnle"));
+        let json = serde_json::to_string(project).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&snapshot, json)).map_err(|e| format!("Cannot save the project for the render queue in {}: {e}", dir.display()))?;
+        self.jobs.push(QueuedJob { id: id.clone(), project: project.name.clone(), template: template.clone(), out, range, opts, snapshot, state: JobState::Queued, log: None });
+        self.save();
+        Ok(id)
+    }
+
+    pub fn job(&self, id: &str) -> Option<&QueuedJob> {
+        self.jobs.iter().find(|j| j.id == id)
+    }
+
+    fn job_mut(&mut self, id: &str) -> Option<&mut QueuedJob> {
+        self.jobs.iter_mut().find(|j| j.id == id)
+    }
+
+    /// The render job of `id`, while it renders.
+    pub fn running(&self, id: &str) -> Option<&Job> {
+        self.running.as_ref().filter(|(r, _)| r == id).map(|(_, j)| j)
+    }
+
+    /// A render is running or waiting to.
+    pub fn busy(&self) -> bool {
+        !self.halted && (self.running.is_some() || self.jobs.iter().any(|j| j.state == JobState::Queued))
+    }
+
+    /// Jobs queued before `id` (the running one included).
+    pub fn ahead(&self, id: &str) -> usize {
+        self.jobs.iter().take_while(|j| j.id != id).filter(|j| matches!(j.state, JobState::Queued | JobState::Running)).count()
+    }
+
+    /// Take in the job that ended and start the next queued one. The ids of the jobs that finished (Done) now.
+    pub fn tick(&mut self, ctx: &egui::Context) -> Vec<String> {
+        let mut done = Vec::new();
+        if let Some((id, job)) = self.running.take_if(|(_, j)| j.status() != Status::Running) {
+            let state = match job.status() {
+                Status::Done => JobState::Done,
+                Status::Failed(e) => JobState::Failed(e),
+                _ => JobState::Cancelled,
+            };
+            let log = job.log();
+            if let Some(j) = self.job_mut(&id) {
+                (j.state, j.log) = (state.clone(), log);
+                if state == JobState::Done {
+                    let _ = std::fs::remove_file(&j.snapshot); // no Retry for a finished render
+                    done.push(id);
+                }
+            }
+            self.save();
+        }
+        if self.running.is_none() && !self.halted {
+            if let Some(j) = self.jobs.iter_mut().find(|j| j.state == JobState::Queued) {
+                let loaded = std::fs::read_to_string(&j.snapshot).map_err(anyhow::Error::from).and_then(|s| Ok(serde_json::from_str::<Project>(&s)?));
+                match loaded {
+                    Ok(p) => {
+                        j.state = JobState::Running;
+                        let job = crate::engine::render::start(&p, &j.template, j.out.clone(), j.range, j.opts, ctx.clone());
+                        self.running = Some((j.id.clone(), job));
+                    }
+                    Err(e) => j.state = JobState::Failed(format!("The queued project {} cannot be read: {e}", j.snapshot.display())),
+                }
+                self.save();
+                ctx.request_repaint();
+            }
+        }
+        done
+    }
+
+    /// Cancel `id`: a running render stops, a waiting one never starts.
+    pub fn cancel(&mut self, id: &str) {
+        if let Some(job) = self.running(id) {
+            job.cancel(); // its state is taken in by `tick` once the render thread has cleaned up
+        } else if let Some(j) = self.job_mut(id).filter(|j| matches!(j.state, JobState::Queued | JobState::Paused)) {
+            j.state = JobState::Cancelled;
+            self.save();
+        }
+    }
+
+    /// Pause a waiting job, or resume a paused one.
+    // shortcut: a render that has started cannot be paused (only cancelled); pausing it would need the encoder held mid-stream.
+    pub fn pause(&mut self, id: &str) {
+        if let Some(j) = self.job_mut(id) {
+            j.state = match j.state {
+                JobState::Queued => JobState::Paused,
+                JobState::Paused => JobState::Queued,
+                _ => return,
+            };
+            self.save();
+        }
+    }
+
+    /// Put a failed, cancelled or interrupted job back in the queue (from its snapshot).
+    pub fn retry(&mut self, id: &str) {
+        if let Some(j) = self.job_mut(id).filter(|j| j.state.retryable()) {
+            (j.state, j.log) = (JobState::Queued, None);
+            self.save();
+        }
+    }
+
+    /// Remove a job that is not rendering, with its snapshot.
+    pub fn remove(&mut self, id: &str) {
+        if self.running(id).is_none() {
+            if let Some(k) = self.jobs.iter().position(|j| j.id == id) {
+                let _ = std::fs::remove_file(&self.jobs.remove(k).snapshot);
+                self.save();
+            }
+        }
+    }
+
+    /// Move a job up (-1) or down (+1) the list; the queue renders in list order.
+    pub fn shift(&mut self, id: &str, by: isize) {
+        if let Some(k) = self.jobs.iter().position(|j| j.id == id) {
+            let to = k.saturating_add_signed(by).min(self.jobs.len() - 1);
+            self.jobs.swap(k, to);
+            self.save();
+        }
+    }
+
+    /// Remove the finished and cancelled jobs.
+    pub fn clear_finished(&mut self) {
+        for j in self.jobs.iter().filter(|j| matches!(j.state, JobState::Done | JobState::Cancelled)) {
+            let _ = std::fs::remove_file(&j.snapshot);
+        }
+        self.jobs.retain(|j| !matches!(j.state, JobState::Done | JobState::Cancelled));
+        self.save();
+    }
+
+    /// Exit: cancel the running render and every waiting one.
+    pub fn cancel_all(&mut self) {
+        if let Some((id, job)) = self.running.take() {
+            drop(job); // cancels it and waits for its files to be deleted
+            if let Some(j) = self.job_mut(&id) {
+                j.state = JobState::Cancelled;
+            }
+        }
+        for j in self.jobs.iter_mut().filter(|j| matches!(j.state, JobState::Queued | JobState::Paused)) {
+            j.state = JobState::Cancelled;
+        }
+        self.save();
+    }
+
+    /// Exit: stop the running render and keep it, and every waiting one, for the next start (it starts again from
+    /// its beginning then).
+    pub fn halt(&mut self) {
+        self.halted = true;
+        if let Some((id, job)) = self.running.take() {
+            drop(job);
+            if let Some(j) = self.job_mut(&id) {
+                j.state = JobState::Queued;
+            }
+        }
+        self.save();
+    }
+
+    /// Status bar text while a render runs: "Rendering a.mp4 (1 of 3): 43%".
+    pub fn status(&self) -> Option<String> {
+        let (id, job) = self.running.as_ref()?;
+        let name = self.job(id).and_then(|j| j.out.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let left = self.jobs.iter().filter(|j| j.state == JobState::Queued).count();
+        let of = if left > 0 { format!(" (1 of {})", left + 1) } else { String::new() };
+        Some(format!("Rendering {name}{of}: {:.0}%", job.fraction() * 100.0))
+    }
+
+    /// The running render (Cancel in the status bar).
+    pub fn cancel_running(&mut self) {
+        if let Some((id, _)) = self.running.as_ref() {
+            let id = id.clone();
+            self.cancel(&id);
+        }
+    }
+}
+
+// ---- Batch Render and Render Audio Tracks (VEGAS's bundled scripts) ----
+
+/// Batch Render's Render Mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum BatchMode {
+    #[default]
+    Project,
+    /// The loop region.
+    Selection,
+    /// One render per region.
+    Regions,
+}
+
+/// A file name part with the characters Windows refuses replaced by '-' (the script's FixFileName).
+pub fn fix_name(s: &str) -> String {
+    s.chars().map(|c| if "<>:\"/\\|?*".contains(c) || c.is_control() { '-' } else { c }).collect()
+}
+
+/// The renders Batch Render queues: per template `<base><format>_<template>.<ext>`; per region also `[<index>]` before
+/// the extension, over the region's span. `base` is a folder and a file name prefix (`C:\v\Show_`).
+pub fn batch(p: &Project, templates: &[&Template], base: &std::path::Path, mode: BatchMode) -> Vec<(Template, PathBuf, (f64, f64))> {
+    let dir = base.parent().unwrap_or(std::path::Path::new("."));
+    let prefix = fix_name(&base.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+    let whole = (0.0, content_end(p));
+    let mut out = Vec::new();
+    for t in templates {
+        let stem = format!("{prefix}{}_{}", fix_name(&t.format()), fix_name(&t.name));
+        let file = |tag: &str| if t.sequence() { format!("{stem}{tag}_000000.{}", t.ext()) } else { format!("{stem}{tag}.{}", t.ext()) };
+        match mode {
+            BatchMode::Regions => out.extend(p.timeline.regions.iter().enumerate().map(|(i, r)| ((*t).clone(), dir.join(file(&format!("[{i}]"))), (r.start, r.end)))),
+            BatchMode::Selection => out.push(((*t).clone(), dir.join(file("")), p.timeline.loop_region.filter(|(a, b)| b > a).unwrap_or(whole))),
+            BatchMode::Project => out.push(((*t).clone(), dir.join(file("")), whole)),
+        }
+    }
+    out
+}
+
+/// Render Audio Tracks: per audio track a copy of `p` with that track soloed (as the script does: other solos and
+/// mutes stay), rendered to `<dir>\track NN (<name>).<ext>` (NN counts every track, video first, as VEGAS's track
+/// list does).
+pub fn per_track(p: &Project, t: &Template, dir: &std::path::Path) -> Vec<(Project, PathBuf)> {
+    let first = p.timeline.video_tracks.len();
+    (0..p.timeline.audio_tracks.len())
+        .map(|k| {
+            let mut q = p.clone();
+            q.timeline.audio_tracks[k].solo = true;
+            let tr = &p.timeline.audio_tracks[k];
+            let mut name = format!("track {:02}", first + k + 1);
+            if !tr.name.is_empty() {
+                name += &format!(" ({})", fix_name(&tr.name));
+            }
+            (q, dir.join(format!("{name}.{}", t.ext())))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -931,13 +1272,13 @@ mod tests {
             j.status()
         };
         let ctx = egui::Context::default();
-        let j = Job::start("o".into(), ctx.clone(), |c| {
+        let j = Job::start(ctx.clone(), |c| {
             c.progress(0.5);
             Ok(())
         });
         assert_eq!((wait(&j), j.fraction()), (Status::Done, 0.5));
-        assert_eq!(wait(&Job::start("o".into(), ctx.clone(), |_| Err("no".into()))), Status::Failed("no".into()));
-        let j = Job::start("o".into(), ctx, |c| {
+        assert_eq!(wait(&Job::start(ctx.clone(), |_| Err("no".into()))), Status::Failed("no".into()));
+        let j = Job::start(ctx, |c| {
             while !c.cancelled() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -947,12 +1288,125 @@ mod tests {
         assert_eq!(wait(&j), Status::Cancelled);
     }
 
+    fn queue_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("milan-queue-test-{}-{name}", std::process::id()))
+    }
+
+    /// R12: the queue persists; a job that was rendering when Milan Pro was killed comes back Interrupted, and Retry
+    /// queues it again. A job's snapshot is the project as it was queued, whatever is edited afterwards.
+    #[test]
+    fn queue_persists_and_marks_interrupted_jobs() {
+        let dir = queue_dir("persist");
+        let file = dir.join("queue.json");
+        let mut q = RenderQueue::load(file.clone());
+        assert!(q.jobs.is_empty() && !q.busy());
+        assert!(RenderQueue::load(file.clone()).file.is_none(), "a second window keeps its queue in memory");
+        let on_disk = || serde_json::from_str::<Vec<QueuedJob>>(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let mut p = Project::new("Show");
+        let a = q.add(&p, &BUILTIN[0], dir.join("a.mp4"), (0.0, 2.0), Opts::default()).unwrap();
+        p.timeline.markers.push(crate::project::Marker { position: 1.0, name: "later".into(), color: [0; 3] });
+        let b = q.add(&p, &BUILTIN[3], dir.join("b.wav"), (1.0, 2.0), Opts { markers: true, ..Opts::default() }).unwrap();
+        assert!(q.busy() && q.ahead(&a) == 0 && q.ahead(&b) == 1);
+        let snap = |id: &str, q: &RenderQueue| serde_json::from_str::<Project>(&std::fs::read_to_string(&q.job(id).unwrap().snapshot).unwrap()).unwrap();
+        assert!(snap(&a, &q).timeline.markers.is_empty() && snap(&b, &q).timeline.markers.len() == 1, "edits after queueing are not rendered");
+        assert_eq!(on_disk(), q.jobs, "round trip");
+        // A simulated kill while the first job rendered.
+        q.jobs[0].state = JobState::Running;
+        q.save();
+        drop(q);
+        let mut q = RenderQueue::load(file.clone());
+        assert_eq!((&q.jobs[0].state, &q.jobs[1].state), (&JobState::Interrupted, &JobState::Queued));
+        q.retry(&a);
+        assert_eq!(q.jobs[0].state, JobState::Queued);
+        q.pause(&b);
+        assert_eq!(q.job(&b).unwrap().state, JobState::Paused);
+        q.pause(&b);
+        q.cancel(&b);
+        assert_eq!(q.job(&b).unwrap().state, JobState::Cancelled);
+        q.shift(&b, -1);
+        assert_eq!(q.jobs.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [b.as_str(), a.as_str()]);
+        let snap_b = q.job(&b).unwrap().snapshot.clone();
+        q.clear_finished();
+        assert!(q.job(&b).is_none() && !snap_b.exists() && on_disk().len() == 1);
+        q.remove(&a);
+        assert!(q.jobs.is_empty() && on_disk().is_empty());
+        drop(q);
+        std::fs::remove_dir(dir.join("queue")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R12: a render that ended is taken in (Done: its snapshot goes); Exit's "cancel" and "keep for next start" both
+    /// stop the running render, as Cancelled or as Queued again, and nothing starts after "keep".
+    #[test]
+    fn queue_takes_in_finished_jobs_and_exit_choices() {
+        let ctx = egui::Context::default();
+        let p = Project::new("p");
+        let mut q = RenderQueue::default();
+        let a = q.add(&p, &BUILTIN[0], "a.mp4".into(), (0.0, 1.0), Opts::default()).unwrap();
+        q.jobs[0].state = JobState::Running;
+        q.running = Some((a.clone(), Job::start(ctx.clone(), |_| Ok(()))));
+        while q.running(&a).unwrap().status() == Status::Running {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let snap = q.job(&a).unwrap().snapshot.clone();
+        assert_eq!(q.tick(&ctx), [a.clone()]);
+        assert!(q.job(&a).unwrap().state == JobState::Done && !snap.exists() && !q.busy());
+        for keep in [false, true] {
+            let mut q = RenderQueue::default();
+            let ids: Vec<String> = (0..2).map(|_| q.add(&p, &BUILTIN[0], "x.mp4".into(), (0.0, 1.0), Opts::default()).unwrap()).collect();
+            q.jobs[0].state = JobState::Running;
+            let wait = |c: &Ctl| {
+                while !c.cancelled() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err("stopped".to_string())
+            };
+            q.running = Some((ids[0].clone(), Job::start(ctx.clone(), wait)));
+            assert!(q.busy() && q.status().unwrap().starts_with("Rendering x.mp4 (1 of 2): "));
+            if keep { q.halt() } else { q.cancel_all() }
+            let want = if keep { JobState::Queued } else { JobState::Cancelled };
+            assert!(q.jobs.iter().all(|j| j.state == want) && !q.busy() && q.running.is_none(), "keep {keep}");
+            assert!(q.tick(&ctx).is_empty() && q.running.is_none(), "nothing starts");
+            for id in &ids {
+                q.remove(id);
+            }
+        }
+        let _ = std::fs::remove_dir(RenderQueue::default().snapshot_dir());
+    }
+
+    /// R12: Batch Render gives one job per template, or per template and region (with the region's span and index in
+    /// the name); the selection mode takes the loop region. Render Audio Tracks solos each audio track in its copy.
+    #[test]
+    fn batch_render_jobs_and_names() {
+        let mut p = Project::new("Show");
+        p.timeline.video_tracks[0].clips.push(crate::project::Clip::new("c", 0.0, 10.0));
+        let region = |a, b, n: &str| crate::project::Region { start: a, end: b, name: n.into() };
+        p.timeline.regions = vec![region(0.0, 2.0, "Intro"), region(5.0, 8.0, "Outro"), region(8.0, 9.0, "")];
+        p.timeline.loop_region = Some((1.0, 3.0));
+        let (mp4, wav) = (&BUILTIN[0], &BUILTIN[3]);
+        let base = std::path::Path::new(r"C:\v\Show_");
+        let jobs = batch(&p, &[mp4, wav], base, BatchMode::Regions);
+        assert_eq!(jobs.len(), 6);
+        assert_eq!(jobs.iter().map(|j| j.2).collect::<Vec<_>>(), [(0.0, 2.0), (5.0, 8.0), (8.0, 9.0), (0.0, 2.0), (5.0, 8.0), (8.0, 9.0)]);
+        assert_eq!(jobs[1].1, PathBuf::from(format!(r"C:\v\Show_{}_MP4 H.264 (AAC)[1].mp4", fix_name(&mp4.format()))));
+        assert!(jobs[5].1.to_string_lossy().ends_with("_WAV audio only[2].wav") && jobs[5].0 == *wav);
+        assert_eq!(batch(&p, &[mp4], base, BatchMode::Selection)[0].2, (1.0, 3.0));
+        assert_eq!(batch(&p, &[mp4], base, BatchMode::Project)[0].2, (0.0, 10.0));
+        assert_eq!(fix_name("a/b:c?"), "a-b-c-");
+        let seq = BUILTIN.iter().find(|t| t.sequence()).unwrap();
+        assert!(batch(&p, &[seq], base, BatchMode::Project)[0].1.to_string_lossy().ends_with("_000000.png"));
+        p.timeline.audio_tracks.push(crate::project::Track::new("Voice: take 2", crate::project::TrackKind::Audio));
+        let tracks = per_track(&p, wav, std::path::Path::new(r"C:\v"));
+        assert_eq!(tracks.iter().map(|t| t.1.clone()).collect::<Vec<_>>(), [PathBuf::from(r"C:\v\track 02 (Audio 1).wav"), PathBuf::from(r"C:\v\track 03 (Voice- take 2).wav")]);
+        assert_eq!(tracks.iter().map(|(q, _)| q.timeline.audio_tracks.iter().map(|t| t.solo).collect::<Vec<_>>()).collect::<Vec<_>>(), [[true, false], [false, true]]);
+    }
+
     #[test]
     fn drop_deletes_the_files_of_a_render_stuck_past_its_wait() {
         let f = std::env::temp_dir().join(format!("milan-job-drop-{}.partial", std::process::id()));
         std::fs::write(&f, b"x").unwrap();
         let (g, (tx, rx)) = (f.clone(), std::sync::mpsc::channel());
-        let j = Job::start("o".into(), egui::Context::default(), move |c| {
+        let j = Job::start(egui::Context::default(), move |c| {
             c.set_temp(vec![g]);
             tx.send(()).unwrap();
             std::thread::sleep(std::time::Duration::from_secs(3)); // a slow decoder: Cancel is not seen in time

@@ -235,6 +235,7 @@ impl CmdState {
             Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx | InsertInputBus => true,
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
+            RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -366,7 +367,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         SurroundPanner => Later("R10b"),
-        RenderToNewTrack => Later("R12"),
         ToggleDocks | TopDock | BottomDock | RightDock | CollapseTrackList | MaximizeTimeline | LayoutVp14 | LayoutAudio | LayoutColor
         | LayoutSource | LayoutTimelineTop | NextWindow | PrevWindow | FocusTimeline => Later("R13"),
         ExternalMonitor => Later("R14"),
@@ -618,7 +618,7 @@ pub const FILE: &[M] = &[
     S,
     V16(&C("&Render As...", RenderAs)),
     V23(&C("&Render...", RenderAs)),
-    X("Real-Ti&me Render...", Later("R12")),
+    X("Real-Ti&me Render...", NotPlanned("R59")),
     S,
     Sub("&Import", IMPORT),
     Sub("E&xport", EXPORT),
@@ -972,6 +972,7 @@ pub const TOOLS: &[M] = &[
     ]),
     S,
     C("&Render to New Track...", RenderToNewTrack),
+    C("Render &Queue...", RenderQueue),
     C("Preview on E&xternal Monitor", ExternalMonitor),
     C("&Selectively Prerender Video...", Prerender),
     X("Clean &Up Prerendered Video...", Later("R23")),
@@ -990,7 +991,13 @@ pub const TOOLS: &[M] = &[
     V23(&X("Speech to Text...", NotPlanned("R59"))),
     V23(&C("Text to Speech...", TextToSpeech)),
     S,
-    Sub("Scrip&ting", &[X("Ru&n Script...", NotPlanned("R60")), X("Res&can Script Menu Folder", NotPlanned("R60"))]),
+    Sub("Scrip&ting", &[
+        X("Ru&n Script...", NotPlanned("R60")),
+        X("Res&can Script Menu Folder", NotPlanned("R60")),
+        S,
+        C("&Batch Render", BatchRender),
+        C("&Render Audio Tracks", RenderAudioTracks),
+    ]),
     Sub("&Multicamera", &[
         X("Synchronize Audio to A&lign Events", Later("R17a")),
         X("Synchronize Media &Timecode to Align Events", Later("R17a")),
@@ -1487,6 +1494,24 @@ mod tests {
             greyed(items, &mut rows);
         }
         assert!(!rows.iter().any(|(_, w)| *w == Later("R8a")), "{rows:?}");
+    }
+
+    /// R12: Render to New Track, the Render Queue and the Batch Render / Render Audio Tracks scripts work, and nothing
+    /// in the menus waits on R12 any more.
+    #[test]
+    fn render_queue_commands_work() {
+        let st = CmdState::default();
+        for c in [RenderAs, RenderToNewTrack, RenderQueue, BatchRender, RenderAudioTracks] {
+            assert!(unfinished(c).is_none() && st.enabled(c), "{c:?}");
+        }
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R12")), "{rows:?}");
+        let mut cmds = Vec::new();
+        commands(TOOLS, &mut cmds);
+        assert!([RenderToNewTrack, RenderQueue, BatchRender, RenderAudioTracks].iter().all(|c| cmds.contains(c)));
     }
 
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.

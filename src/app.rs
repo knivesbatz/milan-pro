@@ -51,6 +51,20 @@ pub struct MeridianApp {
     /// Create Video Proxy jobs; they belong to files, so they carry on through New and Open.
     proxies: crate::proxy::ProxyJobs,
     render: RenderDialog,
+    /// R12: every render, one after another (`%APPDATA%\MilanPro\queue.json`); the Render Queue window, Batch Render,
+    /// Render Audio Tracks, the guard asked at Exit or update while a render runs (Some(install)), Exit waiting for
+    /// the queue, what the guard chose to do with the renders once Milan Pro really closes (after the save prompt), and
+    /// Render to New Track files waiting to be placed: (job id, time, `project_serial`).
+    queue: render::RenderQueue,
+    queue_win: ui::render_queue::QueueWindow,
+    batch: Option<ui::render_queue::BatchRender>,
+    render_tracks: Option<ui::render_queue::RenderTracks>,
+    render_guard: Option<bool>,
+    exit_after_render: bool,
+    exit_choice: Option<ui::render_queue::Guard>,
+    new_tracks: Vec<(String, f64, u64)>,
+    /// Counts the projects opened in this window (New, Open, an import), so a late render lands in its own.
+    project_serial: u64,
     settings: SettingsDialog,
     autosave: Autosave,
     last_frame_time: f64,
@@ -228,6 +242,14 @@ impl MeridianApp {
                 dock.open(p);
             }
         }
+        // The demo harness never reads or writes the user's render queue.
+        let queue = match render::RenderQueue::default_file().filter(|_| !launch.demo && launch.screenshot.is_none()) {
+            Some(f) => render::RenderQueue::load(f),
+            None => render::RenderQueue::default(),
+        };
+        // Renders left from the last session (to resume, or interrupted: Retry) are shown.
+        let mut queue_win = ui::render_queue::QueueWindow::default();
+        queue_win.open = queue.jobs.iter().any(|j| matches!(j.state, render::JobState::Queued | render::JobState::Interrupted));
         let mut app = Self {
             project,
             history: History::default(),
@@ -249,6 +271,15 @@ impl MeridianApp {
             thumbs: Thumbs::new(&cc.egui_ctx),
             proxies: Default::default(),
             render: RenderDialog::default(),
+            queue,
+            queue_win,
+            batch: None,
+            render_tracks: None,
+            render_guard: None,
+            exit_after_render: false,
+            exit_choice: None,
+            new_tracks: Vec::new(),
+            project_serial: 0,
             settings: SettingsDialog::default(),
             autosave: Autosave::default(),
             last_frame_time: 0.0,
@@ -639,8 +670,15 @@ impl eframe::App for MeridianApp {
             );
             // Last, so hovered-command hints from every bar this frame are shown.
             let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
-            if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), self.proxies.status().as_deref()) {
-                self.proxies.cancel();
+            // A render's progress first, then the video proxies'.
+            let (rendering, proxies) = (self.queue.status(), self.proxies.status());
+            let progress = rendering.as_deref().map(|s| (s, "Stop the render")).or(proxies.as_deref().map(|s| (s, "Stop creating video proxies")));
+            if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), progress) {
+                if rendering.is_some() {
+                    self.queue.cancel_running();
+                } else {
+                    self.proxies.cancel();
+                }
             }
             if !v16 {
                 chrome::resize_edges(ui, full);
@@ -666,7 +704,12 @@ impl eframe::App for MeridianApp {
             self.stop_recording();
             self.recorded = None;
         }
-        if ctx.input(|i| i.viewport().close_requested()) && self.project.modified {
+        let closing = ctx.input(|i| i.viewport().close_requested());
+        if closing && self.queue.busy() && self.exit_choice.is_none() {
+            // R12: a render is running: wait, cancel it, or keep it for the next start.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.render_guard = Some(false);
+        } else if closing && self.project.modified {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.confirm = Some(MenuAction::Exit);
         }
@@ -743,10 +786,15 @@ impl eframe::App for MeridianApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.normalizer.tick(ctx, &mut self.project);
+        self.tick_renders(ctx);
         self.render.quickfade = self.prefs.quickfade;
-        if self.render.show(ctx, &self.project, &mut self.prefs) {
+        if self.render.show(ctx, &self.project, &mut self.prefs, &mut self.queue) {
             self.save_prefs();
         }
+        if let Some((id, at)) = self.render.new_track.take() {
+            self.new_tracks.push((id, at, self.project_serial));
+        }
+        self.queue_win.show(ctx, &mut self.queue);
         self.settings.show(ctx, &mut self.project, &mut self.history);
         if !self.demo {
             self.autosave.tick(ctx, &self.project);

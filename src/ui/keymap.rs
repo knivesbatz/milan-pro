@@ -110,6 +110,8 @@ pub enum Command {
     RippleMarkers,
     /// R8b: the audio track header's Show Output Meters, Use Vertical Meters and Channel Width (0-2).
     OutputMeters, VerticalMeters, MeterWidth(u8),
+    /// R12: Tools › Render Queue...; Tools › Scripting › Batch Render and Render Audio Tracks (VEGAS's bundled scripts).
+    RenderQueue, BatchRender, RenderAudioTracks,
 }
 
 use Command::*;

@@ -35,16 +35,16 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 223 |
-| PARTIAL | 126 |
-| MISSING | 71 |
+| DONE | 228 |
+| PARTIAL | 124 |
+| MISSING | 68 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
 - **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
-- **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. Missing: hardware encoders (R22), queue and batch, and the dialog is still modal (R12). An update can kill a running render.
+- **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Missing: hardware encoders (R22).
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps:** no schema version, no `.bak` on save, no crash-recovery prompt, fixed 120 s autosave, no logging (the release exe has no console, so `eprintln!` goes nowhere), no diagnostic report.
@@ -123,7 +123,7 @@ What matters most:
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b), Summary (R16a). → R10a, R40b |
-| 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a; non-modal render → R12 |
+| 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
@@ -431,15 +431,15 @@ What matters most:
 | 13.9 | Software encoding | DONE | libx264, libx265, prores_ks, pcm, libmp3lame |
 | 13.10 | Quality settings | DONE | R11: Project Properties › Full-resolution rendering quality (Good for a new project, as VEGAS) and the template's Video rendering quality; encoder speed presets; renders never decode proxies (`VideoPlan::without_proxies`) |
 | 13.11 | Multi-channel audio export | MISSING | "Enable multichannel mapping" greyed (`dialogs/render.rs:269`) → R10a |
-| 13.12 | Batch rendering | MISSING | → R12 |
-| 13.13 | Render queue | MISSING | → R12 |
+| 13.12 | Batch rendering | DONE | R12: Tools › Scripting › Batch Render (VEGAS's `Batch Render.cs`: per ticked template, over the project, the loop region or each region, `<base><format>_<template>[n].<ext>`) and Render Audio Tracks (`Render Audio Tracks.cs`: each audio track soloed, `track NN (name).<ext>`), queued (`render::batch`, `render::per_track`, `ui/render_queue.rs`); `batch_render_jobs_and_names` |
+| 13.13 | Render queue | DONE | R12: `render::RenderQueue`, Tools › Render Queue... (move, pause / resume a waiting job, cancel, retry, remove, clear finished, show log), one render at a time in list order, kept in `%APPDATA%\MilanPro\queue.json` with a project snapshot per job; `queue_persists_and_marks_interrupted_jobs`, ignored `render_queue_e2e` (two renders checked with ffprobe, a cancelled queued job never rendered) |
 | 13.14 | Render progress | DONE | `dialogs/render.rs:170` |
 | 13.15 | Estimated completion | DONE | `j.eta()` |
 | 13.16 | Cancellation | DONE | `j.cancel()`; `.partial` deleted |
-| 13.17 | Failure recovery | PARTIAL | A failed render cleans up its temp files and shows the FFmpeg error tail. No retry, no queue resume after a crash. → R12 |
+| 13.17 | Failure recovery | DONE | A failed render cleans up its temp files and shows the FFmpeg error tail. R12: Retry re-renders a failed, cancelled or interrupted job from its snapshot; a job rendering when Milan Pro crashed comes back Interrupted, waiting jobs resume at the next start (`RenderQueue::load`) |
 | 13.18 | Export logs | DONE | R11: every render writes `%LOCALAPPDATA%\MilanPro\logs\render\<date>-<time>-<n> <file>.log` (command, FFmpeg version, timings, frames, status, all FFmpeg output; `engine/render.rs::write_log`); Show log in the dialog |
 | 13.19 | Configurable presets for common delivery formats | DONE | R11: YouTube 1080p/2160p, Vimeo, Web 720p, Social Vertical, ProRes 422 HQ/4444 (alpha), DNxHR LB/SQ/HQ/HQX/444, CineForm, FFV1 MKV archive, VP9/VP8 WebM, AV1, MPEG-2 TS/PS, AVI MJPEG, PNG/TIFF/EXR/DPX sequences, FLAC, ALAC, AAC, Opus, Vorbis, AC-3, E-AC-3, AIFF; user templates saved and deleted in Customize Template |
-| 13.20 | Background rendering while editing continues | PARTIAL | The render runs on its own thread, but the dialog is modal (`commands.rs:34`, `render.open` in `modal_open`), so editing is blocked. → R12 |
+| 13.20 | Background rendering while editing continues | DONE | R12: Render Options › Render in the background (off by default, as VEGAS's progress dialog is modal) and Add to Render Queue: the dialog closes, the status bar shows the progress with Cancel, and the render is of the snapshot taken when it was queued, so edits never reach it (`queue_persists_and_marks_interrupted_jobs`, `render_queue_e2e`) |
 | 13.21 | Renderer reproduces timeline FX, transitions, compositing, audio | DONE | One `plan::compile` for preview and render |
 
 ### 2.14 Section 13: media management
@@ -503,7 +503,7 @@ What matters most:
 | 16.13 | Update settings | PARTIAL | Auto-check toggle and skip-version only (`prefs.rs`). → R46 |
 | 16.14 | Stable and optional preview channels | MISSING | Pre-releases are always rejected (`updater.rs:112`). → R46 |
 | 16.15 | Updates cannot corrupt an open project | DONE | Install goes through the save prompt (`commands.rs:1345-1349`) |
-| 16.16 | Updates cannot interrupt an ongoing export | MISSING | "Install and restart" exits the app, which kills a running render (`commands.rs:1071-1079`); nothing checks for one. → R12, R46 |
+| 16.16 | Updates cannot interrupt an ongoing export | DONE | R12: Install and restart (and Exit, and closing the window) while a render runs or waits asks first (`ui/render_queue.rs::guard`): an update only waits for the queue to finish or is not installed now; Exit may also cancel the renders or keep them for the next start (`exit_and_update_guards`). R46's recording guard is separate |
 | 16.17 | Separate, maintainable component | PARTIAL | A self-contained module, `src/updater.rs`, not a crate. → R50 |
 | 16.18 | Never install unverified packages | PARTIAL | Hash-verified, but not authenticated (see 16.9). → R46 |
 | 16.19 | Best implementation researched for this framework and deployment | DONE | `README.md` "Updates", `FEATURE_PLAN.md` batch 18 |
@@ -512,7 +512,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 17.1 | CPU thread scheduling | PARTIAL | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. No priority classes: render and UI compete. → R12, R19 |
+| 17.1 | CPU thread scheduling | PARTIAL | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. R12: a render's encoder runs at BELOW_NORMAL priority (`proc::below_normal`, checked in `render_queue_e2e`); the composing threads still compete with the UI. → R19 |
 | 17.2 | GPU acceleration | MISSING | → R21a |
 | 17.3 | Hardware video decoding | PARTIAL | → R22 |
 | 17.4 | Hardware encoding | MISSING | → R22 |
@@ -580,7 +580,7 @@ What matters most:
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
 | Professional audio editing system | PARTIAL | R8-R10 |
-| Professional rendering engine | PARTIAL | R12, R22 (R11 DONE) |
+| Professional rendering engine | PARTIAL | R22 (R11, R12 DONE) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
 | VEGAS project import/interchange | PARTIAL | R25-R30 |
@@ -617,7 +617,7 @@ The inventory as found before R0:
 | Group | Commands | Batch |
 |---|---|---|
 | File | SaveVersion | R42 |
-| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a, R6b, R12, R18a, R17b |
+| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a, R6b, R12 (DONE), R18a, R17b |
 | Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
@@ -759,7 +759,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R8b: the ripple mode "Affected Tracks, Markers, and Regions" (the same as the mode above it until bus tracks exist).
 - R8c (DONE): audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
-- R12: File > Real-Time Render.
+- R12: File > Real-Time Render (R12 moved it to R59: it exists for external hardware FX, which Milan Pro does not host; a normal render gives the same file).
 - R13/R14: the Display page docking options.
 - R16a: region Rename (marker bar), Project Properties Summary page.
 - R16b: preview Split-Screen View and the Isolate channel overlays.
@@ -1228,6 +1228,15 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - An invalid combination (VP9 in MOV) is refused with a message.
 
 ### R12: Background render, render queue, batch render, Render to New Track (L)
+
+**Status: DONE.** Built as designed below, except:
+- As in VEGAS the Render dialog stays modal with its progress by default; Render Options › Render in the background (a preference, off) makes it a window that Render closes, and Add to Render Queue does that for one render. Batch Render and Render Audio Tracks (Tools › Scripting, as VEGAS's bundled scripts) show their renders in the Render Queue window, modal unless Render in the background is on; closing it cancels the batch, as the script's Cancel does. Tools › Render Queue... is the extra window.
+- Pause holds a waiting job; a render that has started can only be cancelled (holding the encoder mid-stream is not done). Keep in Queue at Exit stops the running render; it starts again from its beginning at the next start.
+- Every render (the Render dialog's too) goes through the queue, whose snapshot is the project serialised to `%APPDATA%\MilanPro\queue\<id>.mnle`. One window owns `queue.json` at a time (`queue.lock`); a second window keeps its queue in memory.
+- The guard's choices apply when Milan Pro really closes, after the save prompt (a cancelled save prompt leaves the renders running). Install and restart offers only Wait or Not Now.
+- Render to New Track places the file on a new first video track and a new first audio track (grouped), at the start of what was rendered, in the project it was rendered from; image sequences are refused for it.
+- R0's File > Real-Time Render moved to R59 (external hardware FX).
+- Thread priority: the encoder process only (`proc::below_normal`); the render's composing threads stay normal (R19).
 
 **Scope**
 - The render dialog becomes non-modal: closing it leaves the job running. Status-bar progress uses `status.rs`'s progress and Cancel link.
@@ -2025,7 +2034,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 |---|---|---|---|
 | R57 | Media ops: Media FX on files, Rotate 90°, Broadcast Wave import (bext time reference → placement), Add at Project Frame Rate, Match Project Video Settings, Select Timeline Events, Open Parent Media in Trimmer, Rename, Refresh, Columns/Auto-size, Scene Detection (FFmpeg `scdet`) to events/subclips, Tempo/Beat Detection (onset envelope autocorrelation), Explorer preview buttons, Trimmer "Show Video in Preview" | L (split 2 × M) | Feasible |
 | R58 | Event long tail: Synchronize by Moving/Slipping, Sync Links, Add Missing Stream, Apply Non-Real-Time Event FX (render the event with FX to a new take), Select Events to End, Split Trim / Shuffle / Zoom tools, Expanded Edit polish, Slip All Takes, Fade Colors dialogs, track Text/Background Color | L (split 2 × M) | Feasible |
-| R59 | Hardware and services: CD/DVD burn (Windows IMAPI2 COM: feasible for audio CD and data); Blu-ray authoring (NOT FEASIBLE: AACS/BD licensing); Extract Audio from CD (feasible via IOCTL_CDROM_RAW_READ, M); DV/HDV capture (obsolete FireWire: not planned); Import from Device (WPD/MTP, M); Get Media from the Web (not planned); MIDI timecode, clock and trigger (`midir` crate, MIT, M); External Control surfaces (Mackie/FaderPort over MIDI, L); Text to Speech (SAPI COM, S-M); Speech to Text (whisper.cpp MIT plus model download, L, opt-in); Motion Tracking (KLT tracker, L-XL, research); Dashboard (VP23 system stats, S); Stereoscopic 3D (not planned) | per item | Mixed, as noted |
+| R59 | Hardware and services: CD/DVD burn (Windows IMAPI2 COM: feasible for audio CD and data); Blu-ray authoring (NOT FEASIBLE: AACS/BD licensing); Extract Audio from CD (feasible via IOCTL_CDROM_RAW_READ, M); DV/HDV capture (obsolete FireWire: not planned); Import from Device (WPD/MTP, M); Get Media from the Web (not planned); MIDI timecode, clock and trigger (`midir` crate, MIT, M); File > Real-Time Render (renders through external hardware FX in real time; needs hardware FX hosting, not planned); External Control surfaces (Mackie/FaderPort over MIDI, L); Text to Speech (SAPI COM, S-M); Speech to Text (whisper.cpp MIT plus model download, L, opt-in); Motion Tracking (KLT tracker, L-XL, research); Dashboard (VP23 system stats, S); Stereoscopic 3D (not planned) | per item | Mixed, as noted |
 | R60 | Scripting: VEGAS .NET script compatibility is NOT FEASIBLE (it needs the ScriptPortal API surface on .NET). Honest alternative: Milan scripting with Rhai 1.x (MIT/Apache) exposing the edit API; Tools > Scripting > Run Script, Rescan Script Menu; port the 17 bundled VEGAS script behaviours that matter (batch render → R12; EDL → R28; subtitles → R39) | L | Alternative feasible |
 
 ---
