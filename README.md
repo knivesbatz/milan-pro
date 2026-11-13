@@ -4,7 +4,7 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.5). Editing, preview, effects, transitions, titles, audio FX, recording and rendering work; plug-in hosting is next.
+> Early development (v0.5). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, recording and rendering work; VST hosting is next.
 
 ## Features
 
@@ -33,13 +33,24 @@ A few seconds after startup Milan Pro asks GitHub for the latest release (it sen
 
 Milan Pro cannot read `.veg` files directly. In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (including Pan/Crop, subclips and reversed events), fades, takes, groups, track envelopes, markers and regions come across; Milan Pro lists what does not (FX, generated media, transitions and Track Motion). Picking a `.veg` there instead only adds the media it uses to Project Media.
 
+## OFX plug-ins
+
+Milan Pro runs third-party OFX video effects (Filter and General effects, 8-bit or 32-bit float) in **milan-plugin-host.exe**, a separate process installed next to `MilanPro.exe`: a plug-in that crashes or hangs is stopped and bypassed with a message, and Milan Pro keeps running. Its settings stay in the project, so nothing is lost.
+
+- **Where Milan Pro looks:** `C:\Program Files\Common Files\OFX\Plugins` (the standard folder, where installers put `*.ofx.bundle` folders), every folder in the `OFX_PLUGIN_PATH` environment variable (separated by `;`), and folders you add in **View > Window > Plug-In Manager > Folders > Add Folder...**.
+- **Using them:** found effects appear in the Video FX window under their own grouping (for example "spektrafilm OFX"), and apply to events, tracks and Video Output like the built-in FX, with their parameters and keyframes in the FX window. Projects store them as `ofx:<identifier>@<major version>`; a project that uses a plug-in you do not have keeps its settings and shows the FX as missing.
+- **Plug-In Manager** (View > Window, Ctrl+Alt+1): every plug-in with its status (OK, Failed with the reason, Disabled), a check box to turn one off, and **Rescan** (reads every plug-in again and tries failed ones again). Results are cached in `%LOCALAPPDATA%\MilanPro\plugins.json`.
+- **Limits:** Milan Pro does not provide GPU render suites (CUDA, OpenCL, Metal, OpenGL), overlays/on-screen controls, custom parameter UIs, push buttons, parametric (curve) parameters or other frames than the current one (temporal access). Plug-ins that need these, or that only run in a particular host (for example DaVinci Resolve-only plug-ins), may fail or not show. Generator and Transition plug-ins are listed but not run yet. See `docs/compat/ofx-spektrafilm.md` for Spektrafilm.
+
+The OFX C API bindings in `src/bin/milan-plugin-host/ofx.rs` were written from the OpenFX 1.4 headers, Copyright (c) 2003-2015 The Open Effects Association Ltd, used under the BSD 3-Clause licence.
+
 ## Build from source
 
 ```bash
 cargo build --release
 ```
 
-Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/milan-pro.exe`.
+Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/milan-pro.exe` and `target/release/milan-plugin-host.exe` (the OFX plug-in host, which must sit beside it).
 
 ## Project layout
 
@@ -54,7 +65,7 @@ Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/mil
 
 ## Roadmap
 
-- OFX / VST plug-in hosting
+- VST plug-in hosting; OFX transitions, generators and GPU render
 - Masks, freely dockable panels, direct `.veg` reading
 - EDL / OTIO interchange
 

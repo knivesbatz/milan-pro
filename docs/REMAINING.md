@@ -1723,6 +1723,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R31: Plug-in manager and registry sources (M-L)
 
+**Status: DONE for OFX; VST3/CLAP sources left.** Built (`engine/ofx/scan.rs`, `ui/plugin_manager.rs`): OFX bundles in `%CommonProgramFiles%\OFX\Plugins`, `OFX_PLUGIN_PATH` and user folders (Plug-In Manager › Folders, `prefs.ofx.folders`) are described in plug-in host processes and cached in `%LOCALAPPDATA%\MilanPro\plugins.json` by path, size and mtime; the Plug-In Manager (View › Window, Ctrl+Alt+1) lists built-ins and OFX plug-ins with OK / Failed (reason) / Disabled, a check box per OFX plug-in (`prefs.ofx.disabled`) and Rescan; the Video FX chooser lists enabled OFX plug-ins in a folder per grouping (VP16) and under Third Party (VP23); missing, disabled or failed plug-ins keep their saved settings and are bypassed, the FX window saying why. Tests: `scan_cache_invalidates_on_mtime_change`, `a_project_with_a_missing_ofx_plugin_keeps_its_parameters`, `plugin_manager_works`. Left: `PluginSource` for VST3/CLAP and the VST folders (Preferences › VST Effects, now labelled R34a), the tree by kind/vendor, search by vendor, "Export compatibility report" (the unmerged WIP branch `r31-plugin-manager` has a PE/moduleinfo reader and the report; reuse it with R34a).
+
 **Scope**
 - `PluginSource { Builtin, Ofx { bundle, index }, Vst3 { path, class_id }, Clap { path, id } }`.
 - Scan cache at `%LOCALAPPDATA%\MilanPro\plugins.json` (path, size, mtime, status, error).
@@ -1735,6 +1737,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** scan cache invalidation on mtime change; a disabled plug-in is hidden from the choosers but a project using it still loads (FX shown as "disabled plug-in"); report export format.
 
 ### R32: Out-of-process plug-in host (L)
+
+**Status: DONE for OFX video.** `milan-plugin-host.exe` (`src/bin/milan-plugin-host/`, a second `[[bin]]`, installed beside MilanPro.exe) serves a named pipe (length-prefixed JSON, `engine/ofx/proto.rs`, shared by both binaries); frames travel in a paging-file mapping (`CreateFileMappingW`, source then output, single-buffered). One host per binary, started on demand in the Job Object with `CREATE_NO_WINDOW`, no console, `SetErrorMode` + `WerSetFlags(NO_UI)` so a crash shows no dialog. Watchdog (`engine/ofx/client.rs`): load 10 s, describe 2 s per plug-in, render 30 s; a crash, hang or plug-in error bypasses that plug-in for the session with a status-bar message, the FX window and Plug-In Manager show the reason, Rescan retries. Tests: `crash_and_hang_are_contained`, `a_panicking_host_is_reported` (both `#[ignore]`, need the built host). Left: audio blocks, double buffering, "isolate each instance" mode, a red badge on the timeline event (the FX window and status bar say it today).
 
 **Scope**
 - `milan-plugin-host.exe`: a second `[[bin]]`, or a workspace member after R50.
@@ -1752,6 +1756,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R33a: OFX host, describe and parameters (L)
 
+**Status: DONE for Filter and General contexts.** Hand-written OpenFX 1.4 bindings (`src/bin/milan-plugin-host/ofx.rs`, attribution in README › OFX plug-ins) and the host suites (`suites.rs`): property, image effect, parameter (Double, Integer, Boolean, Choice, RGB/RGBA, 2D/3D Double and Integer, String, Custom, Group, Page, PushButton; the variadic value functions read the Win64 argument slots), memory, multithread (real threads, recursive mutexes), message (logged, no dialogs; questions answer No), progress and time line; interact, parametric, dialog and GPU suites return NULL. Describe runs load, describe and describeInContext (Filter, else General). Parameters map to `ParamSpec` (`engine/ofx/mod.rs::specs`): groups become headings; secret parameters, pages, push buttons, custom parameters and choices without options are not shown. Instances are stored as `ofx:<identifier>@<major>` with OFX parameter names as keys, so keyframes, presets and automation work as for built-ins. Tests: `parameters_map_both_ways`, `describe_through_the_host`, host `property_suite` / `variadic_parameter_values` / `recursive_mutex_and_memory`. Left: Transition and Generator contexts, push buttons in the FX window, `kOfxParamPropEnabled`/conditional visibility, choice options a plug-in changes at run time, parameter curves for `paramGetValueAtTime` at other times, plug-in edits written back to the project, OFX 1.5 colour management, R33c against the VEGAS bundles.
+
 **Scope**
 - Load `.ofx` with libloading 0.8 (in the lock; ISC) inside the host.
 - Implement `OfxGetNumberOfPlugins` / `OfxGetPlugin`, the property suite, parameter suite (double, int, bool, choice, RGB/RGBA, 2D, string, group, page, pushbutton), image effect suite (describe, describeInContext for Filter, Transition and Generator contexts), memory, message and multithread suites.
@@ -1763,6 +1769,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** the OpenFX sample plug-ins (BSD; build them with MSVC in a test step or fetch the release artifacts) describe correctly; the parameter mapping unit tests.
 
 ### R33b: OFX render path (L)
+
+**Status: DONE for video FX (8-bit and 32-bit float).** `vfx::apply` sends `ofx:` effects to their host (`engine/ofx::apply`): Milan's premultiplied frame goes to shared memory bottom row first as RGBA 8-bit or float (float when the plug-in supports it), with time in frames, render scale (picture height over the full-quality height: event FX use the media's, track and output FX the project's), project PAR, field none; the host runs instance changed for parameters Milan changed, begin sequence render (once per instance; end on close), region of definition and of interest, is identity, then render, and the output comes back clamped to valid premultiplied colours. Preview and render share the path (`plan` → `composite` → `vfx`). Tests (`#[ignore]`, need the host and the test plug-in): `invert_matches_the_builtin_invert` (≤ 1 LSB, float and 8-bit), `gain_is_keyframed_at_t`, `render_matches_preview_with_ofx_plugins` (FFV1 render equals the compositor's frames, needs ffmpeg). Left: transitions and generators, temporal clip access, 16-bit half, tiles, the 1080p overhead bench, a CPU-side cache of OFX output.
 
 **Scope**
 - `kOfxImageEffectActionRender` for Filter, Transition and Generator with 8-bit RGBA, plus 16f/32f after R40b.
