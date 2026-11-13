@@ -101,6 +101,16 @@ pub struct Prefs {
     /// edge) and "Position tabs at top of docked windows"; both off, as in VEGAS.
     pub auto_hide_docks: bool,
     pub tabs_on_top: bool,
+    /// R14: Preferences › Display › "Allow floating windows to dock (hold Ctrl to override)"; None = the look's
+    /// default (off in VEGAS 16, on in VEGAS 23, as their installs show it).
+    pub float_dock: Option<bool>,
+    /// R14: Preferences › Preview Device (Windows Graphics Card): the display (`\\.\DISPLAY2`; None = the first one that
+    /// is not the primary), "Scale output to fit display" (off), "Display frames in Video Preview window during
+    /// playback" (on) and "Use project output rotation setting" (on).
+    pub ext_display: Option<String>,
+    pub ext_fit: bool,
+    pub ext_in_window: bool,
+    pub ext_rotate: bool,
 }
 
 /// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
@@ -228,11 +238,21 @@ impl Default for Prefs {
             render_background: false,
             auto_hide_docks: false,
             tabs_on_top: false,
+            float_dock: None,
+            ext_display: None,
+            ext_fit: false,
+            ext_in_window: true,
+            ext_rotate: true,
         }
     }
 }
 
 impl Prefs {
+    /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
+    pub fn float_dock(&self, look: UiLook) -> bool {
+        self.float_dock.unwrap_or(look == UiLook::Vegas23)
+    }
+
     /// R9: the output device these preferences choose.
     pub fn device(&self) -> crate::audio::DeviceConfig {
         crate::audio::DeviceConfig { kind: self.device_type, device: self.playback_device.clone(), buffer: self.buffer_frames }
@@ -624,6 +644,13 @@ mod tests {
         assert!(!d.auto_hide_docks && !d.tabs_on_top);
         let k = Prefs { auto_hide_docks: true, tabs_on_top: true, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
+        // R14: old preferences dock floating windows as each look's install does, and preview externally on the first
+        // secondary display at 1:1, with frames in the Video Preview window too and the output rotation applied.
+        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23));
+        assert!(d.ext_display.is_none() && !d.ext_fit && d.ext_in_window && d.ext_rotate);
+        let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
+        assert!(!e.float_dock(UiLook::Vegas23));
         let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
         let t = Prefs { render_templates: vec![mine], render_favorites: vec!["Mine".into()], render_recent: vec!["Web 720p".into()], ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&t).unwrap()).unwrap(), t);

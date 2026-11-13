@@ -155,6 +155,8 @@ pub struct CmdState {
     pub output_meters: bool,
     pub vertical_meters: bool,
     pub meter_width: u8,
+    /// R14: Preview on External Monitor is on.
+    pub external: bool,
 }
 
 impl CmdState {
@@ -239,7 +241,7 @@ impl CmdState {
             Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx | InsertInputBus => true,
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
-            RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks => true,
+            RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -297,7 +299,8 @@ impl CmdState {
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            MediaMarkers | Multicam | ExternalMonitor => false,
+            ExternalMonitor => self.external,
+            MediaMarkers | Multicam => false,
             _ => return None,
         })
     }
@@ -371,7 +374,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         SurroundPanner => Later("R10b"),
-        ExternalMonitor => Later("R14"),
         EditDetails | ProjectNotes => Later("R16a"),
         VideoScopes => Later("R16b"),
         LoudnessMeters => Later("R16c"),

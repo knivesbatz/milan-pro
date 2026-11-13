@@ -46,15 +46,9 @@ fn main() -> eframe::Result<()> {
         .with_inner_size([1600.0, 900.0])
         .with_min_inner_size([960.0, 540.0])
         .with_decorations(look.look == ui::theme::UiLook::Vegas16);
-    if launch.screenshot.is_some() || std::env::var_os("MILAN_UPDATE_AUTO").is_some() {
-        // Never steal focus or show up: off every monitor, no taskbar button, clicks pass through.
+    if offscreen_run(launch.screenshot.is_some()) {
         // The app resizes to 1920x1080 px on its first frame.
-        viewport = viewport
-            .with_active(false)
-            .with_taskbar(false)
-            .with_mouse_passthrough(true)
-            .with_position([-20000.0, -20000.0])
-            .with_min_inner_size([100.0, 100.0]);
+        viewport = offscreen(viewport).with_min_inner_size([100.0, 100.0]);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
@@ -62,4 +56,15 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(app::MeridianApp::new(cc, launch)))),
     )
+}
+
+/// The screenshot harness (`screenshot`) or an automatic update run: every window opens off-screen.
+pub fn offscreen_run(screenshot: bool) -> bool {
+    screenshot || std::env::var_os("MILAN_UPDATE_AUTO").is_some()
+}
+
+/// Never steal focus or show up: off every monitor, no taskbar button, clicks pass through. The main window and (R14)
+/// every floating window and the external preview of an off-screen run.
+pub fn offscreen(v: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    v.with_active(false).with_taskbar(false).with_mouse_passthrough(true).with_position([-20000.0, -20000.0])
 }

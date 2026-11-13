@@ -6,7 +6,7 @@ use crate::project::*;
 use super::icons::{Icon, paint_icon};
 use super::menus::{Later, MenuAction};
 use super::theme::{self, UiLook};
-use super::toolbar::{arrow_menu, inert_button, inert_split, split_button, text_menu, tool_button};
+use super::toolbar::{arrow_menu, inert_split, split_button, text_menu, tool_button};
 use super::transport::{Cmd, Playback, cmd_button, cmd_menu};
 use super::widgets;
 
@@ -35,7 +35,10 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
     if tool_button(ui, Icon::Properties, "Project Video Properties", true, false).clicked() {
         *action = Some(MenuAction::Properties);
     }
-    inert_button(ui, Icon::ExternalMonitor, &Later("R14").tip("Preview on External Monitor"), false);
+    let external = super::menus::state(ui.ctx()).external;
+    if tool_button(ui, Icon::ExternalMonitor, "Preview on External Monitor (Alt+Shift+4)", true, external).clicked() {
+        super::menus::send(ui.ctx(), super::keymap::Command::ExternalMonitor);
+    }
     if tool_button(ui, Icon::TrackFx, "Video Output FX", true, false).clicked() {
         super::menus::send(ui.ctx(), super::keymap::Command::VideoOutputFx);
     }
@@ -274,6 +277,35 @@ fn paint_overlays(p: &Painter, frame: Rect, view: &PreviewView) {
     }
 }
 
+/// R14: Preview on External Monitor's picture, filling `ui`: the Video Preview's frame on black, at one project pixel
+/// per display pixel or scaled to fit (Preferences › Preview Device), turned by the project's output rotation if
+/// `rotate`. The decode width follows the larger of this and the Video Preview window.
+pub fn draw_external(ui: &mut Ui, project: &Project, preview: &mut Preview, fit: bool, rotate: bool, mute: bool) {
+    let rect = ui.max_rect();
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, Color32::BLACK);
+    let s = &project.settings;
+    let rot = if rotate { s.rotation } else { 0 };
+    let frame = external_frame(rect, vec2(s.width as f32, s.height.max(1) as f32), rot % 180 == 90, fit, ui.ctx().pixels_per_point());
+    let w = if rot % 180 == 90 { frame.height() } else { frame.width() } * ui.ctx().pixels_per_point();
+    preview.display_w = preview.display_w.max(w as u32);
+    if let Some(tex) = preview.texture.as_ref().filter(|_| !mute) {
+        p.add(rotated_image(tex.id(), frame, rot));
+    }
+}
+
+/// The external picture in `display` (points at `ppp` pixels per point) for a `size` project frame, turned a quarter
+/// if `quarter`: fitted (letterboxed), or one project pixel per display pixel, centred (larger frames are cropped).
+pub fn external_frame(display: Rect, size: Vec2, quarter: bool, fit: bool, ppp: f32) -> Rect {
+    let shown = if quarter { vec2(size.y, size.x) } else { size };
+    if fit {
+        return fit_rect_to_aspect(display, shown.x / shown.y.max(1.0));
+    }
+    let r = Rect::from_center_size(display.center(), shown / ppp);
+    let snap = |p: Pos2| ((p.to_vec2() * ppp).round() / ppp).to_pos2();
+    Rect::from_min_max(snap(r.min), snap(r.max))
+}
+
 /// `tex` filling `r`, turned `rot` degrees clockwise (Project Properties › Output rotation).
 fn rotated_image(tex: TextureId, r: Rect, rot: u16) -> Shape {
     let uv = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
@@ -296,4 +328,30 @@ fn fit_rect_to_aspect(container: Rect, aspect: f32) -> Rect {
     };
     let r = Rect::from_center_size(container.center(), vec2(w, h));
     Rect::from_min_max(r.min.round(), r.max.round())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R14: the external picture on a 2560x1440 display at 150 % (1706.7x960 points): 1:1 in display pixels and
+    /// centred, or fitted (pillarboxed for 4:3); a quarter turn swaps the sides.
+    #[test]
+    fn external_monitor_frame_geometry() {
+        let ppp = 1.5;
+        let display = Rect::from_min_size(Pos2::ZERO, vec2(2560.0, 1440.0) / ppp);
+        let hd = vec2(1920.0, 1080.0);
+        let close = |a: Vec2, b: Vec2| (a - b).length() < 0.01;
+        let one = external_frame(display, hd, false, false, ppp);
+        assert!(close(one.size() * ppp, hd), "{one:?}");
+        assert!((one.center() - display.center()).length() < 0.5);
+        assert!(close(external_frame(display, hd, false, true, ppp).size(), display.size().round()));
+        let sd = external_frame(display, vec2(640.0, 480.0), false, true, ppp);
+        assert_eq!((sd.height(), sd.width()), (960.0, 1280.0));
+        let turned = external_frame(display, hd, true, false, ppp);
+        assert!(close(turned.size() * ppp, vec2(1080.0, 1920.0)));
+        // Larger than the display at 1:1: cropped by the display, still centred.
+        let uhd = external_frame(display, vec2(3840.0, 2160.0), false, false, ppp);
+        assert!(uhd.contains_rect(display) && (uhd.center() - display.center()).length() < 0.5);
+    }
 }

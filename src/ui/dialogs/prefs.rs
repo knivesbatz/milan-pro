@@ -16,9 +16,10 @@ const ROWS23: &[&[&str]] = &[
 ];
 const GENERAL: usize = 0;
 const VIDEO: usize = 1;
-const AUDIO_DEVICE: usize = 4;
+pub const PREVIEW_DEVICE: usize = 2;
+pub const AUDIO_DEVICE: usize = 4;
 const EDITING: usize = 7;
-const DISPLAY: usize = 8;
+pub const DISPLAY: usize = 8;
 
 #[derive(Default)]
 pub struct PrefsDialog {
@@ -28,6 +29,8 @@ pub struct PrefsDialog {
     /// Input and output device names, listed once per opening of the Audio Device page (listing devices is slow).
     inputs: Option<Vec<String>>,
     outputs: Option<Vec<String>>,
+    /// R14: the displays, listed once per opening of the Preview Device page.
+    monitors: Option<Vec<crate::ui::monitors::Monitor>>,
     /// R13 (VP16) Display: "Display timeline at bottom of main window", which the app reads from and applies to the
     /// dock (the place of its one area is part of the window layout).
     pub timeline_bottom: bool,
@@ -36,19 +39,13 @@ pub struct PrefsDialog {
 impl PrefsDialog {
     pub fn open(&mut self, prefs: &Prefs) {
         self.draft = Some(prefs.clone());
-        (self.inputs, self.outputs) = (None, None);
+        (self.inputs, self.outputs, self.monitors) = (None, None, None);
     }
 
-    /// Open on the Display tab (screenshot harness).
-    pub fn open_display(&mut self, prefs: &Prefs) {
+    /// Open on page `tab` (`DISPLAY`, `AUDIO_DEVICE`, `PREVIEW_DEVICE`; screenshot harness).
+    pub fn open_on(&mut self, prefs: &Prefs, tab: usize) {
         self.open(prefs);
-        self.tab = DISPLAY;
-    }
-
-    /// Open on the Audio Device tab (screenshot harness).
-    pub fn open_audio_device(&mut self, prefs: &Prefs) {
-        self.open(prefs);
-        self.tab = AUDIO_DEVICE;
+        self.tab = tab;
     }
 
     pub fn is_open(&self) -> bool {
@@ -68,11 +65,13 @@ impl PrefsDialog {
         let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
         let changed = *d != *current || self.timeline_bottom != timeline_bottom_now;
         let (tab, track, inputs, outputs, bottom) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs, &mut self.timeline_bottom);
+        let monitors = &mut self.monitors;
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
                 GENERAL => general(ui, d),
                 VIDEO => video(ui, d),
+                PREVIEW_DEVICE => preview_device(ui, d, monitors.get_or_insert_with(crate::ui::monitors::list)),
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track, bottom),
@@ -92,7 +91,6 @@ impl PrefsDialog {
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
-        "Preview Device" => Later("R14"),
         "Audio" => Later("R49"),
         "VST Effects" => Later("R31"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
@@ -151,6 +149,47 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
         .on_hover_text("Not VEGAS modes: a project using them looks different in VEGAS");
     if default_all(ui) {
         (d.auto_proxy, d.extra_blend_modes) = (false, false);
+    }
+}
+
+/// R14: Preview Device, VEGAS's Windows Graphics Card device (a secondary display): the display Preview on External
+/// Monitor uses and how the picture goes on it. VEGAS's other devices (IEEE 1394, SDI cards) are not planned.
+fn preview_device(ui: &mut Ui, d: &mut Prefs, monitors: &[crate::ui::monitors::Monitor]) {
+    const W: f32 = 230.0;
+    super::row(ui, "Device:", 110.0, true, |ui| {
+        ComboBox::from_id_salt("ppd_device").width(W).selected_text("Windows Graphics Card").show_ui(ui, |ui| {
+            let _ = ui.selectable_label(true, "Windows Graphics Card");
+            ui.add_enabled(false, SelectableLabel::new(false, "IEEE 1394/OHCI Compatible Device")).on_disabled_hover_text(NotPlanned("R59").text());
+        });
+    });
+    ui.add_space(6.0);
+    super::group(ui, "Details");
+    let auto = "Automatic (the first secondary display)";
+    let shown = d.ext_display.as_deref().map_or(auto.to_string(), |n| monitors.iter().find(|m| m.name == n).map_or(format!("{n} (not connected)"), |m| m.label()));
+    super::row(ui, "Display adapter:", 110.0, true, |ui| {
+        ComboBox::from_id_salt("ppd_display").width(W).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.ext_display, None, auto);
+            for m in monitors {
+                ui.selectable_value(&mut d.ext_display, Some(m.name.clone()), m.label());
+            }
+        });
+    });
+    if monitors.is_empty() {
+        ui.label("No displays were found.");
+    }
+    ui.add_enabled(false, Button::new("Identify Displays")).on_disabled_hover_text(Later("R49").text());
+    ui.add_space(6.0);
+    ui.checkbox(&mut d.ext_fit, "Scale output to fit display").on_hover_text("Off: one project pixel per display pixel, centred");
+    let r49 = Later("R49").text();
+    ui.add_enabled(false, Checkbox::new(&mut false, "Apply deinterlace filter")).on_disabled_hover_text(&r49);
+    ui.add_enabled(false, Checkbox::new(&mut false, "Adjust levels from studio RGB to computer RGB")).on_disabled_hover_text(&r49);
+    ui.add_enabled(false, Checkbox::new(&mut true, "Wait for vertical sync")).on_disabled_hover_text(ALWAYS_ON.text());
+    ui.add_enabled(false, Checkbox::new(&mut true, "Optimize GPU display performance")).on_disabled_hover_text(ALWAYS_ON.text());
+    ui.add_enabled(false, Checkbox::new(&mut false, "Recompress edited frames")).on_disabled_hover_text(NotPlanned("R59").text());
+    ui.checkbox(&mut d.ext_in_window, "Display frames in Video Preview window during playback");
+    ui.checkbox(&mut d.ext_rotate, "Use project output rotation setting");
+    if default_all(ui) {
+        (d.ext_display, d.ext_fit, d.ext_in_window, d.ext_rotate) = (None, false, true, true);
     }
 }
 
@@ -340,11 +379,14 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
         ui.checkbox(timeline_bottom, "Display timeline at bottom of main window");
     }
     ui.checkbox(&mut d.tabs_on_top, "Position tabs at top of docked windows");
-    ui.add_enabled(false, Checkbox::new(&mut !v16, "Allow floating windows to dock (hold Ctrl to override)")).on_disabled_hover_text(Later("R14").text());
+    let mut float_dock = d.float_dock(d.look.look);
+    if ui.checkbox(&mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
+        d.float_dock = Some(float_dock);
+    }
     if default_all(ui) {
         d.track_colors = None;
         d.look.variant = Variant::Dark;
-        (d.auto_hide_docks, d.tabs_on_top, *timeline_bottom) = (false, false, true);
+        (d.auto_hide_docks, d.tabs_on_top, *timeline_bottom, d.float_dock) = (false, false, true, None);
     }
 }
 

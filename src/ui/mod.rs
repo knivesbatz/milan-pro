@@ -15,6 +15,7 @@ pub mod keymap;
 mod master_bus;
 mod media_panel;
 pub mod menus;
+pub mod monitors;
 pub mod render_queue;
 mod mixer;
 mod pancrop;
@@ -43,7 +44,7 @@ pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_co
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
 pub use pancrop::PanCropWin;
-pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
+pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
 pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event};

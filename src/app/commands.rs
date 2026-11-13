@@ -140,6 +140,7 @@ impl MeridianApp {
             output_meters: self.prefs.output_meters,
             vertical_meters: self.prefs.vertical_meters,
             meter_width: self.prefs.meter_width,
+            external: self.external.is_some(),
         }
     }
 
@@ -626,13 +627,12 @@ impl MeridianApp {
         self.layout = Some(l);
     }
 
-    /// Preferences, on the Display page (`Some(true)`) or the Audio Device page (`Some(false)`; screenshot harness).
-    /// The VP16 Display page shows where the dock area is.
-    fn open_prefs(&mut self, page: Option<bool>) {
+    /// Preferences, on page `page` (`dialogs::prefs::DISPLAY`...; screenshot harness) or the last one. The VP16 Display
+    /// page shows where the dock area is.
+    fn open_prefs(&mut self, page: Option<usize>) {
         match page {
             None => self.prefs_dlg.open(&self.prefs),
-            Some(true) => self.prefs_dlg.open_display(&self.prefs),
-            Some(false) => self.prefs_dlg.open_audio_device(&self.prefs),
+            Some(k) => self.prefs_dlg.open_on(&self.prefs, k),
         }
         self.prefs_dlg.timeline_bottom = !self.dock.timeline_top();
     }
@@ -1454,6 +1454,20 @@ impl MeridianApp {
             }
             Window(p) => self.dock.toggle(p),
             ShowWindow(p) => self.dock.open(p),
+            // R14: on the Preferences › Preview Device display; off again here or by Esc on it.
+            ExternalMonitor => {
+                self.external = match self.external.take() {
+                    Some(_) => None,
+                    None => {
+                        let mons = ui::monitors::list();
+                        let m = ui::monitors::external(self.prefs.ext_display.as_deref(), &mons).cloned();
+                        if m.is_none() {
+                            self.message = Some("Preview on External Monitor: no display was found.".into());
+                        }
+                        m.map(|m| (m, super::PLACING))
+                    }
+                };
+            }
             // Navigation and selection (R2)
             CursorToPlayhead => {
                 // The cursor is the playhead while playing; this keeps it there when playback stops.
@@ -2171,8 +2185,12 @@ impl MeridianApp {
         let Ok(what) = std::env::var("MILAN_DIALOG") else { return };
         match what.as_str() {
             "prefs" => self.open_prefs(None),
-            "prefs-display" => self.open_prefs(Some(true)),
-            "prefs-audio" => self.open_prefs(Some(false)),
+            "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
+            "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),
+            // R14: the Preview Device page; a floating Trimmer and the external preview (off-screen in the harness).
+            "prefs-preview" => self.open_prefs(Some(dialogs::prefs::PREVIEW_DEVICE)),
+            "float" => self.dock.float(crate::ui::dock::Panel::Trimmer, egui::Rect::from_min_size(egui::pos2(200.0, 200.0), egui::vec2(640.0, 400.0))),
+            "external-preview" => self.exec(ctx, ExternalMonitor),
             "recorded" => {
                 let audio = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Audio);
                 self.recorded = audio.map(|m| dialogs::RecordedFiles::new(vec![m.id.clone()]));

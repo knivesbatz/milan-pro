@@ -1,10 +1,12 @@
 //! Dock areas (§4.3–4.5, §5.3): columns of tabbed window groups with tab strips at the bottom (or the top), draggable
 //! splitters, maximise-in-dock, close (hide), moving tabs between groups by drag or context menu, the tab overflow
 //! scroller, and the areas themselves: VP16 has one (above the timeline, or below it), VP23 four (top, bottom, left,
-//! right), each one minimised on its own (F11, Alt+F11...). R13: the built-in window layouts.
+//! right), each one minimised on its own (F11, Alt+F11...). R13: the built-in window layouts. R14: floating windows,
+//! each in a native window of its own (an egui viewport) on any monitor, docked again by dragging.
 use eframe::egui::*;
 use serde::{Deserialize, Serialize};
 use super::icons::{Icon, paint_icon};
+use super::monitors;
 use super::theme::{self, Theme, UiLook};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
@@ -98,6 +100,51 @@ pub struct Group {
     pub area: Area,
 }
 
+/// R14: a window floating in a native window of its own. `rect`: its outer position and inner size in physical pixels
+/// (x, y, w, h); `monitor`: the display it was on (`\\.\DISPLAY2`), so a layout reopens it there.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FloatWin {
+    pub panel: Panel,
+    pub rect: [f32; 4],
+    #[serde(default)]
+    pub monitor: String,
+}
+
+impl FloatWin {
+    fn new(panel: Panel, r: Rect) -> Self {
+        let mut f = FloatWin { panel, rect: [0.0; 4], monitor: String::new() };
+        f.set(r);
+        f
+    }
+
+    pub fn rect(&self) -> Rect {
+        let [x, y, w, h] = self.rect;
+        Rect::from_min_size(pos2(x, y), vec2(w, h))
+    }
+
+    /// Move to `r`, on the display under its centre.
+    fn set(&mut self, r: Rect) {
+        self.rect = [r.min.x, r.min.y, r.width(), r.height()].map(f32::round);
+        if let Some(m) = monitors::name_at(r.center()) {
+            self.monitor = m;
+        }
+    }
+}
+
+/// Where a dragged window lands: in a group, as a new column of a docking area, or floating.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Drop {
+    Group(usize),
+    Area(Area),
+    Float,
+}
+
+/// What a floating window asks for this frame.
+enum FloatAction {
+    Close(Panel),
+    Dock(Panel, Drop),
+}
+
 /// The built-in window layouts (View › Window Layouts).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Builtin {
@@ -143,6 +190,18 @@ pub struct Dock {
     /// Where each area was drawn last frame (auto-hide keeps an area open while the pointer is over it).
     shown: [Rect; 4],
     dragging: Option<Panel>,
+    /// R14: the floating windows, and for each one opened: the rect and display scaling it opened at (its viewport's
+    /// fixed builder) and the frames left to correct where Windows put it.
+    pub floating: Vec<FloatWin>,
+    opened: Vec<(Panel, Rect, f32, u8)>,
+    /// The window to bring to the front (a floating one by View › Window or Next Window, or the main one when Next
+    /// Window leaves a floating one); a floating window the OS is moving.
+    raise: Option<ViewportId>,
+    moving: Option<Panel>,
+    /// The main window between its toolbar and status bar (set by the app), and last frame's group columns: where a
+    /// dragged window docks.
+    pub bounds: Rect,
+    cols: Vec<(usize, Rect)>,
     /// The tabs drawn whole last frame.
     #[cfg(test)]
     drawn: Vec<Panel>,
@@ -164,9 +223,18 @@ pub struct Layout {
     pub right_w: Option<f32>,
     #[serde(default)]
     pub hidden: Vec<Area>,
+    /// R14: the floating windows, where they are.
+    #[serde(default)]
+    pub floating: Vec<FloatWin>,
 }
 
 const MIN_W: f32 = 80.0;
+/// The bands along the main window's edges that dock a dragged window in that side's area.
+const EDGE: f32 = 32.0;
+/// Frames a new floating window gets to reach its place (Windows places it in the primary display's scaling first).
+const PLACING: u8 = 10;
+/// The smallest floating window (points).
+const MIN_FLOAT: Vec2 = vec2(160.0, 100.0);
 /// Smallest area a splitter leaves.
 pub const MIN_AREA: f32 = 60.0;
 /// An auto-hidden area keeps this edge to hover.
@@ -202,6 +270,12 @@ impl Dock {
             tabs_top: false,
             shown: [Rect::NOTHING; 4],
             dragging: None,
+            floating: Vec::new(),
+            opened: Vec::new(),
+            raise: None,
+            moving: None,
+            bounds: Rect::NOTHING,
+            cols: Vec::new(),
             #[cfg(test)]
             drawn: Vec::new(),
         }
@@ -257,6 +331,7 @@ impl Dock {
             left_w: self.left_w,
             right_w: self.right_w,
             hidden: self.hidden.clone(),
+            floating: self.floating.clone(),
         }
     }
 
@@ -298,9 +373,21 @@ impl Dock {
                 Some(Group { tabs, active, width, area })
             })
             .collect();
+        // Floating windows: a panel docked in the layout too stays docked; a rect that is no rect is dropped.
+        let floating: Vec<FloatWin> = l
+            .floating
+            .iter()
+            .filter(|f| f.rect.iter().all(|v| v.is_finite()) && f.rect[2] >= 1.0 && f.rect[3] >= 1.0)
+            .filter(|f| f.panel.in_look(t.look()) && !seen.contains(&f.panel) && {
+                seen.push(f.panel);
+                true
+            })
+            .cloned()
+            .collect();
         *self = Dock::new(t);
-        if !groups.is_empty() {
+        if !groups.is_empty() || !floating.is_empty() {
             self.groups = groups;
+            self.floating = floating;
             let ok = |s: Option<f32>| s.filter(|s| s.is_finite());
             (self.height, self.bottom_h, self.left_w, self.right_w) = (ok(l.height), ok(l.bottom_h), ok(l.left_w), ok(l.right_w));
             for &a in &l.hidden {
@@ -319,19 +406,32 @@ impl Dock {
     }
 
     pub fn is_open(&self, p: Panel) -> bool {
-        self.find(p).is_some()
+        self.find(p).is_some() || self.is_floating(p)
     }
 
-    /// Show and activate `p` (into the first group if hidden), or hide it if it is the active tab of a shown area.
+    pub fn is_floating(&self, p: Panel) -> bool {
+        self.floating.iter().any(|f| f.panel == p)
+    }
+
+    /// Show and activate `p` (into the first group if hidden), or hide it if it is the active tab of a shown area or
+    /// floats.
+    // shortcut: a closed floating window reopens docked (VEGAS reopens it floating); keep its FloatWin while hidden
+    // if users miss that.
     pub fn toggle(&mut self, p: Panel) {
         match self.find(p) {
             Some((g, i)) if self.groups[g].active == i && !self.hidden.contains(&self.groups[g].area) => self.close(g, i),
+            None if self.unfloat(p) => {}
             _ => self.open(p),
         }
     }
 
-    /// Show and activate `p` (into the first group if hidden), restoring its area if it is minimised.
+    /// Show and activate `p` (into the first group if hidden), restoring its area if it is minimised; a floating
+    /// window comes to the front.
     pub fn open(&mut self, p: Panel) {
+        if self.is_floating(p) {
+            self.raise = Some(float_id(p));
+            return;
+        }
         let g = match self.find(p) {
             Some((g, i)) => {
                 self.groups[g].active = i;
@@ -397,11 +497,87 @@ impl Dock {
 
     /// Move `p` into docking area `area` (VP23), as a new last column there; the area is shown.
     pub fn move_to_area(&mut self, p: Panel, area: Area) {
-        let Some((g, i)) = self.find(p) else { return };
-        let moved = self.take(g, i);
-        self.groups.push(Group { tabs: vec![moved], active: 0, width: 320.0, area });
+        match self.find(p) {
+            Some((g, i)) => {
+                self.take(g, i);
+            }
+            None if self.unfloat(p) => {}
+            None => return,
+        }
+        self.groups.push(Group { tabs: vec![p], active: 0, width: 320.0, area });
         self.hidden.retain(|&a| a != area);
         self.maximized = None;
+    }
+
+    /// R14: float `p` (docked or hidden) in a native window at `r` (physical pixels).
+    pub fn float(&mut self, p: Panel, r: Rect) {
+        if let Some((g, i)) = self.find(p) {
+            self.take(g, i);
+        }
+        self.unfloat(p);
+        self.floating.push(FloatWin::new(p, r));
+        if self.focus == Some(p) {
+            self.focus = None;
+        }
+    }
+
+    /// Close floating window `p` (hide it); false if it does not float.
+    fn unfloat(&mut self, p: Panel) -> bool {
+        let n = self.floating.len();
+        self.floating.retain(|f| f.panel != p);
+        self.opened.retain(|o| o.0 != p);
+        self.floating.len() != n
+    }
+
+    /// Dock floating window `p` where `to` says (a float target docks it in the first group).
+    fn dock_float(&mut self, p: Panel, to: Drop) {
+        if !self.unfloat(p) {
+            return;
+        }
+        match to {
+            Drop::Group(g) if g < self.groups.len() => {
+                let gr = &mut self.groups[g];
+                gr.tabs.push(p);
+                gr.active = gr.tabs.len() - 1;
+                let area = gr.area;
+                self.hidden.retain(|&a| a != area);
+            }
+            Drop::Area(a) => {
+                self.groups.push(Group { tabs: vec![p], active: 0, width: 320.0, area: a });
+                self.hidden.retain(|&h| h != a);
+            }
+            _ => self.open(p),
+        }
+    }
+
+    /// The areas a window dragged to the main window's edge docks in: VP23's four, VP16's one.
+    fn edge_areas(&self, look: UiLook) -> Vec<Area> {
+        match look {
+            UiLook::Vegas23 => Area::ALL.to_vec(),
+            UiLook::Vegas16 => vec![if self.timeline_top() { Area::Bottom } else { Area::Top }],
+        }
+    }
+
+    /// Where a window dropped at `pos` (main window points) lands: the group under it, else the docking area of the
+    /// edge band under it, else it floats. With the outline to draw (none for a float).
+    fn drop_at(&self, pos: Option<Pos2>, cols: &[(usize, Rect)], look: UiLook) -> (Drop, Option<Rect>) {
+        let Some(pos) = pos else { return (Drop::Float, None) };
+        if let Some(&(g, r)) = cols.iter().find(|(_, r)| r.contains(pos)) {
+            return (Drop::Group(g), Some(r));
+        }
+        let b = self.bounds;
+        for a in self.edge_areas(look) {
+            let band = match a {
+                Area::Top => b.with_max_y(b.min.y + EDGE),
+                Area::Bottom => b.with_min_y(b.max.y - EDGE),
+                Area::Left => b.with_max_x(b.min.x + EDGE),
+                Area::Right => b.with_min_x(b.max.x - EDGE),
+            };
+            if band.contains(pos) {
+                return (Drop::Area(a), Some(band));
+            }
+        }
+        (Drop::Float, None)
     }
 
     fn used(&self) -> Vec<Area> {
@@ -472,9 +648,17 @@ impl Dock {
         for g in self.groups.iter().filter(|g| !self.hidden.contains(&g.area)) {
             ring.extend(g.tabs.iter().copied().map(Some));
         }
+        ring.extend(self.floating.iter().map(|f| Some(f.panel)));
         let at = ring.iter().position(|&f| f == self.focus).unwrap_or(0);
         let n = ring.len();
+        let was_float = self.focus.is_some_and(|p| self.is_floating(p));
         self.focus = ring[if back { (at + n - 1) % n } else { (at + 1) % n }];
+        // A floating window reached gets the keyboard; leaving one gives it back to the main window.
+        match self.focus {
+            Some(p) if self.is_floating(p) => self.raise = Some(float_id(p)),
+            _ if was_float => self.raise = Some(ViewportId::ROOT),
+            _ => {}
+        }
         if let Some((g, i)) = self.focus.and_then(|p| self.find(p)) {
             self.groups[g].active = i;
             if self.maximized.is_some_and(|m| m != g) {
@@ -539,8 +723,8 @@ impl Dock {
             }
             // Column x ranges: later columns keep their width, the first takes the rest. An area too narrow for those
             // widths shows the later columns narrower alike (their widths are kept), so the first still gets MIN_W.
-            // shortcut: left and right areas lay their groups out as columns too; stacked groups come with R14's
-            // drag docking.
+            // shortcut: left and right areas lay their groups out as columns too; stacking them needs a drop on a
+            // group's edge to split it, add that if side areas get crowded.
             let later: f32 = visible[1..].iter().map(|&g| self.groups[g].width).sum();
             let room = rect.width() - MIN_W - sw * visible[1..].len() as f32;
             let scale = if later > room && later > 0.0 { (room / later).max(0.0) } else { 1.0 };
@@ -589,38 +773,209 @@ impl Dock {
                 self.focus = Some(gr.tabs[gr.active.min(gr.tabs.len() - 1)]);
             }
         }
+        // Undock floats the window over where it was docked, a little down and right.
+        let undock = match &action {
+            Some(TabAction::Float(p)) => cols.iter().find(|(g, _)| self.groups[*g].tabs.contains(p)).map(|&(_, r)| r.translate(vec2(30.0, 30.0))),
+            _ => None,
+        };
         match action {
             Some(TabAction::Maximize(g)) => self.maximized = if self.maximized == Some(g) { None } else { Some(g) },
             Some(TabAction::Close(g, i)) => self.close(g, i),
             Some(TabAction::Move(p, to)) => self.move_to(p, to),
             Some(TabAction::ToArea(p, a)) => self.move_to_area(p, a),
+            Some(TabAction::Float(p)) => self.float(p, screen_rect(ui.ctx(), undock.unwrap_or(Rect::from_min_size(pos2(100.0, 100.0), vec2(480.0, 320.0))))),
             None => {}
         }
         self.drop_target(ui, &t, &cols);
+        self.cols = cols;
     }
 
-    /// Dragging a tab outlines the group under the pointer; releasing over another group moves the tab there.
+    /// Dragging a tab outlines where it would land: the group under the pointer, a docking area along the main
+    /// window's edge, or (anywhere else, outside the main window too) a floating window of the group's size.
+    /// Releasing puts it there (R14: VEGAS floats a window dropped outside the docking areas).
     fn drop_target(&mut self, ui: &mut Ui, t: &Theme, cols: &[(usize, Rect)]) {
         let Some(p) = self.dragging else { return };
         let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.any_down()));
-        let target = pos.and_then(|pos| cols.iter().find(|(_, r)| r.contains(pos)));
+        let (target, outline) = self.drop_at(pos, cols, t.look());
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-        if let Some(&(g, r)) = target {
-            ui.painter().rect_stroke(r.shrink(1.0), 0.0, Stroke::new(2.0_f32, t.text_dim), StrokeKind::Inside);
-            if released {
-                self.move_to(p, Some(g));
-            }
+        let size = cols.iter().find(|(g, _)| self.groups.get(*g).is_some_and(|gr| gr.tabs.contains(&p))).map_or(vec2(480.0, 320.0), |(_, r)| r.size());
+        let float = pos.map(|pos| Rect::from_min_size(pos - vec2(20.0, 10.0), size));
+        let layer = ui.ctx().layer_painter(LayerId::new(Order::Tooltip, Id::new("dock_drag_label")));
+        if let Some(r) = outline.or(float) {
+            layer.rect_stroke(r.shrink(1.0), 0.0, Stroke::new(2.0_f32, t.text_dim), StrokeKind::Inside);
         }
         if let Some(pos) = pos {
-            let layer = ui.ctx().layer_painter(LayerId::new(Order::Tooltip, Id::new("dock_drag_label")));
             layer.text(pos + vec2(12.0, 4.0), Align2::LEFT_TOP, p.title(t.look()), t.font(t.font.dock_tab), t.text_bright);
         }
         if released {
             self.dragging = None;
+            match target {
+                Drop::Group(g) => self.move_to(p, Some(g)),
+                Drop::Area(a) => self.move_to_area(p, a),
+                Drop::Float => {
+                    // Where the pointer is on the screen (it may have left the window), else where egui last saw it.
+                    // Its size in points stays, in the scaling of the display it lands on.
+                    let at = monitors::cursor().filter(|_| ui.ctx().input(|i| i.viewport().inner_rect.is_some()));
+                    let r = match (at, float) {
+                        (Some(c), _) => {
+                            let ppp = ui.ctx().zoom_factor() * monitors::scale_at(c);
+                            Rect::from_min_size(c - vec2(20.0, 10.0) * ppp, size * ppp)
+                        }
+                        (None, Some(f)) => screen_rect(ui.ctx(), f),
+                        (None, None) => return,
+                    };
+                    self.float(p, r);
+                }
+            }
+        }
+    }
+
+    /// R14: every floating window in a native window of its own (an egui immediate viewport, drawn with the main
+    /// window's frame), with `content` as in `show`. It stays above the main window while Milan Pro is the active
+    /// application, as VEGAS's floating windows do. Moved (by its title bar or its tab) and let go over the docking
+    /// areas, it docks if `allow_dock` (Preferences › Display › Allow floating windows to dock), Ctrl inverting it.
+    /// `offscreen` (the screenshot harness): off every monitor, never active, no taskbar button, clicks pass through.
+    pub fn show_floating(&mut self, ctx: &Context, offscreen: bool, allow_dock: bool, mut content: impl FnMut(Panel, &mut Ui, &mut Ui)) {
+        let ids: Vec<ViewportId> = std::iter::once(ViewportId::ROOT).chain(self.floating.iter().map(|f| float_id(f.panel))).collect();
+        let active = ctx.input(|i| ids.iter().any(|id| i.raw.viewports.get(id).and_then(|v| v.focused).unwrap_or(false)));
+        if let Some(id) = self.raise.take().filter(|_| !offscreen) {
+            ctx.send_viewport_cmd_to(id, ViewportCommand::Focus);
+        }
+        let new = self.floating.iter().any(|f| !self.opened.iter().any(|o| o.0 == f.panel));
+        let mons = if new { monitors::list() } else { Vec::new() };
+        let t = theme::get();
+        let mut actions = Vec::new();
+        for k in 0..self.floating.len() {
+            let p = self.floating[k].panel;
+            if !self.opened.iter().any(|o| o.0 == p) {
+                // On its display if that is still connected, else on the primary one; moved in and shrunk to fit.
+                let (r, scale) = match monitors::place(self.floating[k].rect(), &self.floating[k].monitor, &mons) {
+                    Some((r, m)) => (r, mons[m].scale),
+                    None => (self.floating[k].rect(), 1.0),
+                };
+                self.floating[k].set(r);
+                self.opened.push((p, r, scale, if offscreen { 0 } else { PLACING }));
+            }
+            let &(_, r0, scale, _) = self.opened.iter().find(|o| o.0 == p).expect("opened above");
+            // The builder stays as the window opened: egui moves a window whose builder changes.
+            let pts = monitors::to_points(r0, ctx.zoom_factor() * scale);
+            let b = ViewportBuilder::default().with_title(p.title(t.look())).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false);
+            let b = if offscreen {
+                crate::offscreen(b)
+            } else {
+                b.with_position(pts.min).with_taskbar(false).with_window_level(if active { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal })
+            };
+            let act = ctx.show_viewport_immediate(float_id(p), b, |vctx, class| {
+                let mut act = None;
+                let mut draw = |ui: &mut Ui| act = self.float_ui(ui, &t, k, offscreen || class == ViewportClass::Embedded, allow_dock, &mut content);
+                if class == ViewportClass::Embedded {
+                    // A backend without native windows (tests): an egui window instead.
+                    Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).show(vctx, |ui| draw(ui));
+                } else {
+                    CentralPanel::default().frame(Frame::NONE.fill(t.frame)).show(vctx, |ui| draw(ui));
+                }
+                if class != ViewportClass::Embedded && vctx.input(|i| i.viewport().close_requested()) {
+                    act = Some(FloatAction::Close(p));
+                }
+                act
+            });
+            actions.extend(act);
+        }
+        for a in actions {
+            match a {
+                FloatAction::Close(p) => {
+                    self.unfloat(p);
+                }
+                FloatAction::Dock(p, to) => self.dock_float(p, to),
+            }
+        }
+    }
+
+    /// One floating window's frame: its toolbar, body and a one-tab strip. `fixed`: never moved or tracked
+    /// (off-screen, or embedded). Docks when the OS move it was in ends over a docking target.
+    fn float_ui(&mut self, ui: &mut Ui, t: &Theme, k: usize, fixed: bool, allow_dock: bool, content: &mut impl FnMut(Panel, &mut Ui, &mut Ui)) -> Option<FloatAction> {
+        let p = self.floating[k].panel;
+        let ctx = ui.ctx().clone();
+        let strip = self.window_ui(ui, t, p, ui.max_rect(), content);
+        let tab = float_tab(ui, t, p, strip, self.tabs_top);
+        if tab.drag_started_by(PointerButton::Primary) && !fixed {
+            // The tab moves the window, as its title bar does (the OS's own move; docking is checked when it ends).
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        let mut action = None;
+        let look = t.look();
+        let areas = self.edge_areas(look);
+        super::menus::context(&tab, |ui| {
+            if ui.button("Dock").clicked() {
+                action = Some(FloatAction::Dock(p, Drop::Float));
+                ui.close_menu();
+            }
+            if look == UiLook::Vegas23 {
+                for a in areas {
+                    if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
+                        action = Some(FloatAction::Dock(p, Drop::Area(a)));
+                        ui.close_menu();
+                    }
+                }
+            }
+            ui.separator();
+            if ui.button("Close").clicked() {
+                action = Some(FloatAction::Close(p));
+                ui.close_menu();
+            }
+        });
+        if fixed || action.is_some() {
+            return action;
+        }
+        // Placing: Windows put the new window in the primary display's scaling; move it to its rect in its own. Then
+        // it is where it is (so the end of placing is no move).
+        if let Some(o) = self.opened.iter_mut().find(|o| o.0 == p).filter(|o| o.3 > 0) {
+            o.3 = if monitors::settle(&ctx, o.1) { 0 } else { o.3 - 1 };
+            if let Some(cur) = monitors::current(&ctx).filter(|_| o.3 == 0) {
+                self.floating[k].set(cur);
+            }
+            return None;
+        }
+        let cur = monitors::current(&ctx)?;
+        let f = &mut self.floating[k];
+        if cur != f.rect() {
+            // The same size at a new place is a move (a resize from the left or top edge changes both).
+            if (cur.size() - f.rect().size()).length() < 0.5 {
+                self.moving = Some(p);
+            }
+            f.set(cur);
+        }
+        // shortcut: no drop outline while the OS moves a floating window (Windows' move loop holds the main window's
+        // frames); draw one from the cursor here if users ask where it will dock.
+        if self.moving != Some(p) || monitors::left_down() {
+            return None;
+        }
+        self.moving = None;
+        // Only a move by the mouse docks: let go with the pointer still on the window (its title bar or tab).
+        let cursor = monitors::cursor()?;
+        let outer = ctx.input(|i| i.viewport().outer_rect.map(|r| r * i.pixels_per_point))?;
+        if allow_dock == monitors::ctrl_down() || !outer.expand(2.0).contains(cursor) {
+            return None;
+        }
+        // The pointer in the main window's points.
+        let root = ctx.input(|i| i.raw.viewports.get(&ViewportId::ROOT).and_then(|v| Some((v.inner_rect?.min, v.native_pixels_per_point?))));
+        let (origin, native) = root?;
+        let at = monitors::to_local(cursor, origin, native * ctx.zoom_factor());
+        match self.drop_at(Some(at), &self.cols, look).0 {
+            Drop::Float => None,
+            d => Some(FloatAction::Dock(p, d)),
         }
     }
 
     fn group_ui(&mut self, ui: &mut Ui, t: &Theme, g: usize, col: Rect, content: &mut impl FnMut(Panel, &mut Ui, &mut Ui)) -> Option<TabAction> {
+        let gr = &self.groups[g];
+        let panel = gr.tabs[gr.active.min(gr.tabs.len() - 1)];
+        let strip = self.window_ui(ui, t, panel, col, content);
+        self.tab_strip(ui, t, g, strip)
+    }
+
+    /// A window's toolbar and body in `col`, filled by `content`; returns where its tab strip goes.
+    fn window_ui(&self, ui: &mut Ui, t: &Theme, panel: Panel, col: Rect, content: &mut impl FnMut(Panel, &mut Ui, &mut Ui)) -> Rect {
         let v16 = t.look() == UiLook::Vegas16;
         let p = ui.painter().clone();
         let h = t.m.tab_strip_h;
@@ -642,8 +997,6 @@ impl Dock {
         let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
         p.rect_filled(body, 0.0, t.panel_bg);
 
-        let gr = &self.groups[g];
-        let panel = gr.tabs[gr.active.min(gr.tabs.len() - 1)];
         let mut bar_ui = ui.new_child(
             UiBuilder::new().id_salt(("dock_bar", panel)).max_rect(bar.shrink2(vec2(2.0, 0.0))).layout(eframe::egui::Layout::left_to_right(Align::Center)),
         );
@@ -652,7 +1005,7 @@ impl Dock {
         let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(eframe::egui::Layout::top_down(Align::Min)));
         body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         content(panel, &mut bar_ui, &mut body_ui);
-        self.tab_strip(ui, t, g, strip)
+        strip
     }
 
     fn tab_strip(&mut self, ui: &mut Ui, t: &Theme, g: usize, strip: Rect) -> Option<TabAction> {
@@ -782,7 +1135,7 @@ impl Dock {
                     action = Some(TabAction::Move(panel, None));
                     ui.close_menu();
                 }
-                // VP23 docks on all four sides (§4.3); dragging to an edge comes with R14.
+                // VP23 docks on all four sides (§4.3), also by dragging the tab to an edge of the main window.
                 if look == UiLook::Vegas23 {
                     for a in Area::ALL.into_iter().filter(|&a| a != area) {
                         if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
@@ -790,6 +1143,11 @@ impl Dock {
                             ui.close_menu();
                         }
                     }
+                }
+                // R14: also by dragging the tab off the docking areas.
+                if ui.button("Undock").clicked() {
+                    action = Some(TabAction::Float(panel));
+                    ui.close_menu();
                 }
                 ui.separator();
                 if ui.button(if maximized { "Restore in Dock" } else { "Maximize in Dock" }).clicked() {
@@ -855,6 +1213,39 @@ enum TabAction {
     Close(usize, usize),
     Move(Panel, Option<usize>),
     ToArea(Panel, Area),
+    Float(Panel),
+}
+
+/// A floating window's viewport.
+fn float_id(p: Panel) -> ViewportId {
+    ViewportId::from_hash_of(("milan_float", p))
+}
+
+/// `r` (points of `ctx`'s window) in physical screen pixels; from the window's corner when there is no window (tests).
+fn screen_rect(ctx: &Context, r: Rect) -> Rect {
+    let origin = ctx.input(|i| i.viewport().inner_rect.map_or(Vec2::ZERO, |w| w.min.to_vec2()));
+    r.translate(origin) * ctx.pixels_per_point()
+}
+
+/// A floating window's tab strip: its one tab, drawn active (the native title bar has the close button).
+fn float_tab(ui: &mut Ui, t: &Theme, panel: Panel, strip: Rect, tabs_top: bool) -> Response {
+    let v16 = t.look() == UiLook::Vegas16;
+    let p = ui.painter_at(strip);
+    p.rect_filled(strip, 0.0, if v16 { t.tab_strip_single_bg } else { t.tab_strip_bg });
+    let font = if v16 { t.font(t.font.dock_tab) } else { t.bold(t.font.dock_tab) };
+    let galley = p.layout_no_wrap(panel.title(t.look()).to_owned(), font, t.tab_text_active);
+    let r = Rect::from_min_size(strip.min, vec2(galley.size().x + if v16 { 16.0 } else { 18.0 }, strip.height()));
+    if v16 {
+        p.rect_filled(r, 0.0, t.tab_active_bg);
+        vline(&p, r.max.x - 1.0, strip.y_range(), t.line_dark);
+    } else {
+        let y = if tabs_top { r.max.y - t.m.tab_active_line_w } else { r.min.y };
+        p.rect_filled(Rect::from_min_size(pos2(r.min.x, y), vec2(r.width(), t.m.tab_active_line_w)), 0.0, t.tab_active_line);
+    }
+    let shift = if v16 { 0.0 } else if tabs_top { -2.0 } else { 2.0 };
+    let pos = pos2(r.min.x + if v16 { 8.0 } else { 9.0 }, (r.center().y - galley.size().y * 0.5).round() - shift);
+    p.galley(pos, galley, t.tab_text_active);
+    ui.interact(r, ui.id().with(("float_tab", panel)), Sense::click_and_drag())
 }
 
 fn hline(p: &Painter, x: Rangef, y: f32, c: Color32) {
@@ -921,6 +1312,7 @@ mod tests {
             left_w: None,
             right_w: None,
             hidden: vec![Area::Left, Area::Left],
+            floating: vec![],
         };
         let mut v16 = Dock::new(&t16);
         v16.apply(&bad, &t16);
@@ -942,7 +1334,134 @@ mod tests {
         c.apply(&Dock::builtin(Builtin::Classic, &t16).layout("C"), &t16);
         assert!(c.timeline_top() && c.groups.iter().all(|g| g.area == Area::Bottom));
         let old: Layout = serde_json::from_str(r#"{"name":"Old","groups":[{"tabs":["Trimmer"],"active":0,"width":0}],"height":300,"track_list_w":200}"#).unwrap();
-        assert_eq!((old.groups[0].area, old.bottom_h, old.hidden.len()), (Area::Top, None, 0));
+        assert_eq!((old.groups[0].area, old.bottom_h, old.hidden.len(), old.floating.len()), (Area::Top, None, 0, 0));
+    }
+
+    /// R14: floating windows round-trip through a layout with their rect and monitor; applying one keeps each panel
+    /// once (docked wins), drops bad rects and VP23-only windows in VP16; a layout of floating windows only is kept.
+    #[test]
+    fn layout_serde_round_trip_with_floating_windows() {
+        use Panel::*;
+        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let mut d = Dock::new(&t23);
+        d.float(Trimmer, Rect::from_min_size(pos2(2200.0, 100.0), vec2(800.0, 500.0)));
+        d.floating[0].monitor = r"\\.\DISPLAY2".into();
+        d.float(MixingConsole, Rect::from_min_size(pos2(-1700.0, 40.0), vec2(1200.0, 400.0)));
+        assert!(d.is_open(Trimmer) && d.is_floating(Trimmer) && d.find(Trimmer).is_none());
+        let l = d.layout("Two screens");
+        let json = serde_json::to_string(&l).unwrap();
+        assert_eq!(serde_json::from_str::<Layout>(&json).unwrap(), l);
+        assert_eq!(l.floating[0], FloatWin { panel: Trimmer, rect: [2200.0, 100.0, 800.0, 500.0], monitor: r"\\.\DISPLAY2".into() });
+        let mut e = Dock::new(&t23);
+        e.apply(&l, &t23);
+        assert_eq!((e.floating, e.groups), (d.floating.clone(), d.groups.clone()));
+        // Docked and floating at once, a NaN rect, a VP23 window in VP16: sanitised.
+        let f = |panel, rect| FloatWin { panel, rect, monitor: String::new() };
+        let bad = Layout {
+            floating: vec![f(VideoPreview, [0.0, 0.0, 300.0, 200.0]), f(Explorer, [f32::NAN, 0.0, 9.0, 9.0]), f(ColorGrading, [0.0; 4]), f(Properties, [5.0, 5.0, 400.0, 300.0]), f(Properties, [9.0, 9.0, 400.0, 300.0])],
+            ..Dock::new(&t16).layout("")
+        };
+        let mut v = Dock::new(&t16);
+        v.apply(&bad, &t16);
+        assert_eq!(v.floating, vec![f(Properties, [5.0, 5.0, 400.0, 300.0])]);
+        assert!(v.find(VideoPreview).is_some());
+        // Everything floating: no docked groups, and the default ones do not come back.
+        let all_float = Layout { groups: vec![], floating: vec![f(MasterBus, [0.0, 0.0, 200.0, 400.0])], ..bad };
+        v.apply(&all_float, &t16);
+        assert!(v.groups.is_empty() && v.is_open(MasterBus) && !v.is_open(Explorer));
+    }
+
+    /// R14: View › Window closes a floating window and docks it again when reopened; Dock puts it in a group or a new
+    /// column of an area; Undock and Next Window reach it.
+    #[test]
+    fn floating_windows_open_close_dock_and_cycle() {
+        use Panel::*;
+        let t = Theme::new(LookChoice::VEGAS23);
+        let mut d = Dock::new(&t);
+        let r = Rect::from_min_size(pos2(10.0, 10.0), vec2(400.0, 300.0));
+        d.float(MasterBus, r);
+        assert_eq!(d.groups.len(), 2, "its group emptied and went");
+        d.open(MasterBus);
+        assert!(d.is_floating(MasterBus) && d.raise == Some(float_id(MasterBus)), "open brings it to the front");
+        d.toggle(MasterBus);
+        assert!(!d.is_open(MasterBus));
+        d.toggle(MasterBus);
+        assert_eq!(d.find(MasterBus), Some((0, d.groups[0].tabs.len() - 1)), "reopened docked, in the first group");
+        d.float(Trimmer, r);
+        d.dock_float(Trimmer, Drop::Group(1));
+        assert_eq!(d.groups[1].tabs, vec![VideoPreview, Trimmer]);
+        assert_eq!(d.groups[1].active, 1);
+        d.float(Trimmer, r);
+        d.toggle_area(Area::Left);
+        d.dock_float(Trimmer, Drop::Area(Area::Left));
+        assert_eq!((d.groups.last().unwrap().area, d.groups.last().unwrap().tabs.clone(), d.hidden.clone()), (Area::Left, vec![Trimmer], vec![]));
+        // The context menu's Dock in Right Docking Area works on a floating window too.
+        d.float(Trimmer, r);
+        d.move_to_area(Trimmer, Area::Right);
+        assert!(!d.is_floating(Trimmer) && d.groups.last().unwrap().area == Area::Right);
+        // Next Window reaches a floating window last and hands the keyboard back to the main window after it.
+        d.float(Explorer, r);
+        d.focus = d.groups.last().map(|g| g.tabs[0]);
+        d.cycle(false);
+        assert_eq!((d.focus, d.raise), (Some(Explorer), Some(float_id(Explorer))));
+        d.cycle(false);
+        assert_eq!((d.focus, d.raise), (None, Some(ViewportId::ROOT)));
+        let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum::<usize>() + d.floating.len();
+        assert_eq!(n, Dock::new(&t).groups.iter().map(|g| g.tabs.len()).sum::<usize>(), "every window once");
+    }
+
+    /// R14: where a dragged window lands: the group under it, a docking area along the main window's edge (VP23: any;
+    /// VP16: its one area's), else floating.
+    #[test]
+    fn drop_targets() {
+        let t = Theme::new(LookChoice::VEGAS23);
+        let mut d = Dock::new(&t);
+        d.bounds = Rect::from_min_max(pos2(0.0, 60.0), pos2(1920.0, 1040.0));
+        let cols = vec![(0, Rect::from_min_max(pos2(0.0, 60.0), pos2(900.0, 400.0)))];
+        let at = |d: &Dock, x, y, look| d.drop_at(Some(pos2(x, y)), &cols, look).0;
+        let v23 = UiLook::Vegas23;
+        assert_eq!(at(&d, 100.0, 70.0, v23), Drop::Group(0), "a group beats the edge band under it");
+        assert_eq!(at(&d, 1500.0, 70.0, v23), Drop::Area(Area::Top));
+        assert_eq!(at(&d, 1000.0, 1030.0, v23), Drop::Area(Area::Bottom));
+        assert_eq!(at(&d, 5.0, 700.0, v23), Drop::Area(Area::Left));
+        assert_eq!(at(&d, 1910.0, 700.0, v23), Drop::Area(Area::Right));
+        assert_eq!(at(&d, 1000.0, 700.0, v23), Drop::Float, "over the timeline");
+        assert_eq!(at(&d, 3000.0, 700.0, v23), Drop::Float, "outside the main window");
+        assert_eq!(d.drop_at(None, &cols, v23).0, Drop::Float);
+        // VP16: only the edge of its one area (the top, or the bottom with the timeline above it).
+        let v16 = UiLook::Vegas16;
+        assert_eq!(at(&d, 5.0, 700.0, v16), Drop::Float);
+        assert_eq!(at(&d, 1500.0, 70.0, v16), Drop::Area(Area::Top));
+        d.set_timeline_top(true);
+        assert_eq!((at(&d, 1500.0, 70.0, v16), at(&d, 1500.0, 1030.0, v16)), (Drop::Float, Drop::Area(Area::Bottom)));
+    }
+
+    /// R14: dragging a tab over the timeline and letting go floats it there, at its column's size; a floating window
+    /// shows its panel (embedded in a test context, which has no native windows).
+    #[test]
+    fn drag_tab_out_floats_it() {
+        let ctx = Context::default();
+        let t = theme::get();
+        let mut d = Dock::new(&t);
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 400.0));
+        d.bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 700.0));
+        let press = |p: Pos2, pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        // Master Bus, the last column's only tab (its label, left of the □ × buttons).
+        let mut p = pos2(rect.max.x - t.m.master_bus_w + 20.0, rect.max.y - 8.0);
+        frame(&ctx, &mut d, rect, vec![Event::PointerMoved(p)]);
+        frame(&ctx, &mut d, rect, vec![press(p, true)]);
+        for _ in 0..6 {
+            p += vec2(-150.0, 30.0);
+            frame(&ctx, &mut d, rect, vec![Event::PointerMoved(p)]);
+        }
+        frame(&ctx, &mut d, rect, vec![press(p, false)]);
+        assert!(d.is_floating(Panel::MasterBus) && d.find(Panel::MasterBus).is_none(), "{:?}", d.floating);
+        let r = d.floating[0].rect();
+        assert_eq!((r.min, r.width()), (p - vec2(20.0, 10.0), t.m.master_bus_w.round()));
+        let mut seen = Vec::new();
+        let raw = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 700.0))), ..Default::default() };
+        let _ = ctx.run(raw, |ctx| d.show_floating(ctx, false, true, |panel, _, _| seen.push(panel)));
+        assert_eq!(seen, vec![Panel::MasterBus]);
     }
 
     /// R13: each built-in layout opens the windows VEGAS's layout files show (Video Scopes waits on R16b).

@@ -35,9 +35,9 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 229 |
-| PARTIAL | 123 |
-| MISSING | 68 |
+| DONE | 232 |
+| PARTIAL | 122 |
+| MISSING | 66 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
@@ -125,21 +125,21 @@ What matters most:
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b), Summary (R16a). → R10a, R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
-| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
+| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again. Customize Toolbar is greyed. → R15, R49 |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
 | 4.16 | Consistent icons | DONE | `ui/icons.rs` (967 lines of vector icons) |
 | 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics per look |
 | 4.18 | Modern dark theme | DONE | VP16 and VP23 dark (`theme.rs`) |
 | 4.19 | Optional light theme | DONE | VP23 `Variant::White` (`theme.rs:17-21`) |
 | 4.20 | Smooth but restrained animations | PARTIAL | Only egui defaults plus transition-thumbnail animation (`choosers.rs:16`). There is no central animation policy, and the Windows "show animations" setting is not honoured. → R48 |
-| 4.21 | Resizable and dockable panels | PARTIAL | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options. Missing: floating windows and drag-to-edge docking. → R14 |
+| 4.21 | Resizable and dockable panels | DONE | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options; (R14) floating windows (`Dock::show_floating`, one egui viewport each; Undock, or drag a tab off the docking areas), dragging a tab to the main window's edge docks it in that area, a floating window moved over the dock docks under "Allow floating windows to dock" (Ctrl inverts it). Tests: `drop_targets`, `drag_tab_out_floats_it`, `floating_windows_open_close_dock_and_cycle`. |
 | 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 per look (`settings.rs`, batch 11); (R13) the built-in VEGAS layouts Classic (VEGAS Pro 14), Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. Video Scopes joins Color Correction with R16b. |
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
 | 4.26 | Custom keyboard shortcuts | MISSING | "Customize Keyboard..." is greyed (`menus.rs:904`). The keymap is a compile-time table (`keymap.rs:83`). → R15 |
 | 4.27 | High-DPI display support | PARTIAL | egui follows the per-monitor scale automatically. Not tested above 100%; the UI spec gives pixel values at 1.0. No UI scale preference. → R48 |
-| 4.28 | Proper multi-monitor support | MISSING | One window only. No floating panels and no external preview monitor (`preview.rs:36` inert). → R14 |
+| 4.28 | Proper multi-monitor support | DONE | (R14) Floating windows on any display, saved in layouts with their rect (physical pixels) and display, reopened on the primary display when theirs is gone (`ui/monitors.rs`: `EnumDisplayMonitors`, `place`); each window takes its own display's scaling and is placed in it (`monitors::settle`). Preview on External Monitor (Alt+Shift+4, Video Preview toolbar) full screen on the Preferences › Preview Device display (`App::show_external`, `preview::draw_external`). Tests: `layout_serde_round_trip_with_floating_windows`, `floating_window_on_a_removed_monitor_reopens_on_the_primary`, `external_monitor_frame_geometry`. Not checked by hand on two monitors or a 150 %/100 % mix yet (the harness never opens a window on a monitor). |
 | 4.29 | No excessive visual effects; serious professional feel | DONE | |
 | 4.30 | Save and restore workspace layouts | DONE | `Prefs.layouts` with `merge_layouts` (`settings.rs:61-75`) |
 
@@ -521,7 +521,7 @@ What matters most:
 | 17.7 | Cache management | PARTIAL | Fixed sizes. No preference, no disk cache, no "clear cache". → R23 |
 | 17.8 | SSD storage (cache/prerender location) | MISSING | The prerender and temp folder fields are greyed (`settings.rs:344`, `prefs.rs:112`). → R23 |
 | 17.9 | High-resolution displays | PARTIAL | Preview Auto size fits the window. Not verified at 4K/200%. → R48 |
-| 17.10 | Multiple monitors | MISSING | → R14 |
+| 17.10 | Multiple monitors | DONE | R14: floating windows and the external preview on any display (see 4.28) |
 | 17.11 | High-refresh-rate displays | PARTIAL | egui repaints on demand and the preview is paced by the audio clock. Not tested at 120/144 Hz. → R48 |
 | 17.12 | High-DPI scaling | PARTIAL | → R48 |
 | 17.13 | Direct3D / Vulkan / vendor acceleration paths | PARTIAL | `-hwaccel auto` only. No explicit d3d11va/cuda/qsv choice. → R22 |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R14-R18 (R13 DONE) |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R15-R18 (R13, R14 DONE) |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -618,7 +618,7 @@ The inventory as found before R0:
 |---|---|---|
 | File | SaveVersion | R42 |
 | Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a, R6b, R12 (DONE), R18a, R17b |
-| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 |
+| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 (DONE) |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
@@ -760,7 +760,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R8c (DONE): audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
 - R12: File > Real-Time Render (R12 moved it to R59: it exists for external hardware FX, which Milan Pro does not host; a normal render gives the same file).
-- R13/R14: the Display page docking options (R13 DONE: Automatically hide docking area, Display timeline at bottom of main window (VP16), Position tabs at top of docked windows; R14: Allow floating windows to dock).
+- R13/R14: the Display page docking options (R13 DONE: Automatically hide docking area, Display timeline at bottom of main window (VP16), Position tabs at top of docked windows; R14 DONE: Allow floating windows to dock).
 - R16a: region Rename (marker bar), Project Properties Summary page.
 - R16b: preview Split-Screen View and the Isolate channel overlays.
 - R18a: View > Event Length (VP23).
@@ -1282,6 +1282,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - 30 tabs in one group scroll.
 
 ### R14: Floating windows, multi-monitor, external preview (L)
+
+**Status: DONE.** Built as designed below, except:
+- Floating windows are immediate viewports (`show_viewport_immediate`), not deferred ones: they draw with the app's state like docked windows. Each floating window holds one window (VEGAS lets a floating window take tabs). It has a native title bar and the dock toolbar and tab; its tab moves the window as the title bar does (the OS's own move). It stays above the main window while Milan Pro is the active application (VEGAS's floating windows are owned windows) and has no taskbar button. Keys pressed in it reach the keymap. Closed (×, View › Window, Close), a floating window reopens docked.
+- Undock is in the tab menu (spec §5.3); a tab dropped anywhere but a group or an edge band floats there. The edge bands (32 px along the main window's client area) dock in that side's area: all four in VP23, the one area in VP16. A floating window let go over a group or an edge band after a mouse move docks under Preferences › Display › "Allow floating windows to dock" (default off in VP16, on in VP23, as the installs show it; Ctrl inverts it). No outline is drawn while the OS moves a floating window.
+- `FloatWin { panel, rect: [x, y, w, h] in physical pixels, monitor: "\\.\DISPLAYn" }`. Windows are placed in their display's own scaling and corrected for a few frames (Windows creates a window in the primary display's scaling first), so a 150 %/100 % mix keeps both position and size; egui scales the content per window.
+- Preview on External Monitor is a borderless, never-activated viewport that goes full screen on the Preview Device display once it is there; Esc on it (as in VEGAS) or Alt+Shift+4 turns it off; not kept between sessions (VEGAS asks again each start). The Preview Device page has the Windows Graphics Card device with Display adapter (Automatic = the first secondary display), Scale output to fit display (off: 1:1), Display frames in Video Preview window during playback and Use project output rotation setting; Identify Displays, deinterlace and studio-to-computer RGB stay greyed (R49), vertical sync and GPU display are always on, IEEE 1394 and Recompress edited frames are not planned (R59).
+- The screenshot harness opens every floating window and the external preview off-screen (`main::offscreen`), never active and never full screen: `MILAN_DIALOG=float`, `external-preview`, `prefs-preview`.
+- Not checked by hand on two monitors or a 150 %/100 % mix (needs the user).
 
 **Scope**
 - Drag any dock tab out to a floating native window (egui viewports), dock it back, and save floating rectangles and monitors in layouts.

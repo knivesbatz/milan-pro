@@ -6,7 +6,7 @@ mod goto;
 mod organize_layouts;
 mod paste_attrs;
 mod paste_repeat;
-mod prefs;
+pub mod prefs;
 mod recorded;
 mod remove_fx;
 mod render;

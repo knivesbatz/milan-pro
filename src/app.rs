@@ -195,7 +195,15 @@ pub struct MeridianApp {
     paste_attrs: Option<crate::ui::dialogs::PasteAttrs>,
     /// Tools › Audio › Remove Assignable FX..., open.
     remove_fx: Option<crate::ui::dialogs::RemoveAssignableFx>,
+    /// R14: Preview on External Monitor, while on (not kept between sessions, as in VEGAS): its display, and the
+    /// frames left to put its window there before it goes full screen.
+    external: Option<(ui::monitors::Monitor, u8)>,
+    /// The screenshot harness or an automatic update: every extra window opens off-screen (`crate::offscreen`).
+    offscreen: bool,
 }
+
+/// R14: frames the external preview's window gets to reach its display before it goes full screen.
+const PLACING: u8 = 10;
 
 impl MeridianApp {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
@@ -253,6 +261,7 @@ impl MeridianApp {
         // Renders left from the last session (to resume, or interrupted: Retry) are shown.
         let mut queue_win = ui::render_queue::QueueWindow::default();
         queue_win.open = queue.jobs.iter().any(|j| matches!(j.state, render::JobState::Queued | render::JobState::Interrupted));
+        let offscreen = crate::offscreen_run(launch.screenshot.is_some());
         let mut app = Self {
             project,
             history: History::default(),
@@ -361,6 +370,8 @@ impl MeridianApp {
             paste_repeat: None,
             paste_attrs: None,
             remove_fx: None,
+            external: None,
+            offscreen,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
@@ -435,6 +446,39 @@ impl MeridianApp {
         }
     }
 
+    /// R14: Preview on External Monitor: the Video Preview's picture full screen on the Preview Device display, in a
+    /// borderless window that never takes the focus; Esc there (as in VEGAS) or Alt+Shift+4 turns it off. An
+    /// off-screen run opens it off every monitor, small, and never full screen.
+    fn show_external(&mut self, ctx: &egui::Context) {
+        let Some((m, placing)) = &mut self.external else { return };
+        let b = egui::ViewportBuilder::default().with_title("Video Preview (External Monitor)").with_decorations(false).with_active(false).with_taskbar(false);
+        let b = if self.offscreen {
+            crate::offscreen(b).with_inner_size([640.0, 360.0])
+        } else {
+            // Placed in the display's own scaling, then full screen on it once Windows has it there.
+            let pts = ui::monitors::to_points(m.rect, ctx.zoom_factor() * m.scale);
+            b.with_position(pts.min).with_inner_size(pts.size()).with_fullscreen(*placing == 0)
+        };
+        let (offscreen, want, project, preview) = (self.offscreen, m.rect, &self.project, &mut self.preview);
+        let (fit, rotate, mute) = (self.prefs.ext_fit, self.prefs.ext_rotate, self.mute_video);
+        let id = egui::ViewportId::from_hash_of(("milan_external_preview", &m.name));
+        let close = ctx.show_viewport_immediate(id, b, |vctx, class| {
+            if class == egui::ViewportClass::Embedded {
+                return true; // no native windows to show it in
+            }
+            if !offscreen && *placing > 0 {
+                *placing = if ui::monitors::settle(vctx, want) { 0 } else { *placing - 1 };
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(vctx, |ui| ui::draw_external(ui, project, preview, fit, rotate, mute));
+            vctx.input(|i| i.key_pressed(egui::Key::Escape) || i.viewport().close_requested())
+        });
+        // The engine makes frames while a preview is on screen.
+        self.preview.visible = true;
+        if close {
+            self.external = None;
+        }
+    }
+
     /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
     fn import_new(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>) {
         let new: Vec<_> = paths.into_iter().filter(|p| !crate::media::in_pool(&self.project.media_pool, p)).collect();
@@ -498,6 +542,7 @@ impl eframe::App for MeridianApp {
             let sizes = self.dock.area_sizes(&t, full, self.prefs.auto_hide_docks, hover, ui::menus::any_open(ctx));
             let a = chrome::areas(&t, full, sizes, self.dock.track_list_w);
             self.dock.tabs_top = self.prefs.tabs_on_top;
+            self.dock.bounds = egui::Rect::from_min_max(egui::pos2(full.min.x, a.toolbar.max.y), egui::pos2(full.max.x, a.status.min.y));
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
             // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
@@ -517,12 +562,25 @@ impl eframe::App for MeridianApp {
             let (mut plugin_apply, mut favorites_changed) = (None, false);
             // The engine makes frames only while the Video Preview window is on screen.
             self.preview.visible = false;
-            self.preview.mute = self.mute_video;
+            // R14: with the external preview on, "Display frames in Video Preview window during playback" off leaves
+            // the window empty while playing.
+            self.preview.mute = self.mute_video || (self.external.is_some() && self.playing && !self.prefs.ext_in_window);
             let edit_point = self.edit_point();
             // R8b: this frame's levels for every meter (track headers, Master Bus, Mixing Console).
             ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
-            self.dock.show(ui, a.dock, |panel, bar, body| match panel {
+            let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
+            let mut content = |panel, bar: &mut egui::Ui, body: &mut egui::Ui| {
+                // R14: keys pressed in a floating window work as in the main window.
+                let vctx = bar.ctx().clone();
+                if vctx.viewport_id() != egui::ViewportId::ROOT {
+                    let blocked = modal || vctx.wants_keyboard_input() || ui::menus::any_open(&vctx);
+                    let over_dock = ui::over_plain_key_area(&vctx) | ui::over_tool_window(&vctx);
+                    for c in self.keymap.poll(&vctx, look, ui::keymap::Scope { blocked, over_dock }) {
+                        ui::menus::send(&vctx, c);
+                    }
+                }
+                match panel {
                 Panel::ProjectMedia => {
                     ui::draw_media_toolbar(
                         bar,
@@ -599,7 +657,10 @@ impl eframe::App for MeridianApp {
                     console_prefs |= ui::mixer_toolbar(bar, &mut self.prefs.console, &self.audio.master);
                     ui::mixing_console(body, &mut self.console, &self.prefs.console, &mut self.project, &mut self.history, &mut self.sel);
                 }
-            });
+                }
+            };
+            self.dock.show(ui, a.dock, &mut content);
+            self.dock.show_floating(ctx, self.offscreen, float_dock, &mut content);
             if console_prefs {
                 self.save_prefs();
             }
@@ -708,6 +769,7 @@ impl eframe::App for MeridianApp {
             }
         });
         self.sync_sel();
+        self.show_external(ctx);
         if let Some(TransportAction::ToggleColorGrading) = transport_action {
             self.dock.toggle(Panel::ColorGrading);
         }
