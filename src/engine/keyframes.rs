@@ -154,6 +154,8 @@ impl EnvKind {
         match self {
             EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress | EnvKind::MotionBlur | EnvKind::Supersampling => 0.0,
             EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::Opacity | EnvKind::Velocity | EnvKind::Unknown => 1.0,
+            // The middle of the parameter's range.
+            EnvKind::FxParam => 0.5,
         }
     }
 }

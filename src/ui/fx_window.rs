@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use crate::edit::{self, FxTarget};
 use crate::engine::plugins::{self, FxEval, ParamKind, PluginInfo, PluginKind, UserPreset, Val};
 use crate::history::History;
-use crate::project::{Curve, Fx, Keyframe, Keyframes, Project};
+use crate::project::{AutoMode, Curve, Fx, Keyframe, Keyframes, Project};
 use super::dialogs;
 use super::icons::Icon;
 use super::keyframes::{self, KfResponse, KfState};
@@ -229,6 +229,14 @@ impl FxWindow {
         let end = if matches!(self.target, FxTarget::Event(_)) { span } else { f64::INFINITY };
         let mut list = orig.clone();
         self.sel = self.sel.min(list.len().saturating_sub(1));
+        // R8c: an audio track's or bus's automated parameters follow its Automation Settings.
+        let parent = match &self.target {
+            FxTarget::Track(id) | FxTarget::Bus(id) if audio => Some(id.clone()),
+            _ => None,
+        };
+        let mode = parent.as_deref().and_then(|id| edit::automation_of(project, id)).map(|m| m.0);
+        // (plug-in id, parameter, Some(new value 0..=1) or None: held) for the automation writes after the window.
+        let mut auto_writes: Vec<(String, String, Option<f32>)> = Vec::new();
         let title = self.title(project);
         let label = title.split(':').next().unwrap_or_default().to_string();
         let (mut msg, mut seek, mut op) = (None, None, None);
@@ -355,7 +363,8 @@ impl FxWindow {
                     }
                 });
                 if let Some(p) = pick.filter(|_| editable) {
-                    *fx = Fx { id: fx.id.clone(), enabled: fx.enabled, ..p };
+                    // A preset sets the values; the plug-in's FX envelopes stay.
+                    *fx = Fx { id: fx.id.clone(), enabled: fx.enabled, auto: std::mem::take(&mut fx.auto), ..p };
                 }
                 match &mut self.save_as {
                     Some(name) => {
@@ -389,6 +398,11 @@ impl FxWindow {
                         }
                     }
                 }
+                if let Some(id) = parent.as_deref() {
+                    if ui.add_enabled(editable, Button::new("Automation...")).on_hover_text("FX Automation Envelopes...").clicked() {
+                        super::automation::open_chooser(ui.ctx(), id);
+                    }
+                }
                 if keyed.is_some() && chain {
                     let mut on = self.animate.contains(&fx.id);
                     if ui.add_enabled(editable, Checkbox::new(&mut on, "Animate")).changed() {
@@ -408,7 +422,10 @@ impl FxWindow {
 
             // ---- Parameters ----
             let key_at = self.animate.contains(&fx.id).then_some(at).filter(|_| keyed.is_some() && chain);
-            let (Some(e), d) = (plugins::eval(fx, at), plugins::preset_eval(info, None)) else { return };
+            // Automation Off: the parameters show (and set) their own values, not their envelopes.
+            let off = mode == Some(AutoMode::Off);
+            let shown = if off { Fx { auto: Default::default(), ..fx.clone() } } else { fx.clone() };
+            let (Some(e), d) = (plugins::eval(&shown, at), plugins::preset_eval(info, None)) else { return };
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 for (i, spec) in info.params.iter().enumerate() {
                     if !spec.section.is_empty() {
@@ -422,7 +439,21 @@ impl FxWindow {
                         if lr.double_clicked() && editable {
                             reset(fx, spec.key, spec.kind);
                         }
-                        ui.add_enabled_ui(editable, |ui| param(ui, fx, spec.key, spec.kind, &e.vals[i].1, key_at, fps, &mut self.fonts));
+                        let automated = !off && fx.auto.contains_key(spec.key);
+                        match mode.filter(|_| automated) {
+                            // An automated parameter: Read shows its envelope; Touch and Latch write it.
+                            Some(m) => {
+                                let mut scratch = Fx { auto: Default::default(), params: Default::default(), ..fx.clone() };
+                                let held = ui.add_enabled_ui(editable && m.writes(), |ui| param(ui, &mut scratch, spec.key, spec.kind, &e.vals[i].1, None, fps, &mut self.fonts)).inner;
+                                let new = scratch.params.get(spec.key).and_then(|k| k.keys.first()).map(|k| plugins::to_unit(spec.kind, k.v));
+                                if new.is_some() || held {
+                                    auto_writes.push((fx.id.clone(), spec.key.to_string(), new));
+                                }
+                            }
+                            None => {
+                                ui.add_enabled_ui(editable, |ui| param(ui, fx, spec.key, spec.kind, &e.vals[i].1, key_at, fps, &mut self.fonts));
+                            }
+                        }
                     });
                 }
             });
@@ -455,6 +486,11 @@ impl FxWindow {
             let active = ctx.input(|i| i.pointer.any_down()) || ctx.wants_keyboard_input();
             self.commit(project, history, list, active);
         }
+        if let (Some(id), Some(m)) = (parent.as_deref(), mode) {
+            for (fx, key, v) in auto_writes {
+                super::automation::touch(ctx, project, history, &edit::fx_owner(id, &fx, &key), crate::project::EnvKind::FxParam, m, v);
+            }
+        }
         if let Some(s) = seek.and_then(|s| self.kf.seek(s.clamp(0.0, span))) {
             project.timeline.cursor_position = base + s;
         }
@@ -463,16 +499,18 @@ impl FxWindow {
 }
 
 /// One parameter's control, editing `fx`: `cur` is its value now; numbers are keyed at `key_at` (Animate) or set.
+/// True while a slider is pressed (an automation write holds it).
 #[allow(clippy::too_many_arguments)]
-fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at: Option<f64>, fps: f64, fonts: &mut Option<Vec<String>>) {
+fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at: Option<f64>, fps: f64, fonts: &mut Option<Vec<String>>) -> bool {
     match (kind, cur) {
         (ParamKind::Float { min, max, .. }, Val::F(v)) => {
             let mut x = *v;
             // Wide positive ranges (frequencies, times) are swept on a log scale.
-            let log = min > 0.0 && max / min >= 100.0;
-            if ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always).logarithmic(log)).changed() {
+            let r = ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always).logarithmic(plugins::log_scale(min, max)));
+            if r.changed() {
                 set_num(fx, key, x, *v, key_at, fps);
             }
+            return r.is_pointer_button_down_on();
         }
         (ParamKind::Bool { .. }, Val::F(v)) => {
             let mut on = *v >= 0.5;
@@ -523,6 +561,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
         }
         _ => {}
     }
+    false
 }
 
 #[cfg(test)]

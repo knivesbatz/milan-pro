@@ -703,10 +703,15 @@ impl Mixer {
                     ch.run(&e.fx, (a - ps) as f64 / r, &mut pcm);
                     self.ev_fx.insert(e.id.clone(), ch);
                 }
-                let (v0, v1) = env_gain(&e.vol_env, (a - ps) as f64 / r, (b - ps) as f64 / r);
+                let (la, lb) = ((a - ps) as f64 / r, (b - ps) as f64 / r);
+                let (v0, v1) = env_gain(&e.vol_env, la, lb);
+                // R8c: the event's Mute and Pan (Balance 0 dB) envelopes.
+                let (m0, m1) = e.mute_env.as_ref().map_or((1.0, 1.0), |x| ramp(x, la, lb));
+                let (p0, p1) = e.pan_env.as_ref().map_or((0.0, 0.0), |x| ramp(x, la, lb));
                 let g0 = ev_last.remove(&e.id).unwrap_or(e.gain);
                 self.ev_last.insert(e.id.clone(), e.gain);
                 let len = (b - a) as f32;
+                let shaped = e.pan_env.is_some() || e.mute_env.is_some();
                 for (i, (o, x)) in track[(a - f0) as usize * 2..].chunks_exact_mut(2).zip(pcm.chunks_exact(2)).enumerate() {
                     let local = (a - ps + i as i64) as f64 / r;
                     let s = i as f32 / len;
@@ -725,8 +730,15 @@ impl Mixer {
                     if e.src.dur - local < qf && e.fade_out <= 0.0 {
                         g *= fade(Curve::Linear, (e.src.dur - local).max(0.0), qf);
                     }
-                    o[0] += x[0] * g;
-                    o[1] += x[1] * g;
+                    if shaped {
+                        g *= (m0 + (m1 - m0) * s).clamp(0.0, 1.0);
+                        let p = (p0 + (p1 - p0) * s).clamp(-1.0, 1.0);
+                        o[0] += x[0] * g * (1.0 - p).min(1.0);
+                        o[1] += x[1] * g * (1.0 + p).min(1.0);
+                    } else {
+                        o[0] += x[0] * g;
+                        o[1] += x[1] * g;
+                    }
                 }
             }
             let (t0, t1) = (f0 as f64 / r, f1 as f64 / r);
@@ -1406,6 +1418,47 @@ mod tests {
         let mut m = ones();
         let b = [mix(&p, &mut m, 0, end), mix(&p, &mut m, end as i64, end)].concat();
         assert!(b[2 * end..].iter().any(|&v| v.abs() > 1e-4), "the track reverb rings on");
+    }
+
+    /// R8c: an audio event's Pan and Mute envelopes; a track's envelopes are left out with its automation Off.
+    #[test]
+    fn event_pan_and_mute_envelopes_and_automation_off() {
+        let linear = |keys: &[(f64, f32)]| Keyframes { keys: keys.iter().map(|&(t, v)| Keyframe { t, v, curve: Curve::Linear }).collect() };
+        let env = |kind, keys: &[(f64, f32)]| crate::project::Envelope { kind, points: linear(keys) };
+        let mut q = solo_track();
+        q.timeline.audio_tracks[0].clips[0].envelopes = vec![env(EnvKind::Pan, &[(0.0, 1.0)])];
+        assert_eq!(mix(&q, &mut ones(), 0, 2), [0.0, 1.0, 0.0, 1.0]);
+        q.timeline.audio_tracks[0].clips[0].envelopes = vec![env(EnvKind::Mute, &[(0.0, 0.0)])];
+        assert_eq!(mix(&q, &mut ones(), 0, 2), [0.0; 4]);
+        let mut q = solo_track();
+        q.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Mute, &[(0.0, 0.0)]), env(EnvKind::Volume, &[(0.0, -6.0)])];
+        assert_eq!(mix(&q, &mut ones(), 0, 2), [0.0; 4]);
+        q.timeline.audio_tracks[0].automation = crate::project::AutoMode::Off;
+        assert_eq!(mix(&q, &mut ones(), 0, 2), [1.0; 4], "Off: the envelopes are ignored");
+    }
+
+    /// R8c acceptance: a Track Compressor threshold envelope from -10 to -30 dB makes the gain reduction grow over
+    /// time; with the track's automation Off the compressor's own threshold plays throughout.
+    #[test]
+    fn a_threshold_envelope_changes_the_gain_reduction() {
+        let mut p = solo_track();
+        let blocks = 6;
+        let end = (blocks * BLOCK) as f64 / RATE as f64;
+        let mut comp = afx("milan.afx.compressor", &[("threshold", -10.0), ("ratio", 10.0), ("attack", 0.1), ("release", 1.0)]);
+        let keys = vec![Keyframe { t: 0.0, v: -10.0, curve: Curve::Linear }, Keyframe { t: end, v: -30.0, curve: Curve::Linear }];
+        comp.auto.insert("threshold".into(), Keyframes { keys });
+        p.timeline.audio_tracks[0].fx = vec![comp];
+        // Each block's level over its second half (the detector settled).
+        let levels = |p: &Project| {
+            let mut m = ones();
+            (0..blocks).map(|b| mix(p, &mut m, (b * BLOCK) as i64, BLOCK)[BLOCK..].iter().map(|v| v.abs()).sum::<f32>() / BLOCK as f32).collect::<Vec<f32>>()
+        };
+        let auto = levels(&p);
+        assert!(auto.windows(2).all(|w| w[1] < w[0]), "the reduction grows: {auto:?}");
+        assert!(auto[blocks - 1] < 0.4 * auto[0], "{auto:?}");
+        p.timeline.audio_tracks[0].automation = crate::project::AutoMode::Off;
+        let off = levels(&p);
+        assert!(off[1..].iter().all(|l| (l - off[1]).abs() < 1e-3 * off[1]) && (off[1] - auto[0]).abs() < 0.05 * off[1], "{off:?}");
     }
 
     /// Event delay, track reverb and a master limiter on both tracks of `project()`.

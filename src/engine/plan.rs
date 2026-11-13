@@ -11,7 +11,7 @@ use crate::engine::composite::Affine;
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
 use crate::engine::raster::MaskPlan;
-use crate::project::{AudioSettings, BlurType, Bus, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, Out, PanCrop, PanType, Project, Resample};
+use crate::project::{AudioSettings, AutoMode, BlurType, Bus, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, Out, PanCrop, PanType, Project, Resample};
 
 /// A picture source as the decoders need it.
 #[derive(Debug, Clone)]
@@ -710,8 +710,10 @@ pub struct AEvent {
     pub fade_out: f64,
     pub fade_in_curve: Curve,
     pub fade_out_curve: Curve,
-    /// Event volume envelope (dB), event-relative.
+    /// Event volume envelope (dB), event-relative; R8c: its Pan (Balance 0 dB) and Mute envelopes.
     pub vol_env: Option<Envelope>,
+    pub pan_env: Option<Envelope>,
+    pub mute_env: Option<Envelope>,
     /// Audio Event FX, keyed event-relative; they run on the PCM before gain, fades and envelope.
     pub fx: Vec<Fx>,
 }
@@ -818,6 +820,11 @@ fn bus_order(a: &AudioSettings) -> (Vec<&Bus>, Vec<Option<usize>>, HashMap<&str,
     (order.iter().map(|&i| all[i]).collect(), order.iter().map(|&i| out[i].map(|o| pos[o])).collect(), index)
 }
 
+/// R8c: a track's or bus's FX as they play: with automation Off, without their FX automation.
+fn played_fx(fx: &[Fx], mode: AutoMode) -> Vec<Fx> {
+    fx.iter().map(|f| if mode.plays() || f.auto.is_empty() { f.clone() } else { Fx { auto: Default::default(), ..f.clone() } }).collect()
+}
+
 /// The quickfade length (VEGAS's Preferences › Editing default, 10 ms).
 pub const QUICKFADE: f64 = 0.010;
 
@@ -871,13 +878,16 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                         fade_in_curve: c.fade_in_curve,
                         fade_out_curve: c.fade_out_curve,
                         vol_env: env(&c.envelopes, EnvKind::Volume),
+                        pan_env: env(&c.envelopes, EnvKind::Pan),
+                        mute_env: env(&c.envelopes, EnvKind::Mute),
                     })
                 })
                 .collect();
-            let e = &t.envelopes;
+            // R8c: automation Off leaves the track's envelopes and FX automation out.
+            let e: &[Envelope] = if t.automation.plays() { &t.envelopes } else { &[] };
             (!events.is_empty()).then(|| ATrack {
                 id: t.id.clone(),
-                fx: t.fx.clone(),
+                fx: played_fx(&t.fx, t.automation),
                 volume: t.volume,
                 pan: t.pan.clamp(-1.0, 1.0),
                 pan_type: t.pan_type,
@@ -899,15 +909,18 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
     let buses = order
         .iter()
         .zip(outs)
-        .map(|(b, out)| ABus {
-            id: b.id.clone(),
-            fx: b.fx.clone(),
-            volume: if b.muted { 0.0 } else { b.volume },
-            pan: b.pan.clamp(-1.0, 1.0),
-            vol_env: env(&b.envelopes, EnvKind::Volume),
-            pan_env: env(&b.envelopes, EnvKind::Pan),
-            mute_env: env(&b.envelopes, EnvKind::Mute),
-            out,
+        .map(|(b, out)| {
+            let e: &[Envelope] = if b.automation.plays() { &b.envelopes } else { &[] };
+            ABus {
+                id: b.id.clone(),
+                fx: played_fx(&b.fx, b.automation),
+                volume: if b.muted { 0.0 } else { b.volume },
+                pan: b.pan.clamp(-1.0, 1.0),
+                vol_env: env(e, EnvKind::Volume),
+                pan_env: env(e, EnvKind::Pan),
+                mute_env: env(e, EnvKind::Mute),
+                out,
+            }
         })
         .collect();
     AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None }

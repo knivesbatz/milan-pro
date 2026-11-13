@@ -110,6 +110,9 @@ pub struct CmdState {
     /// The focus video event has a Velocity envelope; a transition (into or out of it); a Transition Progress one.
     pub velocity: bool,
     pub transition: bool,
+    /// R8c: the envelopes the focus audio event has; View › Show OFX Effect Envelopes.
+    pub event_envs: Vec<EnvKind>,
+    pub ofx_envelopes: bool,
     pub progress: bool,
     /// Options › Bypass All Audio FX.
     pub bypass_audio_fx: bool,
@@ -183,6 +186,9 @@ impl CmdState {
             ToggleVideoEnvelope(_) => self.video_track_focus,
             ViewEnvelope(_) => true,
             EventVelocity | FreezeFrame => self.video_clip,
+            EventEnvelope(_) => self.audio_clip,
+            OfxEnvelopes => true,
+            NextFxEnvelope | PrevFxEnvelope => self.audio_track_focus || self.video_track_focus,
             TransitionProgress => self.video_clip && self.transition,
             EventPanCrop | VideoEventFx => self.video_clip,
             TrackMotion | TrackFx => self.video_track_focus,
@@ -278,6 +284,8 @@ impl CmdState {
             ToggleVideoEnvelope(k) => self.focus_venvs.contains(&k),
             ViewEnvelope(v) => self.hidden_envs & v.bit() == 0,
             EventVelocity => self.velocity,
+            EventEnvelope(k) => self.event_envs.contains(&k),
+            OfxEnvelopes => self.ofx_envelopes,
             TransitionProgress => self.progress,
             LayoutUser(n) => self.layout_slot == Some(n),
             LayoutDefault => self.layout_slot.is_none(),
@@ -357,7 +365,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
-        NextFxEnvelope | PrevFxEnvelope => Later("R8c"),
         SurroundPanner => Later("R10b"),
         RenderToNewTrack => Later("R12"),
         ToggleDocks | TopDock | BottomDock | RightDock | CollapseTrackList | MaximizeTimeline | LayoutVp14 | LayoutAudio | LayoutColor
@@ -878,7 +885,7 @@ pub const VIEW: &[M] = &[
     C("Video &Event Edge Edit Frames", EdgeFrames),
     C("Event Headers", EventHeaders),
     V23(&K("Event Length", false, Later("R18a"))),
-    V23(&K("Show OFX Effect Envelopes (Beta)", false, Later("R8c"))),
+    V23(&C("Show OFX Effect Envelopes (Beta)", OfxEnvelopes)),
     S,
     Sub("&Audio Envelopes", AUDIO_ENV_VIEW),
     Sub("Video &Envelopes", VIDEO_ENV_VIEW),

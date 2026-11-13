@@ -80,7 +80,7 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
             }
             None => {
                 automation_badge(&p, c);
-                ui.interact(c, ui.id().with("master_auto"), Sense::hover()).on_hover_text(super::menus::Later("R8c").tip("Automation Settings"));
+                ui.interact(c, ui.id().with("master_auto"), Sense::hover()).on_hover_text(super::menus::Later("R10a").tip("Automation Settings (master bus envelopes)"));
             }
         }
     }

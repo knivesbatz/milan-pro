@@ -51,20 +51,27 @@ impl Shown<'_> {
 }
 
 /// The envelopes of track `tr` the timeline draws and edits (the ones the engine plays, and not hidden by View ›
-/// Envelopes), in drawing order: the track's own, then those of its events that reach into `range`.
+/// Envelopes), in drawing order: the track's own, its FX envelopes (R8c), then those of its events that reach into
+/// `range` (R8c: an audio event's Volume, Pan and Mute).
 pub(super) fn shown(tr: &Track, hidden: u16, range: (f64, f64)) -> Vec<Shown<'_>> {
     let video = tr.kind == TrackKind::Video;
     let visible = |kind| EnvView::of(kind, video).is_none_or(|v| hidden & v.bit() == 0);
-    let mut out: Vec<Shown> = tr
-        .envelopes
-        .iter()
-        .filter(|e| !e.points.keys.is_empty() && env_fits(e.kind, video) && visible(e.kind))
-        .map(|e| Shown { owner: tr.id.clone(), env: Cow::Borrowed(e), start: 0.0, scale: 1.0, from: f64::NEG_INFINITY, to: f64::INFINITY, locked: false })
-        .collect();
+    let whole = |owner: String, env| Shown { owner, env, start: 0.0, scale: 1.0, from: f64::NEG_INFINITY, to: f64::INFINITY, locked: false };
+    let mut out: Vec<Shown> = tr.envelopes.iter().filter(|e| !e.points.keys.is_empty() && env_fits(e.kind, video) && visible(e.kind)).map(|e| whole(tr.id.clone(), Cow::Borrowed(e))).collect();
+    // R8c: FX envelopes; a video track's keyed FX parameters with View › Show OFX Effect Envelopes.
+    if !video || hidden & crate::settings::OFX_SHOWN != 0 {
+        out.extend(crate::edit::chain_envelopes(&tr.id, &tr.fx, video).into_iter().map(|(o, e)| whole(o, Cow::Owned(e))));
+    }
+    let reach = |c: &&Clip| c.position <= range.1 && c.position + c.duration >= range.0;
     if !video {
+        for c in tr.clips.iter().filter(reach) {
+            for e in c.envelopes.iter().filter(|e| matches!(e.kind, EnvKind::Volume | EnvKind::Pan | EnvKind::Mute) && !e.points.keys.is_empty() && visible(e.kind)) {
+                out.push(Shown { owner: c.id.clone(), env: Cow::Borrowed(e), start: c.position, scale: 1.0, from: c.position, to: c.position + c.duration, locked: c.locked });
+            }
+        }
         return out;
     }
-    for c in tr.clips.iter().filter(|c| c.position <= range.1 && c.position + c.duration >= range.0) {
+    for c in tr.clips.iter().filter(reach) {
         let end = c.position + c.duration;
         if let Some(e) = crate::engine::velocity::of(c).filter(|_| visible(EnvKind::Velocity)) {
             out.push(Shown { owner: c.id.clone(), env: Cow::Borrowed(e), start: c.position, scale: 1.0, from: c.position, to: end, locked: c.locked });
@@ -128,6 +135,8 @@ pub(super) fn hit(g: &Geo, rows: &[Row], project: &Project, p: Pos2, hidden: u16
 /// VP16 default envelope colours (spec §2) of the kinds without a theme colour, the same in both looks.
 const VELOCITY: Color32 = Color32::from_rgb(0x6A, 0xD3, 0x7F);
 const FADE_TO_COLOR: Color32 = Color32::from_rgb(0xFF, 0x45, 0x3F);
+// shortcut: VEGAS's FX envelope colour was not measured; amber keeps it apart from the others. Use it once measured.
+pub(super) const FX_PARAM: Color32 = Color32::from_rgb(0xD3, 0x9F, 0x3F);
 
 fn color(t: &Theme, kind: EnvKind) -> Color32 {
     match kind {
@@ -137,6 +146,7 @@ fn color(t: &Theme, kind: EnvKind) -> Color32 {
         EnvKind::Velocity => VELOCITY,
         EnvKind::FadeToColor => FADE_TO_COLOR,
         EnvKind::TransitionProgress => super::TRANSITION,
+        EnvKind::FxParam => FX_PARAM,
         _ => t.envelope_volume,
     }
 }
@@ -162,7 +172,8 @@ pub(super) fn paint(p: &Painter, t: &Theme, g: &Geo, rows: &[Row], project: &Pro
         for s in shown(tr, hidden, view(g)) {
             let kind = s.env.kind;
             let c = color(t, kind);
-            let hovered = hover.is_some_and(|h| (h.is_video, h.track, &h.owner, h.kind) == (row.is_video, row.idx, &s.owner, kind));
+            // The selected envelope (E / Shift+E pick an FX envelope) is drawn as a hovered one.
+            let hovered = hover.is_some_and(|h| (h.is_video, h.track, &h.owner, h.kind) == (row.is_video, row.idx, &s.owner, kind)) || sel.is_some_and(|e| e.track == s.owner && e.kind == kind);
             let (x0, x1) = (lane.min.x.max(g.to_x(s.from.max(-1e12))), lane.max.x.min(g.to_x(s.to.min(1e12))));
             if x1 < x0 {
                 continue;
@@ -204,6 +215,12 @@ pub(super) fn value_text(kind: EnvKind, v: f32) -> String {
         EnvKind::Supersampling => format!("Supersampling {}", v.round()),
         _ => format!("{:.1} %", v * 100.0),
     }
+}
+
+/// R8c: `value_text`, with an FX envelope's value in its parameter's units ("Gain (dB) -6.00", "High-Pass").
+pub(super) fn value_label(project: &Project, owner: &str, kind: EnvKind, v: f32) -> String {
+    let fx = (kind == EnvKind::FxParam).then(|| crate::edit::fx_value_text(project, owner, v)).flatten();
+    fx.unwrap_or_else(|| value_text(kind, v))
 }
 
 /// The point menu's preset values (§6.7: two above the default, four below), high to low, evenly spaced in the lane

@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 202 |
-| PARTIAL | 141 |
+| DONE | 204 |
+| PARTIAL | 139 |
 | MISSING | 77 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -161,7 +161,7 @@ What matters most:
 | 5.12 | Track volume | DONE | |
 | 5.13 | Track panning | DONE | |
 | 5.14 | Track mute and solo | DONE | Mute, Solo, and (R2) exclusive mute/solo Shift+Z / Shift+X (`edit::exclusive_tracks`); Options › Mute All Audio / Mute All Video (playback only) |
-| 5.15 | Track automation | PARTIAL | Volume/pan/mute envelopes work. Missing: FX parameter automation ("FX Automation Envelopes" greyed, `ctx.rs:645`) and Touch/Latch write (`ctx.rs:729` greyed). → R8c |
+| 5.15 | Track automation | DONE | Volume/pan/mute envelopes; (R8c) Automation Settings per audio track and bus (`Track/Bus.automation`, `auto_controls`; Off leaves the envelopes and FX automation out of the plan), automation controls in the track header, bus tracks and Mixing Console that follow and write the envelopes (`ui/automation.rs`: Touch while held, Latch until stop, a point per 20 ms and 0.5 dB at most), FX automation envelopes (`Fx.auto`, FX Automation chooser, E / Shift+E, envelope Properties), audio event envelopes. Tests `a_touch_write_is_thinned_and_stays_inside_the_hold`, `a_threshold_envelope_changes_the_gain_reduction`, `render_e2e` (automation renders as it plays). |
 | 5.16 | Waveform rendering | DONE | `audio.rs` Waveforms |
 | 5.17 | Audio track-level effects | DONE | Batch 16 |
 | 5.18 | Audio routing | DONE | (R8a) Track header › Output (Master or a bus, `ctx.rs::routing`, `edit::set_track_out`); sends to busses (pre-volume and pre-mute) and assignable FX chains (post-volume) on the multipurpose slider (`tracks.rs`, Pre/Post Volume in its label list); busses route to the master or another bus with loops refused (`edit::set_bus_out`); `engine/mix.rs` tests `a_track_through_a_bus_at_minus_6_db_is_halved`, `a_pre_volume_send_feeds_the_bus_with_the_fader_down`, `a_bus_loop_is_rejected`, `busses_play_and_render_the_same` |
@@ -351,7 +351,7 @@ What matters most:
 | 10.19 | Plug-in enable/disable | MISSING | → R31 |
 | 10.20 | Plug-in compatibility reporting | MISSING | → R31, R55 |
 | 10.21 | Plug-in error handling | MISSING | No external plug-ins to fail yet. → R32 |
-| 10.22 | Plug-in presets | PARTIAL | Video FX presets work. Audio FX presets were skipped (`FEATURE_PLAN.md:1814`). External presets (`.vstpreset`, OFX presets) are missing. → R8c, R34b |
+| 10.22 | Plug-in presets | PARTIAL | Video FX presets work; (R8c) audio FX presets too: built-in ones for each audio plug-in and user presets saved and loaded in the FX window (test `audio_preset_round_trips`). External presets (`.vstpreset`, OFX presets) are missing. → R34b |
 | 10.23 | Effect chains | DONE | `Vec<Fx>` on event, track, output, master and media; FX window (`ui/fx_window.rs`) |
 | 10.24 | Plug-in UI integration | PARTIAL | A generic parameter grid for built-ins. No native editor windows. → R34b |
 | 10.25 | Compatibility matrix (native / standard / adapter / unsupported / investigate) | MISSING | → R55 |
@@ -399,7 +399,7 @@ What matters most:
 | 12.2 | Accurate waveform visualization | DONE | `audio.rs` Waveforms; Rebuild Audio Peaks disabled → R18a |
 | 12.3 | Volume envelopes | DONE | |
 | 12.4 | Pan envelopes | DONE | |
-| 12.5 | Automation | PARTIAL | See 5.15 → R8c |
+| 12.5 | Automation | DONE | See 5.15 (R8c) |
 | 12.6 | Fade curves | DONE | Linear, fast, slow, smooth, sharp, hold |
 | 12.7 | Audio routing | DONE | See 5.18 (R8a) |
 | 12.8 | Master bus | DONE | `ui/master_bus.rs`, master FX |
@@ -623,7 +623,7 @@ The inventory as found before R0:
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
 | Markers | InsertCommand, CdTrack, CdIndex | R18a |
-| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c |
+| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c (DONE) |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 |
@@ -757,7 +757,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R5: track header Cut/Copy/Paste/Delete.
 - R7 (DONE): Motion Blur Amount and Video Supersampling envelopes, Project Properties Motion blur type, the compositing modes 3D Source Alpha, Cut and Difference Squared.
 - R8b: the ripple mode "Affected Tracks, Markers, and Regions" (the same as the mode above it until bus tracks exist).
-- R8c: audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
+- R8c (DONE): audio event Volume/Pan/Mute envelopes in the event menu, envelope point Properties.
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
 - R12: File > Real-Time Render.
 - R13/R14: the Display page docking options.
@@ -1112,7 +1112,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Meters: once a frame the app folds every `mix::Meter` and the master tap into a `MeterView` per id (`mixer::feed_levels`, in egui memory); track headers, bus track headers, console strips and the Master Bus window read it, so the mix thread still only writes atomics. Peak bars fall at 24 dB/s, peak holds stay 2 s, clip lamps and readouts latch until clicked. The master tap now also gives a 50 ms RMS for its VU. Track and bus meters lead the sound by the device queue (about 128 ms; shortcut noted in `feed_levels`).
 - VU: VEGAS has a separate VU Meters control region in the console (Properties and Layout › Show Control Regions), so the VU ballistics are that region, off by default; the peak meters stay the default everywhere.
 - Mixing Console (`ui/mixer.rs`, `Panel::MixingConsole`, View › Window › Mixing Console, Ctrl+Alt+5 / VP23 Ctrl+Alt+6): VEGAS's toolbar (Views › Channel List; Properties and Layout › Audio Properties..., Show Channels, Show Control Regions, Channel Width; Downmix Output; Dim Output; Insert Audio Track, Insert Assignable FX, Insert Bus; Insert Input Bus is R9), the Channel List (strip check boxes, for the session), and strips for audio tracks, busses, assignable FX chains and the master: Insert FX (click opens the chain), Sends (a fader per bus and chain, right-click Pre / Post Volume), I/O (output: Master or a bus; a bus loop is refused with `set_bus_out`'s message), VU Meters, Peak Meters, Faders (Arm, Mute, Solo, Invert Phase on tracks; Mute on busses; the master's Mute is Mute All Audio; Pan; the fader; a meter beside it when Peak Meters is hidden), and the label (click selects, double-click renames). Every control edit is one undo step. Layout is saved in the preferences (`Prefs.console`).
-- Master Bus window: Master Bus Properties opens Project Properties › Audio (`Command::AudioProperties`), Downmix Output plays (L+R)/2 on both sides, Dim Output (and `DimMaster`, Ctrl+Shift+F12) lowers the output 20 dB, both gliding, playback only (never rendered); Mixing Console opens the window. Its Mute is Mute All Audio; its Solo and automation badge say why they do nothing (R57 preview bus, R8c).
+- Master Bus window: Master Bus Properties opens Project Properties › Audio (`Command::AudioProperties`), Downmix Output plays (L+R)/2 on both sides, Dim Output (and `DimMaster`, Ctrl+Shift+F12) lowers the output 20 dB, both gliding, playback only (never rendered); Mixing Console opens the window. Its Mute is Mute All Audio; its Solo and automation badge say why they do nothing (R57 preview bus; R10a, moved there by R8c).
 - Audio Bus Tracks (View › Audio Bus Tracks, B; `Prefs.bus_tracks`): one 64 px row per bus and chain under the tracks (with the Video Bus Track), at most half the timeline (whole rows; shortcut: no scrolling of that area). Header: name, Mute, FX, Vol, Pan, meter; lane: Volume / Pan / Mute envelopes (right-click › Insert/Remove Envelope, point drags, double-click adds, point menu deletes). No Master bus track (it would need master envelopes in the engine).
 - Track header (R0 items): Show Output Meters, Use Vertical Meters (off draws L/R bars across the top row) and Channel Width (meter width) work and are saved in the preferences. Ripple: VEGAS's fourth mode, Affected Tracks, Markers, and Regions, is `RippleMode::AffectedMarkersOnly` (also Post-Edit Ripple); the bus-track modes (Affected Tracks, Bus Tracks, Markers, and Regions; All) also ripple the bus tracks' envelope keys.
 - View › Mixer Preview Fader is relabelled R57: the preview bus it shows plays the Explorer's previews, which Milan Pro does not have.
@@ -1135,6 +1135,17 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Screenshot harness of the Mixing Console in both looks.
 
 ### R8c: Automation write and FX parameter envelopes (M-L)
+
+**Status: DONE.** Built as designed below, plus the items R0 assigned, except where VEGAS differs:
+- Model: `Track.automation` / `Bus.automation` (`AutoMode`: Off, Read (the default, so old projects play as before), Touch, Latch) and `auto_controls` (Show Automation Controls); FX automation in `Fx.auto` (parameter key → keys in the parameter's units, timeline time), which `plugins::eval` plays over the parameter's own value. Instead of `EnvKind::Fx { fx_id, param }` the FX envelope is `EnvKind::FxParam` lent out by an owner string (`{track or bus}/fx/{plug-in}/{parameter}`, `edit::fx_owner`) as 0..=1 of the parameter's range (`plugins::to_unit`, log for wide ranges): the kind stays `Copy`, every envelope edit (drag, point menu, Thin, Flip, ripple) works on it unchanged, and an older build reads nothing it does not know. All new fields are skipped when default.
+- Modes follow VEGAS: Off leaves the track's (bus's) envelopes and FX automation out of the plan and its controls trim; Read plays them and an automation control follows them without editing; Write (Touch) writes while the control is held, Write (Latch) from the first move until playback stops (`ui/automation.rs`). Stopped, a move sets the envelope at the cursor (adding the envelope if there is none, as VEGAS). A pass is one undo step, punched in and out with a step, so the envelope outside it is untouched; a point at most every 20 ms and 0.5 dB (half a percent of the lane for the others). Writes are UI-thread edits heard through the plan swap; the mix thread is unchanged.
+- Automation controls: with Show Automation Controls on and a mode other than Off, the Vol and Pan sliders of the audio track header, the bus track and the Mixing Console strips show and write the Volume / Pan envelope (their thumbs take the envelope's colour). An automated FX parameter's control in the FX window follows the mode alone (Read shows it greyed).
+- FX Automation Envelopes... (track header, lane, bus track, and the FX window's Automation... button) opens the FX Automation chooser: each plug-in's numbers, choices and switches with a check box each. E / Shift+E select the focus track's next / previous FX envelope (drawn as hovered, its name in the status bar). The envelope menus' Properties opens an FX envelope's plug-in; the other kinds have none (says so on hover).
+- Video track FX are keyframed in VEGAS, so their "envelopes" are View › Show OFX Effect Envelopes (Beta, VP23, off by default): a video track's keyed FX numbers drawn and edited as envelopes. Automation modes are on audio tracks and busses only (as the VEGAS track menu).
+- Audio event Insert/Remove Envelope › Volume / Pan / Mute (event-relative; Pan is Balance 0 dB) play in the mixer and render.
+- Audio FX presets: built-in presets for each audio plug-in (named in VEGAS's style; VEGAS's own lists live inside its DirectX DLLs and were not read out, shortcut noted in `plugins.rs`); user presets already worked. A preset pick keeps the plug-in's FX envelopes.
+- The Master Bus window's automation badge moved to R10a (the master has no envelopes or bus track yet).
+- Not done: "Smooth and thin automation data after recording" (the writes are thinned as they go), "Set controls to default values when automation is turned off" (Off keeps the static values, VEGAS's default behaviour for FX), automation of sends and of Mute, Lock Envelopes to Events for FX automation.
 
 **Scope**
 - FX parameter automation envelopes on audio and video tracks and buses (`NextFxEnvelope`, `PrevFxEnvelope`, "FX Automation Envelopes...").
@@ -1728,6 +1739,7 @@ No product code unless the research finds a stable, documented structure. If it 
 - Sources decode to their native layout (no `-ac 2`) with a channel map.
 - Stereo-to-5.1 pan law; downmix for stereo monitoring (ITU-R BS.775).
 - Multichannel render (AAC 5.1, AC-3, E-AC-3, PCM, FLAC) with `-channel_layout`; "Enable multichannel mapping" (tracks to channels).
+- From R8c: master bus envelopes (a Master bus track) and the Master Bus window's Automation Settings badge.
 
 **Files:** `engine/mix.rs`, `engine/plan.rs`, `audio.rs`, `engine/render.rs`, `render.rs`, `project.rs` (`AudioSettings.layout`).
 

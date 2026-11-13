@@ -457,19 +457,40 @@ mod tests {
         bused.timeline.audio.buses[0].volume = crate::engine::keyframes::db_to_gain(-6.0206);
         let fx = crate::edit::insert_assignable_fx(&mut bused, vec![crate::engine::afx::test_fx("milan.afx.reverb", &[])]).unwrap();
         crate::edit::set_send(&mut bused.timeline.audio_tracks[0], &fx, 0.25, true);
-        let rendered = pcm(&run(&bused, &PRESETS[3], "bus.wav", (0.0, 3.0)));
-        let plan = plan::AudioPlan { quickfade: plan::QUICKFADE, ..plan::compile_audio(&bused) };
-        let mut mixer = crate::engine::mix::Mixer::ffmpeg();
-        mixer.render = Some(Arc::new(std::sync::atomic::AtomicBool::new(false))); // every decoder waited for
-        let mut played = vec![0.0f32; 2 * 3 * 48_000];
-        for (i, b) in played.chunks_mut(2 * crate::engine::mix::BLOCK).enumerate() {
-            mixer.block(&plan, (i * crate::engine::mix::BLOCK) as i64, b);
+        let parity = |p: &Project, name: &str| {
+            let rendered = pcm(&run(p, &PRESETS[3], name, (0.0, 3.0)));
+            let plan = plan::AudioPlan { quickfade: plan::QUICKFADE, ..plan::compile_audio(p) };
+            let mut mixer = crate::engine::mix::Mixer::ffmpeg();
+            mixer.render = Some(Arc::new(std::sync::atomic::AtomicBool::new(false))); // every decoder waited for
+            let mut played = vec![0.0f32; 2 * 3 * 48_000];
+            for (i, b) in played.chunks_mut(2 * crate::engine::mix::BLOCK).enumerate() {
+                mixer.block(&plan, (i * crate::engine::mix::BLOCK) as i64, b);
+            }
+            drop(mixer);
+            let n = rendered.len().min(played.len());
+            assert!(n > 2 * 47_000, "{n}");
+            let worst = rendered[..n].iter().zip(&played[..n]).fold(0.0f32, |m, (a, b)| m.max((a - b.clamp(-1.0, 1.0)).abs()));
+            assert!(worst < 2.0 / 32768.0, "{name}: render and playback differ by {worst}");
+            rendered
+        };
+        parity(&bused, "bus.wav");
+        // R8c: FX automation (a swept EQ band on the track, a bus compressor threshold) and an event Pan envelope render
+        // as playback mixes them, and change the sound.
+        let mut autod = bused.clone();
+        {
+            use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes};
+            let ramp = |a: f32, b: f32| Keyframes { keys: vec![Keyframe { t: 0.0, v: a, curve: Curve::Linear }, Keyframe { t: 3.0, v: b, curve: Curve::Linear }] };
+            let t = &mut autod.timeline.audio_tracks[0];
+            let mut eq = crate::engine::afx::test_fx("milan.afx.eq", &[("b2.freq", 440.0)]);
+            eq.auto.insert("b2.gain".into(), ramp(-12.0, 12.0));
+            t.fx.push(eq);
+            t.clips[0].envelopes.push(Envelope { kind: EnvKind::Pan, points: ramp(-0.5, 0.5) });
+            let mut comp = crate::engine::afx::test_fx("milan.afx.compressor", &[("ratio", 4.0)]);
+            comp.auto.insert("threshold".into(), ramp(0.0, -40.0));
+            autod.timeline.audio.buses[0].fx.push(comp);
         }
-        drop(mixer);
-        let n = rendered.len().min(played.len());
-        assert!(n > 2 * 47_000, "{n}");
-        let worst = rendered[..n].iter().zip(&played[..n]).fold(0.0f32, |m, (a, b)| m.max((a - b.clamp(-1.0, 1.0)).abs()));
-        assert!(worst < 2.0 / 32768.0, "render and playback differ by {worst}");
+        let with_auto = parity(&autod, "auto.wav");
+        assert!(with_auto.iter().zip(&pcm(&dir.join("bus.wav"))).any(|(a, b)| (a - b).abs() > 0.01), "the automation is heard");
         bused.timeline.audio.fx.clear(); // the send goes with its chain: then the bus halves the track
         bused.timeline.audio_tracks[0].sends.clear();
         let via_bus = pcm(&run(&bused, &PRESETS[3], "bus_half.wav", (0.0, 3.0)));

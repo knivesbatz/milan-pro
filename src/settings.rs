@@ -61,6 +61,8 @@ pub struct Prefs {
     pub video_bus: bool,
     /// R8b: View › Audio Bus Tracks, and the Mixing Console's layout.
     pub bus_tracks: bool,
+    /// R8c: View › Show OFX Effect Envelopes (Beta, VP23): video track FX keys are drawn as envelopes (off, as in VEGAS).
+    pub ofx_envelopes: bool,
     pub console: crate::ui::ConsolePrefs,
     /// R8b: the audio track header's Show Output Meters, Use Vertical Meters and Channel Width (0-2) for its meter.
     pub output_meters: bool,
@@ -101,6 +103,9 @@ pub enum EnvView {
     MotionBlur,
     Supersampling,
 }
+
+/// R8c: in the timeline's View › Envelopes mask, not a row but View › Show OFX Effect Envelopes (set when on).
+pub const OFX_SHOWN: u16 = 1 << 15;
 
 impl EnvView {
     /// The row that shows envelope `kind` on a video (or audio) track or its events.
@@ -180,6 +185,7 @@ impl Default for Prefs {
             extra_blend_modes: false,
             video_bus: false,
             bus_tracks: false,
+            ofx_envelopes: false,
             console: Default::default(),
             output_meters: true,
             vertical_meters: true,

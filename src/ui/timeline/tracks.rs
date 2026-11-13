@@ -4,7 +4,7 @@ use eframe::egui::*;
 use crate::edit;
 use crate::history::History;
 use crate::project::*;
-use crate::ui::Selection;
+use crate::ui::{Selection, automation};
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{self, Theme, UiLook};
 use super::{GROUP_H, Geo, Head, MIN_TRACK_H, Rename, Row, TlState};
@@ -111,6 +111,27 @@ impl Slider {
             Slider::Send => db_text(Self::send_level(tr, cx)),
         }
     }
+}
+
+/// R8c: an audio track's Vol or Pan as an automation control (Show Automation Controls, mode not Off): its envelope
+/// kind, the mode, and the envelope's value at the cursor.
+fn auto_ctl(ctx: &Context, project: &Project, tr: &Track, s: Slider) -> Option<(EnvKind, AutoMode, f32)> {
+    let kind = match s {
+        Slider::Vol => EnvKind::Volume,
+        Slider::Pan => EnvKind::Pan,
+        _ => return None,
+    };
+    let mode = automation::control_mode(project, &tr.id)?;
+    Some((kind, mode, automation::value(ctx, project, &tr.id, kind)))
+}
+
+/// An automation control's slider position and value text for envelope value `v`.
+fn auto_pos(kind: EnvKind, v: f32) -> f32 {
+    if kind == EnvKind::Volume { fader_pos(automation::gain_of(v)) } else { (v.clamp(-1.0, 1.0) + 1.0) * 0.5 }
+}
+
+fn auto_text(kind: EnvKind, v: f32) -> String {
+    if kind == EnvKind::Volume { db_text(automation::gain_of(v)) } else { pan_text(v) }
 }
 
 /// Where everything sits in one header.
@@ -462,6 +483,14 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 send_menu(ui, id, Rect::from_x_y_ranges(Rangef::new(l.body.min.x, groove.min - 10.0), r.y_range()), project, history, row, &cx);
             }
             let tr = &project.timeline.tracks(row.is_video)[row.idx];
+            if let Some((kind, mode, v)) = auto_ctl(ui.ctx(), project, tr, *s) {
+                let span = groove.span();
+                let to_v = |np: f32| if kind == EnvKind::Volume { automation::db_of(fader_gain(np)) } else { np * 2.0 - 1.0 };
+                let reset = if kind == EnvKind::Volume { fader_pos(1.0) } else { 0.5 };
+                automation::slider(ui, &resp, project, history, &tid, kind, mode, auto_pos(kind, v), reset, |p| (p.x - groove.min) / span, |d| d.x / span, to_v);
+                resp.on_hover_text(format!("{} (automation: {})", auto_text(kind, v), mode.name()));
+                continue;
+            }
             let pos = s.pos(tr, &cx);
             let value = s.value(tr, &cx);
             if resp.double_clicked() {
@@ -666,7 +695,9 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(&cx), font.clone(), t.text_label);
             // VP16 puts values in a column at x=48; VP23 sets them right after the label.
             let vx = if v16 { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
-            p.text(pos2(vx, cy), Align2::LEFT_CENTER, s.value(tr, &cx), font.clone(), t.text_value);
+            let auto = auto_ctl(p.ctx(), project, tr, *s);
+            let value = auto.map_or_else(|| s.value(tr, &cx), |(k, _, v)| auto_text(k, v));
+            p.text(pos2(vx, cy), Align2::LEFT_CENTER, value, font.clone(), t.text_value);
             if groove.span() < 20.0 {
                 continue;
             }
@@ -680,14 +711,16 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
                 p.rect_filled(bar, 0.0, t.fader_track);
                 p.rect_stroke(bar.expand(1.0), 0.0, Stroke::new(1.0_f32, t.frame), StrokeKind::Inside);
             }
-            let x = (groove.min + s.pos(tr, &cx) * groove.span()).round();
+            let x = (groove.min + auto.map_or_else(|| s.pos(tr, &cx), |(k, _, v)| auto_pos(k, v)) * groove.span()).round();
+            // An automation control's thumb takes its envelope's colour (VEGAS draws a distinct automation handle).
+            let tint = auto.map(|(k, ..)| if k == EnvKind::Volume { t.envelope_volume } else { t.envelope_pan });
             if *s == Slider::Pan {
                 let (w, h) = if v16 { (20.0, 12.0) } else { (10.0, 8.0) };
                 p.rect_filled(Rect::from_min_size(pos2(groove.center().round(), cy - 3.0), vec2(1.0, 7.0)), 0.0, t.fader_track);
                 let pts = vec![pos2(x - w * 0.5, cy - h * 0.5), pos2(x + w * 0.5, cy - h * 0.5), pos2(x, cy + h * 0.5)];
-                p.add(Shape::convex_polygon(pts, t.fader_thumb, Stroke::new(1.0_f32, t.fader_thumb_bar)));
+                p.add(Shape::convex_polygon(pts, tint.unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
             } else {
-                paint_icon(&p, Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0)), Icon::FaderThumb, t.look(), None);
+                paint_icon(&p, Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0)), Icon::FaderThumb, t.look(), tint);
             }
         }
         if let Some(m) = l.meter {

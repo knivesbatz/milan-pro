@@ -93,6 +93,8 @@ impl MeridianApp {
             video_track_focus: self.focus_of(true).is_some(),
             focus_envs: self.focus_envs(false),
             focus_venvs: self.focus_envs(true),
+            event_envs: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map_or(Vec::new(), |c| c.envelopes.iter().map(|e| e.kind).collect()),
+            ofx_envelopes: self.prefs.ofx_envelopes,
             hidden_envs: crate::settings::EnvView::bits(&self.prefs.hidden_envelopes),
             velocity: self.focus_clip(true).and_then(|id| self.project.clip(&id)).is_some_and(|c| crate::engine::velocity::of(c).is_some()),
             transition: self.focus_clip(true).and_then(|id| self.project.clip(&id)).is_some_and(|c| c.transition.is_some() || c.transition_out.is_some()),
@@ -331,7 +333,8 @@ impl MeridianApp {
             tool: self.tool,
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
-            hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes),
+            hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes)
+                | if p.ofx_envelopes && theme::get().look() == UiLook::Vegas23 { crate::settings::OFX_SHOWN } else { 0 },
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
@@ -1203,6 +1206,36 @@ impl MeridianApp {
                     self.reveal_envelopes();
                 }
             }
+            EventEnvelope(k) => {
+                let ids: Vec<String> = self.sel.clips.iter().filter(|id| self.project.find_clip(id).is_some_and(|r| !r.is_video)).cloned().collect();
+                if self.edit(|p| edit::toggle_event_envelope(p, &ids, k)) {
+                    self.reveal_envelopes();
+                }
+            }
+            OfxEnvelopes => {
+                self.prefs.ofx_envelopes = !self.prefs.ofx_envelopes;
+                self.save_prefs();
+            }
+            NextFxEnvelope | PrevFxEnvelope => {
+                // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
+                let ofx = self.prefs.ofx_envelopes && theme::get().look() == UiLook::Vegas23;
+                let all = self.sel.tracks.last().map_or(Vec::new(), |t| edit::fx_envelopes(&self.project, t, ofx));
+                let n = all.len();
+                if n == 0 {
+                    self.message = Some("The track has no FX envelopes: its header menu's FX Automation Envelopes... adds them.".into());
+                } else {
+                    let cur = self.sel.env.as_ref().and_then(|e| all.iter().position(|o| *o == e.track));
+                    let k = match (cur, c == NextFxEnvelope) {
+                        (Some(i), true) => (i + 1) % n,
+                        (Some(i), false) => (i + n - 1) % n,
+                        (None, true) => 0,
+                        (None, false) => n - 1,
+                    };
+                    self.sel.env = Some(ui::EnvSel { track: all[k].clone(), kind: crate::project::EnvKind::FxParam, keys: Vec::new() });
+                    self.message = edit::fx_envelope_name(&self.project, &all[k]);
+                    self.reveal_envelopes();
+                }
+            }
             AudioFollowsVelocity => {
                 let on = !self.project.timeline.audio_follows_velocity;
                 self.edit(|p| edit::set_audio_follows_velocity(p, on));
@@ -1975,6 +2008,34 @@ impl MeridianApp {
                     self.dock.open(crate::ui::dock::Panel::MixingConsole);
                 } else {
                     self.prefs.bus_tracks = true;
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "automation" => {
+                // R8c: the first audio track (tall) in Write (Touch) with its automation controls shown, a Volume
+                // envelope ramp, its compressor's Threshold as an FX envelope and its first event's Pan envelope; the
+                // FX Automation chooser open on it.
+                use crate::project::{AutoMode, EnvKind};
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    (t.height, t.automation, t.auto_controls) = (96.0, AutoMode::Touch, true);
+                    let (tid, comp, clip) = (t.id.clone(), t.fx.iter().find(|f| f.plugin == "milan.afx.compressor").map(|f| f.id.clone()), t.clips.first().map(|c| c.id.clone()));
+                    edit::ensure_envelope(&mut self.project, &tid, EnvKind::Volume);
+                    edit::with_envelope(&mut self.project, &tid, EnvKind::Volume, |e| {
+                        edit::env_insert(e, 4.0, -9.0);
+                        edit::env_insert(e, 8.0, 3.0);
+                        true
+                    });
+                    if let Some(comp) = comp {
+                        edit::toggle_fx_envelope(&mut self.project, &tid, &comp, "threshold");
+                        edit::with_envelope(&mut self.project, &edit::fx_owner(&tid, &comp, "threshold"), EnvKind::FxParam, |e| {
+                            edit::env_insert(e, 6.0, 0.4);
+                            true
+                        });
+                    }
+                    if let Some(c) = clip {
+                        edit::toggle_event_envelope(&mut self.project, &[c], EnvKind::Pan);
+                    }
+                    ui::automation::open_chooser(ctx, &tid);
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }

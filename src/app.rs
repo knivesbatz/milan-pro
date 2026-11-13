@@ -439,6 +439,7 @@ impl eframe::App for MeridianApp {
         self.tick_shuttle(ctx);
         self.handle_keys(ctx);
         self.tick_input(ctx);
+        ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
         // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
@@ -687,6 +688,9 @@ impl eframe::App for MeridianApp {
         // Before the media added below is offered for auto proxies: an imported project is opened, not imported media.
         self.poll_vegas(ctx);
         self.show_dialogs(ctx);
+        // R8c: after every control has drawn (the FX window too), and before the plan below picks up the writes.
+        ui::automation::chooser(ctx, &mut self.project, &mut self.history);
+        ui::automation::end_frame(ctx, &mut self.project);
         // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
         // (§5.4). Both reuse the probes started while the files hovered.
         if let Some((paths, track, time, mode)) = drag.dropped_at.take() {

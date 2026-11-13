@@ -1,4 +1,5 @@
 //! All panels. Colours, sizes and fonts come from `theme::get()` (never hard-coded).
+pub mod automation;
 pub mod chrome;
 mod choosers;
 mod color_grading;

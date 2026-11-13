@@ -784,6 +784,20 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
                 }
             }
         }
+        // R8c: with Show Automation Controls, a track's or bus's Pan and fader show (and write) its envelopes.
+        let sid = match s {
+            Strip::Track(id) | Strip::Bus(id) => Some(id.clone()),
+            Strip::Master => None,
+        };
+        let auto = sid.as_deref().and_then(|id| Some((id, super::automation::control_mode(project, id)?)));
+        let c = match auto {
+            Some((id, _)) => {
+                let v = |kind| super::automation::value(ui.ctx(), project, id, kind);
+                Ctl { pan: v(EnvKind::Pan), volume: super::automation::gain_of(v(EnvKind::Volume)), ..c }
+            }
+            None => c,
+        };
+        let tint = |kind| auto.map(|_| if kind == EnvKind::Volume { t.envelope_volume } else { t.envelope_pan });
         // Pan (not on the master).
         let mut top = r.min.y + 24.0;
         if *s != Strip::Master {
@@ -793,11 +807,13 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy), vec2(1.0, 7.0)), 0.0, t.fader_track);
             let pos = (c.pan.clamp(-1.0, 1.0) + 1.0) * 0.5;
             let tx = (groove.min + pos * groove.span()).round();
-            p.add(Shape::convex_polygon(vec![pos2(tx - 5.0, cy - 5.0), pos2(tx + 5.0, cy - 5.0), pos2(tx, cy + 4.0)], t.fader_thumb, Stroke::new(1.0_f32, t.fader_thumb_bar)));
+            p.add(Shape::convex_polygon(vec![pos2(tx - 5.0, cy - 5.0), pos2(tx + 5.0, cy - 5.0), pos2(tx, cy + 4.0)], tint(EnvKind::Pan).unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
             let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 6.0, groove.max + 6.0), Rangef::new(top, top + 16.0));
             let resp = ui.interact(hit, id.with("pan"), Sense::click_and_drag()).on_hover_text(format!("Pan: {}", pan_text(c.pan)));
             let span = groove.span().max(1.0);
-            if let Some((undo, np)) = slider(ui, &resp, pos, 0.5, |q| (q.x - groove.min) / span, |d| d.x / span) {
+            if let Some((aid, mode)) = auto {
+                super::automation::slider(ui, &resp, project, history, aid, EnvKind::Pan, mode, pos, 0.5, |q| (q.x - groove.min) / span, |d| d.x / span, |np| np * 2.0 - 1.0);
+            } else if let Some((undo, np)) = slider(ui, &resp, pos, 0.5, |q| (q.x - groove.min) / span, |d| d.x / span) {
                 if undo {
                     history.push(project.clone());
                 }
@@ -813,7 +829,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             let pos = fader_pos(c.volume);
             let ty = (y1 - (y1 - y0) * pos).round();
             let thumb = Rect::from_center_size(pos2(fx + 0.5, ty), if v16 { vec2(21.0, 12.0) } else { vec2(25.0, 13.0) });
-            p.rect_filled(thumb, 1.0, t.fader_thumb);
+            p.rect_filled(thumb, 1.0, tint(EnvKind::Volume).unwrap_or(t.fader_thumb));
             p.rect_stroke(thumb, 1.0, Stroke::new(1.0_f32, t.fader_thumb_bar), StrokeKind::Inside);
             p.rect_filled(Rect::from_center_size(thumb.center(), vec2(thumb.width() - 8.0, 1.0)), 0.0, t.fader_thumb_bar);
             if fader_meter {
@@ -825,7 +841,10 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             let what = if *s == Strip::Master { "Master" } else { "Volume" };
             let resp = ui.interact(hit, id.with("fader"), Sense::click_and_drag()).on_hover_text(format!("{what}: {} dB", gain_text(c.volume)));
             let span = (y1 - y0).max(1.0);
-            if let Some((undo, np)) = slider(ui, &resp, pos, fader_pos(1.0), |q| (y1 - q.y) / span, |d| -d.y / span) {
+            if let Some((aid, mode)) = auto {
+                let to_v = |np: f32| super::automation::db_of(fader_gain(np));
+                super::automation::slider(ui, &resp, project, history, aid, EnvKind::Volume, mode, pos, fader_pos(1.0), |q| (y1 - q.y) / span, |d| -d.y / span, to_v);
+            } else if let Some((undo, np)) = slider(ui, &resp, pos, fader_pos(1.0), |q| (y1 - q.y) / span, |d| -d.y / span) {
                 if undo {
                     history.push(project.clone());
                 }

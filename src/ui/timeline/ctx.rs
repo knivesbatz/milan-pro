@@ -455,18 +455,33 @@ fn env_curves(ui: &mut Ui, project: &mut Project, history: &mut History, track: 
     }
 }
 
+/// R8c: the envelope menus' Properties: an FX envelope's opens its plug-in's settings (the track's or bus's FX window).
+fn env_properties(ui: &mut Ui, project: &Project, owner: &str, kind: EnvKind) {
+    let parent = (kind == EnvKind::FxParam).then(|| edit::fx_owner_parts(owner)).flatten().map(|p| p.0);
+    let Some(parent) = parent else {
+        return off(ui, "&Properties", Fixed("only an FX envelope has properties: its plug-in's settings"));
+    };
+    if entry(ui, "&Properties", "", true, Mark::None) {
+        let target = if project.find_track(parent).is_some() { edit::FxTarget::Track(parent.into()) } else { edit::FxTarget::Bus(parent.into()) };
+        crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
+    }
+}
+
 /// Envelope point menu (§6.7). It acts on the selected points when the clicked one is among them.
 #[allow(clippy::too_many_arguments)]
 fn env_point(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut Selection, st: &mut TlState, track: &str, kind: EnvKind, k: usize) {
     let keys = sel.env.as_ref().filter(|s| s.track == track && s.kind == kind && s.keys.contains(&k)).map_or(vec![k], |s| s.keys.clone());
     let lane_end = |f: f32| edit::env_clamp(kind, edit::lane_value(kind, f));
     let (above, below) = envelopes::presets(kind);
-    let named = |v: f32| (format!("Set to {}", envelopes::value_text(kind, v)), v);
+    let named = |v: f32| (format!("Set to {}", envelopes::value_label(project, track, kind, v)), v);
+    // R8c: an FX envelope's default is its parameter's.
+    let default = edit::fx_default_unit(project, track).filter(|_| kind == EnvKind::FxParam).unwrap_or(edit::env_default(kind));
     let items = std::iter::once(("Set to Ma&ximum".to_string(), lane_end(1.0)))
         .chain(above.into_iter().map(named))
-        .chain([("Set to D&efault".to_string(), edit::env_default(kind))])
+        .chain([("Set to D&efault".to_string(), default)])
         .chain(below.into_iter().map(named))
         .chain([("Set to M&inimum".to_string(), lane_end(0.0))]);
+    let items: Vec<(String, f32)> = items.collect();
     for (label, v) in items {
         if entry(ui, &label, "", true, Mark::None) {
             env_edit(project, history, track, kind, |e| edit::env_set_values(e, &keys, v));
@@ -492,7 +507,7 @@ fn env_point(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mu
     sep(ui);
     env_curves(ui, project, history, track, kind, k, &keys);
     sep(ui);
-    off(ui, "&Properties", Later("R8c"));
+    env_properties(ui, project, track, kind);
 }
 
 /// Envelope line menu (§6.7): `t` is where it was clicked, `seg` the point starting that segment.
@@ -520,7 +535,7 @@ fn env_line(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &mut
         }
     }
     sep(ui);
-    off(ui, "&Properties", Later("R8c"));
+    env_properties(ui, project, track, kind);
 }
 
 /// Track ≡ / ⋯ button menu: the switches, default height and the button-set entry.
@@ -751,7 +766,10 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         routing(ui, project, history, sel, i);
         sep(ui);
         sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
-        menus::show(ui, &[X("F&X Automation Envelopes...", Later("R8c")), S]);
+        if entry(ui, "F&X Automation Envelopes...", "", true, Mark::None) {
+            crate::ui::automation::open_chooser(ui.ctx(), &project.timeline.audio_tracks[i].id);
+        }
+        sep(ui);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
         menus::show(ui, AUDIO_HEADER_END);
         track_group_and_color(ui, project, history, sel, st, v, i);
@@ -780,7 +798,9 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
         sub(ui, "Fade Colors", true, |ui| fade_colors(ui, project, history, st, i));
         menus::show(ui, &[V23(&X("Insert Slideshow", Later("R18b")))]);
     } else {
-        off(ui, "FX Automation Envelopes", Later("R8c"));
+        if entry(ui, "FX Automation Envelopes", "", true, Mark::None) {
+            crate::ui::automation::open_chooser(ui.ctx(), &project.timeline.audio_tracks[i].id);
+        }
         sep(ui);
         cmd(ui, "Use Vertical Meters", VerticalMeters);
         cmd(ui, "Show Output Meters", OutputMeters);
@@ -852,15 +872,6 @@ const AUDIO_HEADER_MID: &[M] = &[
     Sub("I&nput", &[X("None", Later("R9"))]),
 ];
 
-const AUDIO_HEADER_AUTOMATION: &[M] = &[Sub("Au&tomation", &[
-    X("Show Automation Controls", Later("R8c")),
-    S,
-    R("Off", true, Later("R8c")),
-    R("Read", false, Later("R8c")),
-    R("Write (Touch)", false, Later("R8c")),
-    R("Write (Latch)", false, Later("R8c")),
-])];
-
 /// R8a: Output ▸ (Master and the busses) and Pan Type ▸ for audio track `i`, or every selected track when it is one of
 /// them. One undo step each.
 fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], i: usize) {
@@ -878,7 +889,7 @@ fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[Str
             }
         }
     });
-    menus::show(ui, AUDIO_HEADER_AUTOMATION);
+    crate::ui::automation::menu(ui, project, history, &ids);
     let mut ptype = None;
     sub(ui, "&Pan Type", true, |ui| {
         for t in PanType::ALL {
@@ -975,7 +986,7 @@ const AUDIO_EVENT: &[M] = &[
     C("&Reverse", EventReverse),
     S,
     C("Select Events to E&nd", SelectEventsToEnd),
-    Sub("Insert/Remove &Envelope", &[X("Volume", Later("R8c")), X("Pan", Later("R8c")), X("Mute", Later("R8c"))]),
+    Sub("Insert/Remove &Envelope", &[C("&Volume", EventEnvelope(EnvKind::Volume)), C("&Pan", EventEnvelope(EnvKind::Pan)), C("&Mute", EventEnvelope(EnvKind::Mute))]),
     Sub("Channe&ls", menus::CHANNELS),
     S,
     Sub("Switc&hes", &[Inline(EVENT_SWITCHES), Inline(menus::AUDIO_SWITCHES)]),
@@ -1036,7 +1047,6 @@ const TIME_DISPLAY: &[M] = &[
 /// The tables of the timeline's right-click menus, for the Unfinished Features list.
 pub(crate) const MENUS: &[(&str, &[M])] = &[
     ("Track header", AUDIO_HEADER_MID),
-    ("Track header", AUDIO_HEADER_AUTOMATION),
     ("Track header", AUDIO_HEADER_METERS),
     ("Video event", VIDEO_EVENT),
     ("Audio event", AUDIO_EVENT),

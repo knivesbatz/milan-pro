@@ -36,6 +36,8 @@ pub(super) fn row_h(row: &Option<String>) -> f32 {
 
 #[derive(Clone)]
 struct Drag {
+    /// The envelope's owner (`shown`) and kind.
+    owner: String,
     kind: EnvKind,
     key: usize,
     orig: Envelope,
@@ -50,6 +52,7 @@ fn color(t: &Theme, kind: EnvKind) -> Color32 {
         EnvKind::Volume => t.envelope_volume,
         EnvKind::Pan => t.envelope_pan,
         EnvKind::Mute => t.envelope_mute,
+        EnvKind::FxParam => envelopes::FX_PARAM,
         _ => Color32::from_rgb(0xFF, 0x45, 0x3F),
     }
 }
@@ -72,25 +75,38 @@ fn envs<'a>(project: &'a Project, owner: Option<&str>) -> &'a [Envelope] {
     }
 }
 
-/// The shown envelopes (View › Audio / Video Envelopes can hide kinds) with points.
-fn shown<'a>(project: &'a Project, owner: Option<&str>, hidden: u16) -> Vec<&'a Envelope> {
+/// The shown envelopes (View › Audio / Video Envelopes can hide kinds) with points, each with its owner: the bus's own
+/// (owner `""` on the Video Bus Track) and, R8c, an audio bus's FX envelopes (`edit::FX_ENV` owners).
+fn shown(project: &Project, owner: Option<&str>, hidden: u16) -> Vec<(String, Envelope)> {
     let visible = |k| EnvView::of(k, owner.is_none()).is_none_or(|v| hidden & v.bit() == 0);
-    envs(project, owner).iter().filter(|e| !e.points.keys.is_empty() && visible(e.kind)).collect()
+    let own = envs(project, owner).iter().filter(|e| !e.points.keys.is_empty() && visible(e.kind)).map(|e| (owner.unwrap_or_default().to_string(), e.clone()));
+    let fx = owner.and_then(|id| bus(project, id)).map_or(Vec::new(), |b| edit::chain_envelopes(&b.id, &b.fx, false));
+    own.chain(fx).collect()
 }
 
-/// What the pointer is on: (kind, Some(point) or None for the line).
-fn hit(g: &Geo, lane: Rect, project: &Project, owner: Option<&str>, hidden: u16, p: Pos2) -> Option<(EnvKind, Option<usize>)> {
+/// What the pointer is on: (owner, kind, Some(point) or None for the line).
+type Hit = (String, EnvKind, Option<usize>);
+
+fn hit(g: &Geo, lane: Rect, project: &Project, owner: Option<&str>, hidden: u16, p: Pos2) -> Option<Hit> {
     let envs = shown(project, owner, hidden);
-    for e in envs.iter().rev() {
+    for (o, e) in envs.iter().rev() {
         if let Some(k) = e.points.keys.iter().position(|k| (p.x - g.to_x(k.t)).abs() <= 4.0 && (p.y - y_of(lane, e.kind, k.v)).abs() <= 4.0) {
-            return Some((e.kind, Some(k)));
+            return Some((o.clone(), e.kind, Some(k)));
         }
     }
     let t = g.to_time(p.x);
-    envs.iter().rev().find(|e| (p.y - y_of(lane, e.kind, e.at(t))).abs() <= 3.0).map(|e| (e.kind, None))
+    envs.iter().rev().find(|(_, e)| (p.y - y_of(lane, e.kind, e.at(t))).abs() <= 3.0).map(|(o, e)| (o.clone(), e.kind, None))
 }
 
-fn edit_env(project: &mut Project, owner: Option<&str>, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+/// Edit envelope `kind` of `env_owner` on bus track `owner` (its own, or one of its FX envelopes).
+fn edit_env(project: &mut Project, owner: Option<&str>, env_owner: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    if kind == EnvKind::FxParam {
+        let done = edit::with_envelope(project, env_owner, kind, f);
+        if done {
+            project.mark_modified();
+        }
+        return done;
+    }
     let a = &mut project.timeline.audio;
     let envs = match owner {
         None => Some(&mut project.timeline.master.video_envelopes),
@@ -110,6 +126,13 @@ fn env_items(ui: &mut Ui, project: &mut Project, history: &mut History, owner: O
         if entry(ui, label, "", true, Mark::Check(has)) {
             history.push(project.clone());
             edit::toggle_bus_envelope(project, owner, kind);
+        }
+    }
+    // R8c: an audio bus's FX automation envelopes, through the chooser.
+    if let Some(id) = owner {
+        menus::sep(ui);
+        if entry(ui, "F&X Automation Envelopes...", "", true, Mark::None) {
+            crate::ui::automation::open_chooser(ui.ctx(), id);
         }
     }
 }
@@ -158,7 +181,13 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
     if fr.clicked() {
         crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
     }
-    menus::context(&hr, |ui| menus::sub(ui, "Insert/Remove &Envelope", true, |ui| env_items(ui, project, history, owner)));
+    menus::context(&hr, |ui| {
+        menus::sub(ui, "Insert/Remove &Envelope", true, |ui| env_items(ui, project, history, owner));
+        // R8c: an audio bus's Automation Settings, as a track's.
+        if let Some(id) = owner {
+            crate::ui::automation::menu(ui, project, history, &[id.to_string()]);
+        }
+    });
     p.text(head.left_top() + vec2(8.0, 15.0), Align2::LEFT_CENTER, &name, t.bold(t.font.ui), t.text_bright);
     p.rect_filled(fx, 2.0, if fr.hovered() { t.button_hover_bg } else { t.toolbar_bg });
     p.text(fx.center(), Align2::CENTER_CENTER, "fx", t.font(t.font.ui), if has_fx { t.accent } else { t.text });
@@ -174,9 +203,9 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
     if lr.drag_started_by(PointerButton::Primary) {
         let press = ui.input(|i| i.pointer.press_origin());
         drag = press.and_then(|p| {
-            let (kind, key) = hit(g, lane, project, owner, hidden, p)?;
-            let orig = envs(project, owner).iter().find(|e| e.kind == kind)?.clone();
-            Some(Drag { kind, key: key?, orig, press: p })
+            let (o, kind, key) = hit(g, lane, project, owner, hidden, p)?;
+            let orig = shown(project, owner, hidden).into_iter().find(|e| e.0 == o && e.1.kind == kind)?.1;
+            Some(Drag { owner: o, kind, key: key?, orig, press: p })
         });
     }
     if let (Some(d), Some(p)) = (&drag, lr.interact_pointer_pos().filter(|_| lr.dragged())) {
@@ -184,13 +213,13 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
         let df = -(p.y - d.press.y) / (lane.height() - 6.0).max(1.0) * fine;
         let dt = if fine < 1.0 { 0.0 } else { (p.x - d.press.x) as f64 / g.pps };
         let (orig, key) = (d.orig.clone(), d.key);
-        edit_env(project, owner, d.kind, |e| edit::env_move(e, &orig, &[key], dt, df));
+        edit_env(project, owner, &d.owner, d.kind, |e| edit::env_move(e, &orig, &[key], dt, df));
     }
     if lr.drag_stopped() {
         if let Some(d) = drag.take() {
             // One undo step: the project as it was, the envelope back as the drag found it.
             let mut before = project.clone();
-            if edit_env(&mut before, owner, d.kind, |e| {
+            if edit_env(&mut before, owner, &d.owner, d.kind, |e| {
                 let moved = *e != d.orig;
                 *e = d.orig.clone();
                 moved
@@ -200,10 +229,10 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
         }
     }
     if lr.double_clicked() {
-        if let (Some(p), Some((kind, None))) = (lr.interact_pointer_pos(), hover) {
+        if let (Some(p), Some((o, kind, None))) = (lr.interact_pointer_pos(), hover.clone()) {
             let before = project.clone();
             let t0 = g.to_time(p.x).max(0.0);
-            if edit_env(project, owner, kind, |e| {
+            if edit_env(project, owner, &o, kind, |e| {
                 edit::env_insert(e, t0, e.at(t0));
                 true
             }) {
@@ -212,17 +241,17 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
         }
     }
     if lr.secondary_clicked() {
-        ui.data_mut(|d| match hover {
+        ui.data_mut(|d| match hover.clone() {
             Some(h) => d.insert_temp(id.with("menu"), h),
-            None => d.remove::<(EnvKind, Option<usize>)>(id.with("menu")),
+            None => d.remove::<Hit>(id.with("menu")),
         });
     }
-    let menu_at = ui.data(|d| d.get_temp::<(EnvKind, Option<usize>)>(id.with("menu")));
+    let menu_at = ui.data(|d| d.get_temp::<Hit>(id.with("menu")));
     menus::context(&lr, |ui| {
-        if let Some((kind, Some(k))) = menu_at {
+        if let Some((o, kind, Some(k))) = menu_at {
             if entry(ui, "&Delete", "", k > 0, Mark::None) {
                 let before = project.clone();
-                if edit_env(project, owner, kind, |e| edit::env_delete(e, &[k])) {
+                if edit_env(project, owner, &o, kind, |e| edit::env_delete(e, &[k])) {
                     history.push(before);
                 }
             }
@@ -231,7 +260,7 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
         menus::sub(ui, "Insert/Remove &Envelope", true, |ui| env_items(ui, project, history, owner));
     });
     if drag.is_some() || hover.is_some() {
-        ui.ctx().set_cursor_icon(if drag.is_some() || hover.is_some_and(|h| h.1.is_some()) { CursorIcon::PointingHand } else { CursorIcon::ResizeVertical });
+        ui.ctx().set_cursor_icon(if drag.is_some() || hover.as_ref().is_some_and(|h| h.2.is_some()) { CursorIcon::PointingHand } else { CursorIcon::ResizeVertical });
     }
     ui.data_mut(|d| match &drag {
         Some(dr) => d.insert_temp(sid, dr.clone()),
@@ -240,12 +269,13 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
 
     // Paint the envelopes.
     let pl = p.with_clip_rect(lane.intersect(area));
-    for e in shown(project, owner, hidden) {
+    let all = shown(project, owner, hidden);
+    for (o, e) in &all {
         let c = color(&t, e.kind);
         let mut xs: Vec<f32> = (0..).map(|k| lane.min.x + 2.0 * k as f32).take_while(|x| *x < lane.max.x).chain([lane.max.x]).collect();
         xs.extend(e.points.keys.iter().map(|k| g.to_x(k.t)).filter(|x| *x > lane.min.x && *x < lane.max.x));
         xs.sort_by(f32::total_cmp);
-        let hovered = hover.is_some_and(|h| h.0 == e.kind) || drag.as_ref().is_some_and(|d| d.kind == e.kind);
+        let hovered = hover.as_ref().is_some_and(|h| (&h.0, h.1) == (o, e.kind)) || drag.as_ref().is_some_and(|d| (&d.owner, d.kind) == (o, e.kind));
         pl.add(Shape::line(xs.iter().map(|&x| pos2(x, y_of(lane, e.kind, e.at(g.to_time(x))))).collect(), Stroke::new(if hovered { 2.0_f32 } else { 1.0 }, c)));
         for k in &e.points.keys {
             let r = Rect::from_center_size(pos2(g.to_x(k.t).round(), y_of(lane, e.kind, k.v).round()), vec2(5.0, 5.0));
@@ -254,10 +284,10 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
         }
     }
     // The value of the point dragged or hovered.
-    let tip = drag.as_ref().map(|d| (d.kind, d.key)).or_else(|| hover.and_then(|h| Some((h.0, h.1?))));
-    if let Some((kind, k)) = tip {
-        if let Some(key) = envs(project, owner).iter().find(|e| e.kind == kind).and_then(|e| e.points.keys.get(k)) {
-            super::paint_fade_tag(&pl, &t, pos2(g.to_x(key.t) + 6.0, y_of(lane, kind, key.v) - 18.0), envelopes::value_text(kind, key.v));
+    let tip = drag.as_ref().map(|d| (d.owner.clone(), d.kind, d.key)).or_else(|| hover.and_then(|h| Some((h.0, h.1, h.2?))));
+    if let Some((o, kind, k)) = tip {
+        if let Some(key) = all.iter().find(|e| e.0 == o && e.1.kind == kind).and_then(|e| e.1.points.keys.get(k)) {
+            super::paint_fade_tag(&pl, &t, pos2(g.to_x(key.t) + 6.0, y_of(lane, kind, key.v) - 18.0), envelopes::value_label(project, &o, kind, key.v));
         }
     }
 }
@@ -286,6 +316,14 @@ fn bus_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history
             break;
         }
         let groove = Rangef::new(head.min.x + 100.0, meter.min.x - 10.0);
+        // R8c: with Show Automation Controls, Vol and Pan show (and write) the bus's envelopes.
+        let kind = if pan { EnvKind::Pan } else { EnvKind::Volume };
+        let auto = crate::ui::automation::control_mode(project, bid).map(|m| (m, crate::ui::automation::value(ui.ctx(), project, bid, kind)));
+        let (pan_v, volume) = match auto {
+            Some((_, v)) if pan => (v, volume),
+            Some((_, v)) => (pan_v, crate::ui::automation::gain_of(v)),
+            None => (pan_v, volume),
+        };
         let (label, value, pos, reset) = if pan {
             ("Pan:", mixer::pan_text(pan_v), (pan_v.clamp(-1.0, 1.0) + 1.0) * 0.5, 0.5)
         } else {
@@ -299,10 +337,16 @@ fn bus_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history
         p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
         let x = (groove.min + pos * groove.span()).round();
         let thumb = Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0));
-        super::super::icons::paint_icon(p, thumb, if pan { Icon::PanThumb } else { Icon::FaderThumb }, t.look(), None);
+        let tint = auto.map(|_| color(&t, kind));
+        super::super::icons::paint_icon(p, thumb, if pan { Icon::PanThumb } else { Icon::FaderThumb }, t.look(), tint);
         let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 8.0, groove.max + 8.0), Rangef::new(cy - 7.0, cy + 7.0));
         let resp = ui.interact(hit, id.with(("slider", k)), Sense::click_and_drag()).on_hover_text(value);
         let span = groove.span();
+        if let Some((mode, _)) = auto {
+            let to_v = |np: f32| if pan { np * 2.0 - 1.0 } else { crate::ui::automation::db_of(fader_gain(np)) };
+            crate::ui::automation::slider(ui, &resp, project, history, bid, kind, mode, pos, reset, |q| (q.x - groove.min) / span, |d| d.x / span, to_v);
+            continue;
+        }
         if let Some((undo, np)) = mixer::slider(ui, &resp, pos, reset, |q| (q.x - groove.min) / span, |d| d.x / span) {
             if undo {
                 history.push(project.clone());

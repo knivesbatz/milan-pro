@@ -582,6 +582,8 @@ pub static PLUGINS: &[PluginInfo] = &[
         presets: &[DEFAULT],
     },
     // ---- Audio FX (DSP in afx.rs) ----
+    // shortcut: R8c's presets are named in VEGAS's style; VEGAS's own lists (stored inside its DirectX plug-ins) were not
+    // read out. Replace them if they are measured.
     PluginInfo {
         id: "milan.afx.gate",
         name: "Track Noise Gate",
@@ -590,7 +592,7 @@ pub static PLUGINS: &[PluginInfo] = &[
         category: "Audio",
         desc: "Silences the track below a threshold",
         params: &[f("threshold", "Threshold (dB)", -96.0, 0.0, -96.0), f("attack", "Attack (ms)", 0.1, 100.0, 1.0), f("release", "Release (ms)", 1.0, 2000.0, 100.0)],
-        presets: &[DEFAULT],
+        presets: &[DEFAULT, preset("Light gate (-50 dB)", &[("threshold", -50.0)]), preset("Tight gate (-30 dB)", &[("threshold", -30.0), ("attack", 0.5), ("release", 50.0)])],
     },
     PluginInfo {
         id: "milan.afx.eq",
@@ -615,7 +617,13 @@ pub static PLUGINS: &[PluginInfo] = &[
             f("b4.gain", "Gain (dB)", -24.0, 24.0, 0.0),
             f("b4.q", "Q", 0.1, 10.0, 0.7071),
         ],
-        presets: &[DEFAULT],
+        presets: &[
+            DEFAULT,
+            preset("Low cut (100 Hz)", &[("b1.type", 1.0), ("b1.freq", 100.0)]),
+            preset("High cut (8 kHz)", &[("b4.type", 1.0), ("b4.freq", 8000.0)]),
+            preset("Presence boost", &[("b3.freq", 4000.0), ("b3.gain", 4.0)]),
+            preset("Bass boost", &[("b1.gain", 6.0)]),
+        ],
     },
     PluginInfo {
         id: "milan.afx.compressor",
@@ -631,7 +639,13 @@ pub static PLUGINS: &[PluginInfo] = &[
             f("release", "Release (ms)", 1.0, 5000.0, 100.0),
             f("output", "Output gain (dB)", -24.0, 24.0, 0.0),
         ],
-        presets: &[DEFAULT],
+        presets: &[
+            DEFAULT,
+            preset("2:1 compression starting at -18 dB", &[("threshold", -18.0), ("ratio", 2.0)]),
+            preset("3:1 compression starting at -15 dB", &[("threshold", -15.0), ("ratio", 3.0)]),
+            preset("4:1 compression starting at -12 dB", &[("threshold", -12.0), ("ratio", 4.0)]),
+            preset("Hard limit at -6 dB", &[("threshold", -6.0), ("ratio", 20.0), ("attack", 0.1)]),
+        ],
     },
     PluginInfo {
         id: "milan.afx.reverb",
@@ -647,7 +661,7 @@ pub static PLUGINS: &[PluginInfo] = &[
             f("wet", "Reverb out", 0.0, 1.0, 0.25),
             f("dry", "Dry out", 0.0, 1.0, 1.0),
         ],
-        presets: &[DEFAULT],
+        presets: &[DEFAULT, preset("Small room", &[("room", 0.3), ("wet", 0.15)]), preset("Large hall", &[("room", 0.9), ("damp", 0.3), ("wet", 0.35)])],
     },
     PluginInfo {
         id: "milan.afx.delay",
@@ -662,7 +676,7 @@ pub static PLUGINS: &[PluginInfo] = &[
             f("dry", "Dry out", 0.0, 1.0, 1.0),
             f("wet", "Delay out", 0.0, 1.0, 0.5),
         ],
-        presets: &[DEFAULT],
+        presets: &[DEFAULT, preset("Slapback", &[("delay", 100.0), ("feedback", 0.1), ("wet", 0.4)]), preset("Long echo", &[("delay", 500.0), ("feedback", 0.5), ("wet", 0.4)])],
     },
     PluginInfo {
         id: "milan.afx.limiter",
@@ -672,7 +686,7 @@ pub static PLUGINS: &[PluginInfo] = &[
         category: "Audio",
         desc: "Keeps peaks under a ceiling (1.5 ms lookahead)",
         params: &[f("input", "Input gain (dB)", 0.0, 24.0, 0.0), f("ceiling", "Ceiling (dB)", -24.0, 0.0, -1.0), f("release", "Release (ms)", 1.0, 1000.0, 50.0)],
-        presets: &[DEFAULT],
+        presets: &[DEFAULT, preset("Louder (+6 dB in)", &[("input", 6.0)]), preset("Broadcast (-2 dB ceiling)", &[("ceiling", -2.0)])],
     },
 ];
 
@@ -693,6 +707,7 @@ pub fn new_fx(info: &PluginInfo, preset: Option<&Preset>) -> Fx {
         enabled: true,
         params: preset.map_or(&[][..], |p| p.vals).iter().map(|&(k, v)| (k.to_string(), key(v))).collect(),
         text: preset.map_or(&[][..], |p| p.text).iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect(),
+        auto: Default::default(),
     }
 }
 
@@ -783,8 +798,42 @@ fn resolve(info: &'static PluginInfo, num: impl Fn(&str) -> Option<f32>, txt: im
 /// `fx` at `t` (its own time: event-relative for event FX). None for a plug-in this build does not know: it is bypassed.
 pub fn eval(fx: &Fx, t: f64) -> Option<FxEval> {
     let info = find(&fx.plugin)?;
-    let num = |k: &str| fx.params.get(k).filter(|kf| !kf.keys.is_empty()).map(|kf| kf.at(t));
+    // R8c: an FX automation envelope plays over the parameter's own value.
+    let keyed = |m: &'_ BTreeMap<String, Keyframes<f32>>, k: &str| m.get(k).filter(|kf| !kf.keys.is_empty()).map(|kf| kf.at(t));
+    let num = |k: &str| keyed(&fx.auto, k).or_else(|| keyed(&fx.params, k));
     Some(resolve(info, num, |k| fx.text.get(k).cloned()))
+}
+
+/// The FX window sweeps wide positive ranges (frequencies, times) on a log scale, and so do FX envelopes.
+pub fn log_scale(min: f32, max: f32) -> bool {
+    min > 0.0 && max / min >= 100.0
+}
+
+/// R8c: parameter `key` of `fx`'s plug-in when an FX envelope can automate it (a number, choice or switch).
+pub fn automatable(fx: &Fx, key: &str) -> Option<&'static ParamSpec> {
+    find(&fx.plugin)?.params.iter().find(|p| p.key == key && matches!(p.kind, ParamKind::Float { .. } | ParamKind::Choice { .. } | ParamKind::Bool { .. }))
+}
+
+/// R8c: a parameter value as an envelope height, 0..=1 of its range (log for log-scale ranges; choices evenly).
+pub fn to_unit(kind: ParamKind, v: f32) -> f32 {
+    match kind {
+        ParamKind::Float { min, max, .. } if log_scale(min, max) => (v.clamp(min, max) / min).ln() / (max / min).ln(),
+        ParamKind::Float { min, max, .. } => ((v - min) / (max - min).max(f32::EPSILON)).clamp(0.0, 1.0),
+        ParamKind::Choice { options, .. } => v.clamp(0.0, (options.len().max(2) - 1) as f32) / (options.len().max(2) - 1) as f32,
+        _ => v.clamp(0.0, 1.0),
+    }
+}
+
+/// The inverse of `to_unit`.
+pub fn from_unit(kind: ParamKind, u: f32) -> f32 {
+    let u = u.clamp(0.0, 1.0);
+    match kind {
+        ParamKind::Float { min, max, .. } if log_scale(min, max) => min * (max / min).powf(u),
+        ParamKind::Float { min, max, .. } => min + u * (max - min),
+        ParamKind::Choice { options, .. } => (u * (options.len().max(2) - 1) as f32).round(),
+        ParamKind::Bool { .. } => (u >= 0.5) as u8 as f32,
+        _ => u,
+    }
 }
 
 /// A transition's settings (not keyframed). None for an unknown plug-in (the mix falls back to a dissolve).
@@ -943,5 +992,42 @@ mod tests {
         assert!(write_preset(&path, p).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ damaged");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R8c acceptance: an audio FX preset saved from a plug-in and loaded back gives the same values; every audio
+    /// plug-in has presets beyond Default.
+    #[test]
+    fn audio_preset_round_trips() {
+        let dir = std::env::temp_dir().join(format!("milan-apresets-{}", std::process::id()));
+        let path = dir.join("presets.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let comp = find("milan.afx.compressor").unwrap();
+        let fx = new_fx(comp, comp.presets.iter().find(|p| p.name.starts_with("4:1")));
+        write_preset(&path, user_preset_of(&fx, "Vocals", 0.0)).unwrap();
+        let back = read_presets(&path).unwrap();
+        let loaded = new_user_fx(comp, &back[0]);
+        assert_eq!((back[0].plugin.as_str(), eval(&loaded, 0.0)), ("milan.afx.compressor", eval(&fx, 0.0)));
+        assert_eq!((eval(&loaded, 0.0).unwrap().f("threshold"), eval(&loaded, 0.0).unwrap().f("ratio")), (-12.0, 4.0));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(PLUGINS.iter().filter(|p| p.kind == PluginKind::AudioFx).all(|p| p.presets.len() > 1));
+    }
+
+    /// R8c: FX automation plays over the parameter's own value; the envelope mapping round-trips (log for wide ranges,
+    /// choices on their steps).
+    #[test]
+    fn fx_automation_and_unit_mapping() {
+        let eq = find("milan.afx.eq").unwrap();
+        let mut fx = new_fx(eq, None);
+        fx.auto.insert("b2.gain".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: -12.0, curve: Curve::Linear }, Keyframe { t: 2.0, v: 12.0, curve: Curve::Linear }] });
+        assert_eq!((eval(&fx, 1.0).unwrap().f("b2.gain"), eval(&fx, 1.0).unwrap().f("b3.gain")), (0.0, 0.0));
+        assert_eq!(eval(&fx, 2.0).unwrap().f("b2.gain"), 12.0);
+        assert!(automatable(&fx, "b1.type").is_some() && automatable(&fx, "nope").is_none());
+        assert!(automatable(&new_fx(find("milan.gen.text").unwrap(), None), "text").is_none(), "text is not automatable");
+        for (key, v) in [("b2.freq", 800.0), ("b2.gain", -6.0), ("b1.type", 1.0)] {
+            let kind = eq.params.iter().find(|p| p.key == key).unwrap().kind;
+            assert!((from_unit(kind, to_unit(kind, v)) - v).abs() < 1e-2, "{key}");
+        }
+        let freq = eq.params.iter().find(|p| p.key == "b2.freq").unwrap().kind;
+        assert!((to_unit(freq, 632.4555) - 0.5).abs() < 1e-3, "20 Hz-20 kHz is swept on a log scale");
     }
 }

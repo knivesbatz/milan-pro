@@ -307,11 +307,51 @@ pub struct Bus {
     pub envelopes: Vec<Envelope>,
     #[serde(default, skip_serializing_if = "Out::is_master")]
     pub out: Out,
+    /// R8c: Automation Settings and Show Automation Controls, as on a track.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AutoMode::is_read")]
+    pub automation: AutoMode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_controls: bool,
 }
 
 impl Bus {
     pub fn new(name: String, fx: Vec<Fx>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), name, volume: 1.0, pan: 0.0, muted: false, fx, envelopes: Vec::new(), out: Out::Master }
+        Self { id: uuid::Uuid::new_v4().to_string(), name, volume: 1.0, pan: 0.0, muted: false, fx, envelopes: Vec::new(), out: Out::Master, automation: AutoMode::Read, auto_controls: false }
+    }
+}
+
+/// R8c: a track's or bus's Automation Settings (VEGAS). Off: its envelopes and FX automation are ignored and its
+/// controls are trims. Read: they play, and automation controls follow them. Write (Touch): an automation control
+/// writes points while it is held. Write (Latch): from the first move it writes until playback stops.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AutoMode {
+    Off,
+    #[default]
+    Read,
+    Touch,
+    Latch,
+}
+
+impl AutoMode {
+    pub const ALL: [AutoMode; 4] = [AutoMode::Off, AutoMode::Read, AutoMode::Touch, AutoMode::Latch];
+
+    /// The Automation ▸ menu's name.
+    pub fn name(self) -> &'static str {
+        ["Off", "Read", "Write (Touch)", "Write (Latch)"][self as usize]
+    }
+
+    fn is_read(&self) -> bool {
+        *self == AutoMode::Read
+    }
+
+    /// Envelopes and FX automation play (every mode but Off).
+    pub fn plays(self) -> bool {
+        self != AutoMode::Off
+    }
+
+    /// An automation control writes points.
+    pub fn writes(self) -> bool {
+        matches!(self, AutoMode::Touch | AutoMode::Latch)
     }
 }
 
@@ -466,6 +506,12 @@ pub struct Track {
     pub sends: Vec<AudioSend>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "PanType::is_default")]
     pub pan_type: PanType,
+    /// R8c (audio): Automation Settings, and Show Automation Controls (the Vol and Pan sliders follow and write the
+    /// envelopes instead of trimming).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AutoMode::is_read")]
+    pub automation: AutoMode,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_controls: bool,
     /// The bus or FX chain the header's multipurpose slider shows (a view choice: not saved).
     #[serde(skip)]
     pub send_view: Option<String>,
@@ -827,6 +873,9 @@ pub enum EnvKind {
     /// sub-frames rendered per frame (0..=8).
     MotionBlur,
     Supersampling,
+    /// R8c: an FX parameter (`Fx::auto` on audio track and bus FX; a video track FX's keys), lent to the envelope
+    /// editor as 0..=1 of the parameter's range (`edit::FX_ENV`). Never stored in `envelopes`.
+    FxParam,
     /// A kind written by a later version: loads (instead of failing the whole project) and is ignored.
     #[serde(other)]
     Unknown,
@@ -851,6 +900,10 @@ pub struct Fx {
     pub params: BTreeMap<String, Keyframes<f32>>,
     #[serde(default)]
     pub text: BTreeMap<String, String>,
+    /// R8c: FX automation envelopes of an audio track's or bus's plug-in, by parameter key, in the parameter's units
+    /// and timeline time. They play over `params` unless the track's automation is Off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub auto: BTreeMap<String, Keyframes<f32>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1230,7 +1283,8 @@ pub fn set_default_track_fx(fx: Option<Vec<Fx>>) {
 pub fn default_track_chain(saved: Option<&[Fx]>) -> Vec<Fx> {
     use crate::engine::plugins;
     match saved {
-        Some(s) => s.iter().map(|f| Fx { id: uuid::Uuid::new_v4().to_string(), ..f.clone() }).collect(),
+        // A track's FX automation is its own: the default chain takes the settings only.
+        Some(s) => s.iter().map(|f| Fx { id: uuid::Uuid::new_v4().to_string(), auto: Default::default(), ..f.clone() }).collect(),
         None => ["milan.afx.gate", "milan.afx.eq", "milan.afx.compressor"].into_iter().filter_map(plugins::find).map(|i| plugins::new_fx(i, None)).collect(),
     }
 }
@@ -1269,6 +1323,8 @@ impl Track {
             out: Out::Master,
             sends: Vec::new(),
             pan_type: PanType::Balance0,
+            automation: AutoMode::Read,
+            auto_controls: false,
             send_view: None,
             armed: false,
         }
@@ -1775,6 +1831,23 @@ mod tests {
         }
         let b: Bus = serde_json::from_str(r#"{"id":"b","name":"Bus A"}"#).unwrap();
         assert!(b.volume == 1.0 && b.pan == 0.0 && !b.muted && b.fx.is_empty() && b.envelopes.is_empty() && b.out == Out::Master);
+        // R8c: automation Read with trim controls (envelopes play, as they always did), no FX automation; none written.
+        assert!(a.automation == AutoMode::Read && !a.auto_controls && b.automation == AutoMode::Read && !b.auto_controls);
+        assert!(a.fx.iter().chain(&t.fx).all(|f| f.auto.is_empty()));
+        for k in ["automation", "auto_controls"] {
+            assert!(v["timeline"]["audio_tracks"][0].get(k).is_none(), "{k} written");
+        }
+        let f: Fx = serde_json::from_str(r#"{"id":"f","plugin":"milan.afx.eq"}"#).unwrap();
+        assert!(f.auto.is_empty() && serde_json::to_value(&f).unwrap().get("auto").is_none());
+        // An automation mode from a newer build loads as Read; FxParam is never written in an envelope list, and an
+        // old build reads a kind it does not know as Unknown.
+        let t2: Track = serde_json::from_value({
+            let mut t = serde_json::to_value(&tl.audio_tracks[0]).unwrap();
+            t["automation"] = "Trim".into();
+            t
+        })
+        .unwrap();
+        assert_eq!(t2.automation, AutoMode::Read);
     }
 
     #[test]
@@ -1787,6 +1860,7 @@ mod tests {
             enabled: false,
             params: BTreeMap::from([("amount".to_string(), keys(0.25))]),
             text: BTreeMap::from([("text".to_string(), "Hello".to_string())]),
+            auto: BTreeMap::from([("gain".to_string(), keys(-3.0))]),
         };
         let env = |kind| Envelope { kind, points: keys(-6.0) };
         let mut c = Clip::new("c", 1.0, 4.0);
@@ -1843,8 +1917,10 @@ mod tests {
         (bus.volume, bus.pan, bus.muted, bus.envelopes) = (0.5, -0.25, true, vec![env(EnvKind::Volume)]);
         let mut fxb = Bus::new("FX 1".into(), Vec::new());
         fxb.out = Out::Bus(bus.id.clone());
+        (bus.automation, bus.auto_controls) = (AutoMode::Latch, true);
         let a = &mut p.timeline.audio_tracks[0];
         (a.out, a.pan_type) = (Out::Bus(bus.id.clone()), PanType::ConstantPower);
+        (a.automation, a.auto_controls) = (AutoMode::Off, true);
         a.sends = vec![AudioSend { to: fxb.id.clone(), level: 0.25, pre: true }];
         p.timeline.audio = AudioSettings { buses: vec![bus], fx: vec![fxb] };
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
@@ -1874,6 +1950,7 @@ mod tests {
         assert!(back.timeline.audio_tracks[0].hidden && back.timeline.track_groups == p.timeline.track_groups);
         let (a, b) = (&back.timeline.audio_tracks[0], &p.timeline.audio_tracks[0]);
         assert!(back.timeline.audio == p.timeline.audio && a.out == b.out && a.sends == b.sends && a.pan_type == b.pan_type);
+        assert!(a.automation == AutoMode::Off && a.auto_controls && back.timeline.master.audio_fx[0].auto == p.timeline.master.audio_fx[0].auto);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();

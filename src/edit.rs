@@ -797,11 +797,18 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
         for e in &mut t.envelopes {
             done |= shift(e);
         }
+        // R8c: FX automation rides with the track's envelopes.
+        for kf in t.fx.iter_mut().flat_map(|f| f.auto.values_mut()) {
+            done |= ripple_keys(kf, &shift);
+        }
     }
     if matches!(mode, RippleMode::AffectedMarkers | RippleMode::All) {
         let a = &mut tl.audio;
         for e in a.buses.iter_mut().chain(&mut a.fx).flat_map(|b| &mut b.envelopes).chain(&mut tl.master.video_envelopes) {
             done |= shift(e);
+        }
+        for kf in a.buses.iter_mut().chain(&mut a.fx).flat_map(|b| &mut b.fx).flat_map(|f| f.auto.values_mut()) {
+            done |= ripple_keys(kf, &shift);
         }
     }
     if mode != RippleMode::Affected {
@@ -2038,6 +2045,13 @@ pub fn transition_span(clips: &[Clip], c: &Clip, out: bool) -> Option<(f64, f64)
 /// Envelope `kind` of `owner` (see `TRANSITION_OUT`), with how its key times map to the timeline: timeline time = start
 /// + key time x scale. A transition's progress is lent out as an envelope.
 pub fn envelope_of(project: &Project, owner: &str, kind: EnvKind) -> Option<(Envelope, f64, f64)> {
+    // R8c: an FX envelope (`FX_ENV`), and an audio bus's own envelopes.
+    if kind == EnvKind::FxParam {
+        return fx_envelope(project, owner).map(|e| (e, 0.0, 1.0));
+    }
+    if let Some(b) = project.timeline.audio.bus(owner) {
+        return b.envelopes.iter().find(|e| e.kind == kind).map(|e| (e.clone(), 0.0, 1.0));
+    }
     if let Some((v, i)) = project.find_track(owner) {
         return project.timeline.tracks(v)[i].envelopes.iter().find(|e| e.kind == kind).map(|e| (e.clone(), 0.0, 1.0));
     }
@@ -2073,6 +2087,13 @@ pub fn edit_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl 
 
 /// `edit_envelope` without marking the project modified (a drag marks it on release).
 pub fn with_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    if kind == EnvKind::FxParam {
+        return with_fx_envelope(project, owner, f);
+    }
+    let a = &mut project.timeline.audio;
+    if let Some(b) = a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == owner) {
+        return b.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+    }
     if let Some((v, i)) = project.find_track(owner) {
         let t = &mut project.timeline.tracks_mut(v)[i];
         return !t.locked && t.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
@@ -2167,6 +2188,276 @@ pub fn toggle_bus_envelope(project: &mut Project, bus: Option<&str>, kind: EnvKi
         envs.push(new_envelope(kind));
     }
     changed(project, true)
+}
+
+// ---- R8c: FX envelopes, automation modes, automation writes ----
+
+/// The owner of an FX envelope, as `envelope_of` takes it: `{track or bus id}/fx/{plug-in id}/{parameter key}`. Audio
+/// track and bus plug-ins keep their envelopes in `Fx::auto`; a video track plug-in's are its keys (View › Show OFX
+/// Effect Envelopes). They are lent out as `EnvKind::FxParam`, 0..=1 of the parameter's range (`plugins::to_unit`).
+pub const FX_ENV: &str = "/fx/";
+
+pub fn fx_owner(parent: &str, fx: &str, param: &str) -> String {
+    format!("{parent}{FX_ENV}{fx}/{param}")
+}
+
+/// (track or bus id, plug-in id, parameter key) of an FX envelope owner.
+pub fn fx_owner_parts(owner: &str) -> Option<(&str, &str, &str)> {
+    let (parent, rest) = owner.split_once(FX_ENV)?;
+    let (fx, param) = rest.split_once('/')?;
+    Some((parent, fx, param))
+}
+
+/// The track or bus id an envelope owner belongs to (an event id stays as it is).
+pub fn owner_base(owner: &str) -> &str {
+    fx_owner_parts(owner).map_or(owner, |p| p.0)
+}
+
+/// Run envelope edit `f` on keys `kf` (FX automation).
+fn ripple_keys(kf: &mut Keyframes<f32>, f: &impl Fn(&mut Envelope) -> bool) -> bool {
+    let mut e = Envelope { kind: EnvKind::FxParam, points: std::mem::take(kf) };
+    let done = f(&mut e);
+    *kf = e.points;
+    done
+}
+
+/// The plug-in chain of track or bus `parent`: (chain, a video track's (keys are its envelopes), locked).
+fn chain_of<'a>(project: &'a Project, parent: &str) -> Option<(&'a [Fx], bool, bool)> {
+    match project.find_track(parent) {
+        Some((v, i)) => {
+            let t = &project.timeline.tracks(v)[i];
+            Some((&t.fx, v, t.locked))
+        }
+        None => project.timeline.audio.bus(parent).map(|b| (&b.fx[..], false, false)),
+    }
+}
+
+fn chain_of_mut<'a>(project: &'a mut Project, parent: &str) -> Option<(&'a mut Vec<Fx>, bool, bool)> {
+    match project.find_track(parent) {
+        Some((v, i)) => {
+            let t = &mut project.timeline.tracks_mut(v)[i];
+            Some((&mut t.fx, v, t.locked))
+        }
+        None => {
+            let a = &mut project.timeline.audio;
+            a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == parent).map(|b| (&mut b.fx, false, false))
+        }
+    }
+}
+
+/// Keys in a parameter's units as envelope points (0..=1), and back.
+fn unit_keys(kf: &Keyframes<f32>, kind: crate::engine::plugins::ParamKind, to: bool) -> Keyframes<f32> {
+    use crate::engine::plugins::{from_unit, to_unit};
+    Keyframes { keys: kf.keys.iter().map(|k| Keyframe { v: if to { to_unit(kind, k.v) } else { from_unit(kind, k.v) }, ..k.clone() }).collect() }
+}
+
+/// FX envelope `owner` lent out (points 0..=1); None when it has none.
+fn fx_envelope(project: &Project, owner: &str) -> Option<Envelope> {
+    let (parent, fid, key) = fx_owner_parts(owner)?;
+    let (chain, video, _) = chain_of(project, parent)?;
+    let fx = chain.iter().find(|f| f.id == fid)?;
+    let spec = crate::engine::plugins::automatable(fx, key)?;
+    let kf = if video { fx.params.get(key) } else { fx.auto.get(key) }.filter(|k| !k.keys.is_empty())?;
+    Some(Envelope { kind: EnvKind::FxParam, points: unit_keys(kf, spec.kind, true) })
+}
+
+fn with_fx_envelope(project: &mut Project, owner: &str, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    let Some((parent, fid, key)) = fx_owner_parts(owner) else { return false };
+    let Some((chain, video, locked)) = chain_of_mut(project, parent) else { return false };
+    let Some(fx) = chain.iter_mut().find(|f| f.id == fid).filter(|_| !locked) else { return false };
+    let Some(spec) = crate::engine::plugins::automatable(fx, key) else { return false };
+    let Some(kf) = if video { fx.params.get_mut(key) } else { fx.auto.get_mut(key) }.filter(|k| !k.keys.is_empty()) else { return false };
+    let mut e = Envelope { kind: EnvKind::FxParam, points: unit_keys(kf, spec.kind, true) };
+    let done = f(&mut e);
+    if done {
+        *kf = unit_keys(&e.points, spec.kind, false);
+    }
+    done
+}
+
+/// FX Automation Envelopes: add (one point at 0 holding the parameter's value) or remove the envelope of parameter `key`
+/// of plug-in `fx` on audio track or bus `parent`. False on a locked track or a parameter no envelope can automate.
+pub fn toggle_fx_envelope(project: &mut Project, parent: &str, fx: &str, key: &str) -> bool {
+    let Some((chain, false, false)) = chain_of_mut(project, parent) else { return false };
+    let Some(f) = chain.iter_mut().find(|f| f.id == fx) else { return false };
+    if crate::engine::plugins::automatable(f, key).is_none() {
+        return false;
+    }
+    if f.auto.remove(key).is_none() {
+        let v = crate::engine::plugins::eval(&Fx { auto: Default::default(), ..f.clone() }, 0.0).map_or(0.0, |e| e.f(key));
+        f.auto.insert(key.to_string(), Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] });
+    }
+    changed(project, true)
+}
+
+/// Every FX envelope of the chain `chain` of track or bus `parent`, lent out with its owner, in chain and parameter
+/// order: an audio chain's automated parameters, a `video` track's keyed (animated) numbers.
+pub fn chain_envelopes(parent: &str, chain: &[Fx], video: bool) -> Vec<(String, Envelope)> {
+    let mut out = Vec::new();
+    for f in chain {
+        let Some(info) = crate::engine::plugins::find(&f.plugin) else { continue };
+        for p in info.params.iter().filter(|p| crate::engine::plugins::automatable(f, p.key).is_some()) {
+            let kf = if video { f.params.get(p.key).filter(|k| k.keys.len() > 1 || k.keys.iter().any(|k| k.t != 0.0)) } else { f.auto.get(p.key) };
+            if let Some(kf) = kf.filter(|k| !k.keys.is_empty()) {
+                out.push((fx_owner(parent, &f.id, p.key), Envelope { kind: EnvKind::FxParam, points: unit_keys(kf, p.kind, true) }));
+            }
+        }
+    }
+    out
+}
+
+/// The FX envelope owners of track or bus `parent` (`chain_envelopes`); a video track's only with `video_keys`.
+pub fn fx_envelopes(project: &Project, parent: &str, video_keys: bool) -> Vec<String> {
+    let Some((chain, video, _)) = chain_of(project, parent) else { return Vec::new() };
+    if video && !video_keys {
+        return Vec::new();
+    }
+    chain_envelopes(parent, chain, video).into_iter().map(|e| e.0).collect()
+}
+
+/// "Track EQ: Band 1 Gain (dB)": the plug-in and parameter an FX envelope owner names.
+pub fn fx_envelope_name(project: &Project, owner: &str) -> Option<String> {
+    let (parent, fid, key) = fx_owner_parts(owner)?;
+    let fx = chain_of(project, parent)?.0.iter().find(|f| f.id == fid)?;
+    let info = crate::engine::plugins::find(&fx.plugin)?;
+    let spec = info.params.iter().find(|p| p.key == key)?;
+    // A parameter without a section heading is in the last one above it.
+    let section = info.params.iter().take_while(|p| p.key != key).chain([spec]).filter(|p| !p.section.is_empty()).last().map(|p| p.section);
+    Some(match section {
+        Some(s) => format!("{}: {s} {}", info.name, spec.name),
+        None => format!("{}: {}", info.name, spec.name),
+    })
+}
+
+/// A value of FX envelope `owner` (0..=1) in the parameter's units: "-12.0", "High-Pass", "On".
+pub fn fx_value_text(project: &Project, owner: &str, u: f32) -> Option<String> {
+    use crate::engine::plugins::{ParamKind, from_unit};
+    let (parent, fid, key) = fx_owner_parts(owner)?;
+    let fx = chain_of(project, parent)?.0.iter().find(|f| f.id == fid)?;
+    let spec = crate::engine::plugins::automatable(fx, key)?;
+    let v = from_unit(spec.kind, u);
+    Some(match spec.kind {
+        ParamKind::Choice { options, .. } => options.get(v as usize).copied().unwrap_or_default().to_string(),
+        ParamKind::Bool { .. } => (if v >= 0.5 { "On" } else { "Off" }).to_string(),
+        _ => format!("{} {}", spec.name, if v.abs() >= 100.0 { format!("{v:.0}") } else { format!("{v:.2}") }),
+    })
+}
+
+/// The default value of FX envelope `owner`'s parameter, 0..=1 (the point menu's Set to Default).
+pub fn fx_default_unit(project: &Project, owner: &str) -> Option<f32> {
+    use crate::engine::plugins::{ParamKind, to_unit};
+    let (parent, fid, key) = fx_owner_parts(owner)?;
+    let fx = chain_of(project, parent)?.0.iter().find(|f| f.id == fid)?;
+    let spec = crate::engine::plugins::automatable(fx, key)?;
+    Some(match spec.kind {
+        ParamKind::Float { default, .. } => to_unit(spec.kind, default),
+        ParamKind::Choice { default, .. } => to_unit(spec.kind, default as f32),
+        ParamKind::Bool { default } => default as u8 as f32,
+        _ => return None,
+    })
+}
+
+/// R8c: the Automation Settings and Show Automation Controls of the audio track or bus `id`.
+pub fn automation_of(project: &Project, id: &str) -> Option<(AutoMode, bool)> {
+    match project.find_track(id) {
+        Some((false, i)) => {
+            let t = &project.timeline.audio_tracks[i];
+            Some((t.automation, t.auto_controls))
+        }
+        Some(_) => None,
+        None => project.timeline.audio.bus(id).map(|b| (b.automation, b.auto_controls)),
+    }
+}
+
+/// Automation ▸ Off / Read / Write (Touch) / Write (Latch) (`mode`) or Show Automation Controls (`controls`) on the
+/// unlocked audio tracks and busses `ids`.
+pub fn set_automation(project: &mut Project, ids: &[String], mode: Option<AutoMode>, controls: Option<bool>) -> bool {
+    let mut done = false;
+    let mut set = |m: &mut AutoMode, c: &mut bool| {
+        if let Some(mode) = mode.filter(|x| x != m) {
+            (*m, done) = (mode, true);
+        }
+        if let Some(on) = controls.filter(|x| x != c) {
+            (*c, done) = (on, true);
+        }
+    };
+    let tl = &mut project.timeline;
+    for t in tl.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && !t.locked) {
+        set(&mut t.automation, &mut t.auto_controls);
+    }
+    for b in tl.audio.buses.iter_mut().chain(&mut tl.audio.fx).filter(|b| ids.contains(&b.id)) {
+        set(&mut b.automation, &mut b.auto_controls);
+    }
+    changed(project, done)
+}
+
+/// An automation write needs envelope `kind` of `owner` (an audio track, a bus, or an FX envelope owner): add it when
+/// it has none. False when it cannot have one (locked, gone).
+pub fn ensure_envelope(project: &mut Project, owner: &str, kind: EnvKind) -> bool {
+    if project.find_track(owner_base(owner)).is_some_and(|(v, i)| project.timeline.tracks(v)[i].locked) {
+        return false;
+    }
+    if envelope_of(project, owner, kind).is_some() {
+        return true;
+    }
+    if let Some((parent, fx, key)) = fx_owner_parts(owner) {
+        return toggle_fx_envelope(project, parent, fx, key);
+    }
+    match project.find_track(owner) {
+        Some((false, i)) if !project.timeline.audio_tracks[i].locked && env_fits(kind, false) => project.timeline.audio_tracks[i].envelopes.push(new_envelope(kind)),
+        Some(_) => return false,
+        None if project.timeline.audio.bus(owner).is_some() => return toggle_bus_envelope(project, Some(owner), kind),
+        None => return false,
+    }
+    changed(project, true)
+}
+
+/// Insert/Remove Envelope › Volume, Pan or Mute on audio events `ids`: all take the opposite of the focus (last)
+/// event's state. Locked events and events on locked tracks are left alone.
+pub fn toggle_event_envelope(project: &mut Project, ids: &[String], kind: EnvKind) -> bool {
+    let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| !c.envelopes.iter().any(|e| e.kind == kind)) else { return false };
+    let mut done = false;
+    for c in project.timeline.audio_tracks.iter_mut().filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(|c| !c.locked && ids.contains(&c.id)) {
+        // Events that already have one keep it (their points are the user's).
+        if c.envelopes.iter().any(|e| e.kind == kind) != on {
+            c.envelopes.retain(|e| e.kind != kind);
+            if on {
+                c.envelopes.push(new_envelope(kind));
+            }
+            done = true;
+        }
+    }
+    changed(project, done)
+}
+
+/// The least time between two points an automation write adds, and the least change: 0.5 dB on Volume, half a percent
+/// of the lane on the others.
+pub const WRITE_GAP: f64 = 0.020;
+
+/// Add value `v` at key time `t` to the points `pts` of an automation write, unless it is within `WRITE_GAP` of the last
+/// one or changes it by less than the least change.
+pub fn write_point(kind: EnvKind, pts: &mut Vec<(f64, f32)>, t: f64, v: f32) {
+    let differs = |a: f32| if kind == EnvKind::Volume { (v - a).abs() >= 0.5 } else { (lane_frac(kind, v) - lane_frac(kind, a)).abs() >= 0.005 };
+    if pts.last().is_none_or(|&(lt, lv)| t - lt >= WRITE_GAP - 1e-9 && differs(lv)) {
+        pts.push((t, env_clamp(kind, v)));
+    }
+}
+
+/// An automation write over envelope `orig` (key times): punched in at `t0` with points `pts`, the control at `v` at
+/// `t` now. `orig` stays as it was before `t0` and after `t`; it steps to the written values at `t0` and back at `t`.
+pub fn env_written(orig: &Envelope, t0: f64, pts: &[(f64, f32)], t: f64, v: f32) -> Envelope {
+    let key = |t, v, curve| Keyframe { t, v, curve };
+    let ks = &orig.points.keys;
+    let mut keys: Vec<Keyframe<f32>> = ks.iter().filter(|k| k.t < t0 - KEY_EPS).cloned().collect();
+    keys.push(key(t0, orig.at(t0), Curve::Linear));
+    keys.extend(pts.iter().map(|&(t, v)| key(t, v, Curve::Linear)));
+    keys.push(key(t, env_clamp(orig.kind, v), Curve::Linear));
+    // The original curve on from `t`: its value there, with the shape of the segment it is in.
+    let after = ks.partition_point(|k| k.t <= t + KEY_EPS);
+    let curve = after.checked_sub(1).map_or(Curve::Linear, |i| ks[i].curve);
+    keys.push(key(t, orig.at(t), curve));
+    keys.extend(ks[after..].iter().cloned());
+    Envelope { kind: orig.kind, points: Keyframes { keys } }
 }
 
 /// Add a point at `t` holding `v`; it takes its left neighbour's curve (Mute points hold). Returns its index.
@@ -2733,7 +3024,7 @@ pub fn set_fx_list(p: &mut Project, target: &FxTarget, list: Vec<Fx>) -> bool {
 /// A transition's settings as a plug-in instance (each value one key at 0), for the FX window.
 pub fn fx_of_transition(tr: &Transition) -> Fx {
     let key = |v| Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] };
-    Fx { id: "transition".into(), plugin: tr.plugin.clone(), enabled: true, params: tr.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: Default::default() }
+    Fx { id: "transition".into(), plugin: tr.plugin.clone(), enabled: true, params: tr.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: Default::default(), auto: Default::default() }
 }
 
 /// A plug-in instance as a transition (transitions are not keyframed: each value at 0).
@@ -3000,7 +3291,7 @@ mod tests {
         let mut c = Clip::from_media(&m, 0.0);
         c.looping = false;
         assert_eq!(media_limit(&p, &c), Some(8.0));
-        m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default() });
+        m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() });
         p.media_pool[0] = m;
         assert_eq!(media_limit(&p, &c), None);
     }
@@ -3117,7 +3408,7 @@ mod tests {
     fn attribute_paste_copies_only_what_is_chosen() {
         let mut p = Project::new("t");
         let mut src = Clip::new("src", 0.0, 4.0);
-        src.fx = vec![Fx { id: "fx1".into(), plugin: "milan.fx.invert".into(), enabled: true, params: Default::default(), text: Default::default() }];
+        src.fx = vec![Fx { id: "fx1".into(), plugin: "milan.fx.invert".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() }];
         (src.fade_in, src.fade_out, src.gain_db, src.rate) = (1.0, 1.0, -6.0, 2.0);
         src.pan_crop = Keyframes { keys: vec![Keyframe { t: 0.0, v: PanCrop { w: 0.5, ..Default::default() }, curve: Curve::Linear }] };
         let mut dst = Clip::new("dst", 10.0, 4.0);
@@ -5075,11 +5366,80 @@ mod tests {
         assert_eq!(p.timeline.audio.fx.len(), MAX_FX_CHAINS);
         // Bus FX are edited as a chain.
         let t = FxTarget::Bus(f2.clone());
-        assert!(fx_is_audio(&p, &t) && add_fx(&mut p, &t, Fx { id: "x".into(), plugin: "milan.afx.eq".into(), enabled: true, params: Default::default(), text: Default::default() }));
+        assert!(fx_is_audio(&p, &t) && add_fx(&mut p, &t, Fx { id: "x".into(), plugin: "milan.afx.eq".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() }));
         assert_eq!(fx_list(&p, &t).unwrap().0.len(), 1);
         // Pan Type on the tracks given.
         let all: Vec<String> = p.timeline.audio_tracks.iter().map(|t| t.id.clone()).collect();
         assert!(set_pan_type(&mut p, &all, PanType::Film) && !set_pan_type(&mut p, &all, PanType::Film));
         assert!(p.timeline.audio_tracks.iter().all(|t| t.pan_type == PanType::Film));
+    }
+
+    /// R8c: an audio track's FX envelope is added holding the parameter's value, lent out 0..=1 of its range and
+    /// written back in its units, rides a ripple, and goes again; Automation and event envelopes on the ids given.
+    #[test]
+    fn fx_envelopes_automation_and_event_envelopes() {
+        let mut p = Project::new("t");
+        let mut c = Clip::new("c", 1.0, 4.0);
+        c.media_id = Some("m".into());
+        let cid = c.id.clone();
+        p.timeline.audio_tracks[0].clips.push(c);
+        let tr = &p.timeline.audio_tracks[0];
+        let (tid, comp) = (tr.id.clone(), tr.fx.iter().find(|f| f.plugin == "milan.afx.compressor").unwrap().id.clone());
+        let owner = fx_owner(&tid, &comp, "threshold");
+        assert_eq!(fx_owner_parts(&owner), Some((tid.as_str(), comp.as_str(), "threshold")));
+        assert_eq!(owner_base(&owner), tid);
+        assert!(envelope_of(&p, &owner, EnvKind::FxParam).is_none());
+        assert!(toggle_fx_envelope(&mut p, &tid, &comp, "threshold"));
+        // -12 dB of -60..0 is 0.8 of the lane.
+        let (e, start, scale) = envelope_of(&p, &owner, EnvKind::FxParam).unwrap();
+        assert!((e.points.keys[0].v - 0.8).abs() < 1e-6 && (start, scale) == (0.0, 1.0));
+        assert!(edit_envelope(&mut p, &owner, EnvKind::FxParam, |e| {
+            env_insert(e, 3.0, 0.5);
+            true
+        }));
+        let f = |p: &Project| p.timeline.audio_tracks[0].fx.iter().find(|f| f.id == comp).unwrap().clone();
+        assert!((f(&p).auto["threshold"].keys[1].v - -30.0).abs() < 1e-4, "stored in dB");
+        assert_eq!(fx_envelopes(&p, &tid, false), [owner.clone()]);
+        assert_eq!(fx_envelope_name(&p, &owner).as_deref(), Some("Track Compressor: Threshold (dB)"));
+        assert_eq!(fx_value_text(&p, &owner, 0.5).as_deref(), Some("Threshold (dB) -30.00"));
+        // A ripple moves the FX automation with the track's envelopes.
+        let op = RippleOp { from: 2.0, delta: 1.0, tracks: vec![tid.clone()], exclude: Vec::new(), keys_from: None };
+        assert!(ripple(&mut p, &op, RippleMode::Affected));
+        assert_eq!(f(&p).auto["threshold"].keys[1].t, 4.0);
+        assert!(toggle_fx_envelope(&mut p, &tid, &comp, "threshold") && f(&p).auto.is_empty());
+        // A locked track takes no new FX envelope; a video track's are its keys (not toggled here).
+        p.timeline.audio_tracks[0].locked = true;
+        assert!(!toggle_fx_envelope(&mut p, &tid, &comp, "threshold") && !ensure_envelope(&mut p, &tid, EnvKind::Volume));
+        p.timeline.audio_tracks[0].locked = false;
+        // Automation ▸ and Show Automation Controls on tracks and busses.
+        set_bus_count(&mut p, 1);
+        let bid = p.timeline.audio.buses[0].id.clone();
+        assert!(set_automation(&mut p, &[tid.clone(), bid.clone()], Some(AutoMode::Latch), Some(true)));
+        assert_eq!((automation_of(&p, &tid), automation_of(&p, &bid)), (Some((AutoMode::Latch, true)), Some((AutoMode::Latch, true))));
+        assert!(!set_automation(&mut p, &[tid.clone()], Some(AutoMode::Latch), None), "no change");
+        assert!(automation_of(&p, &p.timeline.video_tracks[0].id.clone()).is_none());
+        // A write adds the envelope it needs: the track's, the bus's.
+        assert!(ensure_envelope(&mut p, &tid, EnvKind::Volume) && ensure_envelope(&mut p, &bid, EnvKind::Pan));
+        assert!(envelope_of(&p, &bid, EnvKind::Pan).is_some() && with_envelope(&mut p, &bid, EnvKind::Pan, |e| env_set_values(e, &[0], 0.5)));
+        // Audio event envelopes: on, then off with the focus event.
+        assert!(toggle_event_envelope(&mut p, std::slice::from_ref(&cid), EnvKind::Pan));
+        assert_eq!(envelope_of(&p, &cid, EnvKind::Pan).map(|e| e.1), Some(1.0));
+        assert!(toggle_event_envelope(&mut p, &[cid], EnvKind::Pan) && p.timeline.audio_tracks[0].clips[0].envelopes.is_empty());
+    }
+
+    /// R8c: an automation write keeps the envelope outside the pass and thins what it writes.
+    #[test]
+    fn env_written_keeps_the_rest_and_write_point_thins() {
+        let key = |t, v| Keyframe { t, v, curve: Curve::Linear };
+        let orig = Envelope { kind: EnvKind::Volume, points: Keyframes { keys: vec![key(0.0, 0.0), key(10.0, -10.0)] } };
+        let mut pts = Vec::new();
+        for k in 0..=100 {
+            write_point(EnvKind::Volume, &mut pts, 2.0 + k as f64 * 0.001, -20.0 + k as f32 * 0.1);
+        }
+        assert_eq!(pts.len(), 6, "a 10 dB move in 100 ms: a point every 20 ms: {pts:?}");
+        let e = env_written(&orig, 2.0, &pts, 2.1, -10.0);
+        assert_eq!((e.at(1.0), e.at(2.05)), (-1.0, -15.0));
+        assert!((e.at(6.0) - -6.0).abs() < 1e-5 && e.points.keys.last().unwrap().t == 10.0);
+        assert!(e.points.keys.iter().all(|k| k.t <= 2.1 + 1e-9 || k.t == 10.0));
     }
 }

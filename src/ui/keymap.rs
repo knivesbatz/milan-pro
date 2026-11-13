@@ -81,6 +81,9 @@ pub enum Command {
     /// The focus video event's Velocity envelope (Insert › Video Envelopes › Event Velocity, the event menu), Freeze
     /// Frame at Cursor, and its transitions' Transition Progress.
     EventVelocity, FreezeFrame, TransitionProgress,
+    /// R8c: Insert/Remove Envelope › Volume, Pan or Mute on the selected audio events (the event menu); View › Show OFX
+    /// Effect Envelopes (Beta, VP23).
+    EventEnvelope(crate::project::EnvKind), OfxEnvelopes,
     /// Edit › Editing Tool items and the transport tool radios.
     Tool(super::EditTool),
     /// Options › Ripple modes and the transport Auto Ripple ▾ list.

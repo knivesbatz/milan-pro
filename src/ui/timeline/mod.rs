@@ -1060,13 +1060,13 @@ pub fn draw_timeline(
             let (v, i) = owner_row(project, owner)?;
             let (e, start, scale) = edit::envelope_of(project, owner, kind)?;
             let key = e.points.keys.get(k)?;
-            Some((v, i, kind, start + key.t * scale, key.v))
+            Some((v, i, kind, start + key.t * scale, key.v, owner.to_string()))
         };
         let tip = env_drag.as_ref().and_then(|ed| point(&ed.track, ed.kind, ed.grab));
         let tip = tip.or_else(|| hovered_env.as_ref().and_then(|h| point(&h.owner, h.kind, h.point?)));
-        if let Some((v, i, kind, kt, kv)) = tip {
+        if let Some((v, i, kind, kt, kv, owner)) = tip {
             if let Some(row) = rows.iter().find(|r| r.is_video == v && r.idx == i) {
-                paint_fade_tag(&pl, &t, pos2(g.to_x(kt) + 6.0, envelopes::y_of(row, kind, kv) - 18.0), envelopes::value_text(kind, kv));
+                paint_fade_tag(&pl, &t, pos2(g.to_x(kt) + 6.0, envelopes::y_of(row, kind, kv) - 18.0), envelopes::value_label(project, &owner, kind, kv));
             }
         }
     }
@@ -1126,6 +1126,7 @@ pub fn draw_timeline(
 
 /// (is video, index) of the track an envelope's owner (a track, or an event: `edit::envelope_of`) is on.
 fn owner_row(project: &Project, owner: &str) -> Option<(bool, usize)> {
+    let owner = edit::owner_base(owner); // R8c: an FX envelope is on its track
     project.find_track(owner).or_else(|| project.find_clip(edit::split_owner(owner).0).map(|r| (r.is_video, r.track_idx)))
 }
 
