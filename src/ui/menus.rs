@@ -221,13 +221,15 @@ impl CmdState {
             TrackMotion | TrackFx => self.video_track_focus,
             VideoOutputFx | BypassAudioFx => true,
             AudioEventFx => self.audio_clip,
-            AudioTrackFx | DefaultTrackFx => self.audio_track_focus,
+            AudioTrackFx => self.audio_track_focus,
+            DefaultTrackFx => self.audio_track_focus || self.video_track_focus,
             // Ctrl+R starts with armed tracks and stops a running recording; arming waits until it stops.
             Record => self.recording || self.any_armed,
             Arm => self.audio_track_focus && !self.recording,
             Trim => self.clip && self.selection,
-            Copy => self.n_sel > 0,
-            Cut => self.n_sel > 0 && !self.clip_locked,
+            // R18b: a time selection alone cuts or copies what every track has inside it.
+            Copy => self.n_sel > 0 || self.selection,
+            Cut => (self.n_sel > 0 && !self.clip_locked) || self.selection,
             Paste | PasteInsert => self.clipboard,
             NextTool | PrevTool | AutoRipple | RippleMode(_) | IgnoreGrouping | Tool(_) => true,
             Group => self.n_sel >= 2,
@@ -278,6 +280,11 @@ impl CmdState {
             CdTrack => self.selection,
             InsertCommand | CdIndex | MediaMarkers | MarkerLabels | Metronome | RebuildPeaks | ContextMenu => true,
             EventLength => v23,
+            // R18b. An Adjustment Event goes on the focus video track; an audio transition on the selected audio.
+            InsertAdjustmentTrack | InsertSlideshow => v23,
+            InsertAdjustmentEvent => v23 && self.video_track_focus,
+            InsertAudioTransition => self.audio_clip || self.audio_track_focus,
+            InsertTime | ResizeGenerated => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -416,7 +423,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
-        InsertAdjustmentTrack => Later("R18b"),
         Prerender | RamPreview => Later("R23"),
         PluginManager => Later("R31"),
         Help | WhatsThis => Later("R53"),
@@ -966,15 +972,15 @@ pub const INSERT: &[M] = &[
     C("Audio Assignable &FX...", InsertAssignableFx),
     S,
     C("&Empty Event", InsertEmptyEvent),
-    V23(&X("Adjustment Event", Later("R18b"))),
+    V23(&C("Adjustment Event", InsertAdjustmentEvent)),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
-    V23(&X("&Slideshow...", Later("R18b"))),
+    V23(&C("&Slideshow...", InsertSlideshow)),
     V23(&X("Insert Subtitles from Files...", Later("R39"))),
     V23(&X("Insert Subtitles from Regions...", Later("R39"))),
     S,
-    X("Audio Tra&nsition...", Later("R18b")),
+    C("Audio Tra&nsition...", InsertAudioTransition),
     S,
-    X("&Time...", Later("R18b")),
+    C("&Time...", InsertTime),
     S,
     C("&Marker", InsertMarker),
     C("&Region", InsertRegion),
@@ -1040,6 +1046,7 @@ pub const TOOLS: &[M] = &[
         S,
         C("&Batch Render", BatchRender),
         C("&Render Audio Tracks", RenderAudioTracks),
+        C("Resize &Generated Media", ResizeGenerated),
     ]),
     Sub("&Multicamera", &[
         C("Synchronize Audio to A&lign Events", Synchronize(By::Audio)),
@@ -1485,9 +1492,9 @@ mod tests {
         assert!(st.enabled(VideoOutputFx));
         (st.video_clip, st.video_track_focus) = (true, true);
         assert!(st.enabled(EventPanCrop) && st.enabled(TrackMotion) && st.enabled(VideoEventFx) && st.enabled(TrackFx));
-        // Audio Event FX needs an audio event (also beside a video one: a grouped pair); Track FX and the default
-        // chain an audio track.
-        assert!(!st.enabled(AudioEventFx) && !st.enabled(AudioTrackFx) && !st.enabled(DefaultTrackFx));
+        // Audio Event FX needs an audio event (also beside a video one: a grouped pair); Track FX an audio track. (R18b:
+        // Set Default Track Properties works on the video track too.)
+        assert!(!st.enabled(AudioEventFx) && !st.enabled(AudioTrackFx) && st.enabled(DefaultTrackFx));
         (st.audio_clip, st.audio_track_focus) = (true, true);
         assert!(st.enabled(AudioEventFx) && st.enabled(AudioTrackFx) && st.enabled(DefaultTrackFx));
         assert_eq!(st.checked(BypassAudioFx), Some(false));
@@ -1728,6 +1735,67 @@ mod tests {
             commands(items, &mut all);
         }
         assert!([SmartSplit, InsertCommand, CdTrack, CdIndex, OpenInAudioEditor, OpenCopyInAudioEditor, MediaMarkers, MarkerLabels, EventLength, Metronome, RebuildPeaks].iter().all(|c| all.contains(c)));
+    }
+
+    /// R18b: its commands work when they can (the adjustment items in VEGAS 23, an Adjustment Event on a focus video
+    /// track, an audio transition on selected audio, Set Default Track Properties on either kind of track, Cut and Copy
+    /// over a time selection), and nothing in the menus waits on R18b any more.
+    #[test]
+    fn r18b_commands_work() {
+        let v16 = CmdState { look: UiLook::Vegas16, ..CmdState::default() };
+        let v23 = CmdState { look: UiLook::Vegas23, ..CmdState::default() };
+        for c in [InsertAdjustmentTrack, InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated, DefaultTrackFx] {
+            assert!(unfinished(c).is_none(), "{c:?}");
+        }
+        assert!(v23.enabled(InsertAdjustmentTrack) && v23.enabled(InsertSlideshow) && !v16.enabled(InsertAdjustmentTrack) && !v16.enabled(InsertSlideshow));
+        assert!(!v23.enabled(InsertAdjustmentEvent) && CmdState { video_track_focus: true, ..v23.clone() }.enabled(InsertAdjustmentEvent));
+        assert!(!v16.enabled(InsertAudioTransition) && CmdState { audio_clip: true, ..v16.clone() }.enabled(InsertAudioTransition));
+        assert!(v16.enabled(InsertTime) && v16.enabled(ResizeGenerated) && !v16.enabled(DefaultTrackFx));
+        assert!(CmdState { video_track_focus: true, ..v16.clone() }.enabled(DefaultTrackFx));
+        assert!(!v16.enabled(Cut) && !v16.enabled(Copy) && CmdState { selection: true, ..v16.clone() }.enabled(Cut) && CmdState { selection: true, ..v16.clone() }.enabled(Copy));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R18b")), "{rows:?}");
+        let (mut insert, mut tools) = (Vec::new(), Vec::new());
+        commands(INSERT, &mut insert);
+        commands(TOOLS, &mut tools);
+        assert!([InsertAdjustmentTrack, InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime].iter().all(|c| insert.contains(c)) && tools.contains(&ResizeGenerated));
+    }
+
+    /// R18b ends tier 2: no control anywhere still waits on a batch of tiers 0-2 (R0-R18b, as docs/REMAINING.md §5.1
+    /// lists them); what those batches did not build was re-assigned there to a later batch. Test code is left out.
+    #[test]
+    fn no_control_waits_on_tiers_0_to_2() {
+        let doc = include_str!("../../docs/REMAINING.md");
+        let done: Vec<&str> = doc
+            .lines()
+            .filter(|l| ["| 0 |", "| 1 |", "| 2 |"].iter().any(|t| l.starts_with(t)))
+            .flat_map(|l| l.rsplit('|').nth(1).unwrap_or("").split(',').map(str::trim))
+            .collect();
+        assert!(done.contains(&"R0") && done.contains(&"R4b") && done.contains(&"R18b") && done.len() > 25, "{done:?}");
+        let mut files = vec![std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
+        let mut bad = Vec::new();
+        while let Some(p) = files.pop() {
+            if p.is_dir() {
+                files.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            if p.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).unwrap();
+            let src = &src[..src.find("\nmod tests").unwrap_or(src.len())];
+            for (at, _) in src.match_indices("Later(\"") {
+                let arg = &src[at + 7..];
+                let arg = &arg[..arg.find('"').unwrap()];
+                if done.contains(&arg) {
+                    bad.push(format!("{}: Later({arg})", p.display()));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "{bad:?}");
     }
 
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.

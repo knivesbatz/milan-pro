@@ -558,8 +558,33 @@ fn add_halos(img: &mut ColorImage, halos: [Option<Halo>; 2], k: usize) {
     }
 }
 
+/// R18b: `fx` run on a copy of `dst`, mixed back over it at `a` (all of it at 1).
+fn adjust(dst: &mut ColorImage, fx: &[FxEval], a: f32, k: usize) {
+    let mut img = dst.clone();
+    for f in fx {
+        vfx::apply(&mut img, f, k);
+    }
+    if a >= 1.0 {
+        *dst = img;
+        return;
+    }
+    let w = dst.size[0];
+    par_rows(&mut dst.pixels, w, k, |y, row| {
+        for (x, p) in row.iter_mut().enumerate() {
+            *p = vfx::lerp_px(*p, img.pixels[y * w + x], a);
+        }
+    });
+}
+
 /// Track `l` composited onto `dst` (inside a compositing group when `group`: the backdrop may be transparent).
 fn layer_onto(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, bilinear: bool, k: usize, group: bool) {
+    // R18b: an Adjustment Track's or Adjustment Event's FX change what is below first.
+    for (fx, a) in &l.adjust {
+        adjust(dst, fx, *a, k);
+    }
+    if l.items.is_empty() {
+        return;
+    }
     let [w, h] = dst.size;
     let draws: usize = l.items.iter().map(|i| events(i).len()).sum();
     let halo = l.shadow.is_some() || l.glow.is_some();
@@ -614,8 +639,9 @@ pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, biline
             continue;
         };
         let mut g = group.take().unwrap_or_else(blank);
-        // A parent with no event here leaves its children as they are (an empty mask hides nothing).
-        if !l.items.is_empty() {
+        // A parent with no event here leaves its children as they are (an empty mask hides nothing); an adjusting
+        // parent adjusts only them.
+        if !l.items.is_empty() || !l.adjust.is_empty() {
             layer_onto(&mut g, src, l, bilinear, k, true);
         }
         if whole_pixel(motion).is_some_and(|o| o == (0, 0)) {
@@ -703,7 +729,7 @@ mod tests {
     }
 
     fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
-        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), persp: None, fx: Vec::new(), fade: None, compositor: None, child: false, parent: None, shadow: None, glow: None, items }
+        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), persp: None, fx: Vec::new(), fade: None, compositor: None, child: false, parent: None, shadow: None, glow: None, items, adjust: Vec::new() }
     }
 
     /// R4a acceptance, end to end from the project: a Transition Progress envelope at 0.25 renders the dissolve 25%
@@ -749,6 +775,77 @@ mod tests {
         // At +0.5, half way to the top colour (white) from a's grey 200.
         p.timeline.video_tracks[0].envelopes[0].points.keys[0].v = 0.5;
         assert_eq!(px(&frame(&p, 1.0), W / 2, H / 2), [228, 228, 228, 255]);
+    }
+
+    /// R18b acceptance: a blur Adjustment Track over two tracks gives exactly the frame a Video Output blur gives; a track
+    /// above it stays sharp, its Level mixes the blur in part way, a compositing child limits it, and an Adjustment
+    /// Event blurs only while it plays, at its Opacity.
+    #[test]
+    fn adjustment_track_blur_equals_video_output_blur() {
+        use crate::engine::plugins::{find, new_fx};
+        use crate::project::{Clip, Curve, Keyframe, Keyframes, MediaItem, MediaType, Project, Track, TrackKind};
+        struct ById;
+        impl Sources for ById {
+            fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
+                let c = match &*s.m.id {
+                    "a" => Color32::from_gray(200),
+                    "b" => Color32::from_rgb(30, 160, 90),
+                    _ => Color32::from_rgb(250, 20, 20),
+                };
+                Some(Arc::new(ColorImage::new([w as usize, h as usize], c)))
+            }
+        }
+        let info = find("milan.fx.gaussian_blur").unwrap();
+        let blur = new_fx(info, info.presets.iter().find(|p| p.name == "Heavy Blur"));
+        let mut p = Project::new("t");
+        p.settings.frame_rate = 30.0;
+        for id in ["a", "b", "c"] {
+            p.media_pool.push(MediaItem { id: id.into(), media_type: MediaType::Video, duration: 100.0, width: Some(1920), height: Some(1080), frame_rate: Some(30.0), ..Default::default() });
+        }
+        let half = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { w: 0.5, h: 0.5, ..Default::default() }, curve: Curve::Linear }] };
+        p.timeline.add_video_track();
+        let clip = |p: &Project, k: usize| Clip { duration: 10.0, ..Clip::from_media(&p.media_pool[k], 0.0) };
+        (p.timeline.video_tracks[0].clips, p.timeline.video_tracks[0].motion) = (vec![clip(&p, 1)], half.clone());
+        // The grey one small at the upper left, so its own left edge (x 14) is a sharp edge away from the green one.
+        let corner = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { w: 0.25, h: 0.25, x: -0.3, y: -0.3, ..Default::default() }, curve: Curve::Linear }] };
+        (p.timeline.video_tracks[1].clips, p.timeline.video_tracks[1].motion) = (vec![clip(&p, 0)], corner);
+        let frame = |p: &Project, t: f64| {
+            let vp = plan::compile(p);
+            compose(&plan::frame_plan(&vp, plan::frame_at(t, vp.fps)), &mut ById, W, H, true, 1).pixels
+        };
+        let plain = frame(&p, 1.0);
+        let mut out = p.clone();
+        out.timeline.master.video_fx = vec![blur.clone()];
+        let adj = Track { adjustment: true, fx: vec![blur.clone()], ..Track::new("Adjustment Track 1", TrackKind::Video) };
+        let mut a = p.clone();
+        a.timeline.video_tracks.insert(0, adj.clone());
+        let blurred = frame(&out, 1.0);
+        assert!(blurred != plain);
+        assert!(frame(&a, 1.0) == blurred, "the adjustment track blurs what is below as the Video Output FX do");
+        // A track above it is drawn after (sharp): a small red square in the middle stays pure red.
+        let mut above = a.clone();
+        above.timeline.video_tracks.insert(0, Track { clips: vec![clip(&above, 2)], motion: half.clone(), ..Track::new("Top", TrackKind::Video) });
+        assert_eq!(px(&ColorImage { size: [W, H], pixels: frame(&above, 1.0) }, W / 2, H / 2), [250, 20, 20, 255]);
+        // Level 50 %: half way between the sharp and the blurred frame.
+        a.timeline.video_tracks[0].volume = 0.5;
+        let mixed = frame(&a, 1.0);
+        assert!(mixed.iter().zip(&plain).zip(&blurred).all(|((m, s), b)| (0..4).all(|i| (m[i] as i32 - ((s[i] as f32 + b[i] as f32) * 0.5).round() as i32).abs() <= 1)));
+        // Only its compositing children: with the green track its child, the grey one below stays sharp.
+        a.timeline.video_tracks[0].volume = 1.0;
+        a.timeline.video_tracks[1].child = true;
+        let kids = frame(&a, 1.0);
+        let edge = 20 * W + 13;
+        assert!(blurred[edge] != plain[edge] && kids[edge] == plain[edge], "the bottom track's edge is not blurred");
+        assert!(kids[H / 2 * W + W / 4] != plain[H / 2 * W + W / 4], "the child's edge is");
+        // An Adjustment Event: 2 s from 4 s on an empty top track; nothing before it, the blur at 5 s, half at Opacity 50 %.
+        let mut e = p.clone();
+        let mut ev = Clip { adjustment: true, fx: vec![blur.clone()], ..Clip::new("Adjustment Event", 4.0, 2.0) };
+        e.timeline.video_tracks.insert(0, Track { clips: vec![ev.clone()], ..Track::new("V", TrackKind::Video) });
+        assert!(frame(&e, 3.0) == frame(&p, 3.0) && frame(&e, 5.0) == frame(&out, 5.0));
+        ev.set_opacity(0.5);
+        e.timeline.video_tracks[0].clips = vec![ev];
+        let half_blur = frame(&e, 5.0);
+        assert!(half_blur.iter().zip(&plain).zip(&blurred).all(|((m, s), b)| (0..4).all(|i| (m[i] as i32 - ((s[i] as f32 + b[i] as f32) * 0.5).round() as i32).abs() <= 1)));
     }
 
     const W: usize = 192;

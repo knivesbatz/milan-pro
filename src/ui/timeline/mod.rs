@@ -1077,7 +1077,7 @@ pub fn draw_timeline(
                 wave_zoom: opts.wave_zoom,
                 loop_len: media.and_then(|m| edit::loop_len(clip, m)),
                 offset: media.map_or(0.0, |m| m.file_time(0.0)),
-                empty: clip.media_id.is_none(),
+                empty: clip.media_id.is_none() && !clip.adjustment,
                 marks: media.filter(|m| opts.media_markers && !m.markers.is_empty()).map_or(Vec::new(), |m| events::media_marks(clip, m)),
                 labels: opts.marker_labels,
                 length: (opts.event_length && !v16).then(|| project.settings.ruler_len(clip.duration)),

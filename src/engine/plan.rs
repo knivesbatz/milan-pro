@@ -109,6 +109,9 @@ pub struct VTrack {
     fx: Vec<Fx>,
     /// Stable-sorted by position: on ties the later Vec entry is on top.
     events: Vec<VEvent>,
+    /// R18b: an Adjustment Track (its FX adjust what is below), and the track's Adjustment Events by position.
+    adjust: bool,
+    adjust_events: Vec<Clip>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +166,9 @@ pub struct TrackPlan {
     pub shadow: Option<Halo>,
     pub glow: Option<Halo>,
     pub items: Vec<Item>,
+    /// R18b: effect chains run on what is below this track (the frame so far, or its compositing group), each mixed in at
+    /// its strength: an Adjustment Track's FX at its level, then each Adjustment Event's FX at its alpha.
+    pub adjust: Vec<(Vec<FxEval>, f32)>,
 }
 
 #[derive(Debug)]
@@ -226,6 +232,7 @@ impl FramePlan {
         let mut v: Vec<&FxEval> = self.out_fx.iter().collect();
         for l in &self.layers {
             v.extend(&l.fx);
+            v.extend(l.adjust.iter().flat_map(|a| &a.0));
             v.extend(&l.compositor);
             for i in &l.items {
                 let evs: Vec<&EventPlan> = match i {
@@ -259,7 +266,7 @@ pub fn matrix(m: &MediaItem) -> Option<&'static str> {
     }
 }
 
-/// `project` is the project frame size, which generated media render at.
+/// `project` is the project frame size, which generated media without a size of its own render at.
 /// R11: with Adjust source media on, a source keeps its shape in a project of non-square pixels (its square-pixel
 /// width counts `par` times fewer project pixels) and an interlaced one is deinterlaced; off, it is used as it is.
 fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSettings) -> Option<MediaRef> {
@@ -270,9 +277,11 @@ fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSett
         None if !matches!(m.media_type, MediaType::Video | MediaType::Image) => return None,
         _ => {}
     }
+    // R18b: generated media keeps the size it was made at (Tools › Scripting › Resize Generated Media sets it to the
+    // project's); generated media from before R18b has none and follows the project.
     let (w, h) = match (m.width, m.height) {
-        _ if generator.is_some() => project,
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+        _ if generator.is_some() => project,
         _ => (1920, 1080),
     };
     let par = if s.adjust_media && s.par > 0.0 { s.par } else { 1.0 };
@@ -365,7 +374,7 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
             let mut events: Vec<VEvent> = t
                 .clips
                 .iter()
-                .filter(|c| !c.muted && c.duration > 0.0)
+                .filter(|c| !c.muted && c.duration > 0.0 && !c.adjustment)
                 .filter_map(|c| {
                     let (m, item) = refs.get(c.media_id.as_deref()?)?;
                     let nested = kids.get(item.id.as_str()).map(|k| k.1.as_ref().map(|c| c.video.clone()).map_err(|e| e.as_str().into()));
@@ -394,6 +403,8 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
                 motion: t.motion.clone(),
                 fx: t.fx.clone(),
                 events,
+                adjust: t.adjustment,
+                adjust_events: t.clips.iter().filter(|c| c.adjustment && !c.muted && c.duration > 0.0).cloned().collect(),
             }
         })
         .collect();
@@ -553,8 +564,9 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
             let shown = tr.mute_env.as_ref().is_none_or(|e| e.at(ta) >= 0.5);
             let opacity = if shown { tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(ta).clamp(0.0, 1.0)) } else { 0.0 };
             let live: Vec<&VEvent> = tr.events.iter().filter(|e| e.c.position <= te && te < e.c.position + e.c.duration).collect();
+            let adjust = if opacity > 0.0 { adjustments(tr, t, dt, opacity) } else { Vec::new() };
             // A parent stays even without a picture of its own: its children's group goes through it.
-            if tr.parent.is_none() && (opacity <= 0.0 || live.is_empty()) {
+            if tr.parent.is_none() && (opacity <= 0.0 || (live.is_empty() && adjust.is_empty())) {
                 return None;
             }
             let mut items: Vec<Item> = Vec::new();
@@ -650,7 +662,8 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                 opacity,
                 motion: motion(m, size),
                 persp: if tr.composite == Composite::ThreeD { motion3d(m, size) } else { None },
-                fx: evals(&tr.fx, ta),
+                // An Adjustment Track's FX adjust what is below it (`adjust`), not its own events.
+                fx: if tr.adjust { Vec::new() } else { evals(&tr.fx, ta) },
                 fade,
                 compositor: tr.compositor.as_ref().and_then(|f| plugins::eval(f, ta)),
                 child: tr.child,
@@ -658,11 +671,33 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                 shadow: halo(&tr.shadow, Halo::default()),
                 glow: halo(&tr.glow, Halo::glow()),
                 items,
+                adjust,
             })
         })
         .collect();
     let bus_fade = p.bus_envs.iter().find(|e| e.kind == EnvKind::FadeToColor);
     FramePlan { alpha: p.alpha, layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
+}
+
+/// R18b: what track `tr` (at level `opacity`) adjusts below it at frame time `t` (animated values `dt` later): an
+/// Adjustment Track's FX at the level, then each Adjustment Event playing at `t` with its FX at its fades and Opacity
+/// envelope times the level. Overlapping events crossfade as their fades say (the earlier stays whole, as video
+/// events do; a transition between them acts as a dissolve). Chains with no enabled FX are left out.
+fn adjustments(tr: &VTrack, t: f64, dt: f64, opacity: f32) -> Vec<(Vec<FxEval>, f32)> {
+    let te = t + 1e-6;
+    let mut out = Vec::new();
+    if tr.adjust {
+        out.push((evals(&tr.fx, t + dt), opacity));
+    }
+    let live: Vec<&Clip> = tr.adjust_events.iter().filter(|c| c.position <= te && te < c.position + c.duration).collect();
+    for (i, c) in live.iter().enumerate() {
+        let (local, last) = (t - c.position, i + 1 == live.len());
+        let fade_out = if last { fade(c.fade_out_curve, c.duration - local, c.fade_out) } else { 1.0 };
+        let a = fade(c.fade_in_curve, local, c.fade_in) * fade_out * env_at(&c.envelopes, EnvKind::Opacity, local + dt);
+        out.push((evals(&c.fx, local + dt), a * opacity));
+    }
+    out.retain(|(fx, a)| !fx.is_empty() && *a > 0.0);
+    out
 }
 
 /// R6a: the frame of nested timeline event `e` at its media time `ft`: the child's own frame there (on its own frame

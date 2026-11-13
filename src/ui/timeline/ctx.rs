@@ -657,7 +657,7 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         project.mark_modified(); // a view change: no undo step
     }
     sep(ui);
-    off(ui, "Edit Visible Button Set...", Later("R15"));
+    off(ui, "Edit Visible Button Set...", Later("R49"));
 }
 
 fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usize) {
@@ -778,7 +778,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         sub(ui, "Fade &Colors", true, |ui| fade_colors(ui, project, history, st, i));
         inert(ui, "E&xpand Track Layers", Mark::Check(false), NotPlanned("R58"));
         sep(ui);
-        off(ui, "Set De&fault Track Properties...", Later("R18b"));
+        cmd(ui, "Set De&fault Track Properties...", DefaultTrackFx);
         sep(ui);
         track_group_and_color(ui, project, history, sel, st, v, i);
         if v23 {
@@ -837,7 +837,7 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
     if v {
         sep(ui);
         sub(ui, "Fade Colors", true, |ui| fade_colors(ui, project, history, st, i));
-        menus::show(ui, &[V23(&X("Insert Slideshow", Later("R18b")))]);
+        menus::show(ui, &[V23(&C("Insert Slideshow", InsertSlideshow))]);
     } else {
         if entry(ui, "FX Automation Envelopes", "", true, Mark::None) {
             crate::ui::automation::open_chooser(ui.ctx(), &project.timeline.audio_tracks[i].id);

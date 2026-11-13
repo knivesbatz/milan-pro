@@ -1389,8 +1389,20 @@ pub fn insert_track(project: &mut Project, is_video: bool, before: Option<usize>
     let tracks = project.timeline.tracks_mut(is_video);
     let at = before.map_or(if is_video { 0 } else { tracks.len() }, |b| b.min(tracks.len()));
     let (name, kind) = if is_video { ("Video", TrackKind::Video) } else { ("Audio", TrackKind::Audio) };
-    tracks.insert(at, Track::new(&format!("{name} {}", tracks.len() + 1), kind));
+    tracks.insert(at, crate::project::inserted_track(&format!("{name} {}", tracks.len() + 1), kind));
     tidy_track_groups(&mut project.timeline); // inserted inside a track group, it joins it
+    project.mark_modified();
+    at
+}
+
+/// R18b: Insert › Adjustment Track (Ctrl+Shift+Alt+Q, VEGAS 23): a video track whose Track FX adjust the tracks below,
+/// above video track `before` (else at the top). Returns its index.
+pub fn insert_adjustment_track(project: &mut Project, before: Option<usize>) -> usize {
+    let tracks = &mut project.timeline.video_tracks;
+    let at = before.map_or(0, |b| b.min(tracks.len()));
+    let n = tracks.iter().filter(|t| t.adjustment).count() + 1;
+    tracks.insert(at, Track { adjustment: true, ..Track::new(&format!("Adjustment Track {n}"), TrackKind::Video) });
+    tidy_track_groups(&mut project.timeline);
     project.mark_modified();
     at
 }
@@ -3790,36 +3802,7 @@ pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut
     let (b, na) = match edge {
         Edge::Overlap(_, b) | Edge::Start(b) | Edge::End(b) => (b, None),
         Edge::Cut(a, b) => {
-            let (oa, ob) = (t.clips[a].clone(), t.clips[b].clone());
-            let (la, lb) = (media_limit(p, &oa), media_limit(p, &ob));
-            // Neither side may pass the other's far edge (less a frame) or run into the event beyond it.
-            let (a_end, frame) = (oa.position + oa.duration, 1.0 / fps);
-            let others = || t.clips.iter().enumerate().filter(|&(k, _)| k != a && k != b).map(|(_, c)| c);
-            let next = others().filter(|c| c.position >= ob.position).map(|c| c.position).fold(f64::INFINITY, f64::min);
-            let prev = others().filter(|c| c.position < oa.position).map(|c| c.position + c.duration).fold(f64::NEG_INFINITY, f64::max);
-            let max_a = (ob.position + ob.duration - frame).min(next) - a_end;
-            let max_b = ob.position - (oa.position + frame).max(prev);
-            let ext_a = |w: f64| {
-                let mut c = oa.clone();
-                trim_right(&mut c, &oa, a_end + w.min(max_a).max(0.0), frame, la);
-                c
-            };
-            let ext_b = |w: f64| {
-                let mut c = ob.clone();
-                trim_left(&mut c, &ob, ob.position - w.min(max_b).max(0.0), frame, lb);
-                c
-            };
-            // Half each; what one side cannot give, the other takes.
-            let ga = ext_a(cut_overlap * 0.5).duration - oa.duration;
-            let mut nb = ext_b(cut_overlap - ga);
-            let mut na = ext_a(cut_overlap - (ob.position - nb.position));
-            let ov = na.position + na.duration - nb.position;
-            if ov <= 1e-9 {
-                return false;
-            }
-            (na.fade_out, nb.fade_in) = (ov, ov);
-            na.clamp_fades();
-            nb.clamp_fades();
+            let Some((na, nb)) = widen_cut(p, &t.clips, a, b, cut_overlap) else { return false };
             p.timeline.video_tracks[ti].clips[b] = nb;
             (b, Some((a, na)))
         }
@@ -3837,6 +3820,92 @@ pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut
     }
     done |= c.transition.as_ref() != Some(&tr);
     c.transition = Some(tr);
+    changed(p, done)
+}
+
+/// The cut between `clips[a]` and `clips[b]` (`a` ends where `b` starts) made an overlap of `cut_overlap`: `a` extended
+/// right and `b` left by half each, within their media; what one side cannot give, the other takes. Neither passes the
+/// other's far edge (less a frame) or runs into the event beyond it. Both fade over the overlap; None when there is
+/// no room at all.
+fn widen_cut(p: &Project, clips: &[Clip], a: usize, b: usize, cut_overlap: f64) -> Option<(Clip, Clip)> {
+    let (oa, ob) = (clips[a].clone(), clips[b].clone());
+    let (la, lb) = (media_limit(p, &oa), media_limit(p, &ob));
+    let (a_end, frame) = (oa.position + oa.duration, 1.0 / p.settings.frame_rate.max(1.0));
+    let others = || clips.iter().enumerate().filter(|&(k, _)| k != a && k != b).map(|(_, c)| c);
+    let next = others().filter(|c| c.position >= ob.position).map(|c| c.position).fold(f64::INFINITY, f64::min);
+    let prev = others().filter(|c| c.position < oa.position).map(|c| c.position + c.duration).fold(f64::NEG_INFINITY, f64::max);
+    let max_a = (ob.position + ob.duration - frame).min(next) - a_end;
+    let max_b = ob.position - (oa.position + frame).max(prev);
+    let ext_a = |w: f64| {
+        let mut c = oa.clone();
+        trim_right(&mut c, &oa, a_end + w.min(max_a).max(0.0), frame, la);
+        c
+    };
+    let ext_b = |w: f64| {
+        let mut c = ob.clone();
+        trim_left(&mut c, &ob, ob.position - w.min(max_b).max(0.0), frame, lb);
+        c
+    };
+    let ga = ext_a(cut_overlap * 0.5).duration - oa.duration;
+    let mut nb = ext_b(cut_overlap - ga);
+    let mut na = ext_a(cut_overlap - (ob.position - nb.position));
+    let ov = na.position + na.duration - nb.position;
+    if ov <= 1e-9 {
+        return None;
+    }
+    (na.fade_out, nb.fade_in) = (ov, ov);
+    na.clamp_fades();
+    nb.clamp_fades();
+    Some((na, nb))
+}
+
+/// R18b: Insert › Audio Transition...: the cut, crossfade or lone event edge at `at` on audio track `track` gets the
+/// crossfade preset `(out, inc)` (the outgoing fade's curve, the incoming one's): a cut is made an overlap of `len`
+/// (as a transition dropped on a video cut is), an existing crossfade takes the curves, and an event start (end) with
+/// nothing beside it fades in (out) over `len` unless it already does. False (nothing changed) when an event or the
+/// track is locked, or nothing is there.
+pub fn audio_transition(p: &mut Project, track: &str, at: f64, len: f64, (out, inc): (Curve, Curve)) -> bool {
+    let Some((false, ti)) = p.find_track(track) else { return false };
+    let fps = p.settings.frame_rate.max(1.0);
+    let t = &p.timeline.audio_tracks[ti];
+    let Some(edge) = transition_edge(&t.clips, at, 0.5 / fps).filter(|_| !t.locked) else { return false };
+    let locked = |k: usize| t.clips[k].locked;
+    let (a, b) = match edge {
+        Edge::Overlap(a, b) | Edge::Cut(a, b) => (Some(a), Some(b)),
+        Edge::Start(b) => (None, Some(b)),
+        Edge::End(a) => (Some(a), None),
+    };
+    if a.into_iter().chain(b).any(locked) {
+        return false;
+    }
+    let widened = match edge {
+        Edge::Cut(a, b) => Some(widen_cut(p, &t.clips, a, b, len).ok_or(()).map(|n| (a, b, n))),
+        _ => None,
+    };
+    let clips = &mut p.timeline.audio_tracks[ti].clips;
+    let before = (a.map(|k| clips[k].clone()), b.map(|k| clips[k].clone()));
+    match widened {
+        Some(Err(())) => return false,
+        Some(Ok((a, b, (na, nb)))) => (clips[a], clips[b]) = (na, nb),
+        None => {}
+    }
+    if let Some(a) = a {
+        let c = &mut clips[a];
+        if b.is_none() && c.fade_out == 0.0 {
+            c.fade_out = len;
+            c.clamp_fades();
+        }
+        c.fade_out_curve = out;
+    }
+    if let Some(b) = b {
+        let c = &mut clips[b];
+        if a.is_none() && c.fade_in == 0.0 {
+            c.fade_in = len;
+            c.clamp_fades();
+        }
+        c.fade_in_curve = inc;
+    }
+    let done = (a.map(|k| clips[k].clone()), b.map(|k| clips[k].clone())) != before;
     changed(p, done)
 }
 
@@ -3865,7 +3934,9 @@ pub fn insert_generated(p: &mut Project, track: Option<usize>, at: f64, fx: Fx, 
     }
     // R18a: a Credit Roll is as long as its first event: it scrolls over that length (VEGAS's generated media length).
     let duration = if fx.plugin == crate::engine::generate::CREDITS { len } else { 86400.0 };
-    let m = MediaItem { id: uuid::Uuid::new_v4().to_string(), name: name.into(), media_type: MediaType::Image, duration, generator: Some(fx), ..Default::default() };
+    // R18b: made at the project's frame size, which it keeps (VEGAS; Resize Generated Media matches it to the project).
+    let (width, height) = (Some(p.settings.width), Some(p.settings.height));
+    let m = MediaItem { id: uuid::Uuid::new_v4().to_string(), name: name.into(), media_type: MediaType::Image, duration, generator: Some(fx), width, height, ..Default::default() };
     let mut c = Clip::from_media(&m, at.max(0.0));
     (c.duration, c.out_point) = (len, len);
     let id = c.id.clone();
@@ -3874,6 +3945,136 @@ pub fn insert_generated(p: &mut Project, track: Option<usize>, at: f64, fx: Fx, 
     clips.sort_by(|a, b| a.position.total_cmp(&b.position));
     p.media_pool.push(m);
     changed(p, true).then_some(id)
+}
+
+/// R18b: Insert › Adjustment Event (VEGAS 23): an Adjustment Event over `a..b` on video track `track` (no media; its
+/// Event FX adjust the tracks below while it plays). Its id; None when the track is locked or not there.
+pub fn insert_adjustment_event(p: &mut Project, track: usize, (a, b): (f64, f64)) -> Option<String> {
+    let t = p.timeline.video_tracks.get_mut(track).filter(|t| !t.locked && b > a)?;
+    let mut c = Clip::new("Adjustment Event", a.max(0.0), b - a.max(0.0));
+    (c.adjustment, c.color) = (true, ADJUSTMENT_COLOR);
+    let id = c.id.clone();
+    t.clips.push(c);
+    t.clips.sort_by(|x, y| x.position.total_cmp(&y.position));
+    changed(p, true).then_some(id)
+}
+
+/// The colour an Adjustment Event is drawn in.
+pub const ADJUSTMENT_COLOR: [u8; 3] = [128, 96, 168];
+
+/// R18b: Tools › Scripting › Resize Generated Media (VEGAS's script): the generated media of the selected video events'
+/// active takes (of every video event when none is selected) takes the project's frame size. False when every one
+/// already has it.
+pub fn resize_generated(p: &mut Project, sel: &[String]) -> bool {
+    let tl = &p.timeline;
+    let picked: Vec<&Clip> = tl.video_tracks.iter().flat_map(|t| &t.clips).filter(|c| sel.contains(&c.id)).collect();
+    let events = if picked.is_empty() { tl.video_tracks.iter().flat_map(|t| &t.clips).collect() } else { picked };
+    let ids: HashSet<String> = events.iter().filter_map(|c| c.media_id.clone()).collect();
+    let size = (Some(p.settings.width), Some(p.settings.height));
+    let mut done = false;
+    for m in p.media_pool.iter_mut().filter(|m| m.generator.is_some() && ids.contains(&m.id)) {
+        done |= (m.width, m.height) != size;
+        (m.width, m.height) = size;
+    }
+    changed(p, done)
+}
+
+/// R18b: Insert › Time...: `len` seconds of empty time at `at`. What starts at or after it moves later on `tracks`
+/// (every track when empty, as VEGAS does with no track selected), with the markers, regions, command markers and the
+/// time selection after it; an event across `at` stays. Locked tracks and events stay.
+pub fn insert_time(p: &mut Project, at: f64, len: f64, tracks: &[String]) -> bool {
+    if len <= 0.0 {
+        return false;
+    }
+    let mode = if tracks.is_empty() { RippleMode::All } else { RippleMode::AffectedMarkers };
+    ripple(p, &RippleOp { from: at, delta: len, tracks: tracks.to_vec(), ..Default::default() }, mode)
+}
+
+/// R18b: the pieces of events inside the time selection `a..b`, as VEGAS's Cut and Copy take them: events `ids` (every
+/// event, when empty) are split at both ends, and the ids of the parts inside are returned. Locked events and tracks
+/// are left whole and out.
+pub fn split_range(p: &mut Project, ids: &[String], (a, b): (f64, f64)) -> Vec<String> {
+    const EPS: f64 = 1e-9;
+    let old: HashSet<String> = all_clips(&p.timeline).map(|c| c.id.clone()).collect();
+    // A piece split off a picked event has a new id.
+    let pick = |c: &Clip| ids.is_empty() || ids.contains(&c.id) || !old.contains(&c.id);
+    split_where(p, a, |_, c| pick(c));
+    split_where(p, b, |_, c| pick(c));
+    let tl = &p.timeline;
+    tl.video_tracks
+        .iter()
+        .chain(&tl.audio_tracks)
+        .filter(|t| !t.locked)
+        .flat_map(|t| &t.clips)
+        .filter(|c| !c.locked && pick(c) && c.position >= a - EPS && c.position + c.duration <= b + EPS)
+        .map(|c| c.id.clone())
+        .collect()
+}
+
+/// R18b: Copy with a time selection: the parts of events `ids` (every event when empty) inside `a..b`, placed as they
+/// sit from `a` (`copy_clips` counts from the earliest).
+pub fn copy_range(p: &Project, ids: &[String], (a, b): (f64, f64)) -> Vec<(bool, usize, Clip)> {
+    let mut tmp = p.clone();
+    let inside = split_range(&mut tmp, ids, (a, b));
+    let t0 = inside.iter().filter_map(|id| tmp.clip(id)).map(|c| c.position).fold(b, f64::min);
+    let mut out = copy_clips(&tmp, &inside);
+    for (_, _, c) in &mut out {
+        c.position += t0 - a;
+    }
+    out
+}
+
+/// R18b: Paste Insert splits the events under the cursor `at` on `tracks` (every track when `all`), so their second
+/// halves make room with what follows (VEGAS).
+pub fn split_for_insert(p: &mut Project, at: f64, tracks: &[String], all: bool) -> bool {
+    split_where(p, at, |t, _| all || tracks.contains(&t.id))
+}
+
+/// R18b: Insert › Slideshow (VEGAS 23's Slideshow Creator): how the pictures are laid out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slideshow {
+    /// Each picture's length, and how much neighbours overlap (the transition's length).
+    pub len: f64,
+    pub overlap: f64,
+    /// The transitions between pictures, used in turn (or at random); none: a plain crossfade.
+    pub transitions: Vec<Transition>,
+    pub random: bool,
+}
+
+/// R18b: the pictures among pool media `idxs` (in that order) as a slideshow from `at` on video track `track` (the
+/// first one when None; a new one when there is none): each `len` long, overlapping the one before by `overlap` with a
+/// crossfade or the next transition. The new ids; empty (nothing changed) when the track is locked or no picture is
+/// usable.
+pub fn insert_slideshow(p: &mut Project, idxs: &[usize], track: Option<usize>, at: f64, s: &Slideshow) -> Vec<String> {
+    let pics: Vec<MediaItem> = idxs.iter().filter_map(|&i| p.media_pool.get(i)).filter(|m| m.media_type == MediaType::Image && m.generator.is_none()).cloned().collect();
+    let tl = &mut p.timeline;
+    let i = track.unwrap_or(0).min(tl.video_tracks.len());
+    if pics.is_empty() || s.len <= 0.0 || tl.video_tracks.get(i).is_some_and(|t| t.locked) {
+        return Vec::new();
+    }
+    if i == tl.video_tracks.len() {
+        tl.add_video_track();
+    }
+    let overlap = s.overlap.clamp(0.0, s.len * 0.5);
+    let mut ids = Vec::new();
+    for (k, m) in pics.iter().enumerate() {
+        let mut c = Clip::from_media(m, at.max(0.0) + k as f64 * (s.len - overlap));
+        (c.duration, c.out_point) = (s.len, s.len);
+        if overlap > 0.0 && k + 1 < pics.len() {
+            c.fade_out = overlap;
+        }
+        if overlap > 0.0 && k > 0 {
+            c.fade_in = overlap;
+            let n = s.transitions.len();
+            let pick = if s.random { (uuid::Uuid::new_v4().as_u128() % n.max(1) as u128) as usize } else { (k - 1) % n.max(1) };
+            c.transition = s.transitions.get(pick).cloned();
+        }
+        ids.push(c.id.clone());
+        tl.video_tracks[i].clips.push(c);
+    }
+    tl.video_tracks[i].clips.sort_by(|x, y| x.position.total_cmp(&y.position));
+    changed(p, true);
+    ids
 }
 
 /// A stopped recording: the WAV at `path` (`frames` at `rate` Hz) goes into Project Media and, as one event, onto every
@@ -6444,5 +6645,127 @@ mod tests {
         let tl = &p.timeline;
         assert_eq!((tl.commands[0].position, tl.cd_indexes[0], tl.cd_tracks[0].start, tl.cd_tracks[0].end), (6.0, 7.0, 1.0, 8.0));
         assert!(snap_targets(&p, None).contains(&7.0));
+    }
+
+    /// R18b acceptance: Insert Time of 2 s at 3 s moves what starts after the cursor, the markers and regions after it
+    /// (a region across it stretches) and the time selection; an event across it and locked events stay. With tracks
+    /// selected, only theirs move (the markers still do).
+    #[test]
+    fn insert_time_moves_markers_and_regions_after_the_cursor() {
+        let mut p = Project::new("t");
+        let (a, b, mut l) = (Clip::new("a", 1.0, 4.0), Clip::new("b", 6.0, 1.0), Clip::new("l", 8.0, 1.0));
+        l.locked = true;
+        p.timeline.video_tracks[0].clips = vec![a, b, l];
+        p.timeline.audio_tracks[0].clips = vec![Clip::new("s", 4.0, 1.0)];
+        p.timeline.markers = vec![Marker { position: 2.0, name: "m1".into(), color: [0; 3] }, Marker { position: 3.5, name: "m2".into(), color: [0; 3] }];
+        p.timeline.regions = vec![Region { start: 4.0, end: 5.0, name: "r1".into() }, Region { start: 2.0, end: 4.0, name: "r2".into() }];
+        p.timeline.loop_region = Some((3.5, 4.5));
+        assert!(!insert_time(&mut p, 3.0, 0.0, &[]));
+        assert!(insert_time(&mut p, 3.0, 2.0, &[]));
+        let tl = &p.timeline;
+        let starts = |t: &Track| t.clips.iter().map(|c| c.position).collect::<Vec<_>>();
+        assert_eq!((starts(&tl.video_tracks[0]), starts(&tl.audio_tracks[0])), (vec![1.0, 8.0, 8.0], vec![6.0]));
+        assert_eq!(tl.markers.iter().map(|m| m.position).collect::<Vec<_>>(), [2.0, 5.5]);
+        assert_eq!(tl.regions.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(), [(6.0, 7.0), (2.0, 6.0)]);
+        assert_eq!(tl.loop_region, Some((5.5, 6.5)));
+        // Only the selected video track moves; the markers do too.
+        let v = p.timeline.video_tracks[0].id.clone();
+        assert!(insert_time(&mut p, 0.5, 1.0, &[v]));
+        let tl = &p.timeline;
+        assert_eq!((starts(&tl.video_tracks[0]), starts(&tl.audio_tracks[0]), tl.markers[0].position), (vec![2.0, 8.0, 9.0], vec![6.0], 3.0));
+    }
+
+    /// R18b: Cut and Copy with a time selection take the parts inside it, of the selected events or of every event; Paste
+    /// Insert's split puts an event's second half after what is pasted.
+    #[test]
+    fn time_selection_cut_copy_and_paste_insert_split() {
+        let mut p = Project::new("t");
+        let (a, b) = (Clip::new("a", 0.0, 4.0), Clip::new("b", 5.0, 4.0));
+        let (ida, idb) = (a.id.clone(), b.id.clone());
+        p.timeline.video_tracks[0].clips = vec![a, b];
+        p.timeline.audio_tracks[0].clips = vec![Clip::new("s", 0.0, 10.0)];
+        // Copy of 3..6 with nothing selected: a's 3..4, b's 5..6 and the sound's 3..6, placed from 3.
+        let all = copy_range(&p, &[], (3.0, 6.0));
+        let mut got: Vec<(bool, f64, f64, f64)> = all.iter().map(|(v, _, c)| (*v, c.position, c.duration, c.in_point)).collect();
+        got.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        assert_eq!(got, [(false, 0.0, 3.0, 3.0), (true, 0.0, 1.0, 3.0), (true, 2.0, 1.0, 0.0)]);
+        assert_eq!(p.timeline.video_tracks[0].clips.len(), 2, "copying changes nothing");
+        // Only b selected: its 5..6, at 2 s from the selection's start.
+        let sel = copy_range(&p, &[idb.clone()], (3.0, 6.0));
+        assert_eq!(sel.iter().map(|(_, _, c)| (c.position, c.duration)).collect::<Vec<_>>(), [(2.0, 1.0)]);
+        assert!(copy_range(&p, &[ida.clone()], (5.0, 6.0)).is_empty());
+        // Cut's split: b's 5..6 is the piece inside (b keeps its id), the rest a new event from 6 s.
+        let inside = split_range(&mut p, &[idb.clone()], (3.0, 6.0));
+        assert_eq!(inside, [idb.clone()]);
+        assert_eq!(p.clip(&idb).map(|c| (c.position, c.duration)), Some((5.0, 1.0)));
+        assert!(p.timeline.video_tracks[0].clips.iter().any(|c| c.position == 6.0 && c.in_point == 1.0 && c.duration == 3.0));
+        // Paste Insert at 2 s splits a there (on its track only); with the ripple the second half follows.
+        let v = p.timeline.video_tracks[0].id.clone();
+        assert!(split_for_insert(&mut p, 2.0, &[v.clone()], false));
+        assert!(ripple(&mut p, &RippleOp { from: 2.0, delta: 1.5, tracks: vec![v], ..Default::default() }, RippleMode::Affected));
+        let starts: Vec<(f64, f64)> = p.timeline.video_tracks[0].clips.iter().map(|c| (c.position, c.duration)).collect();
+        assert_eq!(starts[..2], [(0.0, 2.0), (3.5, 2.0)]);
+        assert_eq!(p.timeline.audio_tracks[0].clips.len(), 1, "the other track is not split");
+    }
+
+    /// R18b: Insert › Audio Transition turns a cut into an overlap of its length with the preset's curves, sets them on
+    /// an existing crossfade, fades a lone edge, and leaves locked events alone.
+    #[test]
+    fn audio_transition_makes_a_crossfade_preset() {
+        let mut p = Project::new("t");
+        p.settings.frame_rate = 25.0;
+        let t = p.timeline.audio_tracks[0].id.clone();
+        p.timeline.audio_tracks[0].clips = vec![Clip::new("a", 0.0, 4.0), Clip::new("b", 4.0, 4.0)];
+        assert!(audio_transition(&mut p, &t, 4.0, 1.0, (Curve::Fast, Curve::Slow)));
+        let c = &p.timeline.audio_tracks[0].clips;
+        assert!((c[0].position + c[0].duration - c[1].position - 1.0).abs() < 1e-9 && c[0].fade_out == c[1].fade_in);
+        assert_eq!((c[0].fade_out_curve, c[1].fade_in_curve), (Curve::Fast, Curve::Slow));
+        // On the crossfade now: only the curves change.
+        assert!(audio_transition(&mut p, &t, 4.0, 1.0, (Curve::Linear, Curve::Sharp)));
+        assert!(!audio_transition(&mut p, &t, 4.0, 1.0, (Curve::Linear, Curve::Sharp)), "nothing left to change");
+        // The last event's end: a fade-out over the length.
+        let end = p.timeline.audio_tracks[0].clips[1].position + p.timeline.audio_tracks[0].clips[1].duration;
+        assert!(audio_transition(&mut p, &t, end - 0.1, 0.5, (Curve::Smooth, Curve::Smooth)));
+        assert_eq!(p.timeline.audio_tracks[0].clips[1].fade_out, 0.5);
+        p.timeline.audio_tracks[0].clips[0].locked = true;
+        assert!(!audio_transition(&mut p, &t, 3.5, 1.0, (Curve::Fast, Curve::Fast)));
+        let v = p.timeline.video_tracks[0].id.clone();
+        assert!(!audio_transition(&mut p, &v, 0.0, 1.0, (Curve::Fast, Curve::Fast)), "audio tracks only");
+    }
+
+    /// R18b: Insert › Slideshow lays the pictures out at a fixed length, each overlapping the one before with the next
+    /// transition; a locked track refuses it. Adjustment tracks and events insert; Resize Generated Media matches the
+    /// project's size.
+    #[test]
+    fn slideshow_adjustments_and_generated_resize() {
+        let mut p = Project::new("t");
+        for (i, (kind, name)) in [(MediaType::Image, "a.png"), (MediaType::Audio, "s.wav"), (MediaType::Image, "b.png"), (MediaType::Image, "c.png")].into_iter().enumerate() {
+            p.media_pool.push(MediaItem { id: format!("m{i}"), path: name.into(), name: name.into(), media_type: kind, ..Default::default() });
+        }
+        let wipe = Transition { plugin: "milan.tr.linear_wipe".into(), ..Default::default() };
+        let s = Slideshow { len: 4.0, overlap: 1.0, transitions: vec![wipe.clone()], random: false };
+        let ids = insert_slideshow(&mut p, &[0, 1, 2, 3], None, 2.0, &s);
+        assert_eq!(ids.len(), 3, "the sound is not a picture");
+        let c = &p.timeline.video_tracks[0].clips;
+        assert_eq!(c.iter().map(|c| (c.position, c.duration, c.fade_in, c.fade_out)).collect::<Vec<_>>(), [(2.0, 4.0, 0.0, 1.0), (5.0, 4.0, 1.0, 1.0), (8.0, 4.0, 1.0, 0.0)]);
+        assert!(c[0].transition.is_none() && c[1].transition == Some(wipe.clone()) && c[2].transition == Some(wipe));
+        p.timeline.video_tracks[0].locked = true;
+        assert!(insert_slideshow(&mut p, &[0], Some(0), 0.0, &s).is_empty());
+        // An adjustment track goes on top; an adjustment event refuses a locked track.
+        assert_eq!(insert_adjustment_track(&mut p, None), 0);
+        assert!(p.timeline.video_tracks[0].adjustment && p.timeline.video_tracks[0].name == "Adjustment Track 1");
+        let id = insert_adjustment_event(&mut p, 0, (1.0, 3.0)).unwrap();
+        assert!(p.clip(&id).is_some_and(|c| c.adjustment && c.media_id.is_none() && c.duration == 2.0));
+        assert!(insert_adjustment_event(&mut p, 1, (1.0, 3.0)).is_none());
+        // Generated media keeps the size it was made at; Resize Generated Media sets the project's.
+        p.timeline.video_tracks[1].locked = false;
+        let fx = crate::engine::plugins::new_fx(crate::engine::plugins::find("milan.gen.solid").unwrap(), None);
+        let g = insert_generated(&mut p, Some(1), 0.0, fx, "Solid", 5.0).unwrap();
+        let gm = p.clip(&g).and_then(|c| c.media_id.clone()).unwrap();
+        let size = |p: &Project| p.media_pool.iter().find(|m| m.id == gm).map(|m| (m.width, m.height)).unwrap();
+        assert_eq!(size(&p), (Some(1920), Some(1080)));
+        (p.settings.width, p.settings.height) = (1280, 720);
+        assert!(!resize_generated(&mut p, &[ids[0].clone()]), "a picture is not generated media");
+        assert!(resize_generated(&mut p, &[]) && size(&p) == (Some(1280), Some(720)) && !resize_generated(&mut p, &[]));
     }
 }

@@ -727,6 +727,10 @@ pub struct Track {
     /// R9 (audio): Record Input › Input Monitoring (Off, as in VEGAS, unless set).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Monitor::is_off")]
     pub monitor: Monitor,
+    /// R18b: an Adjustment Track (video, VEGAS 23): its Track FX apply to the composite of the tracks below it (its
+    /// compositing children when it is a parent), as strong as its Level / Composite Level envelope.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adjustment: bool,
     /// The bus or FX chain the header's multipurpose slider shows (a view choice: not saved).
     #[serde(skip)]
     pub send_view: Option<String>,
@@ -847,6 +851,10 @@ pub struct Clip {
     /// Event Pan/Crop › Mask (video): Bezier paths over the source picture.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub masks: Vec<Mask>,
+    /// R18b: an Adjustment Event (video, VEGAS 23; no media): its Event FX apply to the composite of the tracks below it
+    /// while it plays, through its fades and Opacity.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adjustment: bool,
 }
 
 /// One Pan/Crop mask path. Positive shows inside it, Negative hides inside it; the positive paths add together, the
@@ -1521,7 +1529,7 @@ impl Timeline {
 
     pub fn add_video_track(&mut self) {
         let n = self.video_tracks.len() + 1;
-        self.video_tracks.push(Track::new(&format!("Video {n}"), TrackKind::Video));
+        self.video_tracks.push(inserted_track(&format!("Video {n}"), TrackKind::Video));
     }
 
     pub fn add_audio_track(&mut self) {
@@ -1589,10 +1597,56 @@ impl Track {
             automation: AutoMode::Read,
             auto_controls: false,
             monitor: Monitor::Off,
+            adjustment: false,
             send_view: None,
             armed: false,
         }
     }
+}
+
+/// R18b: video track Set Default Track Properties: what new video tracks start with (VEGAS: Height, Composite Mode and
+/// Track FX); None = the built-in default.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VideoDefaults {
+    pub height: Option<f32>,
+    #[serde(deserialize_with = "lenient")]
+    pub composite: Option<Composite>,
+    pub fx: Option<Vec<Fx>>,
+}
+
+impl VideoDefaults {
+    /// New video track `t` as these defaults set it (the FX with fresh instance ids).
+    pub fn apply(&self, t: &mut Track) {
+        if let Some(h) = self.height {
+            t.height = h;
+        }
+        if let Some(c) = self.composite {
+            t.composite = c;
+        }
+        if let Some(fx) = &self.fx {
+            t.fx = default_track_chain(Some(fx));
+        }
+    }
+}
+
+/// The app's video Set Default Track Properties (`Prefs::default_video_track`).
+static DEFAULT_VIDEO_TRACK: std::sync::Mutex<Option<VideoDefaults>> = std::sync::Mutex::new(None);
+
+pub fn set_default_video_track(d: VideoDefaults) {
+    *DEFAULT_VIDEO_TRACK.lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
+}
+
+/// A new track the user inserts (Insert › Video / Audio Track, a drop that needs one): `Track::new` with the video
+/// defaults applied (audio tracks get their default FX in `Track::new`).
+pub fn inserted_track(name: &str, kind: TrackKind) -> Track {
+    let mut t = Track::new(name, kind);
+    if kind == TrackKind::Video {
+        if let Some(d) = DEFAULT_VIDEO_TRACK.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            d.apply(&mut t);
+        }
+    }
+    t
 }
 
 impl Clip {
@@ -1637,6 +1691,7 @@ impl Clip {
             undersample: None,
             pitch_cents: 0.0,
             masks: Vec::new(),
+            adjustment: false,
         }
     }
 
@@ -2141,6 +2196,11 @@ mod tests {
         assert!(["commands", "cd_tracks", "cd_indexes"].iter().all(|k| v["timeline"].get(*k).is_none()) && v["media_pool"][0].get("markers").is_none());
         let cd: CdTrack = serde_json::from_str(r#"{"start":1,"end":2}"#).unwrap();
         assert!(cd.name.is_empty() && cd.isrc.is_empty() && !cd.protect && !cd.emphasis);
+        // R18b: no adjustment tracks or events, and neither is written; generated media keeps no size of its own.
+        assert!(!t.adjustment && !c.adjustment && vt.get("adjustment").is_none() && vt["clips"][0].get("adjustment").is_none());
+        assert!(back.media_pool[0].width.is_none() && back.media_pool[0].height.is_none());
+        let d: VideoDefaults = serde_json::from_str(r#"{"composite":"Warp","height":40}"#).unwrap();
+        assert_eq!(d, VideoDefaults { height: Some(40.0), composite: None, fx: None });
     }
 
     /// R16a: Project Notes and the Summary survive save and load.
@@ -2256,6 +2316,9 @@ mod tests {
         p.timeline.commands = vec![CommandMarker { position: 2.0, command: "URL".into(), parameter: "https://example.com".into(), comment: "Shop".into() }];
         p.timeline.cd_tracks = vec![CdTrack { start: 2.0, end: 5.0, name: "Intro".into(), isrc: "USRC17607839".into(), protect: true, emphasis: true }];
         p.timeline.cd_indexes = vec![3.5];
+        // R18b: an adjustment track and event.
+        p.timeline.video_tracks[0].adjustment = true;
+        p.timeline.video_tracks[0].clips[0].adjustment = true;
         assert_eq!(p.media_pool[0].file_time(0.5), 1.75);
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
@@ -2273,6 +2336,7 @@ mod tests {
         assert_eq!(back.settings, p.settings);
         assert_eq!((back.media_pool[0].timecode, back.media_pool[0].created), (Some(3600.5), Some(1_714_566_896.25)));
         assert_eq!((&back.timeline.commands, &back.timeline.cd_tracks, &back.timeline.cd_indexes, &back.media_pool[0].markers), (&p.timeline.commands, &p.timeline.cd_tracks, &p.timeline.cd_indexes, &p.media_pool[0].markers));
+        assert!(back.timeline.video_tracks[0].adjustment && back.timeline.video_tracks[0].clips[0].adjustment);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();
         assert_eq!((c.resample, c.channels), (None, ChannelMap::Both));
@@ -2327,6 +2391,15 @@ mod tests {
         let saved = default_track_chain(Some(&t.fx));
         assert!(saved.iter().zip(&t.fx).all(|(a, b)| a.id != b.id && Fx { id: b.id.clone(), ..a.clone() } == *b));
         assert!(default_track_chain(Some(&[])).is_empty());
+        // R18b: the video defaults set a new video track's height, compositing mode and FX (fresh instance ids).
+        let fx = crate::engine::plugins::new_fx(crate::engine::plugins::find("milan.fx.gaussian_blur").unwrap(), None);
+        let d = VideoDefaults { height: Some(90.0), composite: Some(Composite::Multiply), fx: Some(vec![fx.clone()]) };
+        let mut v = Track::new("V", TrackKind::Video);
+        d.apply(&mut v);
+        assert!(v.height == 90.0 && v.composite == Composite::Multiply && v.fx.len() == 1 && v.fx[0].plugin == fx.plugin && v.fx[0].id != fx.id);
+        let mut v2 = Track::new("V", TrackKind::Video);
+        VideoDefaults::default().apply(&mut v2);
+        assert!(v2.height == 0.0 && v2.composite == Composite::SourceAlpha && v2.fx.is_empty());
     }
 
     #[test]

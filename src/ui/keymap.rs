@@ -74,8 +74,8 @@ pub enum Command {
     EventPanCrop, TrackMotion,
     /// The FX window on the focus video event, the focus video track or the Video Output.
     VideoEventFx, TrackFx, VideoOutputFx,
-    /// The FX window on the focus audio event or the focus audio track; Options › Bypass All Audio FX; the focus audio
-    /// track's FX as the chain new audio tracks get (Set Default Track Properties).
+    /// The FX window on the focus audio event or the focus audio track; Options › Bypass All Audio FX; Set Default Track
+    /// Properties on the focus track (R18b: video tracks too).
     AudioEventFx, AudioTrackFx, BypassAudioFx, DefaultTrackFx,
     /// Insert/Remove Envelope of this kind on the selected audio tracks (Insert › Audio Envelopes) or video tracks
     /// (Insert › Video Envelopes).
@@ -131,6 +131,9 @@ pub enum Command {
     /// R18a: View › Event Media Markers › Show Marker Labels; View › Event Length (VEGAS 23); Options › Metronome;
     /// Tools › Open Copy in Audio Editor.
     MarkerLabels, EventLength, Metronome, OpenCopyInAudioEditor,
+    /// R18b: Insert › Adjustment Event and Slideshow... (VEGAS 23), Audio Transition... and Time...; Tools › Scripting ›
+    /// Resize Generated Media.
+    InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated,
 }
 
 use Command::*;

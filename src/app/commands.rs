@@ -54,6 +54,8 @@ impl MeridianApp {
             || self.remove_fx.is_some()
             || self.expand_ask.is_some()
             || self.command_props.is_some()
+            || self.slideshow.is_some()
+            || self.audio_transition.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -320,8 +322,24 @@ impl MeridianApp {
         self.focus_of(video).map_or(Vec::new(), |i| tracks[i].envelopes.iter().filter(|e| edit::env_fits(e.kind, video)).map(|e| e.kind).collect())
     }
 
-    /// Set Default Track Properties OK: restore the built-in chain, or save the track's chain, for new audio tracks.
+    /// Set Default Track Properties OK: restore the built-in defaults, or save the track's checked properties, for new
+    /// tracks of its kind.
     fn set_default_track(&mut self, d: &dialogs::DefaultTrackProps) {
+        if d.video {
+            let defaults = match self.project.find_track(&d.track) {
+                _ if d.restore => crate::project::VideoDefaults::default(),
+                Some((true, i)) => {
+                    let t = &self.project.timeline.video_tracks[i];
+                    crate::project::VideoDefaults { height: d.height.then_some(t.height), composite: d.composite.then_some(t.composite), fx: d.track_fx.then(|| t.fx.clone()) }
+                }
+                _ => return,
+            };
+            self.message = Some(if d.restore { "New video tracks will start with the original defaults.".into() } else { "New video tracks will start with the chosen properties of this track.".into() });
+            crate::project::set_default_video_track(defaults.clone());
+            self.prefs.default_video_track = defaults;
+            self.save_prefs();
+            return;
+        }
         let fx = if d.restore {
             self.message = Some("New audio tracks will start with the original default FX.".into());
             None
@@ -334,6 +352,42 @@ impl MeridianApp {
         crate::project::set_default_track_fx(fx.clone());
         self.prefs.default_track_fx = fx;
         self.save_prefs();
+    }
+
+    /// R18b: Insert › Slideshow (Create: the pictures are imported, then laid out as one undo step) and Insert › Audio
+    /// Transition (OK: the cut, crossfade or edge at the cursor on each audio track with a selected event, else each
+    /// selected audio track; one undo step).
+    fn show_r18b(&mut self, ctx: &egui::Context) {
+        let s = self.project.settings.clone();
+        if let Some(ok) = self.slideshow.as_mut().and_then(|d| d.show(ctx, |x| s.parse_ruler_len(x), |x| s.parse_ruler_time(x).is_some())) {
+            if let Some(d) = self.slideshow.take().filter(|_| ok) {
+                let len = |x: &str| s.parse_ruler_len(x).unwrap_or(0.0);
+                let overlap = len(&d.overlap);
+                let per = d.per_picture.then(|| len(&d.len));
+                let (transitions, random) = dialogs::Slideshow::transitions(d.effect);
+                let show = edit::Slideshow { len: dialogs::slideshow::picture_len(d.pictures.len(), per, len(&d.total), overlap), overlap, transitions, random };
+                let cur = self.project.timeline.cursor_position;
+                let at = self.quantized(if d.at_cursor { cur } else { s.parse_ruler_time(&d.at).unwrap_or(cur).max(0.0) });
+                let track = self.focus_of(true).map(|i| self.project.timeline.video_tracks[i].id.clone());
+                self.file_drop.slideshow(ctx, d.pictures, track, at, show, &self.project.media_pool);
+            }
+        }
+        if let Some(ok) = self.audio_transition.as_mut().and_then(|d| d.show(ctx, |x| s.parse_ruler_len(x).is_some_and(|v| v > 0.0))) {
+            if let Some(d) = self.audio_transition.take().filter(|_| ok) {
+                let len = s.parse_ruler_len(&d.len).unwrap_or(0.0);
+                let at = self.quantized(self.project.timeline.cursor_position);
+                let tl = &self.project.timeline;
+                let mut tracks: Vec<String> = self.project.find_clips(&self.sel.clips).iter().filter(|r| !r.is_video).map(|r| tl.audio_tracks[r.track_idx].id.clone()).collect();
+                if tracks.is_empty() {
+                    tracks = self.sel.tracks.iter().filter(|id| self.project.find_track(id).is_some_and(|f| !f.0)).cloned().collect();
+                }
+                tracks.sort();
+                tracks.dedup();
+                if !self.edit(|p| tracks.iter().fold(false, |done, t| edit::audio_transition(p, t, at, len, (d.out, d.inc)) | done)) {
+                    self.message = Some("Audio Transition: no unlocked cut, crossfade or event edge of the selected audio is at the cursor.".into());
+                }
+            }
+        }
     }
 
     /// The focus event of one kind: the last selected event of that kind (a grouped A/V pair has one of each).
@@ -599,6 +653,31 @@ impl MeridianApp {
         if self.prefs.quantize { edit::quantize(t, self.project.settings.frame_rate) } else { t }
     }
 
+    /// Cut the selected events whole. Only what the delete removes goes to the clipboard: locked events stay, so
+    /// pasting them would duplicate them.
+    fn cut_events(&mut self, ctx: &egui::Context) {
+        let p = &self.project;
+        let ids: Vec<String> = p
+            .find_clips(&self.sel.clips)
+            .iter()
+            .filter_map(|r| {
+                let t = &p.timeline.tracks(r.is_video)[r.track_idx];
+                let c = &t.clips[r.clip_idx];
+                (!t.locked && !c.locked).then(|| c.id.clone())
+            })
+            .collect();
+        if !ids.is_empty() && !self.dragging() {
+            self.clipboard = edit::copy_clips(&self.project, &ids);
+            claim_clipboard(ctx, &self.clipboard);
+            self.delete_rippled(&ids);
+        }
+    }
+
+    /// The time selection, when it has a length.
+    fn time_sel(&self) -> Option<(f64, f64)> {
+        self.project.timeline.loop_region.filter(|(a, b)| b > a)
+    }
+
     /// Index of the focus track (the last selected one), with its kind.
     fn focus_track(&self) -> Option<(bool, usize)> {
         self.sel.tracks.last().and_then(|id| self.project.find_track(id))
@@ -819,39 +898,64 @@ impl MeridianApp {
                 }
             }
             ClearHistory => self.history.clear(),
+            // R18b: with a time selection, Cut and Copy take the parts of the selected events inside it, or of every
+            // event when none is selected (VEGAS); a selection that holds none of them leaves the clipboard alone.
+            Copy | Cut if self.time_sel().is_some() => {
+                let (range, ids, xfade) = (self.time_sel().unwrap_or_default(), self.sel.clips.clone(), self.prefs.auto_crossfade);
+                if c == Copy {
+                    let clips = edit::copy_range(&self.project, &ids, range);
+                    if clips.is_empty() {
+                        self.message = Some("Copy: the time selection holds none of the selected events.".into());
+                    } else {
+                        self.clipboard = clips;
+                        claim_clipboard(ctx, &self.clipboard);
+                    }
+                    return;
+                }
+                let mut cut = Vec::new();
+                self.ripple_edit(false, |p, mode| {
+                    let inside = edit::split_range(p, &ids, range);
+                    if inside.is_empty() {
+                        return None;
+                    }
+                    cut = edit::copy_range(p, &inside, range);
+                    let ops = edit::gaps(p, &inside);
+                    edit::delete_clips(p, &inside);
+                    if let Some(m) = mode {
+                        let before = p.clone();
+                        if edit::ripple_all(p, &ops, m) && xfade {
+                            edit::crossfade_moved(p, &before);
+                        }
+                    }
+                    Some(ops)
+                });
+                if cut.is_empty() {
+                    self.message = Some("Cut: the time selection holds none of the selected, unlocked events.".into());
+                } else {
+                    self.clipboard = cut;
+                    claim_clipboard(ctx, &self.clipboard);
+                    self.sel.clips.retain(|id| self.project.clip(id).is_some());
+                }
+            }
             Copy => {
                 self.clipboard = edit::copy_clips(&self.project, &self.sel.clips);
                 claim_clipboard(ctx, &self.clipboard);
             }
-            Cut => {
-                // Only what the delete removes goes to the clipboard: locked events stay, so pasting them would
-                // duplicate them.
-                let p = &self.project;
-                let ids: Vec<String> = p
-                    .find_clips(&self.sel.clips)
-                    .iter()
-                    .filter_map(|r| {
-                        let t = &p.timeline.tracks(r.is_video)[r.track_idx];
-                        let c = &t.clips[r.clip_idx];
-                        (!t.locked && !c.locked).then(|| c.id.clone())
-                    })
-                    .collect();
-                if !ids.is_empty() && !self.dragging() {
-                    self.clipboard = edit::copy_clips(&self.project, &ids);
-                    claim_clipboard(ctx, &self.clipboard);
-                    self.delete_rippled(&ids);
-                }
-            }
+            Cut => self.cut_events(ctx),
             Paste | PasteInsert => {
                 // From the focus track at the cursor (quantized); the pasted events become the selection. Paste
                 // Insert (or Auto Ripple) first moves what is after the cursor along by the pasted length.
                 let at = self.quantized(self.project.timeline.cursor_position);
                 let (clips, focus, xfade) = (self.clipboard.clone(), self.focus_track(), self.prefs.auto_crossfade);
-                let mut ids = Vec::new();
-                self.ripple_edit(c == PasteInsert, |p, mode| {
+                let (mut ids, insert) = (Vec::new(), c == PasteInsert);
+                self.ripple_edit(insert, |p, mode| {
                     let before = p.clone();
                     let op = edit::paste_ripple(p, &clips, at, focus);
                     if let Some(m) = mode {
+                        // R18b: Paste Insert splits an event under the cursor, so its second half moves along (VEGAS).
+                        if insert {
+                            edit::split_for_insert(p, at, &op.tracks, m == edit::RippleMode::All);
+                        }
                         edit::ripple(p, &op, m);
                     }
                     ids = edit::paste_clips(p, &clips, at, focus);
@@ -990,9 +1094,13 @@ impl MeridianApp {
                 // The whole group of every selected event, whatever Ignore Event Grouping says.
                 self.sel.clips = edit::expand_groups(&self.project, &self.sel.clips);
                 self.sel.env = None;
+                // Whole events, also with a time selection.
                 match c {
-                    GroupCut => self.exec_one(ctx, Cut),
-                    GroupCopy => self.exec_one(ctx, Copy),
+                    GroupCut => self.cut_events(ctx),
+                    GroupCopy => {
+                        self.clipboard = edit::copy_clips(&self.project, &self.sel.clips);
+                        claim_clipboard(ctx, &self.clipboard);
+                    }
                     _ => {
                         let ids = self.sel.clips.clone();
                         self.delete_rippled(&ids);
@@ -1101,8 +1209,9 @@ impl MeridianApp {
                     ui::hint(ctx, "A project has at most 26 input busses.");
                 }
             }
+            // The focus track: the one whose header was right-clicked.
             DefaultTrackFx => {
-                self.default_track = self.focus_of(false).map(|i| dialogs::DefaultTrackProps::new(self.project.timeline.audio_tracks[i].id.clone()));
+                self.default_track = self.focus_track().map(|(v, i)| dialogs::DefaultTrackProps::new(self.project.timeline.tracks(v)[i].id.clone(), v));
             }
             ChooseActiveTake | DeleteTake => {
                 self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
@@ -1430,6 +1539,48 @@ impl MeridianApp {
                 let at = self.quantized(self.project.timeline.cursor_position);
                 self.edit(|p| edit::insert_cd_index(p, at));
             }
+            // R18b.
+            InsertAdjustmentTrack => {
+                // Above the focus video track, as Insert › Video Track; the new track gets the focus.
+                let (before, mut i) = (self.focus_of(true), 0);
+                if self.edit(|p| {
+                    i = edit::insert_adjustment_track(p, before);
+                    true
+                }) {
+                    self.sel.tracks = vec![self.project.timeline.video_tracks[i].id.clone()];
+                }
+            }
+            InsertAdjustmentEvent => {
+                // On the focus video track at the cursor, as long as a new still image (Preferences › Editing).
+                let Some(i) = self.focus_of(true) else { return };
+                let at = self.quantized(self.project.timeline.cursor_position);
+                let len = self.prefs.still_len.max(1.0 / self.project.settings.frame_rate.max(1.0));
+                let mut id = None;
+                if self.edit(|p| {
+                    id = edit::insert_adjustment_event(p, i, (at, at + len));
+                    id.is_some()
+                }) {
+                    (self.sel.clips, self.sel.env) = (id.into_iter().collect(), None);
+                } else {
+                    self.message = Some("Adjustment Event: the track is locked.".into());
+                }
+            }
+            InsertSlideshow => {
+                let s = &self.project.settings;
+                let overlap = self.prefs.cut_overlap.min(self.prefs.still_len * 0.5);
+                self.slideshow = Some(dialogs::Slideshow::new(s.ruler_time(self.project.timeline.cursor_position), s.ruler_len(self.prefs.still_len), s.ruler_len(overlap)));
+            }
+            InsertAudioTransition => self.audio_transition = Some(dialogs::AudioTransition::new(self.project.settings.ruler_len(self.prefs.cut_overlap))),
+            InsertTime => {
+                let len = self.time_sel().map_or(1.0, |(a, b)| b - a);
+                self.time_entry = Some(dialogs::TimeEntry::new(dialogs::TimeMode::Insert, self.project.settings.ruler_len(len)));
+            }
+            ResizeGenerated => {
+                let ids = self.sel.clips.clone();
+                if !self.edit(|p| edit::resize_generated(p, &ids)) {
+                    self.message = Some("Resize Generated Media: the generated media already has the project's frame size.".into());
+                }
+            }
             MediaMarkers | MarkerLabels | EventLength | Metronome => {
                 let p = &mut self.prefs;
                 let on = match c {
@@ -1493,7 +1644,8 @@ impl MeridianApp {
             }
             GoTo | SetTimeAtCursor => {
                 let shown = self.project.settings.ruler_time(self.project.timeline.cursor_position);
-                self.time_entry = Some(dialogs::TimeEntry::new(c == SetTimeAtCursor, shown));
+                let mode = if c == SetTimeAtCursor { dialogs::TimeMode::SetRuler } else { dialogs::TimeMode::GoTo };
+                self.time_entry = Some(dialogs::TimeEntry::new(mode, shown));
             }
             ProjectTempo => self.settings.open_tab(&self.project, 2),
             GridLeft | GridRight => {
@@ -1895,6 +2047,7 @@ impl MeridianApp {
         self.event_props = None;
         self.take_chooser = None;
         self.default_track = None;
+        (self.slideshow, self.audio_transition) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
@@ -2045,6 +2198,7 @@ impl MeridianApp {
                 self.edit(|p| edit::paste_attrs(p, &clips, &ids, d.attrs));
             }
         }
+        self.show_r18b(ctx);
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_customize(ctx);
@@ -2118,12 +2272,17 @@ impl MeridianApp {
     fn show_time_entry(&mut self, ctx: &egui::Context) {
         let s = self.project.settings.clone();
         let Some(e) = &mut self.time_entry else { return };
-        let set = e.set_ruler;
-        let Some(answer) = e.show(ctx, |x| crate::project::parse_time(x, s.ruler.format, &s).is_some()) else { return };
+        let mode = e.mode;
+        let insert = mode == dialogs::TimeMode::Insert;
+        let Some(answer) = e.show(ctx, |x| if insert { s.parse_ruler_len(x).is_some_and(|d| d > 0.0) } else { crate::project::parse_time(x, s.ruler.format, &s).is_some() }) else { return };
         self.time_entry = None;
         let Some(text) = answer else { return };
         let cur = self.project.timeline.cursor_position;
-        if set {
+        if insert {
+            // R18b: Insert › Time on the selected tracks, else every track (VEGAS).
+            let (Some(len), at, tracks) = (s.parse_ruler_len(&text), self.quantized(cur), self.sel.tracks.clone()) else { return };
+            self.edit(|p| edit::insert_time(p, at, len, &tracks));
+        } else if mode == dialogs::TimeMode::SetRuler {
             let Some(off) = crate::project::parse_time(&text, s.ruler.format, &s).map(|v| v - cur).filter(|o| *o != s.ruler.offset) else { return };
             self.edit(|p| {
                 p.settings.ruler.offset = off;
@@ -2571,6 +2730,41 @@ impl MeridianApp {
                 self.project.modified = false; // the harness closes without a save prompt
             }
             "prefs-audio-editor" => self.open_prefs(Some(dialogs::prefs::AUDIO)),
+            // R18b: an Adjustment Track with a blur over the demo, and a sepia Adjustment Event on a track of its own; or
+            // the Slideshow Creator (listing the demo files), Insert Time, Audio Transition or a video track's Set Default
+            // Track Properties.
+            "adjustment" => {
+                use crate::engine::plugins::{find, new_fx};
+                let blur = find("milan.fx.gaussian_blur").map(|i| new_fx(i, i.presets.iter().find(|p| p.name == "Light Blur")));
+                self.exec(ctx, InsertAdjustmentTrack);
+                if let (Some(i), Some(fx)) = (self.focus_of(true), blur) {
+                    self.project.timeline.video_tracks[i].fx = vec![fx];
+                }
+                self.exec(ctx, InsertVideoTrack);
+                self.project.timeline.cursor_position = 2.0;
+                self.exec(ctx, InsertAdjustmentEvent);
+                if let (Some(c), Some(fx)) = (self.sel.clips.last().and_then(|id| self.project.find_clip(id)), find("milan.fx.sepia").map(|i| new_fx(i, None))) {
+                    self.project.timeline.video_tracks[c.track_idx].clips[c.clip_idx].fx = vec![fx];
+                }
+                self.project.timeline.cursor_position = 3.0;
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "slideshow" => {
+                self.exec(ctx, InsertSlideshow);
+                if let Some(d) = &mut self.slideshow {
+                    d.pictures = self.project.media_pool.iter().map(|m| m.path.clone()).collect();
+                }
+            }
+            "insert-time" => self.exec(ctx, InsertTime),
+            "audio-transition" => {
+                self.sel.clips = self.project.timeline.audio_tracks.iter().flat_map(|t| t.clips.first()).map(|c| c.id.clone()).take(1).collect();
+                self.sync_sel();
+                self.exec(ctx, InsertAudioTransition);
+            }
+            "default-video-track" => {
+                self.sel.tracks = self.project.timeline.video_tracks.first().map(|t| t.id.clone()).into_iter().collect();
+                self.exec(ctx, DefaultTrackFx);
+            }
             "goto" => self.exec(ctx, GoTo),
             "expanded-edit" => {
                 // At the focus event's end, so the bracket and the outgoing frame show.
@@ -2580,7 +2774,8 @@ impl MeridianApp {
                 self.exec(ctx, ExpandedEdit);
             }
             "paste-repeat" => {
-                self.exec(ctx, Copy);
+                // The whole selected event (Copy would take only its part inside the demo's time selection).
+                self.clipboard = edit::copy_clips(&self.project, &self.sel.clips);
                 self.exec(ctx, PasteRepeat);
             }
             "render" => self.render.open(&self.project),

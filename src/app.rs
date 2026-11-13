@@ -228,6 +228,9 @@ pub struct MeridianApp {
     /// R18a: files open in the audio editor, watched for changes; Insert › Command / a command marker's Edit, open.
     audio_edits: audio_editor::Watch,
     command_props: Option<crate::ui::dialogs::CommandProps>,
+    /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
+    slideshow: Option<crate::ui::dialogs::Slideshow>,
+    audio_transition: Option<crate::ui::dialogs::AudioTransition>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -251,6 +254,7 @@ impl MeridianApp {
         let look = launch.look.unwrap_or(prefs.look);
         // Before the first project: its audio track starts with this chain.
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
+        crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
@@ -423,6 +427,8 @@ impl MeridianApp {
             unwind: None,
             audio_edits: Default::default(),
             command_props: None,
+            slideshow: None,
+            audio_transition: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);

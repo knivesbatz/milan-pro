@@ -79,6 +79,8 @@ pub struct Prefs {
     pub cursor_preview: f64,
     /// The FX chain new audio tracks start with (Set Default Track Properties); None = gate, EQ and compressor.
     pub default_track_fx: Option<Vec<crate::project::Fx>>,
+    /// R18b: what new video tracks start with (video track Set Default Track Properties).
+    pub default_video_track: crate::project::VideoDefaults,
     /// Preferences › Audio Device: the recording input (device name; None = the Windows default) and the recording
     /// latency offset, how many milliseconds earlier recorded events are placed.
     pub record_input: Option<String>,
@@ -259,6 +261,7 @@ impl Default for Prefs {
             cut_overlap: 1.0,
             cursor_preview: 3.0,
             default_track_fx: None,
+            default_video_track: Default::default(),
             record_input: None,
             record_offset_ms: 0.0,
             device_type: crate::audio::DeviceType::SoundMapper,
@@ -672,7 +675,7 @@ fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
             }
         });
     });
-    dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0, Later("R4b")));
+    dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0, Later("R10a")));
 }
 
 #[cfg(test)]
@@ -713,6 +716,10 @@ mod tests {
         assert!(d.audio_editor.is_none() && !d.metronome && !d.media_markers && !d.marker_labels && !d.event_length);
         let r = Prefs { audio_editor: Some(r"C:\Editors\Sound.exe".into()), metronome: true, media_markers: true, marker_labels: true, event_length: true, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
+        // R18b: no video track defaults; saved ones read back.
+        assert_eq!(d.default_video_track, crate::project::VideoDefaults::default());
+        let v = Prefs { default_video_track: crate::project::VideoDefaults { height: Some(80.0), composite: Some(crate::project::Composite::Add), fx: Some(Vec::new()) }, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&v).unwrap()).unwrap(), v);
         // R15: old preferences have the default keys and toolbars; custom ones read back.
         assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
         let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };

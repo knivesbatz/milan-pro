@@ -134,6 +134,9 @@ pub(super) fn paint_event(
     if ev.empty {
         paint_hatch(p, r, mul(ev.color, 0.7));
     }
+    if ev.clip.adjustment {
+        paint_adjustment(p, r, ev.color);
+    }
     paint_notches(p, ev, lane_bg);
     paint_media_marks(p, t, ev);
     if r.width() >= 3.0 {
@@ -196,6 +199,20 @@ fn paint_notches(p: &Painter, ev: &Ev, lane_bg: Color32) {
             p.add(Shape::convex_polygon(vec![pos2(x - 4.0, r.min.y), pos2(x + 4.0, r.min.y), pos2(x, r.min.y + 5.0)], lane_bg, Stroke::NONE));
         }
     }
+}
+
+/// R18b: an Adjustment Event's special shading: a light band fading down the event, over its colour.
+fn paint_adjustment(p: &Painter, r: Rect, c: Color32) {
+    let vis = r.intersect(p.clip_rect());
+    let (top, bottom) = (c.lerp_to_gamma(Color32::WHITE, 0.45), c);
+    let mut mesh = Mesh::default();
+    for (y, col) in [(r.min.y, top), (r.max.y, bottom)] {
+        mesh.colored_vertex(pos2(vis.min.x, y), col);
+        mesh.colored_vertex(pos2(vis.max.x, y), col);
+    }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 2, 3);
+    p.with_clip_rect(vis).add(mesh);
 }
 
 /// Diagonal hatching over an empty event.

@@ -12,6 +12,8 @@ use crate::project::{MediaItem, Project};
 struct Pending {
     paths: Vec<PathBuf>,
     place: Option<Place>,
+    /// R18b: Insert › Slideshow: the pictures are laid out as this says (at `place`'s time, on its track).
+    slideshow: Option<edit::Slideshow>,
 }
 
 /// The target track's id (None: new tracks), the time and how the drop menu adds the files.
@@ -68,7 +70,14 @@ impl FileDrop {
 
     /// Import `paths` once they are probed (reusing the hover probes), and place them at `place` if given.
     pub fn drop(&mut self, paths: Vec<PathBuf>, place: Option<Place>) {
-        self.pending.push(Pending { paths, place });
+        self.pending.push(Pending { paths, place, slideshow: None });
+    }
+
+    /// R18b: Insert › Slideshow: import the pictures `paths` once probed and lay them out from `time` on video track
+    /// `track` (the first one when None) as `show` says, as one undo step.
+    pub fn slideshow(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>, track: Option<String>, time: f64, show: edit::Slideshow, pool: &[MediaItem]) {
+        self.hover(ctx, &paths, pool);
+        self.pending.push(Pending { paths, place: Some((track, time, edit::DropMode::AcrossTime)), slideshow: Some(show) });
     }
 
     /// New/Open: drops still waiting are cancelled, and probes still running are ignored.
@@ -95,6 +104,12 @@ impl FileDrop {
         }
         let idxs: Vec<usize> = d.paths.iter().filter_map(|p| project.media_pool.iter().position(|m| m.path == *p && m.subclip.is_none())).collect();
         let (ids, refused) = match &d.place {
+            Some((track, time, _)) if d.slideshow.is_some() => {
+                let target = track.as_deref().and_then(|id| project.find_track(id)).filter(|t| t.0).map(|t| t.1);
+                let ids = d.slideshow.as_ref().map_or(Vec::new(), |s| edit::insert_slideshow(project, &idxs, target, *time, s));
+                let refused = ids.is_empty() && project.timeline.video_tracks.get(target.unwrap_or(0)).is_some_and(|t| t.locked);
+                (ids, refused)
+            }
             Some((track, time, mode)) => {
                 // A track deleted while probing: new tracks, as below the last track.
                 let target = track.as_deref().and_then(|id| project.find_track(id));
