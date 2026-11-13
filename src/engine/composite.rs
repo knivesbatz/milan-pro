@@ -283,7 +283,7 @@ pub fn requests(fp: &FramePlan, w: usize, h: usize) -> Vec<(&SrcAt, u32, u32)> {
 fn events(i: &Item) -> Vec<&EventPlan> {
     match i {
         Item::Event(e) => vec![e],
-        Item::Mix { a, b, .. } => a.iter().chain([b]).collect(),
+        Item::Mix { a, b, .. } => a.iter().chain(b).collect(),
     }
 }
 
@@ -328,21 +328,34 @@ fn draw_items(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, gain: 
                     }
                     img
                 };
-                let (ia, ib) = (side(a.as_ref()), side(Some(b)));
+                let (ia, ib) = (side(a.as_ref()), side(b.as_ref()));
                 let m = if with_motion { Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(to_out) } else { Affine::translate(0.0, 0.0) };
                 draw(dst, &transition::mix(kind, &ia, &ib, *p, k), m, gain, bilinear, k);
             }
             _ => {
-                // An unknown transition draws as a dissolve: A, then B at alpha p.
-                let p = if let Item::Mix { p, .. } = item { *p } else { 1.0 };
+                // An unknown transition draws as a dissolve: A, then B at alpha p (or A alone at 1 - p, out to nothing).
+                let (p, out) = if let Item::Mix { p, b, .. } = item { (*p, b.is_none()) } else { (1.0, false) };
                 let evs = events(item);
-                let last = evs.len() - 1;
+                let last = evs.len().saturating_sub(1);
                 for (i, e) in evs.into_iter().enumerate() {
-                    draw_event(dst, src, e, to_out, place_out, e.alpha * gain * if i == last { p } else { 1.0 }, bilinear, k);
+                    let w = if out { 1.0 - p } else if i == last { p } else { 1.0 };
+                    draw_event(dst, src, e, to_out, place_out, e.alpha * gain * w, bilinear, k);
                 }
             }
         }
     }
+}
+
+/// Fade to Color: each pixel `t` of the way to `color`, at its own alpha (where the track is transparent it stays so).
+fn fade_to(img: &mut ColorImage, [r, g, b]: [u8; 3], t: f32, k: usize) {
+    let w = img.size[0];
+    par_rows(&mut img.pixels, w, k, |_, row| {
+        for p in row.iter_mut() {
+            let a = p.a() as u32;
+            let c = Color32::from_rgba_premultiplied(mul255(r as u32, a) as u8, mul255(g as u32, a) as u8, mul255(b as u32, a) as u8, a as u8);
+            *p = vfx::lerp_px(*p, c, t);
+        }
+    });
 }
 
 /// Compose one frame `w` x `h`: opaque black, then each track bottom to top, then the Video Output FX.
@@ -351,11 +364,14 @@ pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, biline
     for l in &fp.layers {
         let draws: usize = l.items.iter().map(|i| events(i).len()).sum();
         // Fast path: draw straight into the accumulator, sampling each pixel once.
-        if l.fx.is_empty() && l.mode == Composite::SourceAlpha && (l.opacity >= 1.0 || draws <= 1) {
+        if l.fx.is_empty() && l.fade.is_none() && l.mode == Composite::SourceAlpha && (l.opacity >= 1.0 || draws <= 1) {
             draw_items(&mut acc, src, l, l.opacity, bilinear, k, true);
         } else if l.fx.is_empty() {
             let mut layer = ColorImage::new([w, h], Color32::TRANSPARENT);
             draw_items(&mut layer, src, l, 1.0, bilinear, k, true);
+            if let Some((c, t)) = l.fade {
+                fade_to(&mut layer, c, t, k);
+            }
             blend(&mut acc, &layer, l.mode, l.opacity, k);
         } else {
             // Track FX on the track's own frame, then Track Motion moves the result.
@@ -366,6 +382,9 @@ pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, biline
             }
             let mut moved = ColorImage::new([w, h], Color32::TRANSPARENT);
             draw(&mut moved, &layer, Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(layer_to_out(l, w, h)), 1.0, bilinear, k);
+            if let Some((c, t)) = l.fade {
+                fade_to(&mut moved, c, t, k);
+            }
             blend(&mut acc, &moved, l.mode, l.opacity, k);
         }
     }
@@ -423,7 +442,52 @@ mod tests {
     }
 
     fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
-        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), fx: Vec::new(), items }
+        TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), fx: Vec::new(), fade: None, items }
+    }
+
+    /// R4a acceptance, end to end from the project: a Transition Progress envelope at 0.25 renders the dissolve 25%
+    /// mixed, a transition out to nothing leaves the event at 1 - p over black, and a Fade to Color envelope at -1
+    /// draws the bottom colour where the track has a picture (and only there).
+    #[test]
+    fn progress_fade_out_transition_and_fade_to_color() {
+        use crate::project::{Clip, Envelope, EnvKind, Keyframe, Keyframes, MediaItem, MediaType, Project, Transition, Curve};
+        struct ById;
+        impl Sources for ById {
+            fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
+                let c = if &*s.m.id == "a" { Color32::from_gray(200) } else { Color32::from_gray(100) };
+                Some(Arc::new(ColorImage::new([w as usize, h as usize], c)))
+            }
+        }
+        let mut p = Project::new("t");
+        p.settings.frame_rate = 30.0;
+        for id in ["a", "b"] {
+            p.media_pool.push(MediaItem { id: id.into(), media_type: MediaType::Video, duration: 100.0, width: Some(1920), height: Some(1080), frame_rate: Some(30.0), ..Default::default() });
+        }
+        let mut a = Clip::from_media(&p.media_pool[0], 0.0);
+        (a.duration, a.fade_out) = (6.0, 2.0);
+        let mut b = Clip::from_media(&p.media_pool[1], 4.0);
+        (b.duration, b.fade_in) = (6.0, 2.0);
+        let key = |t, v| Keyframe { t, v, curve: Curve::Linear };
+        b.transition = Some(Transition { plugin: "milan.tr.dissolve".into(), progress: Keyframes { keys: vec![key(0.0, 0.25)] }, ..Default::default() });
+        p.timeline.video_tracks[0].clips = vec![a, b];
+        let frame = |p: &Project, t: f64| {
+            let vp = plan::compile(p);
+            compose(&plan::frame_plan(&vp, plan::frame_at(t, vp.fps)), &mut ById, W, H, true, 1)
+        };
+        assert_eq!(px(&frame(&p, 5.0), W / 2, H / 2), [175, 175, 175, 255]); // 200 x 0.75 + 100 x 0.25
+        // b fades out to nothing through a dissolve: half way, half of b over black.
+        let c = &mut p.timeline.video_tracks[0].clips[1];
+        (c.fade_out, c.transition_out) = (2.0, Some(Transition { plugin: "milan.tr.dissolve".into(), ..Default::default() }));
+        assert_eq!(px(&frame(&p, 9.0), W / 2, H / 2), [50, 50, 50, 255]);
+        // Fade to Color at -1 over a half-size picture: the bottom colour on the picture, black around it.
+        let t = &mut p.timeline.video_tracks[0];
+        (t.fade_colors, t.motion) = ([[255, 255, 255], [0, 128, 255]], Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { w: 0.5, h: 0.5, ..Default::default() }, curve: Curve::Linear }] });
+        t.envelopes.push(Envelope { kind: EnvKind::FadeToColor, points: Keyframes { keys: vec![key(0.0, -1.0)] } });
+        let out = frame(&p, 1.0);
+        assert_eq!((px(&out, W / 2, H / 2), px(&out, 2, 2)), ([0, 128, 255, 255], [0, 0, 0, 255]));
+        // At +0.5, half way to the top colour (white) from a's grey 200.
+        p.timeline.video_tracks[0].envelopes[0].points.keys[0].v = 0.5;
+        assert_eq!(px(&frame(&p, 1.0), W / 2, H / 2), [228, 228, 228, 255]);
     }
 
     const W: usize = 192;
@@ -650,7 +714,7 @@ mod tests {
         let m = media(1920, 1080);
         let push = preset_eval(find("milan.tr.push").unwrap(), None);
         let pip = Motion { w: 0.5, h: 0.5, ..Default::default() };
-        let mix = || Item::Mix { a: Some(event(&m, PanCrop::default(), 1.0)), b: event(&m, PanCrop::default(), 1.0), p: 0.5, kind: Some(push.clone()) };
+        let mix = || Item::Mix { a: Some(event(&m, PanCrop::default(), 1.0)), b: Some(event(&m, PanCrop::default(), 1.0)), p: 0.5, kind: Some(push.clone()) };
         let fast = compose(&FramePlan { out_fx: Vec::new(), layers: vec![layer(vec![mix()], Composite::SourceAlpha, 1.0, pip)] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         for y in 0..H {
             for x in 0..W {

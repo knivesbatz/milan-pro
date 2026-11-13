@@ -49,6 +49,8 @@ pub struct Prefs {
     pub ignore_grouping: bool,
     /// View › Show Envelopes: track envelopes are drawn and editable.
     pub show_envelopes: bool,
+    /// View › Audio / Video Envelopes: the kinds turned off (every kind shows by default).
+    pub hidden_envelopes: Vec<EnvView>,
     /// Options › Lock Envelopes to Events: envelope points move with the events over them.
     pub lock_envelopes: bool,
     /// Preferences › Video: create video proxies for 4K, HEVC and AV1 media as it is imported.
@@ -71,7 +73,50 @@ pub struct Prefs {
     pub layouts: BTreeMap<String, Layout>,
 }
 
-/// Key of a saved layout: `slot` is "last" or a user slot number; VP23 Dark and White share one.
+/// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
+/// timeline can hide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnvView {
+    AudioMute,
+    AudioVolume,
+    AudioPan,
+    VideoMute,
+    CompositeLevel,
+    FadeToColor,
+    TrackKeyframes,
+    Velocity,
+    TransitionProgress,
+}
+
+impl EnvView {
+    /// The row that shows envelope `kind` on a video (or audio) track or its events.
+    pub fn of(kind: crate::project::EnvKind, video: bool) -> Option<Self> {
+        use crate::project::EnvKind::*;
+        Some(match (kind, video) {
+            (Mute, false) => EnvView::AudioMute,
+            (Volume, false) => EnvView::AudioVolume,
+            (Pan, false) => EnvView::AudioPan,
+            (Mute, true) => EnvView::VideoMute,
+            (CompositeLevel, true) => EnvView::CompositeLevel,
+            (FadeToColor, true) => EnvView::FadeToColor,
+            (Velocity, true) => EnvView::Velocity,
+            (TransitionProgress, true) => EnvView::TransitionProgress,
+            _ => return None,
+        })
+    }
+
+    /// Its bit in a set of hidden rows (`ui::EditOpts::hidden_envs`).
+    pub fn bit(self) -> u16 {
+        1 << self as u16
+    }
+
+    /// The set of `views` as bits.
+    pub fn bits(views: &[EnvView]) -> u16 {
+        views.iter().fold(0, |m, v| m | v.bit())
+    }
+}
+
+/// Key of a saved layout: `slot` is "last" or a user slot number;VP23 Dark and White share one.
 pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
     format!("{}:{slot}", if look == UiLook::Vegas16 { "vp16" } else { "vp23" })
 }
@@ -113,6 +158,7 @@ impl Default for Prefs {
             ripple_mode: crate::edit::RippleMode::Affected,
             ignore_grouping: false,
             show_envelopes: true,
+            hidden_envelopes: Vec::new(),
             lock_envelopes: true,
             auto_proxy: false,
             fx_favorites: Vec::new(),

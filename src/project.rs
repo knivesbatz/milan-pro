@@ -262,6 +262,9 @@ pub struct Track {
     /// Audio track Switches › Invert Phase.
     #[serde(default)]
     pub invert: bool,
+    /// Video track Fade Colors: [top, bottom] (sRGB), what a Fade to Color envelope fades to (VEGAS: white, black).
+    #[serde(default = "fade_colors")]
+    pub fade_colors: [[u8; 3]; 2],
     /// Armed for recording (audio): this session only.
     #[serde(skip)]
     pub armed: bool,
@@ -315,6 +318,9 @@ pub struct Clip {
     /// Transition from the overlapped event into this one (stored on the incoming event).
     #[serde(default)]
     pub transition: Option<Transition>,
+    /// Transition on a fade-out with nothing after it: the event goes out to transparent through it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition_out: Option<Transition>,
     /// Event envelopes, event-relative.
     #[serde(default)]
     pub envelopes: Vec<Envelope>,
@@ -520,8 +526,12 @@ pub enum EnvKind {
     CompositeLevel,
     /// 0..=1.
     Opacity,
-    /// Reserved for event velocity.
+    /// Event velocity (video): playback speed, 1 = 100%, -1 (reverse) ..= 10; a 0% Hold point is a freeze frame.
     Velocity,
+    /// Video track Fade to Color: 0 none, 1 all the top colour, -1 all the bottom colour (`Track::fade_colors`).
+    FadeToColor,
+    /// Transition Progress, 0..=1 (kept on the `Transition`, its keys over the transition's length 0..=1).
+    TransitionProgress,
     /// A kind written by a later version: loads (instead of failing the whole project) and is ignored.
     #[serde(other)]
     Unknown,
@@ -548,11 +558,21 @@ pub struct Fx {
     pub text: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Transition {
     pub plugin: String,
     #[serde(default)]
     pub params: BTreeMap<String, f32>,
+    /// Transition Progress envelope: progress (0..=1) at each fraction (0..=1) of the transition's length, so it
+    /// follows the overlap when an edge moves; no keys = linear, 0 to 1.
+    #[serde(default, skip_serializing_if = "Keyframes::is_empty")]
+    pub progress: Keyframes<f32>,
+}
+
+impl<T> Keyframes<T> {
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
 }
 
 /// Event Pan/Crop, normalised to the source; negative w/h flip.
@@ -630,6 +650,10 @@ fn one() -> f64 {
 
 fn yes() -> bool {
     true
+}
+
+fn fade_colors() -> [[u8; 3]; 2] {
+    [[255; 3], [0; 3]]
 }
 
 impl Project {
@@ -868,6 +892,7 @@ impl Track {
             },
             envelopes: Vec::new(),
             invert: false,
+            fade_colors: fade_colors(),
             armed: false,
         }
     }
@@ -897,6 +922,7 @@ impl Clip {
             pan_crop: Keyframes::default(),
             fx: Vec::new(),
             transition: None,
+            transition_out: None,
             envelopes: Vec::new(),
             group: None,
             takes: Vec::new(),
@@ -1292,8 +1318,8 @@ mod tests {
         };
         strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
         strip(&mut v["settings"], &["ruler", "resample"]);
-        strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes", "invert"]);
-        strip(&mut v["timeline"]["audio_tracks"][0], &["fx", "invert"]);
+        strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes", "invert", "fade_colors"]);
+        strip(&mut v["timeline"]["audio_tracks"][0], &["fx", "invert", "fade_colors"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes", "looping"];
         let r3b_keys = ["invert", "normalize", "auto_normalize", "channels", "stream", "keep_aspect", "reduce_flicker", "resample"];
         strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &[&clip_keys[..], &r3b_keys].concat());
@@ -1323,6 +1349,13 @@ mod tests {
         assert!(!c.invert && !c.normalize && !c.auto_normalize && c.normalized.is_none() && c.keep_aspect && !c.reduce_flicker);
         assert_eq!((c.channels, c.stream, c.resample, c.undersample), (ChannelMap::Both, 0, None, None));
         assert!(!t.invert && !tl.audio_tracks[0].invert);
+        // R4a: Fade Colors white over black (VEGAS's), no transition out, no velocity.
+        assert_eq!(t.fade_colors, [[255, 255, 255], [0, 0, 0]]);
+        assert!(c.transition_out.is_none() && crate::engine::velocity::of(c).is_none());
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("transition_out").is_none(), "nothing written without one");
+        let tr: Transition = serde_json::from_str(r#"{"plugin":"milan.tr.dissolve"}"#).unwrap();
+        assert!(tr.progress.is_empty() && serde_json::to_value(&tr).unwrap().get("progress").is_none(), "an old transition is linear");
         assert_eq!(back.settings.resample, Resample::Disable);
         assert_eq!(Project::new("n").settings.resample, Resample::Smart, "a new project resamples smartly, as VEGAS 16");
         let m = &back.media_pool[0];
@@ -1350,7 +1383,8 @@ mod tests {
         (c.rate, c.reverse, c.muted) = (0.5, true, true);
         c.pan_crop = Keyframes { keys: vec![Keyframe { t: 0.5, v: PanCrop { cx: 0.25, cy: 0.75, w: -0.5, h: 0.5, rot: 30.0 }, curve: Curve::Linear }] };
         c.fx = vec![fx("milan.fx.blur")];
-        c.transition = Some(Transition { plugin: "milan.tr.dissolve".into(), params: BTreeMap::from([("soft".to_string(), 0.5)]) });
+        c.transition = Some(Transition { plugin: "milan.tr.dissolve".into(), params: BTreeMap::from([("soft".to_string(), 0.5)]), progress: keys(0.25) });
+        c.transition_out = Some(Transition { plugin: "milan.tr.linear_wipe".into(), ..Default::default() });
         c.envelopes = vec![env(EnvKind::Volume), env(EnvKind::Velocity)];
         c.group = Some("g1".into());
         c.takes = vec![Take { media_id: "m2".into(), in_point: 2.0, name: "Take 2".into() }];
@@ -1362,7 +1396,8 @@ mod tests {
         t.composite = Composite::Screen;
         t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0 }, curve: Curve::Smooth }] };
         t.fx = vec![fx("milan.fx.grade")];
-        t.envelopes = vec![env(EnvKind::CompositeLevel), env(EnvKind::Opacity)];
+        t.envelopes = vec![env(EnvKind::CompositeLevel), env(EnvKind::Opacity), env(EnvKind::Mute), env(EnvKind::FadeToColor)];
+        t.fade_colors = [[10, 20, 30], [200, 100, 50]];
         t.clips.push(c);
         p.timeline.audio_tracks[0].envelopes = vec![env(EnvKind::Pan), env(EnvKind::Mute)];
         p.timeline.audio_tracks[0].invert = true;
@@ -1389,6 +1424,8 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());
         assert_eq!(back.timeline.video_tracks[0].clips[0], p.timeline.video_tracks[0].clips[0]);
+        assert_eq!(back.timeline.video_tracks[0].fade_colors, [[10, 20, 30], [200, 100, 50]]);
+        assert_eq!(back.timeline.video_tracks[0].envelopes[3].kind, EnvKind::FadeToColor);
         assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.

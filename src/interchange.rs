@@ -209,6 +209,7 @@ fn envelope(kind: &str, video: bool) -> Option<EnvKind> {
         "Pan" => EnvKind::Pan,
         "Mute" => EnvKind::Mute,
         "Composite" => EnvKind::CompositeLevel,
+        "FadeToColor" => EnvKind::FadeToColor,
         _ => return None,
     };
     edit::env_fits(k, video).then_some(k)
@@ -218,7 +219,7 @@ fn env_value(kind: EnvKind, v: f64, neutral: f64) -> f32 {
     match kind {
         EnvKind::Volume => db(v),
         EnvKind::Mute => if (v - neutral).abs() < 0.5 { 1.0 } else { 0.0 },
-        EnvKind::Pan => v.clamp(-1.0, 1.0) as f32,
+        EnvKind::Pan | EnvKind::FadeToColor => v.clamp(-1.0, 1.0) as f32,
         _ => v.clamp(0.0, 1.0) as f32,
     }
 }
@@ -484,7 +485,7 @@ mod tests {
             { "kind": "video", "name": "", "mute": true, "level": 0.5, "mode": "Screen",
               "envelopes": [
                 { "kind": "Composite", "neutral": 1, "points": [ { "t": 0, "v": 1, "curve": "Linear" }, { "t": 2.01, "v": 0.25, "curve": "None" } ] },
-                { "kind": "FadeToColor", "neutral": 0, "points": [] } ],
+                { "kind": "FadeToColor", "neutral": 0, "points": [ { "t": 0, "v": -0.5 } ] } ],
               "events": [ { "start": 1.01, "length": 2.0, "offset": 3.5, "rate": 2, "path": "C:\\m\\a.mp4", "name": "Take A",
                   "fade_in": 0.5, "fade_out": 0.25, "fade_in_curve": "Fast", "fade_out_curve": "Sharp", "gain": 0.5,
                   "mute": true, "locked": true, "group": 0, "takes": [ { "path": "C:\\m\\b.mp4", "offset": 1.0, "name": "" } ],
@@ -536,9 +537,11 @@ mod tests {
 
         let v = &tl.video_tracks[0];
         assert_eq!((v.name.as_str(), v.muted, v.volume, v.composite), ("Video 1", true, 0.5, Composite::Screen));
-        assert_eq!(v.envelopes.len(), 1);
+        assert_eq!(v.envelopes.len(), 2);
         let k = &v.envelopes[0].points.keys;
         assert_eq!(v.envelopes[0].kind, EnvKind::CompositeLevel);
+        // R4a: Fade to Color comes across (towards the bottom colour below 0).
+        assert_eq!((v.envelopes[1].kind, v.envelopes[1].points.keys[0].v), (EnvKind::FadeToColor, -0.5));
         assert!(close(k[1].t, f(60.0)) && k[1].v == 0.25 && k[1].curve == Curve::Hold && k[0].curve == Curve::Linear);
         let c = &v.clips[0];
         assert!(close(c.position, f(30.0)) && close(c.duration, f(60.0)), "{} {}", c.position, c.duration);
@@ -589,9 +592,9 @@ mod tests {
         assert!(close(la, f(30.0)) && close(lb, f(120.0)));
 
         let has = |s: &str| w.iter().any(|x| x.contains(s));
-        assert!(has("Gaussian Blur") && has("FadeToColor") && has("midi") && has("stream 2"), "{w:?}");
+        assert!(has("Gaussian Blur") && !has("FadeToColor") && has("midi") && has("stream 2"), "{w:?}");
         assert!(has(r"Media offline: C:\m\gone.wav (file not found)"), "{w:?}");
-        assert_eq!(w.len(), 5, "{w:?}");
+        assert_eq!(w.len(), 4, "{w:?}");
     }
 
     #[test]

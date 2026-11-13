@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 186 |
-| PARTIAL | 150 |
+| DONE | 187 |
+| PARTIAL | 149 |
 | MISSING | 84 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). The gaps are velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The gaps are audio varispeed, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -176,7 +176,7 @@ What matters most:
 | 5.27 | Playback rate adjustment | DONE | `Clip.rate`, Event Properties |
 | 5.28 | Reverse playback (events) | PARTIAL | `Clip.reverse` renders correctly. Preview shows only some frames (per-frame respawn, `FEATURE_PLAN.md:242`). → R20 |
 | 5.29 | Clip grouping | DONE | Create/remove/clear/select, and (R3a) Group › Cut All / Copy All / Delete All in Edit › Group and the event menu: the whole group of every selected event, whatever Ignore Event Grouping says (`app/commands.rs`). Test `groups_expand_split_and_dissolve` |
-| 5.30 | Event envelopes | PARTIAL | Volume, pan, mute and opacity work. Velocity, Freeze Frame and Transition Progress are greyed (`ctx.rs:807`). → R4a |
+| 5.30 | Event envelopes | DONE | Volume, pan, mute and opacity work. R4a: event Velocity (-100%..1000%, `engine/velocity.rs`, `edit::src_time`), Freeze Frame at Cursor (`edit::freeze_frame`) and Transition Progress (`Transition.progress`), inserted from the event menu and Insert › Video Envelopes, drawn and edited on the event (`ui/timeline/envelopes.rs`); video track Mute and Fade to Color envelopes with Fade Colors. Tests `velocity_drives_the_source_time`, `track_mute_fade_to_color_and_velocity`, `progress_fade_out_transition_and_fade_to_color`, `render_e2e` (parity). Audio events follow velocity in R4b |
 | 5.31 | Fade-in and fade-out | DONE | Fade curves and crossfades |
 | 5.32 | Audio and video synchronization | DONE | Grouped A/V, audio master clock (`FEATURE_PLAN.md` 1.6) |
 | 5.33 | Precise frame-level editing | DONE | Quantize to Frames |
@@ -307,7 +307,7 @@ What matters most:
 | 8.12 | Track properties | PARTIAL | Mute, solo, volume, pan and compositing mode come across. Track FX, Track Motion, parent/child compositing and colour do not. → R25 |
 | 8.13 | Compositing | PARTIAL | Modes without an equivalent fall back to Source Alpha (`interchange.rs:285`). → R7, R25 |
 | 8.14 | Keyframes | PARTIAL | Pan/Crop keys come across. FX and Track Motion keyframes do not. → R25 |
-| 8.15 | Envelopes | PARTIAL | Track envelopes come across, except kinds Milan lacks (`interchange.rs:295`). Velocity and event envelopes are partial. → R4a, R25 |
+| 8.15 | Envelopes | PARTIAL | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::envelope`). Event velocity and event envelopes are not exported by the VEGAS script yet. → R25 |
 | 8.16 | Markers | DONE | |
 | 8.17 | Regions | DONE | |
 | 8.18 | Project settings | PARTIAL | Width, height, fps and sample rate only. Field order, pixel aspect ratio, pixel format and bus mode are missing. → R25 |
@@ -920,6 +920,16 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R4a: Velocity, freeze frame, transition progress, fade to colour (M-L)
 
+**Status: DONE.** Built as designed below, plus the items R0 assigned (video track Mute envelope, the View › Audio / Video Envelopes filters) and R5's Track Fade Colors, except:
+- `engine/velocity.rs` integrates the envelope exactly (`Curve::area`, the closed-form integral of each curve), so there is no 1 ms table or cache. Velocity is a video event envelope (as in VEGAS); its audio follows in R4b. A forward trim and a split keep every frame where it was on the timeline; reversed trims, slips and stretches of an event with a velocity envelope still count its span at the plain rate (shortcut in `edit::trim_left_edge`), and such an event shows no loop notches.
+- Freeze Frame at Cursor keeps the speed up to the cursor (a point there holding its value) and steps to a 0% Hold point, so the frame at the cursor holds until the next point or the event's end. Velocity makes an event "off speed" for Smart resampling.
+- `Transition.progress` keys are fractions of the transition's length (0..1), so the envelope follows the overlap when an edge moves; none = linear. Transition Progress toggles on the focus event's transitions, in and out.
+- A transition dropped on an event's end with nothing after it fades the event out over the cut-to-overlap length into transparent (`Clip.transition_out`); its menu, FX window (`FxTarget::Transition("<id>/out")`) and Remove Transition work like the incoming one's. An end that a later event overlaps is a crossfade (refused there).
+- Fade to Color fades the track's picture (after its FX and Track Motion) towards the top colour above 0 and the bottom colour below, at the picture's own alpha (empty areas stay empty). Fade Colors ▸ Top / Bottom pick in place (one undo step per pick), white over black by default.
+- Video track Mute hides the track where it is 0. Audio and video Mute are separate commands (Insert › Audio Envelopes and Insert › Video Envelopes act on the selected tracks of their kind).
+- View › Audio / Video Envelopes hide kinds from the timeline (`Prefs.hidden_envelopes`; playback is unchanged). Track Keyframes shows a mark at the bottom of the video lane for each Track Motion and track FX key (VEGAS's separate keyframe row under the track is not built).
+- VEGAS project import now brings Fade to Color and video track Mute envelopes.
+
 **Scope (video and plan side)**
 - Velocity envelope (-100%..1000%, negative means reverse), Freeze Frame at Cursor.
 - Transition Progress envelope.
@@ -972,7 +982,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 **Scope**
 - Group Selected Tracks, Ungroup, Rename Track Group, Collapse/Expand, Mute/Solo Track Group (GroupMute, GroupSolo).
 - Track Hide/Show.
-- Track Fade Colors (with R4a).
+- Track Fade Colors (with R4a; DONE there).
 
 **Design**
 - `Timeline.track_groups: Vec<TrackGroup { id, name, collapsed, tracks: Vec<String> }>`.

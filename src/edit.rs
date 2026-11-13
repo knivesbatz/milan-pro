@@ -66,10 +66,17 @@ pub fn loop_passes(c: &Clip, len: Option<f64>) -> Vec<(f64, f64, f64)> {
 }
 
 /// Source time shown at timeline time `t` (shared with the engine plan). Forward: in + (t - pos) x rate; reversed:
-/// in + (pos + dur - t) x rate. Either way the event covers the source span [in, in + dur x rate].
+/// in + (pos + dur - t) x rate. Either way the event covers the source span [in, in + dur x rate]. With a Velocity
+/// envelope the media played so far is its integral (`engine::velocity`), times the rate; reversed, mirrored.
 pub fn src_time(c: &Clip, t: f64) -> f64 {
-    let local = if c.reverse { c.position + c.duration - t } else { t - c.position };
-    c.in_point + local * c.rate
+    use crate::engine::velocity;
+    match velocity::of(c) {
+        None => c.in_point + if c.reverse { c.position + c.duration - t } else { t - c.position } * c.rate,
+        Some(v) => {
+            let s = velocity::integral(v, t - c.position);
+            c.in_point + c.rate * if c.reverse { velocity::integral(v, c.duration) - s } else { s }
+        }
+    }
 }
 
 /// `out_point` is the end of the source span the event covers.
@@ -103,7 +110,14 @@ fn trim_left_edge(clip: &mut Clip, orig: &Clip, new_start: f64, frame: f64, limi
     let start = new_start.min(end - frame).max(min_start);
     clip.position = start;
     clip.duration = end - start;
-    clip.in_point = if shift { (orig.in_point + (start - orig.position) * orig.rate).max(0.0) } else { orig.in_point };
+    // A forward trim keeps the frame at each point of the timeline, also through a Velocity envelope.
+    // shortcut: other edits of an event with a Velocity envelope (reversed trims, slips, stretches) count its
+    // span at the plain rate; integrate them too if users ask.
+    clip.in_point = match shift {
+        true if !orig.reverse => src_time(orig, start).max(0.0),
+        true => (orig.in_point + (start - orig.position) * orig.rate).max(0.0),
+        false => orig.in_point,
+    };
     // Inactive takes move as a plain trim moves the media, also under a slip-trim (only the active take slips).
     shift_takes(clip, orig, if orig.reverse { 0.0 } else { (start - orig.position) * orig.rate });
     rebase_keys(clip, orig, orig.position - start);
@@ -449,13 +463,14 @@ pub fn split_clip(clip: &Clip, at: f64) -> Option<(Clip, Clip)> {
     second.position = at;
     second.duration -= first_dur;
     second.fade_in = 0.0;
-    second.transition = None; // the transition belongs to the event's start
+    second.transition = None; // the transition belongs to the event's start, the one out to its end
+    first.transition_out = None;
     shift_clip_keys(&mut second, -first_dur);
     // The half that plays first in source order starts at in_point; reversed, that is the second half.
     if clip.reverse {
         first.in_point += second.duration * clip.rate;
     } else {
-        second.in_point += first_dur * clip.rate;
+        second.in_point = src_time(clip, at);
     }
     for c in [&mut first, &mut second] {
         shift_takes(c, clip, c.in_point - clip.in_point);
@@ -1702,12 +1717,13 @@ pub fn env_default(kind: EnvKind) -> f32 {
     kind.neutral()
 }
 
-/// An envelope's values: dB for Volume (+6 at the lane top, -120 is silence), -1 (left) ..= 1 (right) for Pan, 0..=1
-/// for the rest.
+/// An envelope's values: dB for Volume (+6 at the lane top, -120 is silence), -1 (left) ..= 1 (right) for Pan, -1
+/// (bottom colour) ..= 1 (top colour) for Fade to Color, -1 ..= 10 (-100% ..= 1000%) for Velocity, 0..=1 for the rest.
 pub fn env_range(kind: EnvKind) -> (f32, f32) {
     match kind {
         EnvKind::Volume => (-120.0, 6.0),
-        EnvKind::Pan => (-1.0, 1.0),
+        EnvKind::Pan | EnvKind::FadeToColor => (-1.0, 1.0),
+        EnvKind::Velocity => (crate::engine::velocity::MIN, crate::engine::velocity::MAX),
         _ => (0.0, 1.0),
     }
 }
@@ -1719,19 +1735,23 @@ pub fn env_clamp(kind: EnvKind, v: f32) -> f32 {
     if kind == EnvKind::Mute { v.round() } else { v }
 }
 
-/// The track envelopes Milan Pro plays: Volume, Pan and Mute on audio tracks, Composite Level on video tracks.
+/// The track envelopes Milan Pro plays: Volume, Pan and Mute on audio tracks, Mute, Composite Level and Fade to
+/// Color on video tracks.
 pub fn env_fits(kind: EnvKind, video: bool) -> bool {
-    matches!((kind, video), (EnvKind::Volume | EnvKind::Pan | EnvKind::Mute, false) | (EnvKind::CompositeLevel, true))
+    matches!((kind, video), (EnvKind::Volume | EnvKind::Pan | EnvKind::Mute, false) | (EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::FadeToColor, true))
 }
 
 /// Height of value `v` in the envelope's lane, 0 (bottom) ..= 1 (top). Volume: 0 dB at 0.7, linear up to +6 dB at the
-/// top and 0.7 x 10^(dB / 40) below; Pan: left at the top; the rest linear over their range.
+/// top and 0.7 x 10^(dB / 40) below; Pan: left at the top; Velocity: -100% ..= 100% over the lower half, 100% ..=
+/// 1000% over the upper; the rest linear over their range.
 pub fn lane_frac(kind: EnvKind, v: f32) -> f32 {
     let (lo, hi) = env_range(kind);
     match kind {
         EnvKind::Volume if v >= 0.0 => 0.7 + 0.3 * v.min(hi) / hi,
         EnvKind::Volume => 0.7 * 10f32.powf(v.max(lo) / 40.0),
         EnvKind::Pan => (1.0 - v.clamp(lo, hi)) / 2.0,
+        EnvKind::Velocity if v >= 1.0 => 0.5 + 0.5 * (v.min(hi) - 1.0) / (hi - 1.0),
+        EnvKind::Velocity => (v.max(lo) - lo) / (1.0 - lo) * 0.5,
         _ => ((v - lo) / (hi - lo)).clamp(0.0, 1.0),
     }
 }
@@ -1744,8 +1764,16 @@ pub fn lane_value(kind: EnvKind, f: f32) -> f32 {
         EnvKind::Volume if f >= 0.7 => (f - 0.7) / 0.3 * hi,
         EnvKind::Volume => (40.0 * (f / 0.7).log10()).max(lo),
         EnvKind::Pan => 1.0 - 2.0 * f,
+        EnvKind::Velocity if f >= 0.5 => 1.0 + (f - 0.5) * 2.0 * (hi - 1.0),
+        EnvKind::Velocity => lo + f * 2.0 * (1.0 - lo),
         _ => lo + f * (hi - lo),
     }
+}
+
+/// A new envelope of `kind`: one point at 0 holding the default (a Mute point switches).
+fn new_envelope(kind: EnvKind) -> Envelope {
+    let curve = if kind == EnvKind::Mute { Curve::Hold } else { Curve::Linear };
+    Envelope { kind, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: env_default(kind), curve }] } }
 }
 
 /// Insert/Remove Envelope: add envelope `kind` to the track (one point at 0 holding the default), or remove it.
@@ -1753,10 +1781,105 @@ pub fn toggle_envelope(track: &mut Track, kind: EnvKind) -> bool {
     let n = track.envelopes.len();
     track.envelopes.retain(|e| e.kind != kind);
     if track.envelopes.len() == n {
-        let curve = if kind == EnvKind::Mute { Curve::Hold } else { Curve::Linear };
-        track.envelopes.push(Envelope { kind, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: env_default(kind), curve }] } });
+        track.envelopes.push(new_envelope(kind));
     }
     true
+}
+
+/// The video events `ids` can be edited: unlocked, on unlocked tracks.
+fn free_video_events<'a>(project: &'a mut Project, ids: &[String]) -> impl Iterator<Item = &'a mut Clip> {
+    project.timeline.video_tracks.iter_mut().filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(move |c| !c.locked && ids.contains(&c.id))
+}
+
+/// Insert/Remove Envelope › Velocity on video events `ids`: all take the opposite of the focus (last) event's state.
+/// A new one runs at 100%.
+pub fn toggle_velocity(project: &mut Project, ids: &[String]) -> bool {
+    let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| crate::engine::velocity::of(c).is_none()) else { return false };
+    let mut done = false;
+    // Events that already have one keep it (their points are the user's).
+    for c in free_video_events(project, ids).filter(|c| crate::engine::velocity::of(c).is_some() != on) {
+        c.envelopes.retain(|e| e.kind != EnvKind::Velocity);
+        if on {
+            c.envelopes.push(new_envelope(EnvKind::Velocity));
+        }
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// Freeze Frame at Cursor: a Velocity envelope (added at 100% if there is none) that steps to a 0% Hold point at the
+/// cursor (`t`, timeline time): the speed up to the cursor is kept (a point there holds its value), and the frame at
+/// the cursor holds until the next point, or to the event's end.
+pub fn freeze_frame(project: &mut Project, ids: &[String], t: f64) -> bool {
+    let mut done = false;
+    for c in free_video_events(project, ids).filter(|c| t > c.position && t < c.position + c.duration) {
+        let local = t - c.position;
+        if !c.envelopes.iter().any(|e| e.kind == EnvKind::Velocity) {
+            c.envelopes.push(new_envelope(EnvKind::Velocity));
+        }
+        let Some(e) = c.envelopes.iter_mut().find(|e| e.kind == EnvKind::Velocity) else { continue };
+        let v = e.points.at(local);
+        let keys = &mut e.points.keys;
+        // Points already at the cursor make way for the step.
+        keys.retain(|k| (k.t - local).abs() > KEY_EPS);
+        let i = keys.partition_point(|k| k.t < local);
+        keys.splice(i..i, [Keyframe { t: local, v, curve: Curve::Hold }, Keyframe { t: local, v: 0.0, curve: Curve::Hold }]);
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// Insert/Remove Envelope › Transition Progress on the transitions of video events `ids` (into and out of each):
+/// added (0% to 100% over the transition) when the focus event's have none, else removed.
+pub fn toggle_progress(project: &mut Project, ids: &[String]) -> bool {
+    let has = |c: &Clip| [&c.transition, &c.transition_out].into_iter().flatten().any(|tr| !tr.progress.is_empty());
+    let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| !has(c)) else { return false };
+    let linear = Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.0, curve: Curve::Linear }, Keyframe { t: 1.0, v: 1.0, curve: Curve::Linear }] };
+    let mut done = false;
+    for c in free_video_events(project, ids) {
+        // Transitions that already have one keep it.
+        for tr in [&mut c.transition, &mut c.transition_out].into_iter().flatten().filter(|tr| tr.progress.is_empty() == on) {
+            tr.progress = if on { linear.clone() } else { Keyframes::default() };
+            done = true;
+        }
+    }
+    changed(project, done)
+}
+
+/// Whose envelope an envelope edit is on: a track (by id), a video event's Velocity (by event id), or the Transition
+/// Progress of the transition into an event (event id) or out of it (event id + `TRANSITION_OUT`).
+pub const TRANSITION_OUT: &str = "/out";
+
+/// The start and length of an event's transition (into it, or `out` of it): the overlap with the event before it, or
+/// its fade-in (fade-out).
+pub fn transition_span(clips: &[Clip], c: &Clip, out: bool) -> Option<(f64, f64)> {
+    let end = c.position + c.duration;
+    let (a, b) = if out {
+        (end - c.fade_out, end)
+    } else {
+        let from = clips.iter().filter(|a| a.position < c.position && a.position + a.duration > c.position).map(|a| a.position + a.duration).reduce(f64::max);
+        (c.position, from.map_or(c.position + c.fade_in, |e| e.min(end)))
+    };
+    (b > a).then_some((a, b - a))
+}
+
+/// Envelope `kind` of `owner` (see `TRANSITION_OUT`), with how its key times map to the timeline: timeline time = start
+/// + key time x scale. A transition's progress is lent out as an envelope.
+pub fn envelope_of(project: &Project, owner: &str, kind: EnvKind) -> Option<(Envelope, f64, f64)> {
+    if let Some((v, i)) = project.find_track(owner) {
+        return project.timeline.tracks(v)[i].envelopes.iter().find(|e| e.kind == kind).map(|e| (e.clone(), 0.0, 1.0));
+    }
+    let (id, out) = split_owner(owner);
+    let r = project.find_clip(id)?;
+    let clips = &project.timeline.tracks(r.is_video)[r.track_idx].clips;
+    let c = &clips[r.clip_idx];
+    if kind == EnvKind::TransitionProgress {
+        let tr = if out { &c.transition_out } else { &c.transition };
+        let points = tr.as_ref().map(|t| t.progress.clone()).filter(|p| !p.is_empty())?;
+        let (start, len) = transition_span(clips, c, out)?;
+        return Some((Envelope { kind, points }, start, len));
+    }
+    c.envelopes.iter().find(|e| e.kind == kind && !out).map(|e| (e.clone(), c.position, 1.0))
 }
 
 /// Insert (`on`) or remove envelope `kind` on the unlocked tracks `ids` it fits (`env_fits`).
@@ -1770,12 +1893,35 @@ pub fn set_envelope(project: &mut Project, ids: &[String], kind: EnvKind, on: bo
     changed(project, done)
 }
 
-/// Run `f` on envelope `kind` of track `track` (unless the track is locked).
-pub fn edit_envelope(project: &mut Project, track: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
-    let Some((v, i)) = project.find_track(track) else { return false };
-    let t = &mut project.timeline.tracks_mut(v)[i];
-    let done = !t.locked && t.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+/// Run `f` on envelope `kind` of `owner`, a track or an event (`envelope_of`), unless it is locked.
+pub fn edit_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    let done = with_envelope(project, owner, kind, f);
     changed(project, done)
+}
+
+/// `edit_envelope` without marking the project modified (a drag marks it on release).
+pub fn with_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
+    if let Some((v, i)) = project.find_track(owner) {
+        let t = &mut project.timeline.tracks_mut(v)[i];
+        return !t.locked && t.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+    }
+    let (id, out) = split_owner(owner);
+    let Some(r) = project.find_clip(id) else { return false };
+    let t = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx];
+    let c = &mut t.clips[r.clip_idx];
+    if t.locked || c.locked {
+        return false;
+    }
+    if kind != EnvKind::TransitionProgress {
+        return !out && c.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+    }
+    let Some(tr) = (if out { c.transition_out.as_mut() } else { c.transition.as_mut() }).filter(|t| !t.progress.is_empty()) else { return false };
+    let mut e = Envelope { kind, points: std::mem::take(&mut tr.progress) };
+    let done = f(&mut e);
+    // Progress keys stay inside the transition.
+    e.points.keys.iter_mut().for_each(|k| k.t = k.t.min(1.0));
+    tr.progress = e.points;
+    done
 }
 
 /// The compositing mode of video track `track` (unless it is locked).
@@ -2133,8 +2279,16 @@ pub fn fx_list(p: &Project, target: &FxTarget) -> Option<(Vec<Fx>, bool)> {
         FxTarget::VideoOutput => Some((p.timeline.master.video_fx.clone(), true)),
         FxTarget::AudioMaster => Some((p.timeline.master.audio_fx.clone(), true)),
         FxTarget::Media(id) => p.media_pool.iter().find(|m| m.id == *id)?.generator.clone().map(|g| (vec![g], true)),
-        FxTarget::Transition(id) => clip(id).and_then(|(c, free)| Some((vec![fx_of_transition(c.transition.as_ref()?)], free))),
+        FxTarget::Transition(owner) => {
+            let (id, out) = split_owner(owner);
+            clip(id).and_then(|(c, free)| Some((vec![fx_of_transition(if out { &c.transition_out } else { &c.transition }.as_ref()?)], free)))
+        }
     }
+}
+
+/// An event id, and whether `owner` names the transition out of it (`TRANSITION_OUT`).
+pub fn split_owner(owner: &str) -> (&str, bool) {
+    owner.strip_suffix(TRANSITION_OUT).map_or((owner, false), |id| (id, true))
 }
 
 /// Put back what `fx_list` gave, edited. False when nothing changed or the target is gone or locked.
@@ -2147,15 +2301,19 @@ pub fn set_fx_list(p: &mut Project, target: &FxTarget, list: Vec<Fx>) -> bool {
             }
             _ => false,
         },
-        FxTarget::Transition(id) => {
+        FxTarget::Transition(owner) => {
+            let (id, out) = split_owner(owner);
             let tr = list.first().map(transition_of);
             p.find_clip(id).is_some_and(|r| {
                 let t = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx];
                 let free = !t.locked;
                 let c = &mut t.clips[r.clip_idx];
-                let ok = free && !c.locked && c.transition.is_some() && tr.is_some() && c.transition != tr;
+                let slot = if out { &mut c.transition_out } else { &mut c.transition };
+                // The FX window edits the plug-in and its settings; the Transition Progress envelope stays.
+                let tr = tr.map(|tr| Transition { progress: slot.as_ref().map(|s| s.progress.clone()).unwrap_or_default(), ..tr });
+                let ok = free && !c.locked && slot.is_some() && tr.is_some() && *slot != tr;
                 if ok {
-                    c.transition = tr;
+                    *slot = tr;
                 }
                 ok
             })
@@ -2177,7 +2335,8 @@ pub fn fx_of_transition(tr: &Transition) -> Fx {
 
 /// A plug-in instance as a transition (transitions are not keyframed: each value at 0).
 pub fn transition_of(fx: &Fx) -> Transition {
-    Transition { plugin: fx.plugin.clone(), params: fx.params.iter().filter(|(_, k)| !k.keys.is_empty()).map(|(k, kf)| (k.clone(), kf.at(0.0))).collect() }
+    let params = fx.params.iter().filter(|(_, k)| !k.keys.is_empty()).map(|(k, kf)| (k.clone(), kf.at(0.0))).collect();
+    Transition { plugin: fx.plugin.clone(), params, progress: Keyframes::default() }
 }
 
 /// Append `fx` to `target`'s chain; refused (false) when it is locked or gone.
@@ -2212,12 +2371,13 @@ enum Edge {
     /// Outgoing, incoming.
     Overlap(usize, usize),
     Cut(usize, usize),
-    /// An event's start with nothing before it.
+    /// An event's start with nothing before it, or its end with nothing after it.
     Start(usize),
+    End(usize),
 }
 
-/// Overlap: two events live at `at`. Otherwise the half of the event under `at` picks its start or its end; an end
-/// counts only when an event starts there (Milan Pro has no transition on a lone fade-out).
+/// Overlap: two events live at `at`. Otherwise the half of the event under `at` picks its start or its end, each a
+/// cut when an event meets it there.
 fn transition_edge(clips: &[Clip], at: f64, tol: f64) -> Option<Edge> {
     let end = |c: &Clip| c.position + c.duration;
     let live: Vec<usize> = (0..clips.len()).filter(|&k| clips[k].position <= at && at < end(&clips[k])).collect();
@@ -2231,17 +2391,22 @@ fn transition_edge(clips: &[Clip], at: f64, tol: f64) -> Option<Edge> {
         let prev = (0..clips.len()).find(|&k| k != b && clips[k].position < e.position && (end(&clips[k]) - e.position).abs() <= tol);
         Some(prev.map_or(Edge::Start(b), |a| Edge::Cut(a, b)))
     } else {
-        let next = (0..clips.len()).find(|&k| k != b && clips[k].position > e.position && (clips[k].position - end(e)).abs() <= tol)?;
-        Some(Edge::Cut(b, next))
+        // An event starting at the end is a cut; one starting inside the event crossfades with it (no lone fade-out).
+        let next = (0..clips.len()).find(|&k| k != b && clips[k].position > e.position && clips[k].position <= end(e) + tol);
+        match next {
+            Some(n) if (clips[n].position - end(e)).abs() <= tol => Some(Edge::Cut(b, n)),
+            Some(_) => None,
+            None => Some(Edge::End(b)),
+        }
     }
 }
 
 /// Drop transition `tr` on video track `track` at time `at`. On an overlap it becomes the incoming event's. At a cut,
 /// with Automatic Crossfades on, the outgoing event is extended right and the incoming one left by `cut_overlap / 2`
 /// each, within their media (one with no handle leaves the whole overlap to the other), and both fade over it. On an
-/// event's start with nothing before it, the event fades in over `cut_overlap` unless it already fades in. False
-/// (nothing changed) when an event or the track is locked, at an end with nothing after it, or at a cut that cannot
-/// overlap.
+/// event's start with nothing before it (its end with nothing after it), the event fades in (out) over `cut_overlap`
+/// unless it already does, and the transition goes on that fade (`Clip::transition_out` for a fade-out). False
+/// (nothing changed) when an event or the track is locked, or at a cut that cannot overlap.
 pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut_overlap: f64, auto_xfade: bool) -> bool {
     let Some((true, ti)) = p.find_track(track) else { return false };
     let fps = p.settings.frame_rate.max(1.0);
@@ -2250,12 +2415,23 @@ pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut
     let free = |k: usize| !t.clips[k].locked;
     match edge {
         Edge::Overlap(a, b) | Edge::Cut(a, b) if !free(a) || !free(b) => return false,
-        Edge::Start(b) if !free(b) => return false,
+        Edge::Start(b) | Edge::End(b) if !free(b) => return false,
         Edge::Cut(..) if !auto_xfade => return false,
         _ => {}
     }
+    if let Edge::End(b) = edge {
+        let c = &mut p.timeline.video_tracks[ti].clips[b];
+        let mut done = c.fade_out == 0.0;
+        if done {
+            c.fade_out = cut_overlap;
+            c.clamp_fades();
+        }
+        done |= c.transition_out.as_ref() != Some(&tr);
+        c.transition_out = Some(tr);
+        return changed(p, done);
+    }
     let (b, na) = match edge {
-        Edge::Overlap(_, b) | Edge::Start(b) => (b, None),
+        Edge::Overlap(_, b) | Edge::Start(b) | Edge::End(b) => (b, None),
         Edge::Cut(a, b) => {
             let (oa, ob) = (t.clips[a].clone(), t.clips[b].clone());
             let (la, lb) = (media_limit(p, &oa), media_limit(p, &ob));
@@ -2307,13 +2483,13 @@ pub fn set_transition(p: &mut Project, track: &str, at: f64, tr: Transition, cut
     changed(p, done)
 }
 
-/// Event context menu › Remove Transition.
-pub fn remove_transition(p: &mut Project, id: &str) -> bool {
+/// Event context menu › Remove Transition: the transition into event `id`, or `out` of it.
+pub fn remove_transition(p: &mut Project, id: &str, out: bool) -> bool {
     let done = p.find_clip(id).is_some_and(|r| {
         let t = &mut p.timeline.tracks_mut(r.is_video)[r.track_idx];
         let free = !t.locked;
         let c = &mut t.clips[r.clip_idx];
-        free && !c.locked && c.transition.take().is_some()
+        free && !c.locked && if out { c.transition_out.take() } else { c.transition.take() }.is_some()
     });
     changed(p, done)
 }
@@ -2657,9 +2833,54 @@ mod tests {
     #[test]
     fn split_keeps_the_transition_on_the_first_half_only() {
         let mut c = clip(10.0, 6.0, 1.0);
-        (c.fade_in, c.transition) = (1.0, Some(Transition { plugin: "dissolve".into(), params: Default::default() }));
+        (c.fade_in, c.transition) = (1.0, Some(Transition { plugin: "dissolve".into(), ..Default::default() }));
+        (c.fade_out, c.transition_out) = (1.0, c.transition.clone());
         let (a, b) = split_clip(&c, 12.0).unwrap();
         assert!(a.transition.is_some() && b.transition.is_none());
+        assert!(a.transition_out.is_none() && b.transition_out.is_some(), "the transition out stays with the end");
+    }
+
+    /// R4a: Velocity. Constant 200% plays 2 s of media a second; a ramp 100% -> 0% over 1 s plays half a second; a
+    /// freeze holds the frame at the cursor; a forward trim and a split keep each frame where it was.
+    #[test]
+    fn velocity_drives_the_source_time() {
+        let key = |t, v, curve| Keyframe { t, v, curve };
+        let mut c = clip(10.0, 6.0, 1.0);
+        c.envelopes.push(Envelope { kind: EnvKind::Velocity, points: Keyframes { keys: vec![key(0.0, 2.0, Curve::Linear)] } });
+        assert_eq!([src_time(&c, 10.0), src_time(&c, 11.0), src_time(&c, 13.0)], [1.0, 3.0, 7.0]);
+        c.envelopes[0].points.keys = vec![key(0.0, 1.0, Curve::Linear), key(1.0, 0.0, Curve::Linear)];
+        assert!((src_time(&c, 11.0) - 1.5).abs() < 1e-12 && (src_time(&c, 15.0) - 1.5).abs() < 1e-12);
+        // Reversed: the same span, played from its end.
+        c.reverse = true;
+        assert!((src_time(&c, 10.0) - 1.5).abs() < 1e-12 && (src_time(&c, 16.0) - 1.0).abs() < 1e-12);
+        c.reverse = false;
+        // Freeze Frame at Cursor on a plain event: 100% up to the cursor, then the frame there holds.
+        let mut p = Project::new("t");
+        let mut e = clip(10.0, 6.0, 1.0);
+        let id = e.id.clone();
+        e.envelopes.clear();
+        p.timeline.video_tracks[0].clips.push(e);
+        assert!(freeze_frame(&mut p, &[id.clone()], 12.0));
+        let e = p.clip(&id).unwrap();
+        assert_eq!([src_time(e, 11.0), src_time(e, 12.0), src_time(e, 13.0), src_time(e, 15.9)], [2.0, 3.0, 3.0, 3.0]);
+        let fps = 30.0;
+        let frame = |p: &Project, t: f64| crate::engine::plan::frame_at(src_time(p.clip(&id).unwrap(), t), fps);
+        assert!((360..480).all(|n| frame(&p, n as f64 / fps) == 90), "frame 90 (3 s) holds");
+        // A second freeze earlier keeps the speed before it and holds from there on (the first freeze point stays).
+        assert!(freeze_frame(&mut p, &[id.clone()], 11.0) && src_time(p.clip(&id).unwrap(), 14.0) == 2.0);
+        // Trim the start 1 s later and split: the frames stay where they were on the timeline.
+        let before = p.clip(&id).unwrap().clone();
+        let mut t = before.clone();
+        trim_left(&mut t, &before, 10.5, F, None);
+        for x in [10.5, 10.9, 11.0, 12.0, 15.0] {
+            assert!((src_time(&t, x) - src_time(&before, x)).abs() < 1e-9, "{x}");
+        }
+        let (a, b) = split_clip(&before, 10.5).unwrap();
+        assert!([10.0, 10.25].iter().all(|&x| (src_time(&a, x) - src_time(&before, x)).abs() < 1e-9));
+        assert!([10.5, 10.75, 11.0, 14.0].iter().all(|&x| (src_time(&b, x) - src_time(&before, x)).abs() < 1e-9));
+        // Remove: Insert/Remove Envelope › Velocity toggles.
+        assert!(toggle_velocity(&mut p, &[id.clone()]) && crate::engine::velocity::of(p.clip(&id).unwrap()).is_none());
+        assert!(toggle_velocity(&mut p, &[id.clone()]) && p.clip(&id).unwrap().envelopes[0].points.keys[0].v == 1.0);
     }
 
     #[test]
@@ -3919,7 +4140,7 @@ mod tests {
     }
 
     fn dissolve() -> Transition {
-        Transition { plugin: "milan.tr.dissolve".into(), params: Default::default() }
+        Transition { plugin: "milan.tr.dissolve".into(), ..Default::default() }
     }
 
     #[test]
@@ -4011,18 +4232,37 @@ mod tests {
         assert!(set_transition(&mut p, &t, 4.5, dissolve(), 1.0, true));
         assert_eq!(json(&p), json(&want), "on an overlap only the field changes");
         assert!(!set_transition(&mut p, &t, 4.5, dissolve(), 1.0, true), "already there");
-        // A lone start fades in over the cut-to-overlap length; the end of the last event takes none.
+        // A lone start fades in over the cut-to-overlap length; R4a: the end of the last event fades out to
+        // transparent through it (`transition_out`).
         let (mut p, t) = cut(5.0, 5.0);
         p.timeline.video_tracks[0].clips.remove(0);
         assert!(set_transition(&mut p, &t, 5.2, dissolve(), 0.5, false));
         assert_eq!(p.timeline.video_tracks[0].clips[0].fade_in, 0.5);
-        assert!(!set_transition(&mut p, &t, 9.5, dissolve(), 0.5, true));
+        assert!(set_transition(&mut p, &t, 9.5, dissolve(), 0.5, true));
+        let c = &p.timeline.video_tracks[0].clips[0];
+        assert_eq!((c.fade_out, c.transition_out.as_ref()), (0.5, Some(&dissolve())));
+        assert!(!set_transition(&mut p, &t, 9.5, dissolve(), 0.5, true), "already there");
         let id = p.timeline.video_tracks[0].clips[0].id.clone();
-        assert!(remove_transition(&mut p, &id) && !remove_transition(&mut p, &id));
-        assert!(p.timeline.video_tracks[0].clips[0].transition.is_none());
-        // The FX window edits a transition as a plug-in and puts it back.
-        let tr = Transition { plugin: "milan.tr.linear_wipe".into(), params: [("angle".to_string(), 90.0)].into() };
+        assert!(remove_transition(&mut p, &id, false) && !remove_transition(&mut p, &id, false));
+        assert!(p.timeline.video_tracks[0].clips[0].transition.is_none() && p.timeline.video_tracks[0].clips[0].transition_out.is_some());
+        assert!(remove_transition(&mut p, &id, true) && p.timeline.video_tracks[0].clips[0].transition_out.is_none());
+        // An end that a later event overlaps is a crossfade, not a lone fade-out.
+        let (mut p, t) = cut(5.0, 5.0);
+        p.timeline.video_tracks[0].clips[1].position = 4.0;
+        assert!(!set_transition(&mut p, &t, 3.5, dissolve(), 0.5, true));
+        // The FX window edits a transition as a plug-in and puts it back, keeping its progress envelope.
+        let tr = Transition { plugin: "milan.tr.linear_wipe".into(), params: [("angle".to_string(), 90.0)].into(), ..Default::default() };
         assert_eq!(transition_of(&fx_of_transition(&tr)), tr);
+        let (mut p, t) = cut(5.0, 5.0);
+        assert!(set_transition(&mut p, &t, 9.5, dissolve(), 0.5, true));
+        let id = p.timeline.video_tracks[0].clips[1].id.clone();
+        assert!(toggle_progress(&mut p, &[id.clone()]));
+        let target = FxTarget::Transition(format!("{id}{TRANSITION_OUT}"));
+        let (mut list, _) = fx_list(&p, &target).unwrap();
+        list[0].plugin = "milan.tr.linear_wipe".into();
+        assert!(set_fx_list(&mut p, &target, list));
+        let out = p.clip(&id).unwrap().transition_out.clone().unwrap();
+        assert_eq!((out.plugin.as_str(), out.progress.keys.len()), ("milan.tr.linear_wipe", 2));
     }
 
     #[test]

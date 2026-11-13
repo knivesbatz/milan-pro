@@ -363,6 +363,18 @@ mod tests {
         p.timeline.video_tracks[0].clips.push(top);
         p.timeline.audio_tracks[0].clips.push(clip(&a, 0.0, 3.0));
         p.media_pool = vec![a, b, c];
+        // R4a, in the parity frames below: a velocity ramp into a freeze on the bottom event, a Fade to Color envelope
+        // on the middle track and a transition out to nothing on the top event's fade-out.
+        {
+            use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes, Transition};
+            let env = |kind, keys: &[(f64, f32, Curve)]| Envelope { kind, points: Keyframes { keys: keys.iter().map(|&(t, v, curve)| Keyframe { t, v, curve }).collect() } };
+            let vel = env(EnvKind::Velocity, &[(0.0, 1.0, Curve::Linear), (1.5, 0.5, Curve::Hold), (2.0, 0.0, Curve::Hold)]);
+            p.timeline.video_tracks[2].clips[0].envelopes.push(vel);
+            p.timeline.video_tracks[1].envelopes.push(env(EnvKind::FadeToColor, &[(0.5, 0.0, Curve::Linear), (2.5, -1.0, Curve::Linear)]));
+            p.timeline.video_tracks[1].fade_colors[1] = [0, 128, 255];
+            let t = &mut p.timeline.video_tracks[0].clips[0];
+            (t.fade_out, t.transition_out) = (1.0, Some(Transition { plugin: "milan.tr.linear_wipe".into(), ..Default::default() }));
+        }
         assert_eq!(content_end(&p), 3.0);
         let run = |p: &Project, preset: &'static Preset, name: &str, range: (f64, f64)| {
             let out = dir.join(name);

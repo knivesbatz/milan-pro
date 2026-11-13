@@ -116,6 +116,8 @@ struct TlState {
     env_span: Option<Pos2>,
     /// The envelope point menu's Set To value being typed.
     env_text: Option<String>,
+    /// A Fade Colors pick is under way (its undo step is pushed).
+    fade_edit: bool,
 }
 
 /// Track height; 0 in the project means the look's default for new tracks (§5.9.3: 64/68 vs 52 px).
@@ -342,7 +344,7 @@ pub fn draw_timeline(
     let env_hit = |project: &Project, p: Pos2| {
         let on_fade = || tool != EditTool::Envelope && hit_clip(project, p).is_some_and(|(_, m)| matches!(m, DragMode::FadeIn | DragMode::FadeOut));
         env_on
-            .then(|| envelopes::hit(&g, &rows, project, p))
+            .then(|| envelopes::hit(&g, &rows, project, p, opts.hidden_envs))
             .flatten()
             .filter(|h| !project.timeline.tracks(h.is_video)[h.track].locked && (h.point.is_some() || !on_fade()))
     };
@@ -352,7 +354,7 @@ pub fn draw_timeline(
     let env_cursor = |segment: bool| if segment { CursorIcon::ResizeVertical } else { CursorIcon::PointingHand };
     if let Some(ed) = env_drag.as_ref() {
         ui.ctx().set_cursor_icon(env_cursor(ed.segment));
-    } else if let Some(h) = hovered_env {
+    } else if let Some(h) = &hovered_env {
         ui.ctx().set_cursor_icon(env_cursor(h.point.is_none()));
     }
 
@@ -379,20 +381,18 @@ pub fn draw_timeline(
     // lane selects the points in its time span.
     let env_press = press.and_then(|p| env_hit(project, p));
     if response.drag_started_by(PointerButton::Primary) && (env_press.is_some() || tool == EditTool::Envelope) {
-        if let (Some(p), Some(h)) = (press, env_press) {
-            let tr = &project.timeline.tracks(h.is_video)[h.track];
-            let e = &tr.envelopes[h.env];
-            let picked = sel.env.as_ref().filter(|s| s.track == tr.id && s.kind == e.kind && h.point.is_some_and(|k| s.keys.contains(&k)));
+        if let (Some(p), Some((h, (e, _, _)))) = (press, env_press.and_then(|h| Some((h.clone(), edit::envelope_of(project, &h.owner, h.kind)?)))) {
+            let picked = sel.env.as_ref().filter(|s| s.track == h.owner && s.kind == e.kind && h.point.is_some_and(|k| s.keys.contains(&k)));
             let keys = match (picked, h.point) {
                 (Some(s), _) => s.keys.clone(),
                 (None, Some(k)) => vec![k],
                 (None, None) => [h.seg, h.seg + 1].into_iter().filter(|&k| k < e.points.keys.len()).collect(),
             };
             if h.point.is_some() {
-                sel.env = Some(EnvSel { track: tr.id.clone(), kind: e.kind, keys: keys.clone() });
+                sel.env = Some(EnvSel { track: h.owner.clone(), kind: e.kind, keys: keys.clone() });
             }
-            let (track, kind, orig) = (tr.id.clone(), e.kind, e.clone());
-            *env_drag = Some(EnvDrag { track, kind, keys, grab: h.seg, segment: h.point.is_none(), orig, press_t: g.to_time(p.x), press_y: p.y, before: project.clone(), changed: false });
+            let (track, kind) = (h.owner, e.kind);
+            *env_drag = Some(EnvDrag { track, kind, keys, grab: h.seg, segment: h.point.is_none(), orig: e, press_t: g.to_time(p.x), press_y: p.y, before: project.clone(), changed: false });
         } else if let Some(p) = press {
             st.env_span = Some(p);
         }
@@ -638,25 +638,24 @@ pub fn draw_timeline(
     // or lands on a frame.
     if let Some(ed) = env_drag.as_mut() {
         if let Some(p) = response.interact_pointer_pos().filter(|_| response.dragged()) {
-            let row = project.find_track(&ed.track).and_then(|(v, i)| rows.iter().find(|r| r.is_video == v && r.idx == i));
+            let row = owner_row(project, &ed.track).and_then(|(v, i)| rows.iter().find(|r| r.is_video == v && r.idx == i));
             let mut df = row.map_or(0.0, |r| -envelopes::frac_of(r, p.y - ed.press_y));
             let fine = ui.input(|i| i.modifiers.command);
             if fine {
                 df /= 10.0;
             }
+            // Key times are the envelope's own (event- or transition-relative); snapping works on the timeline.
+            let (start, scale) = edit::envelope_of(project, &ed.track, ed.kind).map_or((0.0, 1.0), |e| (e.1, e.2));
             let mut dt = 0.0;
             if !ed.segment && !fine {
-                let k0 = ed.orig.points.keys.get(ed.grab).map_or(0.0, |k| k.t);
+                let k0 = start + ed.orig.points.keys.get(ed.grab).map_or(0.0, |k| k.t) * scale;
                 let want = k0 + g.to_time(p.x) - ed.press_t;
                 let snap = if snap_on { g.snaps(edit::snap_targets(project, None)).nearest(want, SNAP_PX / g.pps) } else { None };
                 st.snap = snap;
-                dt = snap.unwrap_or(if quantize && !shift { edit::quantize(want.max(0.0), fps) } else { want }) - k0;
+                dt = (snap.unwrap_or(if quantize && !shift { edit::quantize(want.max(0.0), fps) } else { want }) - k0) / scale;
             }
-            if let Some((v, i)) = project.find_track(&ed.track) {
-                if let Some(e) = project.timeline.tracks_mut(v)[i].envelopes.iter_mut().find(|e| e.kind == ed.kind) {
-                    ed.changed = edit::env_move(e, &ed.orig, &ed.keys, dt, df);
-                }
-            }
+            let (orig, keys) = (&ed.orig, &ed.keys);
+            ed.changed = edit::with_envelope(project, &ed.track, ed.kind, |e| edit::env_move(e, orig, keys, dt, df));
         }
     }
     // Empty-lane time selection (VP16), or scrubbing a drag that started on the ruler.
@@ -682,7 +681,10 @@ pub fn draw_timeline(
         if let (Some(o), Some(p)) = (st.env_span.take(), ui.input(|i| i.pointer.latest_pos())) {
             let (a, b) = (g.to_time(o.x.min(p.x)), g.to_time(o.x.max(p.x)));
             let tr = row_at(o.y).map(|r| &project.timeline.tracks(r.is_video)[r.idx]).filter(|t| !t.locked);
-            let top = tr.and_then(|t| envelopes::shown(t).last().map(|(_, e)| EnvSel { track: t.id.clone(), kind: e.kind, keys: edit::keys_in_span(e, a, b) }));
+            let top = tr.and_then(|t| {
+                let s = envelopes::shown(t, opts.hidden_envs, (a, b)).into_iter().filter(|s| !s.locked && s.from <= b && s.to >= a).last()?;
+                Some(EnvSel { keys: edit::keys_in_span(&s.env, s.key_t(a), s.key_t(b)), track: s.owner, kind: s.env.kind })
+            });
             sel.env = top.filter(|s| !s.keys.is_empty());
         }
         if let Some(ds) = drag_state.take() {
@@ -758,9 +760,12 @@ pub fn draw_timeline(
                     let done = track.as_ref().is_some_and(|t| edit::set_transition(project, t, g.to_time(p.x).max(0.0), tr.clone(), opts.cut_overlap, opts.auto_crossfade));
                     // The event that took it: the last one whose transition is now this one and that changed.
                     let tl = &project.timeline;
-                    let into = row.filter(|_| done).and_then(|r| tl.video_tracks[r.idx].clips.iter().rev().find(|c| c.transition.as_ref() == Some(&tr) && before.clip(&c.id) != Some(c)));
-                    let why = "A transition goes on an event's start, a cut (with Automatic Crossfades on) or a crossfade on an unlocked video track; Milan Pro has none on a fade-out.";
-                    (into.map(|c| edit::FxTarget::Transition(c.id.clone())), why)
+                    let changed = |c: &&Clip| before.clip(&c.id) != Some(*c);
+                    let clips = row.filter(|_| done).map_or(&[][..], |r| &tl.video_tracks[r.idx].clips[..]);
+                    let into = clips.iter().rev().filter(changed).find(|c| c.transition.as_ref() == Some(&tr)).map(|c| c.id.clone());
+                    let out = || clips.iter().rev().filter(changed).find(|c| c.transition_out.as_ref() == Some(&tr)).map(|c| format!("{}{}", c.id, edit::TRANSITION_OUT));
+                    let why = "A transition goes on an event's start or end, a cut (with Automatic Crossfades on) or a crossfade on an unlocked video track.";
+                    (into.or_else(out).map(edit::FxTarget::Transition), why)
                 }
                 PluginKind::Generator => {
                     let at = drop_time(project, p.x);
@@ -830,8 +835,7 @@ pub fn draw_timeline(
     let clicks = response.clicked() || response.secondary_clicked() || response.double_clicked();
     let env_click = response.interact_pointer_pos().filter(|_| clicks).and_then(|p| env_hit(project, p).map(|h| (p, h)));
     if let Some((p, h)) = env_click {
-        let tr = &project.timeline.tracks(h.is_video)[h.track];
-        let (id, kind) = (tr.id.clone(), tr.envelopes[h.env].kind);
+        let (id, kind) = (h.owner.clone(), h.kind);
         let mut keys = sel.env.take().filter(|s| s.track == id && s.kind == kind).map_or(Vec::new(), |s| s.keys);
         if let Some(k) = h.point {
             if response.clicked() && ui.input(|i| i.modifiers.command) {
@@ -845,7 +849,8 @@ pub fn draw_timeline(
             }
             sel.env = Some(EnvSel { track: id, kind, keys }).filter(|s| !s.keys.is_empty());
         } else if response.double_clicked() || (tool == EditTool::Envelope && response.clicked()) {
-            let t = cursor_at(g.to_time(p.x));
+            let (start, scale) = edit::envelope_of(project, &id, kind).map_or((0.0, 1.0), |e| (e.1, e.2));
+            let t = (cursor_at(g.to_time(p.x)) - start) / scale;
             let (before, mut k) = (project.clone(), 0);
             if edit::edit_envelope(project, &id, kind, |e| {
                 k = edit::env_insert(e, t, e.at(t));
@@ -917,7 +922,7 @@ pub fn draw_timeline(
     // 1–9, 0 jump to marker N through the keymap (§7).
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
-    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on, (opts.cut_overlap, opts.auto_crossfade), drop_menu, drops);
+    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on.then_some(opts.hidden_envs), (opts.cut_overlap, opts.auto_crossfade), drop_menu, drops);
 
     let mut rows = rows_of(project, &g, scroll_y);
     // A drop that adds video tracks: the audio rows move down to show where they will go.
@@ -988,20 +993,16 @@ pub fn draw_timeline(
     }
     paint_edge_bracket(&pl, &g, &rows, project, sel.edge.as_ref());
     if opts.show_envelopes {
-        envelopes::paint(&pl, &t, &g, &rows, project, sel.env.as_ref(), hovered_env);
-        // The value of the point being dragged (or hovered).
-        let tip = env_drag.as_ref().and_then(|ed| {
-            let (v, i) = project.find_track(&ed.track)?;
-            let k = project.timeline.tracks(v)[i].envelopes.iter().find(|e| e.kind == ed.kind)?.points.keys.get(ed.grab)?;
-            Some((v, i, ed.kind, k.t, k.v))
-        });
-        let tip = tip.or_else(|| {
-            let h = hovered_env?;
-            // The context menu may have removed it this frame.
-            let e = project.timeline.tracks(h.is_video).get(h.track)?.envelopes.get(h.env)?;
-            let k = e.points.keys.get(h.point?)?;
-            Some((h.is_video, h.track, e.kind, k.t, k.v))
-        });
+        envelopes::paint(&pl, &t, &g, &rows, project, sel.env.as_ref(), hovered_env.as_ref(), opts.hidden_envs);
+        // The value of the point being dragged (or hovered); the context menu may have removed it this frame.
+        let point = |owner: &str, kind, k: usize| {
+            let (v, i) = owner_row(project, owner)?;
+            let (e, start, scale) = edit::envelope_of(project, owner, kind)?;
+            let key = e.points.keys.get(k)?;
+            Some((v, i, kind, start + key.t * scale, key.v))
+        };
+        let tip = env_drag.as_ref().and_then(|ed| point(&ed.track, ed.kind, ed.grab));
+        let tip = tip.or_else(|| hovered_env.as_ref().and_then(|h| point(&h.owner, h.kind, h.point?)));
         if let Some((v, i, kind, kt, kv)) = tip {
             if let Some(row) = rows.iter().find(|r| r.is_video == v && r.idx == i) {
                 paint_fade_tag(&pl, &t, pos2(g.to_x(kt) + 6.0, envelopes::y_of(row, kind, kv) - 18.0), envelopes::value_text(kind, kv));
@@ -1059,6 +1060,11 @@ pub fn draw_timeline(
     released_op
 }
 
+/// (is video, index) of the track an envelope's owner (a track, or an event: `edit::envelope_of`) is on.
+fn owner_row(project: &Project, owner: &str) -> Option<(bool, usize)> {
+    project.find_track(owner).or_else(|| project.find_clip(edit::split_owner(owner).0).map(|r| (r.is_video, r.track_idx)))
+}
+
 /// The id of event `c`'s media when it is generated.
 fn generated_media(project: &Project, c: &Clip) -> Option<String> {
     let id = c.media_id.as_ref()?;
@@ -1068,25 +1074,23 @@ fn generated_media(project: &Project, c: &Clip) -> Option<String> {
 /// The Transition Progress colour (spec §2 envelope colours), the same in both looks.
 const TRANSITION: Color32 = Color32::from_rgb(0xBF, 0x7F, 0xD3);
 
-/// Each transition on a video row: its overlap (or a lone one's fade-in) tinted, with the plug-in's name.
+/// Each transition on a video row: its overlap (or a lone one's fade-in, or the fade-out of one out to nothing)
+/// tinted, with the plug-in's name.
 fn paint_transitions(p: &Painter, t: &Theme, g: &Geo, row: &Row, clips: &[Clip]) {
     let (t0, t1) = (g.to_time(p.clip_rect().min.x), g.to_time(p.clip_rect().max.x));
     // Off-screen events are skipped before the overlap search, which scans the track.
     for c in clips.iter().filter(|c| c.position <= t1 && c.position + c.duration >= t0) {
-        let Some(tr) = &c.transition else { continue };
-        let from = clips.iter().filter(|a| a.position < c.position && a.position + a.duration > c.position).map(|a| a.position + a.duration).reduce(f64::max);
-        let end = from.map_or(c.position + c.fade_in, |e| e.min(c.position + c.duration));
-        if end <= c.position {
-            continue;
+        for (tr, out) in [(&c.transition, false), (&c.transition_out, true)] {
+            let (Some(tr), Some((start, len))) = (tr, edit::transition_span(clips, c, out)) else { continue };
+            let r = Rect::from_min_max(pos2(g.to_x(start), row.top + 1.0), pos2(g.to_x(start + len), row.top + row.h - 2.0));
+            if !r.intersects(p.clip_rect()) {
+                continue;
+            }
+            p.rect_filled(r, 0.0, TRANSITION.gamma_multiply(0.45));
+            p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, TRANSITION), StrokeKind::Inside);
+            let name = crate::engine::plugins::find(&tr.plugin).map_or(tr.plugin.as_str(), |i| i.name);
+            p.with_clip_rect(r.intersect(p.clip_rect())).text(r.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text_bright);
         }
-        let r = Rect::from_min_max(pos2(g.to_x(c.position), row.top + 1.0), pos2(g.to_x(end), row.top + row.h - 2.0));
-        if !r.intersects(p.clip_rect()) {
-            continue;
-        }
-        p.rect_filled(r, 0.0, TRANSITION.gamma_multiply(0.45));
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, TRANSITION), StrokeKind::Inside);
-        let name = crate::engine::plugins::find(&tr.plugin).map_or(tr.plugin.as_str(), |i| i.name);
-        p.with_clip_rect(r.intersect(p.clip_rect())).text(r.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text_bright);
     }
 }
 

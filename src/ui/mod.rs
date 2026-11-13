@@ -245,6 +245,8 @@ pub struct EditOpts {
     /// View › Show Envelopes and Options › Lock Envelopes to Events.
     pub show_envelopes: bool,
     pub lock_envelopes: bool,
+    /// View › Audio / Video Envelopes rows turned off (`settings::EnvView::bit`).
+    pub hidden_envs: u16,
     /// Preferences › Editing: the crossfade a transition dropped on a cut makes (seconds).
     pub cut_overlap: f64,
     /// Waveform vertical zoom (Shift+Up / Shift+Down), 1 = full scale.

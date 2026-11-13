@@ -11,6 +11,7 @@ use crate::history::History;
 use crate::media::Importer;
 use crate::project::*;
 use crate::edit::{RippleMode, Switch};
+use crate::settings::EnvView;
 use super::chrome;
 use super::EditTool;
 use super::dock::Panel;
@@ -101,6 +102,13 @@ pub struct CmdState {
     pub audio_track_focus: bool,
     pub video_track_focus: bool,
     pub focus_envs: Vec<EnvKind>,
+    pub focus_venvs: Vec<EnvKind>,
+    /// View › Audio / Video Envelopes rows turned off (`EnvView::bit`).
+    pub hidden_envs: u16,
+    /// The focus video event has a Velocity envelope; a transition (into or out of it); a Transition Progress one.
+    pub velocity: bool,
+    pub transition: bool,
+    pub progress: bool,
     /// Options › Bypass All Audio FX.
     pub bypass_audio_fx: bool,
     /// The focus audio track is armed for recording; any track is; a recording is running.
@@ -155,7 +163,11 @@ impl CmdState {
             Delete => self.env_sel || self.n_sel > 0 || (self.list_focus && self.tracks_sel) || (self.auto_ripple && self.selection),
             ShowEnvelopes | LockEnvelopes => true,
             VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope => self.audio_track_focus,
-            ToggleEnvelope(k) => if crate::edit::env_fits(k, true) { self.video_track_focus } else { self.audio_track_focus },
+            ToggleEnvelope(_) => self.audio_track_focus,
+            ToggleVideoEnvelope(_) => self.video_track_focus,
+            ViewEnvelope(_) => true,
+            EventVelocity | FreezeFrame => self.video_clip,
+            TransitionProgress => self.video_clip && self.transition,
             EventPanCrop | VideoEventFx => self.video_clip,
             TrackMotion | TrackFx => self.video_track_focus,
             VideoOutputFx | BypassAudioFx => true,
@@ -236,6 +248,10 @@ impl CmdState {
             Quickfade => self.quickfade,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
+            ToggleVideoEnvelope(k) => self.focus_venvs.contains(&k),
+            ViewEnvelope(v) => self.hidden_envs & v.bit() == 0,
+            EventVelocity => self.velocity,
+            TransitionProgress => self.progress,
             LayoutUser(n) => self.layout_slot == Some(n),
             LayoutDefault => self.layout_slot.is_none(),
             // Always-on behaviour Milan Pro has no switch for.
@@ -800,19 +816,20 @@ const WINDOWS: &[M] = &[
     C("Pr&operties", Window(Panel::Properties)),
 ];
 
-/// The envelope view filters: Milan Pro shows every envelope a track has.
-const SHOWN: Why = Fixed("always shown in Milan Pro (there is no view filter)");
-
-const AUDIO_ENV_VIEW: &[M] = &[K("Track &Mute", true, SHOWN), K("Track &Volume", true, SHOWN), K("Track &Pan", true, SHOWN)];
+const AUDIO_ENV_VIEW: &[M] = &[
+    C("Track &Mute", ViewEnvelope(EnvView::AudioMute)),
+    C("Track &Volume", ViewEnvelope(EnvView::AudioVolume)),
+    C("Track &Pan", ViewEnvelope(EnvView::AudioPan)),
+];
 
 const VIDEO_ENV_VIEW: &[M] = &[
-    K("Track &Mute", true, Later("R4a")),
-    K("Track &Composite Level", true, SHOWN),
-    K("Track &Fade to Color", true, Later("R4a")),
-    K("Track &Keyframes", true, Later("R4a")),
+    C("Track &Mute", ViewEnvelope(EnvView::VideoMute)),
+    C("Track &Composite Level", ViewEnvelope(EnvView::CompositeLevel)),
+    C("Track &Fade to Color", ViewEnvelope(EnvView::FadeToColor)),
+    C("Track &Keyframes", ViewEnvelope(EnvView::TrackKeyframes)),
     S,
-    K("Event &Velocity", true, Later("R4a")),
-    K("Transition &Progress", true, Later("R4a")),
+    C("Event &Velocity", ViewEnvelope(EnvView::Velocity)),
+    C("Transition &Progress", ViewEnvelope(EnvView::TransitionProgress)),
     S,
     K("Motion &Blur Amount", true, Later("R7")),
     K("Video &Supersampling", true, Later("R7")),
@@ -861,12 +878,12 @@ pub const INSERT: &[M] = &[
     // Insert/Remove: checked while the focus track has it (V and P only insert; Shift+V and Shift+P remove).
     Sub("A&udio Envelopes", &[C("&Mute", ToggleEnvelope(EnvKind::Mute)), C("&Volume", ToggleEnvelope(EnvKind::Volume)), C("&Pan", ToggleEnvelope(EnvKind::Pan))]),
     Sub("V&ideo Envelopes", &[
-        X("Track &Mute", Later("R4a")),
-        C("Track &Composite Level", ToggleEnvelope(EnvKind::CompositeLevel)),
-        X("Track &Fade to Color", Later("R4a")),
+        C("Track &Mute", ToggleVideoEnvelope(EnvKind::Mute)),
+        C("Track &Composite Level", ToggleVideoEnvelope(EnvKind::CompositeLevel)),
+        C("Track &Fade to Color", ToggleVideoEnvelope(EnvKind::FadeToColor)),
         S,
-        X("Event &Velocity", Later("R4a")),
-        X("Transition &Progress", Later("R4a")),
+        C("Event &Velocity", EventVelocity),
+        C("Transition &Progress", TransitionProgress),
     ]),
     S,
     C("&Audio Track", InsertAudioTrack),
@@ -1468,6 +1485,34 @@ mod tests {
         assert!(!rows.iter().any(|(_, w)| *w == Later("R3b")), "{rows:?}");
     }
 
+    /// R4a: the video envelope rows, the event Velocity, Freeze Frame and Transition Progress items and the View ›
+    /// Envelopes filters work; nothing in the menus waits on R4a any more.
+    #[test]
+    fn velocity_progress_fade_and_envelope_view_items_work() {
+        let r4a = [ToggleVideoEnvelope(EnvKind::Mute), ToggleVideoEnvelope(EnvKind::FadeToColor), EventVelocity, FreezeFrame, TransitionProgress];
+        let mut st = CmdState::default();
+        for c in r4a {
+            assert!(unfinished(c).is_none() && !st.enabled(c), "{c:?}");
+        }
+        assert!(st.enabled(ViewEnvelope(EnvView::Velocity)) && st.checked(ViewEnvelope(EnvView::Velocity)) == Some(true));
+        st.hidden_envs = EnvView::bits(&[EnvView::Velocity, EnvView::AudioMute]);
+        assert_eq!((st.checked(ViewEnvelope(EnvView::Velocity)), st.checked(ViewEnvelope(EnvView::VideoMute))), (Some(false), Some(true)));
+        // Audio Mute and video Track Mute are told apart.
+        (st.audio_track_focus, st.focus_envs) = (true, vec![EnvKind::Mute]);
+        assert!(st.enabled(ToggleEnvelope(EnvKind::Mute)) && !st.enabled(ToggleVideoEnvelope(EnvKind::Mute)));
+        assert_eq!((st.checked(ToggleEnvelope(EnvKind::Mute)), st.checked(ToggleVideoEnvelope(EnvKind::Mute))), (Some(true), Some(false)));
+        (st.video_track_focus, st.video_clip, st.velocity) = (true, true, true);
+        assert!(st.enabled(ToggleVideoEnvelope(EnvKind::FadeToColor)) && st.enabled(FreezeFrame) && !st.enabled(TransitionProgress));
+        assert_eq!(st.checked(EventVelocity), Some(true));
+        st.transition = true;
+        assert!(st.enabled(TransitionProgress) && st.checked(TransitionProgress) == Some(false));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R4a")), "{rows:?}");
+    }
+
     #[test]
     fn record_and_arm_follow_the_armed_tracks() {
         let mut st = CmdState::default();
@@ -1519,6 +1564,7 @@ mod tests {
             video_track_focus: true,
             any_armed: true,
             edge_mode: true,
+            transition: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

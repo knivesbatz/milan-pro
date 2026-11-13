@@ -25,6 +25,7 @@ pub mod render;
 pub mod thumbs;
 pub mod transition;
 pub mod vdecode;
+pub mod velocity;
 pub mod vfx;
 mod worker;
 

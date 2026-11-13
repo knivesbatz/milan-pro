@@ -819,9 +819,9 @@ mod tests {
         let e = eval(&fx, 1.0).unwrap();
         assert_eq!((e.f("amount"), e.c("color")[0]), (0.5, 1.0)); // keyframed; clamped to the range
         assert!(eval(&Fx { plugin: "ofx:nope".into(), ..fx.clone() }, 0.0).is_none());
-        let tr = Transition { plugin: "milan.tr.linear_wipe".into(), params: BTreeMap::from([("angle".to_string(), 90.0)]) };
+        let tr = Transition { plugin: "milan.tr.linear_wipe".into(), params: BTreeMap::from([("angle".to_string(), 90.0)]), ..Default::default() };
         assert_eq!(eval_transition(&tr).unwrap().f("angle"), 90.0);
-        assert!(eval_transition(&Transition { plugin: "milan.fx.invert".into(), params: BTreeMap::new() }).is_none());
+        assert!(eval_transition(&Transition { plugin: "milan.fx.invert".into(), ..Default::default() }).is_none());
         // Text and presets
         let text = find("milan.gen.text").unwrap();
         let e = eval(&new_fx(text, Some(&text.presets[1])), 0.0).unwrap();

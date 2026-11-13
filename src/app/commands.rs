@@ -89,11 +89,15 @@ impl MeridianApp {
             env_sel: self.sel.env.as_ref().is_some_and(|e| e.keys.iter().any(|&k| k > 0)),
             audio_track_focus: self.focus_of(false).is_some(),
             video_track_focus: self.focus_of(true).is_some(),
-            focus_envs: [false, true]
-                .into_iter()
-                .filter_map(|v| self.focus_of(v).map(|i| (v, i)))
-                .flat_map(|(v, i)| tl.tracks(v)[i].envelopes.iter().filter(move |e| edit::env_fits(e.kind, v)).map(|e| e.kind))
-                .collect(),
+            focus_envs: self.focus_envs(false),
+            focus_venvs: self.focus_envs(true),
+            hidden_envs: crate::settings::EnvView::bits(&self.prefs.hidden_envelopes),
+            velocity: self.focus_clip(true).and_then(|id| self.project.clip(&id)).is_some_and(|c| crate::engine::velocity::of(c).is_some()),
+            transition: self.focus_clip(true).and_then(|id| self.project.clip(&id)).is_some_and(|c| c.transition.is_some() || c.transition_out.is_some()),
+            progress: self
+                .focus_clip(true)
+                .and_then(|id| self.project.clip(&id))
+                .is_some_and(|c| [&c.transition, &c.transition_out].into_iter().flatten().any(|t| !t.progress.is_empty())),
             layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(theme::get().look(), n)).map(|l| l.name.clone())),
             layout_slot: self.layout_slot,
             bypass_audio_fx: self.bypass_audio_fx,
@@ -266,6 +270,20 @@ impl MeridianApp {
         self.sel.tracks.iter().rev().filter_map(|id| self.project.find_track(id)).find(|f| f.0 == video).map(|f| f.1)
     }
 
+    /// An envelope was just inserted: View › Show Envelopes comes on, as in VEGAS.
+    fn reveal_envelopes(&mut self) {
+        if !self.prefs.show_envelopes {
+            self.prefs.show_envelopes = true;
+            self.save_prefs();
+        }
+    }
+
+    /// The envelopes the focus track of one kind has, of the kinds it plays.
+    fn focus_envs(&self, video: bool) -> Vec<crate::project::EnvKind> {
+        let tracks = self.project.timeline.tracks(video);
+        self.focus_of(video).map_or(Vec::new(), |i| tracks[i].envelopes.iter().filter(|e| edit::env_fits(e.kind, video)).map(|e| e.kind).collect())
+    }
+
     /// Set Default Track Properties OK: restore the built-in chain, or save the track's chain, for new audio tracks.
     fn set_default_track(&mut self, d: &dialogs::DefaultTrackProps) {
         let fx = if d.restore {
@@ -302,6 +320,7 @@ impl MeridianApp {
             tool: self.tool,
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
+            hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes),
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
         }
@@ -1091,20 +1110,44 @@ impl MeridianApp {
             MinimizeTracks => edit::toggle_minimize(&mut self.project, &mut self.minimized, ui::MIN_TRACK_H),
             // Envelopes on the selected tracks they fit. V and P only insert (VEGAS's V shows and hides, it never
             // deletes points); Shift+V, Shift+P and a checked Insert/Remove item remove.
-            VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope | ToggleEnvelope(_) => {
+            VolumeEnvelope | PanEnvelope | RemoveVolumeEnvelope | RemovePanEnvelope | ToggleEnvelope(_) | ToggleVideoEnvelope(_) => {
                 use crate::project::EnvKind;
-                let (kind, on) = match c {
-                    VolumeEnvelope => (EnvKind::Volume, true),
-                    PanEnvelope => (EnvKind::Pan, true),
-                    RemoveVolumeEnvelope => (EnvKind::Volume, false),
-                    RemovePanEnvelope => (EnvKind::Pan, false),
-                    ToggleEnvelope(k) => (k, !st.focus_envs.contains(&k)),
+                let (kind, on, video) = match c {
+                    VolumeEnvelope => (EnvKind::Volume, true, false),
+                    PanEnvelope => (EnvKind::Pan, true, false),
+                    RemoveVolumeEnvelope => (EnvKind::Volume, false, false),
+                    RemovePanEnvelope => (EnvKind::Pan, false, false),
+                    ToggleEnvelope(k) => (k, !st.focus_envs.contains(&k), false),
+                    ToggleVideoEnvelope(k) => (k, !st.focus_venvs.contains(&k), true),
                     _ => return,
                 };
-                let ids = self.sel.tracks.clone();
-                if self.edit(|p| edit::set_envelope(p, &ids, kind, on)) && on && !self.prefs.show_envelopes {
-                    self.prefs.show_envelopes = true;
-                    self.save_prefs();
+                // Audio and video tracks both have a Mute envelope: only the selected tracks of the menu's kind.
+                let ids: Vec<String> = self.sel.tracks.iter().filter(|id| self.project.find_track(id).is_some_and(|f| f.0 == video)).cloned().collect();
+                if self.edit(|p| edit::set_envelope(p, &ids, kind, on)) && on {
+                    self.reveal_envelopes();
+                }
+            }
+            ViewEnvelope(v) => {
+                let hidden = &mut self.prefs.hidden_envelopes;
+                match hidden.iter().position(|h| *h == v) {
+                    Some(i) => _ = hidden.remove(i),
+                    None => hidden.push(v),
+                }
+                self.sel.env = None; // a hidden envelope's points cannot stay selected
+                self.save_prefs();
+            }
+            EventVelocity | FreezeFrame | TransitionProgress => {
+                let ids: Vec<String> = self.sel.clips.iter().filter(|id| self.project.find_clip(id).is_some_and(|r| r.is_video)).cloned().collect();
+                let at = self.project.timeline.cursor_position;
+                let done = self.edit(|p| match c {
+                    EventVelocity => edit::toggle_velocity(p, &ids),
+                    FreezeFrame => edit::freeze_frame(p, &ids, at),
+                    _ => edit::toggle_progress(p, &ids),
+                });
+                if !done && c == FreezeFrame {
+                    self.message = Some("Put the cursor inside the selected video event to freeze the frame there.".into());
+                } else if done {
+                    self.reveal_envelopes();
                 }
             }
             ShowEnvelopes | LockEnvelopes => {

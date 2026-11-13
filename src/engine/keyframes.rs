@@ -21,6 +21,23 @@ impl Curve {
             }
         }
     }
+
+    /// The area under `shape` from 0 to `u` (0..=1), exactly: what a velocity segment adds to the source time.
+    pub fn area(self, u: f64) -> f64 {
+        use std::f64::consts::PI;
+        let u = u.clamp(0.0, 1.0);
+        match self {
+            Curve::Linear => u * u / 2.0,
+            Curve::Fast => u - (1.0 - (1.0 - u).powi(3)) / 3.0,
+            Curve::Slow => u * u * u / 3.0,
+            Curve::Smooth => u / 2.0 - (PI * u).sin() / (2.0 * PI),
+            Curve::Sharp => {
+                let y = 1.0 - 2.0 * u;
+                ((1.0 - y * y).max(0.0).sqrt() - y * y.clamp(-1.0, 1.0).acos()) / (2.0 * PI)
+            }
+            Curve::Hold => 0.0,
+        }
+    }
 }
 
 pub trait Lerp: Clone {
@@ -119,7 +136,7 @@ impl EnvKind {
     /// The value of an envelope with no points.
     pub fn neutral(self) -> f32 {
         match self {
-            EnvKind::Volume | EnvKind::Pan => 0.0,
+            EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress => 0.0,
             EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::Opacity | EnvKind::Velocity | EnvKind::Unknown => 1.0,
         }
     }
@@ -161,6 +178,18 @@ mod tests {
         }
         assert!(Curve::Fast.shape(0.25) > 0.25 && Curve::Slow.shape(0.25) < 0.25);
         assert!(Curve::Sharp.shape(0.25) > 0.25 && Curve::Smooth.shape(0.25) < 0.25);
+    }
+
+    /// `area` is the integral of `shape`: checked against a fine midpoint sum.
+    #[test]
+    fn curve_area_integrates_the_shape() {
+        for c in ALL {
+            for u in [0.0, 0.1, 0.25, 0.5, 0.9, 1.0] {
+                let n = 20_000;
+                let sum: f64 = (0..n).map(|i| c.shape((i as f64 + 0.5) / n as f64 * u)).sum::<f64>() * u / n as f64;
+                assert!((c.area(u) - sum).abs() < 1e-6, "{c:?} {u}: {} vs {sum}", c.area(u));
+            }
+        }
     }
 
     #[test]

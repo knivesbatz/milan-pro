@@ -197,7 +197,7 @@ impl FxWindow {
             FxTarget::VideoOutput => "Video Output FX".into(),
             FxTarget::AudioMaster => "Audio Master FX".into(),
             FxTarget::Media(id) => format!("Video Media Generators: {}", p.media_pool.iter().find(|m| m.id == *id).map_or("", |m| m.name.as_str())),
-            FxTarget::Transition(id) => format!("Transition: {}", clip(id)),
+            FxTarget::Transition(id) => format!("Transition: {}", clip(edit::split_owner(id).0)),
         }
     }
 

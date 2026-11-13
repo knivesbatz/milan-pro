@@ -68,6 +68,10 @@ pub struct VTrack {
     composite: Composite,
     level: f32,
     level_env: Option<Envelope>,
+    /// Track Mute envelope (1 shown, 0 hidden) and Fade to Color envelope with the [top, bottom] Fade Colors.
+    mute_env: Option<Envelope>,
+    fade_env: Option<Envelope>,
+    fade_colors: [[u8; 3]; 2],
     motion: Keyframes<Motion>,
     fx: Vec<Fx>,
     /// Stable-sorted by position: on ties the later Vec entry is on top.
@@ -101,14 +105,17 @@ pub struct TrackPlan {
     pub motion: Affine,
     /// Track FX, applied before Track Motion.
     pub fx: Vec<FxEval>,
+    /// Fade to Color: the track's picture (after its FX and Track Motion) goes this far (0..=1) to this colour.
+    pub fade: Option<([u8; 3], f32)>,
     pub items: Vec<Item>,
 }
 
 #[derive(Debug)]
 pub enum Item {
     Event(EventPlan),
-    /// A transition from `a` (None = transparent) into `b` at progress `p`; `kind` None (an unknown plug-in) dissolves.
-    Mix { a: Option<EventPlan>, b: EventPlan, p: f32, kind: Option<FxEval> },
+    /// A transition from `a` into `b` at progress `p` (None = transparent: a lone fade-in, or a fade-out to nothing);
+    /// `kind` None (an unknown plug-in) dissolves.
+    Mix { a: Option<EventPlan>, b: Option<EventPlan>, p: f32, kind: Option<FxEval> },
 }
 
 #[derive(Debug)]
@@ -155,7 +162,7 @@ impl FramePlan {
             for i in &l.items {
                 match i {
                     Item::Event(e) => v.extend(&e.fx),
-                    Item::Mix { a, b, .. } => v.extend(a.iter().chain([b]).flat_map(|e| &e.fx)),
+                    Item::Mix { a, b, .. } => v.extend(a.iter().chain(b).flat_map(|e| &e.fx)),
                 }
             }
         }
@@ -216,7 +223,7 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
 /// Flow) and whether neighbouring source frames are blended (Switches › resample radios, Project Properties › Resample
 /// mode). Smart (and Optical Flow) act when the source rate differs from the project's or the event plays off speed.
 fn event_source(m: &Arc<MediaRef>, item: &MediaItem, c: &Clip, mode: Resample, fps: f64) -> (Arc<MediaRef>, bool) {
-    let off_speed = (c.rate - 1.0).abs() > 1e-9;
+    let off_speed = (c.rate - 1.0).abs() > 1e-9 || crate::engine::velocity::of(c).is_some();
     let moving = !m.still && m.fps > 0.0;
     let off_rate = moving && ((m.fps - fps).abs() > fps * 1e-3 || off_speed);
     let flow = mode == Resample::OpticalFlow && off_rate;
@@ -269,10 +276,14 @@ pub fn compile(p: &Project) -> VideoPlan {
                 })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
+            let env = |kind| t.envelopes.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
             VTrack {
                 composite: t.composite,
                 level: t.volume.clamp(0.0, 1.0),
                 level_env: t.envelopes.iter().find(|e| e.kind == EnvKind::CompositeLevel).cloned(),
+                mute_env: env(EnvKind::Mute),
+                fade_env: env(EnvKind::FadeToColor),
+                fade_colors: t.fade_colors,
                 motion: t.motion.clone(),
                 fx: t.fx.clone(),
                 events,
@@ -357,7 +368,8 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
         .tracks
         .iter()
         .filter_map(|tr| {
-            let opacity = tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(t).clamp(0.0, 1.0));
+            let shown = tr.mute_env.as_ref().is_none_or(|e| e.at(t) >= 0.5);
+            let opacity = if shown { tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(t).clamp(0.0, 1.0)) } else { 0.0 };
             let live: Vec<&VEvent> = tr.events.iter().filter(|e| e.c.position <= te && te < e.c.position + e.c.duration).collect();
             if opacity <= 0.0 || live.is_empty() {
                 return None;
@@ -367,8 +379,10 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 let c = &e.c;
                 let local = t - c.position;
                 // Decision 0.9: an event overlapped by a later one stays at full alpha (a dissolve, not a dip).
-                let fade_out = if i + 1 < live.len() { 1.0 } else { fade(c.fade_out_curve, c.duration - local, c.fade_out) };
-                let alpha = fade_out * env_at(&c.envelopes, EnvKind::Opacity, local);
+                let last = i + 1 == live.len();
+                let fade_out = if !last { 1.0 } else { fade(c.fade_out_curve, c.duration - local, c.fade_out) };
+                let level = env_at(&c.envelopes, EnvKind::Opacity, local);
+                let alpha = fade_out * level;
                 // Undersample rate: the event shows a new frame every 1 / r project frames, holding each in between.
                 let tq = match c.undersample.filter(|r| *r > 0.0 && *r < 1.0) {
                     Some(r) => c.position + ((local * p.fps * r + 1e-6).floor() / (p.fps * r)).min(local),
@@ -401,9 +415,15 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                     next,
                     flicker: c.reduce_flicker,
                 };
-                let kind = c.transition.as_ref().and_then(plugins::eval_transition);
-                match &c.transition {
-                    Some(_) if i > 0 => {
+                let kind = |tr: &crate::project::Transition| plugins::eval_transition(tr);
+                // Progress through a transition `x` (0..1) of the way along: its Transition Progress envelope, else x.
+                let progress = |tr: &crate::project::Transition, x: f64| {
+                    let x = x.clamp(0.0, 1.0);
+                    (if tr.progress.is_empty() { x as f32 } else { tr.progress.at(x) }).clamp(0.0, 1.0)
+                };
+                let out_from = c.duration - c.fade_out;
+                match (&c.transition, &c.transition_out) {
+                    (Some(tr), _) if i > 0 => {
                         let prev = &live[i - 1].c;
                         let len = (prev.position + prev.duration).min(c.position + c.duration) - c.position;
                         let a = match items.pop() {
@@ -413,13 +433,19 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                                 None
                             }
                         };
-                        items.push(Item::Mix { a, b: plan(alpha), p: (local / len.max(1e-9)).clamp(0.0, 1.0) as f32, kind });
+                        items.push(Item::Mix { a, b: Some(plan(alpha)), p: progress(tr, local / len.max(1e-9)), kind: kind(tr) });
                     }
-                    Some(_) if local < c.fade_in => items.push(Item::Mix { a: None, b: plan(alpha), p: (local / c.fade_in) as f32, kind }),
+                    (Some(tr), _) if local < c.fade_in => items.push(Item::Mix { a: None, b: Some(plan(alpha)), p: progress(tr, local / c.fade_in), kind: kind(tr) }),
+                    // A transition on a fade-out with nothing after it: the event goes out to transparent through it.
+                    (_, Some(tr)) if last && c.fade_out > 0.0 && local >= out_from => {
+                        items.push(Item::Mix { a: Some(plan(level)), b: None, p: progress(tr, (local - out_from) / c.fade_out), kind: kind(tr) });
+                    }
                     _ => items.push(Item::Event(plan(alpha * fade(c.fade_in_curve, local, c.fade_in)))),
                 }
             }
-            Some(TrackPlan { mode: tr.composite, opacity, motion: motion(tr.motion.at(t), size), fx: evals(&tr.fx, t), items })
+            // Fade to Color: towards the top colour above 0, the bottom colour below.
+            let fade = tr.fade_env.as_ref().map(|e| e.at(t).clamp(-1.0, 1.0)).filter(|v| v.abs() >= 1.0 / 512.0).map(|v| (tr.fade_colors[(v < 0.0) as usize], v.abs()));
+            Some(TrackPlan { mode: tr.composite, opacity, motion: motion(tr.motion.at(t), size), fx: evals(&tr.fx, t), fade, items })
         })
         .collect();
     FramePlan { layers, out_fx: evals(&p.out_fx, t) }
@@ -621,7 +647,7 @@ mod tests {
             .flat_map(|l| &l.items)
             .flat_map(|i| match i {
                 Item::Event(e) => vec![ev(e)],
-                Item::Mix { a, b, .. } => a.iter().chain([b]).map(ev).collect(),
+                Item::Mix { a, b, .. } => a.iter().chain(b).map(ev).collect(),
             })
             .collect()
     }
@@ -884,20 +910,64 @@ mod tests {
         assert_eq!(d[1].0, "b");
         assert!((d[1].2 - 0.5).abs() < 1e-3); // incoming at its (smooth) fade-in midpoint
 
-        p.timeline.video_tracks[0].clips[1].transition = Some(Transition { plugin: "milan.tr.dissolve".into(), params: Default::default() });
+        p.timeline.video_tracks[0].clips[1].transition = Some(Transition { plugin: "milan.tr.dissolve".into(), ..Default::default() });
         let vp = compile(&p);
-        let mix_p = |n| match &frame_plan(&vp, n).layers[0].items[..] {
-            [Item::Mix { a: Some(_), b, p, kind: Some(k) }] if k.id == "milan.tr.dissolve" => (*p, b.alpha),
+        let mix_p = |vp: &VideoPlan, n| match &frame_plan(vp, n).layers[0].items[..] {
+            [Item::Mix { a: Some(_), b: Some(b), p, kind: Some(k) }] if k.id == "milan.tr.dissolve" => (*p, b.alpha),
             other => panic!("{other:?}"),
         };
-        assert_eq!(mix_p(390), (0.0, 1.0)); // 13.0 s: start of the overlap
-        let (end, _) = mix_p(449); // the last frame inside it
+        assert_eq!(mix_p(&vp, 390), (0.0, 1.0)); // 13.0 s: start of the overlap
+        let (end, _) = mix_p(&vp, 449); // the last frame inside it
         assert!((end - 59.0 / 60.0).abs() < 1e-4);
         assert!(matches!(&frame_plan(&vp, 450).layers[0].items[..], [Item::Event(_)])); // 15.0 s: a has ended
+        // R4a: a Transition Progress envelope sets the progress: held at 25% here, whatever the time.
+        let q = |v: f32| Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] };
+        p.timeline.video_tracks[0].clips[1].transition.as_mut().unwrap().progress = q(0.25);
+        let vq = compile(&p);
+        assert!([390, 420, 449].iter().all(|&n| mix_p(&vq, n).0 == 0.25));
+        // 0 -> 100% -> 0 over the overlap: back to the outgoing picture at the end.
+        p.timeline.video_tracks[0].clips[1].transition.as_mut().unwrap().progress =
+            Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.0, curve: Curve::Linear }, Keyframe { t: 0.5, v: 1.0, curve: Curve::Linear }, Keyframe { t: 1.0, v: 0.0, curve: Curve::Linear }] };
+        let vq = compile(&p);
+        assert!((mix_p(&vq, 420).0 - 1.0).abs() < 1e-6 && mix_p(&vq, 449).0 < 0.05);
+        p.timeline.video_tracks[0].clips[1].transition.as_mut().unwrap().progress = Keyframes::default();
         // A lone fade-in with a transition mixes from transparent.
         p.timeline.video_tracks[0].clips.remove(0);
         let vp = compile(&p);
         assert!(matches!(&frame_plan(&vp, 420).layers[0].items[..], [Item::Mix { a: None, p, .. }] if (*p - 0.5).abs() < 1e-6));
+        // R4a: a transition on a fade-out with nothing after it mixes out to transparent, at the event's own level.
+        let c = &mut p.timeline.video_tracks[0].clips[0]; // b: 13..18 s
+        (c.fade_out, c.transition_out) = (2.0, Some(Transition { plugin: "milan.tr.linear_wipe".into(), ..Default::default() }));
+        let vp = compile(&p);
+        assert!(matches!(&frame_plan(&vp, 450).layers[0].items[..], [Item::Event(e)] if e.alpha == 1.0)); // 15 s: before the fade
+        match &frame_plan(&vp, 510).layers[0].items[..] {
+            [Item::Mix { a: Some(a), b: None, p, kind: Some(k) }] => assert!(k.id == "milan.tr.linear_wipe" && (*p - 0.5).abs() < 1e-6 && a.alpha == 1.0),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// R4a: video track Mute and Fade to Color envelopes; Velocity reaches the frame plan (and resamples, being off speed).
+    #[test]
+    fn track_mute_fade_to_color_and_velocity() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        let key = |t, v, curve| Keyframe { t, v, curve };
+        let t = &mut p.timeline.video_tracks[0]; // a: 10..15 s
+        t.envelopes.push(Envelope { kind: EnvKind::Mute, points: Keyframes { keys: vec![key(0.0, 1.0, Curve::Hold), key(12.0, 0.0, Curve::Hold)] } });
+        assert_eq!((ids(&p, 11.0), ids(&p, 12.5)), (vec!["a".to_string()], vec![]));
+        let t = &mut p.timeline.video_tracks[0];
+        t.envelopes.clear();
+        t.fade_colors = [[255, 0, 0], [0, 0, 255]];
+        t.envelopes.push(Envelope { kind: EnvKind::FadeToColor, points: Keyframes { keys: vec![key(10.0, 0.0, Curve::Linear), key(12.0, -1.0, Curve::Linear), key(14.0, 0.5, Curve::Linear)] } });
+        let fade = |p: &Project, s: f64| frame_plan(&compile(p), frame_at(s, 30.0)).layers[0].fade;
+        assert_eq!((fade(&p, 10.0), fade(&p, 12.0), fade(&p, 14.0)), (None, Some(([0, 0, 255], 1.0)), Some(([255, 0, 0], 0.5))));
+        p.timeline.video_tracks[0].envelopes.clear();
+        // Velocity 200%: source frame 60 + 2 x 30 a second after the start; Smart resampling now blends (off speed).
+        p.settings.resample = Resample::Smart;
+        assert_eq!(event_at(&p, 11.0).src.m.grid, 0.0, "30p at normal speed: nothing to blend");
+        p.timeline.video_tracks[0].clips[0].envelopes.push(Envelope { kind: EnvKind::Velocity, points: Keyframes { keys: vec![key(0.0, 2.0, Curve::Linear)] } });
+        assert_eq!(drawn(&p, 11.0)[0].1, Some(120));
+        assert_eq!(event_at(&p, 11.0).src.m.grid, 30.0);
     }
 
     #[test]

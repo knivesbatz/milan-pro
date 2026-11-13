@@ -72,8 +72,15 @@ pub enum Command {
     /// The FX window on the focus audio event or the focus audio track; Options › Bypass All Audio FX; the focus audio
     /// track's FX as the chain new audio tracks get (Set Default Track Properties).
     AudioEventFx, AudioTrackFx, BypassAudioFx, DefaultTrackFx,
-    /// Insert/Remove Envelope of this kind on the selected tracks it fits (Insert › Audio/Video Envelopes).
+    /// Insert/Remove Envelope of this kind on the selected audio tracks (Insert › Audio Envelopes) or video tracks
+    /// (Insert › Video Envelopes).
     ToggleEnvelope(crate::project::EnvKind),
+    ToggleVideoEnvelope(crate::project::EnvKind),
+    /// View › Audio / Video Envelopes: show or hide one kind.
+    ViewEnvelope(crate::settings::EnvView),
+    /// The focus video event's Velocity envelope (Insert › Video Envelopes › Event Velocity, the event menu), Freeze
+    /// Frame at Cursor, and its transitions' Transition Progress.
+    EventVelocity, FreezeFrame, TransitionProgress,
     /// Edit › Editing Tool items and the transport tool radios.
     Tool(super::EditTool),
     /// Options › Ripple modes and the transport Auto Ripple ▾ list.

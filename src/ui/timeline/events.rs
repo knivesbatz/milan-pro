@@ -136,7 +136,9 @@ fn notches(c: &Clip, len: f64) -> Vec<f64> {
 
 /// Loop notches: a small V cut into the top edge where the media starts again (none closer than 4 px apart).
 fn paint_notches(p: &Painter, ev: &Ev, lane_bg: Color32) {
-    let Some(len) = ev.loop_len.filter(|l| l / ev.clip.rate.max(1e-9) * ev.pps >= 4.0) else { return };
+    // shortcut: notches are placed at the plain rate, so an event with a Velocity envelope gets none; integrate the
+    // envelope to place them if users ask.
+    let Some(len) = ev.loop_len.filter(|l| l / ev.clip.rate.max(1e-9) * ev.pps >= 4.0 && crate::engine::velocity::of(ev.clip).is_none()) else { return };
     let (r, vis) = (ev.rect, p.clip_rect());
     let p = p.with_clip_rect(r.intersect(vis));
     for t in notches(ev.clip, len) {
