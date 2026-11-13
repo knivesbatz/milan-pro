@@ -81,11 +81,11 @@ pub fn list_row(ui: &mut Ui, height: f32, selected: bool) -> Response {
     resp
 }
 
-/// Column header row (20 px): labels with 1 px separators. `cols`: (title, width).
-pub fn header_row(ui: &mut Ui, cols: &[(&str, f32)]) {
+/// Column header row (20 px): labels with 1 px separators. `cols`: (title, width). The column clicked, if any.
+pub fn header_row(ui: &mut Ui, cols: &[(&str, f32)]) -> Option<usize> {
     let t = theme::get();
     let w = ui.available_width().max(cols.iter().map(|c| c.1).sum());
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::click());
     let p = ui.painter();
     p.rect_filled(rect, 0.0, t.toolbar_bg);
     p.hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(1.0_f32, t.frame));
@@ -95,6 +95,11 @@ pub fn header_row(ui: &mut Ui, cols: &[(&str, f32)]) {
         x += cw;
         p.vline(x - 0.5, rect.y_range(), Stroke::new(1.0_f32, t.frame));
     }
+    let px = resp.clicked().then(|| resp.interact_pointer_pos()).flatten()?.x - rect.min.x;
+    cols.iter().scan(0.0, |end, c| {
+        *end += c.1;
+        Some(*end)
+    }).position(|end| px < end)
 }
 
 /// Text cells of one row laid over `rect`, clipped per column.

@@ -120,6 +120,8 @@ pub struct MeridianApp {
     master_view: ui::MasterView,
     /// R8b: Mixing Console state that is not saved.
     console: ui::ConsoleView,
+    /// R16a: the Edit Details window's view (not saved).
+    edit_details: ui::EditDetails,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -331,6 +333,7 @@ impl MeridianApp {
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
             console: ui::ConsoleView::default(),
+            edit_details: ui::EditDetails::default(),
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -575,6 +578,8 @@ impl eframe::App for MeridianApp {
             ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
+            // R16a: Edit Details edits as the timeline does; its last edit's ripple, for Post-Edit Ripple.
+            let (details_opts, mut details_edit) = (self.edit_opts(), None);
             let mut content = |panel, bar: &mut egui::Ui, body: &mut egui::Ui| {
                 // R14: keys pressed in a floating window work as in the main window.
                 let vctx = bar.ctx().clone();
@@ -662,10 +667,20 @@ impl eframe::App for MeridianApp {
                     console_prefs |= ui::mixer_toolbar(bar, &mut self.prefs.console, &self.audio.master);
                     ui::mixing_console(body, &mut self.console, &self.prefs.console, &mut self.project, &mut self.history, &mut self.sel);
                 }
+                Panel::EditDetails => {
+                    ui::edit_details_toolbar(bar, &mut self.edit_details);
+                    if let Some(ops) = ui::edit_details(body, &mut self.edit_details, &mut self.project, &mut self.history, &mut self.sel, &details_opts) {
+                        details_edit = Some(ops);
+                    }
+                }
+                Panel::ProjectNotes => ui::project_notes(body, &mut self.project),
                 }
             };
             self.dock.show(ui, a.dock, &mut content);
             self.dock.show_floating(ctx, self.offscreen, float_dock, &mut content);
+            if let Some(ops) = details_edit {
+                self.last_edit = (self.history.generation(), ops);
+            }
             if console_prefs {
                 self.save_prefs();
             }

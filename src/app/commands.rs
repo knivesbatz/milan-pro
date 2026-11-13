@@ -2235,6 +2235,13 @@ impl MeridianApp {
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "props-audio" => self.settings.open_tab(&self.project, 1),
+            "props-summary" => self.settings.open_tab(&self.project, 3),
+            // R16a: two notes (left unmodified: the harness never marks the project changed) in Project Notes.
+            "notes" => {
+                use crate::project::Note;
+                self.project.notes = vec![Note { at: 1.0, text: "Tighten the cut into the title".into(), resolved: false }, Note { at: 4.5, text: "Music level checked".into(), resolved: true }];
+                self.dock.open(crate::ui::dock::Panel::ProjectNotes);
+            }
             "buses" => {
                 // R8a: two busses and an assignable FX chain (its FX window open); audio tracks tall enough for the
                 // multipurpose slider, the first one sending to Bus A.

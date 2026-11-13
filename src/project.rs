@@ -11,8 +11,37 @@ pub struct Project {
     pub settings: ProjectSettings,
     pub timeline: Timeline,
     pub media_pool: Vec<MediaItem>,
+    /// R16a: View › Window › Project Notes (VEGAS 23). Not in the undo history (`history::restore` keeps the live ones).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
     #[serde(skip)]
     pub modified: bool,
+}
+
+/// R16a: one Project Notes entry: a timeline position (Add New Note takes the cursor), the text, and Resolved.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Note {
+    pub at: f64,
+    pub text: String,
+    pub resolved: bool,
+}
+
+/// R16a: Project Properties › Summary.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Summary {
+    pub title: String,
+    pub artist: String,
+    pub engineer: String,
+    pub copyright: String,
+    pub comments: String,
+}
+
+impl Summary {
+    fn is_empty(&self) -> bool {
+        *self == Summary::default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +81,9 @@ pub struct ProjectSettings {
     /// R11: audio Bit depth (8, 16, 24 or 32 = float): the PCM, FLAC and ALAC renders that follow the project.
     #[serde(default = "sixteen")]
     pub bit_depth: u8,
+    /// R16a: Project Properties › Summary.
+    #[serde(default, skip_serializing_if = "Summary::is_empty")]
+    pub summary: Summary,
 }
 
 /// Project Properties › Field order (and a render template's).
@@ -1197,6 +1229,7 @@ impl Project {
             settings: ProjectSettings::default(),
             timeline: Timeline::new(),
             media_pool: Vec::new(),
+            notes: Vec::new(),
             modified: false,
         }
     }
@@ -1308,6 +1341,7 @@ impl Default for ProjectSettings {
             deinterlace: Deinterlace::Blend,
             adjust_media: true,
             bit_depth: 16,
+            summary: Summary::default(),
         }
     }
 }
@@ -1323,6 +1357,18 @@ impl ProjectSettings {
         match self.ruler.format {
             RulerFormat::MeasuresBeats => measures(d.abs(), self, 0),
             f => format_time(d, f, self),
+        }
+    }
+
+    /// R16a: a length typed in the ruler's format (`ruler_len`'s inverse: Measures & Beats count from 0.0.000).
+    pub fn parse_ruler_len(&self, text: &str) -> Option<f64> {
+        match self.ruler.format {
+            RulerFormat::MeasuresBeats => {
+                let f: Vec<f64> = text.trim().split('.').map(|x| x.trim().parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0)).collect::<Option<_>>()?;
+                let (m, b, t) = (f[0], f.get(1).copied().unwrap_or(0.0), f.get(2).copied().unwrap_or(0.0));
+                (f.len() <= 3).then(|| (m * self.ruler.beats_per_measure.max(1) as f64 + b + t / TICKS) * self.beat_secs())
+            }
+            f => parse_time(text, f, self),
         }
     }
 
@@ -2012,6 +2058,26 @@ mod tests {
         assert_eq!(t2.automation, AutoMode::Read);
         // R9: no input busses and input monitoring off; neither written.
         assert!(tl.audio.inputs.is_empty() && a.monitor == Monitor::Off && v["timeline"]["audio_tracks"][0].get("monitor").is_none());
+        // R16a: no Project Notes and an empty Summary; neither written.
+        assert!(back.notes.is_empty() && back.settings.summary == Summary::default());
+        assert!(v.get("notes").is_none() && v["settings"].get("summary").is_none());
+        let n: Note = serde_json::from_str(r#"{"text":"x"}"#).unwrap();
+        assert_eq!(n, Note { at: 0.0, text: "x".into(), resolved: false });
+    }
+
+    /// R16a: Project Notes and the Summary survive save and load.
+    #[test]
+    fn notes_and_summary_survive_save_and_load() {
+        let dir = temp_dir("notes");
+        let path = dir.join("notes.mnle");
+        let mut p = Project::new("t");
+        p.notes = vec![Note { at: 2.5, text: "Swap the B-roll\nand fix the fade".into(), resolved: false }, Note { at: 0.0, text: "Done".into(), resolved: true }];
+        p.settings.summary = Summary { title: "Show".into(), artist: "Me".into(), comments: "Two\nlines".into(), ..Default::default() };
+        p.save(&path).unwrap();
+        let back = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        assert_eq!((back.notes, back.settings.summary), (p.notes, p.settings.summary));
     }
 
     #[test]

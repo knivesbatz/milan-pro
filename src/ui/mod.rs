@@ -5,6 +5,7 @@ mod choosers;
 mod color_grading;
 pub mod dialogs;
 pub mod dock;
+mod edit_details;
 mod explorer;
 pub mod fonts;
 mod fx_window;
@@ -20,6 +21,7 @@ pub mod render_queue;
 mod mixer;
 mod pancrop;
 mod preview;
+mod project_notes;
 mod properties;
 mod status;
 #[allow(dead_code)] // full token set from the spec; later stages use the rest
@@ -36,6 +38,8 @@ use std::path::PathBuf;
 use crate::project::Clip;
 
 pub use choosers::{Chooser, draw_chooser, draw_chooser_toolbar};
+pub use edit_details::{EditDetails, edit_details, edit_details_toolbar};
+pub use project_notes::project_notes;
 pub use color_grading::{ColorGrading, color_grading_toolbar, draw_color_grading};
 pub use fx_window::FxWindow;
 pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};

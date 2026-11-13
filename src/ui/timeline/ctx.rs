@@ -299,8 +299,8 @@ pub(super) fn menu(
             if entry(ui, "&Select Region", "", true, Mark::None) {
                 project.timeline.loop_region = Some((r.start, r.end));
             }
-            if start {
-                off(ui, "&Rename", Later("R16a"));
+            if start && entry(ui, "&Rename", "", true, Mark::None) {
+                st.rename = Some((Rename::Region(i), r.name));
             }
             sep(ui);
             off(ui, "&Create Subclip", Fixed("timeline regions are not media: create subclips in the Trimmer or from an event"));

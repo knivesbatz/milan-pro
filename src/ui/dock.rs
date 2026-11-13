@@ -25,10 +25,13 @@ pub enum Panel {
     Compositors,
     /// R8b: View › Window › Mixing Console (not in a default layout).
     MixingConsole,
+    /// R16a: View › Window › Edit Details and (VEGAS 23) Project Notes (not in a default layout).
+    EditDetails,
+    ProjectNotes,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 12] = [
+    pub const ALL: [Panel; 14] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -41,6 +44,8 @@ impl Panel {
         Panel::MasterBus,
         Panel::Compositors,
         Panel::MixingConsole,
+        Panel::EditDetails,
+        Panel::ProjectNotes,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -58,12 +63,14 @@ impl Panel {
             Panel::MasterBus => "Master Bus",
             Panel::Compositors => "Compositors",
             Panel::MixingConsole => "Mixing Console",
+            Panel::EditDetails => "Edit Details",
+            Panel::ProjectNotes => "Project Notes",
         }
     }
 
-    /// Color Grading is a VP23 window.
+    /// Color Grading and Project Notes are VP23 windows.
     pub fn in_look(self, look: UiLook) -> bool {
-        self != Panel::ColorGrading || look == UiLook::Vegas23
+        !matches!(self, Panel::ColorGrading | Panel::ProjectNotes) || look == UiLook::Vegas23
     }
 }
 

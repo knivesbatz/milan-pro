@@ -53,7 +53,7 @@ pub enum Command {
     LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
     SaveLayoutAs, OrganizeLayouts, ReloadLayout,
     // Windows
-    FocusTimeline, Window(Panel), ShowWindow(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner,
+    FocusTimeline, Window(Panel), ShowWindow(Panel), PluginManager, VideoScopes, SurroundPanner,
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
@@ -360,8 +360,8 @@ pub const TABLE: &[Row] = &[
     (Window(Panel::MasterBus), "Master Bus", &["Alt+3"], None),
     (Window(Panel::VideoPreview), "Video Preview", &["Alt+4"], None),
     (Window(Panel::ProjectMedia), "Project Media", &["Alt+5"], None),
-    (ProjectNotes, "Project Notes", &["Alt+6"], Some(&[])),
-    (EditDetails, "Edit Details", &["Ctrl+Alt+4"], Some(&["Alt+6"])),
+    (Window(Panel::ProjectNotes), "Project Notes", &["Alt+6"], Some(&[])),
+    (Window(Panel::EditDetails), "Edit Details", &["Ctrl+Alt+4"], Some(&["Alt+6"])),
     (Window(Panel::Transitions), "Transitions", &["Alt+7"], None),
     (Window(Panel::VideoFx), "Video FX", &["Alt+8"], None),
     (Window(Panel::MediaGenerators), "Media Generators", &["Alt+9"], None),

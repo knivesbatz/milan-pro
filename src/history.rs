@@ -66,6 +66,8 @@ impl History {
 fn restore(project: &mut Project, mut snap: Project) -> Project {
     snap.path = project.path.clone();
     snap.name = project.name.clone(); // derived from the path
+    // R16a: Project Notes are typed, not edited: undoing an edit never takes back what was written since.
+    snap.notes = project.notes.clone();
     // Track heights are view state too.
     let live = &project.timeline;
     let heights: std::collections::HashMap<&str, _> = live.video_tracks.iter().chain(&live.audio_tracks).map(|t| (t.id.as_str(), t.height)).collect();
@@ -117,10 +119,12 @@ mod tests {
         p.timeline.markers.push(crate::project::Marker { position: 1.0, name: String::new(), color: [0; 3] });
         p.timeline.video_tracks[0].height += 40.0;
         p.name = "Show".into();
+        p.notes.push(crate::project::Note { at: 1.0, text: "fix the cut".into(), resolved: false });
         let height = p.timeline.video_tracks[0].height;
         assert!(h.undo(&mut p));
         assert!(p.timeline.markers.is_empty());
         assert_eq!((p.timeline.video_tracks[0].height, p.name.as_str()), (height, "Show"));
+        assert_eq!(p.notes.len(), 1, "R16a: undo keeps the Project Notes");
     }
 
     #[test]

@@ -422,7 +422,7 @@ impl SettingsDialog {
                 0 => video_tab(ui, d, project, v23),
                 1 => audio_tab(ui, d, buses),
                 2 => ruler_tab(ui, d),
-                3 => dialogs::empty_page(ui, Later("R16a")),
+                3 => summary_tab(ui, d),
                 4 => dialogs::empty_page(ui, NotPlanned("R59")),
                 _ => dialogs::empty_page(ui, Later("R49")),
             });
@@ -609,6 +609,15 @@ fn ruler_tab(ui: &mut Ui, d: &mut ProjectSettings) {
             }
         });
     });
+}
+
+/// R16a: the Summary page (VEGAS's five fields; Comments takes several lines).
+fn summary_tab(ui: &mut Ui, d: &mut ProjectSettings) {
+    let s = &mut d.summary;
+    for (label, v) in [("Title:", &mut s.title), ("Artist:", &mut s.artist), ("Engineer:", &mut s.engineer), ("Copyright:", &mut s.copyright)] {
+        dialogs::row(ui, label, 80.0, true, |ui| ui.add(egui::TextEdit::singleline(v).desired_width(290.0)));
+    }
+    dialogs::row(ui, "Comments:", 80.0, true, |ui| ui.add(egui::TextEdit::multiline(&mut s.comments).desired_width(290.0).desired_rows(8)));
 }
 
 /// `buses`: Number of stereo busses (R8a). Fewer removes the last ones: what went to them goes to the master.

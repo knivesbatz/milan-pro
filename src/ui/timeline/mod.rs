@@ -122,6 +122,8 @@ enum Rename {
     /// A track group, by id (double-click its header, or Track Group › Rename Track Group).
     Group(String),
     Marker(usize),
+    /// R16a: a region (its start tag's Rename), by index.
+    Region(usize),
     /// An event's active take (Take › Rename Active), by event id.
     Event(String),
 }
@@ -1314,6 +1316,10 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut 
             let (_, marker_r, _) = ruler::band_rows(&t, g.band);
             Rect::from_min_size(pos2(g.to_x(m.position) + 14.0, marker_r.min.y - 2.0), vec2(160.0, 18.0))
         }),
+        &Rename::Region(i) => project.timeline.regions.get(i).map(|r| {
+            let (_, marker_r, _) = ruler::band_rows(&t, g.band);
+            Rect::from_min_size(pos2(g.to_x(r.start).floor() + 14.0, marker_r.min.y - 2.0), vec2(160.0, 18.0))
+        }),
         Rename::Event(id) => project.find_clip(id).zip(project.clip(id)).and_then(|(r, c)| {
             let row = rows.iter().find(|w| w.is_video == r.is_video && w.idx == r.track_idx)?;
             let x = g.to_x(c.position).max(g.lanes.min.x) + 2.0;
@@ -1333,6 +1339,7 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut 
             &Rename::Track(v, i) => project.timeline.tracks(v).get(i).map(|t| &t.name),
             Rename::Group(id) => project.timeline.track_groups.iter().find(|g| g.id == *id).map(|g| &g.name),
             &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| &m.name),
+            &Rename::Region(i) => project.timeline.regions.get(i).map(|r| &r.name),
             Rename::Event(id) => project.clip(id).map(|c| &c.name),
         };
         // An unchanged name is no edit (no undo step).
@@ -1347,6 +1354,7 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut 
                     }
                 }
                 Rename::Marker(i) => project.timeline.markers[i].name = buf,
+                Rename::Region(i) => project.timeline.regions[i].name = buf,
                 Rename::Event(_) => {
                     if let Some((v, i, j)) = at {
                         project.timeline.tracks_mut(v)[i].clips[j].name = buf;

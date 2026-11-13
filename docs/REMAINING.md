@@ -122,7 +122,7 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b), Summary (R16a). → R10a, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b). → R10a, R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators per look, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). → R49 |
@@ -628,7 +628,7 @@ The inventory as found before R0:
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a-c, R31, R10b, R8b (DONE), R59 |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b-c, R31, R10b, R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
@@ -761,7 +761,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R11: Project Properties Field order, Pixel aspect ratio, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth; preview Simulate Device Aspect Ratio.
 - R12: File > Real-Time Render (R12 moved it to R59: it exists for external hardware FX, which Milan Pro does not host; a normal render gives the same file).
 - R13/R14: the Display page docking options (R13 DONE: Automatically hide docking area, Display timeline at bottom of main window (VP16), Position tabs at top of docked windows; R14 DONE: Allow floating windows to dock).
-- R16a: region Rename (marker bar), Project Properties Summary page.
+- R16a (DONE): region Rename (marker bar), Project Properties Summary page.
 - R16b: preview Split-Screen View and the Isolate channel overlays.
 - R18a: View > Event Length (VP23).
 - R18b: video track Set Default Track Properties.
@@ -1333,6 +1333,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Menu shortcut text follows the overrides.
 
 ### R16a: Edit Details and Project Notes (M)
+
+**Status: DONE.** Built as VEGAS has it, which differs from the design below in places:
+- Edit Details (`ui/edit_details.rs`, View › Window, Alt+6 in VEGAS 16 and Ctrl+Alt+4 in VEGAS 23) shows VEGAS's six views: Audio CD Track List, Commands, Events, Markers, Regions and Selected Events (VEGAS has no Media view; Project Media lists media). Events have Track, Start, End, Length, Number of Takes, Active Take Name, Take Start, File Path and the Select, Mute, Loop, Lock and Normalize checks. A heading click sorts (again: descending), a double-click edits a cell, Enter or a click away applies it, Esc cancels. Start moves the event (and its group) as a Move drag, End and Length trim the right edge as a trim drag, Track moves it to another track of its kind; locks, Ignore Event Grouping, Auto Ripple (or Post-Edit Ripple later) and auto crossfades apply as on the timeline, one undo step each. The Audio CD and Commands views stay empty until their markers can be inserted (R18a).
+- Project Notes (`ui/project_notes.rs`, VEGAS 23, Alt+6) is VEGAS's list of notes, not one text field: Add New Note (lower left) adds a note at the cursor; each note has its position (a click goes there), Resolved and its text. Notes are saved with the project (`Project.notes`) and are not undone by Undo, so nothing typed is lost to an undo.
+- Also built: region Rename (region start tag menu) and the Project Properties › Summary page (Title, Artist, Engineer, Copyright, Comments; `ProjectSettings.summary`).
+- Not built (VEGAS extras): column drag to reorder or hide, view presets, the right-click menu, copying rows, and the Timecode In / Out, Tape Name and Snap Offset columns (Milan Pro keeps none of these values; media timecode comes with R17a).
+- Tests: `editing_start_moves_the_event_in_one_undo_step`, `sort_by_length`, `notes_and_summary_survive_save_and_load`, `locks_groups_tracks_and_lengths_follow_the_timeline`, `markers_and_regions_edit`, `lengths_round_trip_in_every_ruler_format`, `undo_keeps_track_heights_and_the_name`, `old_projects_load_without_fades_or_loop`.
 
 **Scope**
 - Edit Details window: sortable, editable tables of Events, Markers, Regions, Media and Commands, with VEGAS columns (Track, Start, Length, Take, Active, ...).
