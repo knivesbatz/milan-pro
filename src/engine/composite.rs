@@ -128,7 +128,7 @@ fn bilerp(src: &ColorImage, u: i64, v: i64) -> Color32 {
 }
 
 /// The whole-pixel offset when `m` is a scale-1 translation (within float noise), else None.
-fn whole_pixel(m: Affine) -> Option<(i64, i64)> {
+pub(crate) fn whole_pixel(m: Affine) -> Option<(i64, i64)> {
     let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
     (near(m.a, 1.0) && near(m.d, 1.0) && near(m.b, 0.0) && near(m.c, 0.0) && near(m.tx, m.tx.round()) && near(m.ty, m.ty.round()))
         .then(|| (m.tx.round() as i64, m.ty.round() as i64))
@@ -167,27 +167,38 @@ pub fn reduce_flicker(img: &mut ColorImage, k: usize) {
     });
 }
 
+/// 16.16 fixed point: source positions in `draw`.
+pub(crate) const ONE: f64 = 65536.0;
+
+/// The destination pixels a `src`-sized picture drawn through `m` can touch: [x0, x1, y0, y1], None when none.
+pub(crate) fn bounds(m: Affine, [sw, sh]: [usize; 2], [dw, dh]: [usize; 2]) -> Option<[usize; 4]> {
+    let pts = [(0.0, 0.0), (sw as f64, 0.0), (0.0, sh as f64), (sw as f64, sh as f64)].map(|(x, y)| m.apply(x, y));
+    let lo = |f: fn(&(f64, f64)) -> f64, max: usize| (pts.iter().map(f).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize).min(max);
+    let hi = |f: fn(&(f64, f64)) -> f64, max: usize| (pts.iter().map(f).fold(f64::NEG_INFINITY, f64::max).ceil().max(0.0) as usize).min(max);
+    let (x0, x1, y0, y1) = (lo(|p| p.0, dw), hi(|p| p.0, dw), lo(|p| p.1, dh), hi(|p| p.1, dh));
+    (x0 < x1 && y0 < y1).then_some([x0, x1, y0, y1])
+}
+
+/// The destination pixels a `src`-sized picture covers at whole-pixel offset `(ox, oy)`: [x0, x1, y0, y1], None when none.
+pub(crate) fn spans((ox, oy): (i64, i64), [sw, sh]: [usize; 2], [dw, dh]: [usize; 2]) -> Option<[usize; 4]> {
+    let span = |o: i64, s: usize, d: usize| (o.clamp(0, d as i64) as usize, (o + s as i64).clamp(0, d as i64) as usize);
+    let ((x0, x1), (y0, y1)) = (span(ox, sw, dw), span(oy, sh, dh));
+    (x0 < x1 && y0 < y1).then_some([x0, x1, y0, y1])
+}
+
 /// Draw `src` through `m` (source pixel edges -> destination pixel edges) at `alpha` onto `dst`, source-over.
 /// Outside the source rectangle nothing is drawn, so letterbox bars stay as they were.
 pub fn draw(dst: &mut ColorImage, src: &ColorImage, m: Affine, alpha: f32, bilinear: bool, k: usize) {
     let a8 = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
     let Some(inv) = m.inverse() else { return };
-    let ([dw, dh], [sw, sh]) = (dst.size, src.size);
+    let ([dw, _], [sw, sh]) = (dst.size, src.size);
     if a8 == 0 || sw == 0 || sh == 0 {
         return;
     }
-    let pts = [(0.0, 0.0), (sw as f64, 0.0), (0.0, sh as f64), (sw as f64, sh as f64)].map(|(x, y)| m.apply(x, y));
-    let lo = |f: fn(&(f64, f64)) -> f64, max: usize| (pts.iter().map(f).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize).min(max);
-    let hi = |f: fn(&(f64, f64)) -> f64, max: usize| (pts.iter().map(f).fold(f64::NEG_INFINITY, f64::max).ceil().max(0.0) as usize).min(max);
-    let (x0, x1, y0, y1) = (lo(|p| p.0, dw), hi(|p| p.0, dw), lo(|p| p.1, dh), hi(|p| p.1, dh));
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
+    let Some([x0, x1, y0, y1]) = bounds(m, src.size, dst.size) else { return };
     if let Some((ox, oy)) = whole_pixel(m) {
         // Fast path: the source at its own size on the pixel grid (a full-frame event decoded at the preview size).
-        let span = |o: i64, s: usize, d: usize| (o.clamp(0, d as i64) as usize, (o + s as i64).clamp(0, d as i64) as usize);
-        let ((x0, x1), (y0, y1)) = (span(ox, sw, dw), span(oy, sh, dh));
-        if x0 < x1 && y0 < y1 {
+        if let Some([x0, x1, y0, y1]) = spans((ox, oy), src.size, dst.size) {
             par_rows(&mut dst.pixels[y0 * dw..y1 * dw], dw, k, |yr, row| {
                 let srow = &src.pixels[((y0 + yr) as i64 - oy) as usize * sw..][..sw];
                 for (x, px) in row.iter_mut().enumerate().take(x1).skip(x0) {
@@ -197,7 +208,6 @@ pub fn draw(dst: &mut ColorImage, src: &ColorImage, m: Affine, alpha: f32, bilin
         }
         return;
     }
-    const ONE: f64 = 65536.0;
     let (du, dv) = ((inv.a * ONE).round() as i64, (inv.c * ONE).round() as i64);
     let (umax, vmax) = ((sw as i64) << 16, (sh as i64) << 16);
     par_rows(&mut dst.pixels[y0 * dw..y1 * dw], dw, k, |yr, row| {
@@ -335,7 +345,7 @@ fn blend_px(d: Color32, s: Color32, mode: Composite, o: f32, group: bool) -> Col
 
 /// Composite `layer` onto `acc` with `mode` at `opacity`: (1 - a) Cd + a B(Cd, Cs) over an opaque backdrop, the W3C
 /// general formula over a transparent one (inside a compositing group, `group`). Custom runs `compositor`.
-fn blend(acc: &mut ColorImage, layer: &ColorImage, mode: Composite, opacity: f32, compositor: Option<&FxEval>, group: bool, k: usize) {
+pub(crate) fn blend(acc: &mut ColorImage, layer: &ColorImage, mode: Composite, opacity: f32, compositor: Option<&FxEval>, group: bool, k: usize) {
     if mode == Composite::Custom {
         // A compositor this build does not know draws the layer as Source Alpha.
         match compositor {
@@ -376,7 +386,7 @@ fn blend(acc: &mut ColorImage, layer: &ColorImage, mode: Composite, opacity: f32
 }
 
 /// Track Motion then the frame size: normalised frame -> output pixels.
-fn layer_to_out(l: &TrackPlan, w: usize, h: usize) -> Affine {
+pub(crate) fn layer_to_out(l: &TrackPlan, w: usize, h: usize) -> Affine {
     l.motion.then(Affine::scale(w as f64, h as f64))
 }
 
@@ -415,26 +425,21 @@ fn compose_nested(fs: &[(FramePlan, f32)], src: &mut dyn Sources, w: u32, h: u32
 }
 
 /// The events an item draws, bottom first, with the alpha factor each gets.
-fn events(i: &Item) -> Vec<&EventPlan> {
+pub(crate) fn events(i: &Item) -> Vec<&EventPlan> {
     match i {
         Item::Event(e) => vec![e],
         Item::Mix { a, b, .. } => a.iter().chain(b).collect(),
     }
 }
 
-/// One event's source, through its event FX (on a copy), drawn at `alpha`. `to_out` (with Track Motion) sets the
-/// decode size; `place_out` is where it lands (without Track Motion when track FX come first).
-#[allow(clippy::too_many_arguments)]
-fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out: Affine, place_out: Affine, alpha: f32, bilinear: bool, k: usize) {
-    if alpha <= 0.0 {
-        return;
-    }
+/// One event's source through its resampling, flicker filter, event FX and masks (on a copy). `to_out` (with Track
+/// Motion) sets the decode size.
+pub(crate) fn event_image(src: &mut dyn Sources, e: &EventPlan, to_out: Affine, bilinear: bool, k: usize) -> Option<Arc<ColorImage>> {
     let (dw, dh) = decode_size(e, to_out);
-    let img = match e.src.nested.as_deref() {
+    let mut img = match e.src.nested.as_deref() {
         Some(Nested::Frame(fs)) => Some(Arc::new(compose_nested(fs, src, dw, dh, bilinear, k))),
         _ => src.get(&e.src, dw, dh),
-    };
-    let Some(mut img) = img else { return };
+    }?;
     if let Some((n, w)) = e.next {
         if let Some(b) = src.get(&SrcAt { m: e.src.m.clone(), sf: Some(n), generator: None, nested: None }, dw, dh) {
             blend_frames(Arc::make_mut(&mut img), &b, w, k);
@@ -447,8 +452,40 @@ fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out
         vfx::apply(Arc::make_mut(&mut img), f, k);
     }
     raster::apply(Arc::make_mut(&mut img), &e.masks, k);
-    let m = Affine::scale(1.0 / img.size[0] as f64, 1.0 / img.size[1] as f64).then(e.place).then(place_out);
-    draw(dst, &img, m, alpha, bilinear, k);
+    Some(img)
+}
+
+/// Where `event_image`'s picture `img` lands: its pixels to the event's place, then to `place_out`.
+pub(crate) fn event_to(img: &ColorImage, e: &EventPlan, place_out: Affine) -> Affine {
+    Affine::scale(1.0 / img.size[0] as f64, 1.0 / img.size[1] as f64).then(e.place).then(place_out)
+}
+
+/// One event's source, through its event FX (on a copy), drawn at `alpha`. `to_out` (with Track Motion) sets the
+/// decode size; `place_out` is where it lands (without Track Motion when track FX come first).
+#[allow(clippy::too_many_arguments)]
+fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out: Affine, place_out: Affine, alpha: f32, bilinear: bool, k: usize) {
+    if alpha <= 0.0 {
+        return;
+    }
+    if let Some(img) = event_image(src, e, to_out, bilinear, k) {
+        draw(dst, &img, event_to(&img, e, place_out), alpha, bilinear, k);
+    }
+}
+
+/// A transition with a known kind: both sides as whole `w` x `h` frames without Track Motion, mixed. `draw_items` then
+/// moves it as one picture: a wipe or push stays inside a picture-in-picture, as in VEGAS, whichever path the track takes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn transition_image(src: &mut dyn Sources, a: Option<&EventPlan>, b: Option<&EventPlan>, p: f32, kind: &FxEval, to_out: Affine, [w, h]: [usize; 2], bilinear: bool, k: usize) -> ColorImage {
+    let frame = Affine::scale(w as f64, h as f64);
+    let mut side = |e: Option<&EventPlan>| {
+        let mut img = ColorImage::new([w, h], Color32::TRANSPARENT);
+        if let Some(e) = e {
+            draw_event(&mut img, src, e, to_out, frame, e.alpha, bilinear, k);
+        }
+        img
+    };
+    let (ia, ib) = (side(a), side(b));
+    transition::mix(kind, &ia, &ib, p, k)
 }
 
 fn draw_items(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, gain: f32, bilinear: bool, k: usize, with_motion: bool) {
@@ -458,19 +495,9 @@ fn draw_items(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, gain: 
     for item in &l.items {
         match item {
             Item::Mix { a, b, p, kind: Some(kind) } => {
-                // Both sides as whole frames without Track Motion, mixed, then moved as one picture: a wipe or push
-                // stays inside a picture-in-picture, as in VEGAS, whichever path the track takes.
-                let frame = Affine::scale(w as f64, h as f64);
-                let mut side = |e: Option<&EventPlan>| {
-                    let mut img = ColorImage::new([w, h], Color32::TRANSPARENT);
-                    if let Some(e) = e {
-                        draw_event(&mut img, src, e, to_out, frame, e.alpha, bilinear, k);
-                    }
-                    img
-                };
-                let (ia, ib) = (side(a.as_ref()), side(b.as_ref()));
+                let img = transition_image(src, a.as_ref(), b.as_ref(), *p, kind, to_out, [w, h], bilinear, k);
                 let m = if with_motion { Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(to_out) } else { Affine::translate(0.0, 0.0) };
-                draw(dst, &transition::mix(kind, &ia, &ib, *p, k), m, gain, bilinear, k);
+                draw(dst, &img, m, gain, bilinear, k);
             }
             _ => {
                 // An unknown transition draws as a dissolve: A, then B at alpha p (or A alone at 1 - p, out to nothing).
@@ -565,7 +592,7 @@ fn add_halos(img: &mut ColorImage, halos: [Option<Halo>; 2], k: usize) {
 }
 
 /// R18b: `fx` run on a copy of `dst`, mixed back over it at `a` (all of it at 1).
-fn adjust(dst: &mut ColorImage, fx: &[FxEval], a: f32, k: usize) {
+pub(crate) fn adjust(dst: &mut ColorImage, fx: &[FxEval], a: f32, k: usize) {
     let mut img = dst.clone();
     for f in fx {
         vfx::apply(&mut img, f, k);
@@ -600,8 +627,14 @@ fn layer_onto(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, biline
         draw_items(dst, src, l, l.opacity, bilinear, k, true);
         return;
     }
+    let layer = layer_image(src, l, [w, h], bilinear, k);
+    blend(dst, &layer, l.mode, l.opacity, l.compositor.as_ref(), group, k);
+}
+
+/// Track `l`'s own `w` x `h` picture, as `layer_onto` blends it: its events, its track FX on the track's own frame
+/// then Track Motion (or 3D Track Motion), 2D Shadow / Glow, Fade to Color.
+pub(crate) fn layer_image(src: &mut dyn Sources, l: &TrackPlan, [w, h]: [usize; 2], bilinear: bool, k: usize) -> ColorImage {
     let mut layer = ColorImage::new([w, h], Color32::TRANSPARENT);
-    // Track FX on the track's own frame, then Track Motion (or 3D Track Motion) moves the result.
     let direct = l.fx.is_empty() && l.persp.is_none();
     draw_items(&mut layer, src, l, 1.0, bilinear, k, direct);
     if !direct {
@@ -615,13 +648,13 @@ fn layer_onto(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, biline
         }
         layer = moved;
     }
-    if halo {
+    if l.shadow.is_some() || l.glow.is_some() {
         add_halos(&mut layer, [l.shadow, l.glow], k);
     }
     if let Some((c, t)) = l.fade {
         fade_to(&mut layer, c, t, k);
     }
-    blend(dst, &layer, l.mode, l.opacity, l.compositor.as_ref(), group, k);
+    layer
 }
 
 /// Compose one frame `w` x `h`: opaque black, then each track bottom to top, then the Video Output FX and the Video
@@ -661,9 +694,15 @@ pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, biline
     if let Some(g) = group {
         blend(&mut acc, &g, Composite::SourceAlpha, 1.0, None, false, k);
     }
+    finish(&mut acc, fp, k);
+    acc
+}
+
+/// After the tracks: the Video Output FX, then the Video Bus Track's Fade to Color.
+pub(crate) fn finish(acc: &mut ColorImage, fp: &FramePlan, k: usize) {
     if !fp.out_fx.is_empty() {
         for f in &fp.out_fx {
-            vfx::apply(&mut acc, f, k);
+            vfx::apply(acc, f, k);
         }
         // The output is opaque: whatever an output FX made transparent shows black.
         for p in &mut acc.pixels {
@@ -672,9 +711,8 @@ pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, biline
         }
     }
     if let Some((c, t)) = fp.fade {
-        fade_to(&mut acc, c, t, k);
+        fade_to(acc, c, t, k);
     }
-    acc
 }
 
 /// Motion blur / supersampling: the weighted mean of `frames` (one size), weights in `w`.
@@ -695,12 +733,12 @@ pub fn mean(frames: &[ColorImage], w: &[f32]) -> ColorImage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::plan::{self, MediaRef};
     use crate::project::{Motion, PanCrop};
 
-    fn media(w: u32, h: u32) -> Arc<MediaRef> {
+    pub(crate) fn media(w: u32, h: u32) -> Arc<MediaRef> {
         Arc::new(MediaRef {
             id: "m".into(),
             path: "m.mp4".into(),
@@ -730,11 +768,11 @@ mod tests {
         }
     }
 
-    fn event(m: &Arc<MediaRef>, pc: PanCrop, alpha: f32) -> EventPlan {
+    pub(crate) fn event(m: &Arc<MediaRef>, pc: PanCrop, alpha: f32) -> EventPlan {
         EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None, nested: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0), true), alpha, fx: Vec::new(), next: None, flicker: false, masks: Vec::new() }
     }
 
-    fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
+    pub(crate) fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {
         TrackPlan { mode, opacity, motion: plan::motion(motion, (1920.0, 1080.0)), persp: None, fx: Vec::new(), fade: None, compositor: None, child: false, parent: None, shadow: None, glow: None, items, adjust: Vec::new() }
     }
 

@@ -2013,6 +2013,7 @@ dependencies = [
  "sha2",
  "ureq",
  "uuid",
+ "wgpu",
  "windows 0.54.0",
  "windows-sys 0.59.0",
  "winresource",

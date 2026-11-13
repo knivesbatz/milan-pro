@@ -11,6 +11,7 @@ pub mod composite;
 #[allow(dead_code)]
 pub mod fonts;
 pub mod generate;
+pub mod gpu;
 // shortcut: key editing is used from batch 10 (keyframe UI) on.
 #[allow(dead_code)]
 pub mod keyframes;

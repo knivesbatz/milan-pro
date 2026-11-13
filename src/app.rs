@@ -256,6 +256,8 @@ impl MeridianApp {
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
+        // R21a: the graphics adapters are listed and the compositor's device opened on a background thread.
+        crate::engine::gpu::choose(&prefs.gpu);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.

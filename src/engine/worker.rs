@@ -298,14 +298,23 @@ impl Worker {
             exact: true,
             err: None,
         };
-        let (wu, hu, bilinear) = (w as usize, h as usize, q != Quality::Draft);
+        let (wu, hu, bilinear, k) = (w as usize, h as usize, q != Quality::Draft, self.k);
+        // R21a: on the GPU when Preferences › Video chose one, renders too (so a render shows what was previewed); a
+        // frame the GPU cannot do composes on the CPU.
+        let gpu = crate::engine::gpu::current();
+        let compose = |fp: &plan::FramePlan, live: &mut Live| {
+            gpu.as_ref().and_then(|g| g.compose(fp, live, wu, hu, bilinear, k)).unwrap_or_else(|| {
+                live.drawn.clear(); // a GPU attempt may have drawn some layers already
+                composite::compose(fp, live, wu, hu, bilinear, k)
+            })
+        };
         let img = Arc::new(if subs.is_empty() {
-            composite::compose(&fp, &mut live, wu, hu, bilinear, self.k)
+            compose(&fp, &mut live)
         } else {
             let mut frames = Vec::new();
             for s in &subs {
                 live.drawn.clear(); // each sub-frame draws the same layers: they hold the same pictures
-                frames.push(composite::compose(s, &mut live, wu, hu, bilinear, self.k));
+                frames.push(compose(s, &mut live));
             }
             composite::mean(&frames, &fp.samples.iter().map(|s| s.1).collect::<Vec<_>>())
         });

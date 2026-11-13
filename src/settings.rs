@@ -57,6 +57,9 @@ pub struct Prefs {
     pub auto_proxy: bool,
     /// Preferences › Video: the compositing-mode lists also offer Milan Pro's blend modes VEGAS has not (off).
     pub extra_blend_modes: bool,
+    /// R21a: Preferences › Video › "GPU acceleration of video processing": "" the best adapter (automatic; the CPU
+    /// when there is none), `engine::gpu::OFF`, or an adapter's name.
+    pub gpu: String,
     /// R6b: Preferences › General: the timeline shows the projects above a nested timeline as a breadcrumb (off: VEGAS
     /// shows only the nested timeline's name, in the title bar).
     pub nested_breadcrumb: bool,
@@ -249,6 +252,7 @@ impl Default for Prefs {
             lock_envelopes: true,
             auto_proxy: false,
             extra_blend_modes: false,
+            gpu: String::new(),
             nested_breadcrumb: false,
             video_bus: false,
             bus_tracks: false,
@@ -720,6 +724,12 @@ mod tests {
         assert_eq!(d.default_video_track, crate::project::VideoDefaults::default());
         let v = Prefs { default_video_track: crate::project::VideoDefaults { height: Some(80.0), composite: Some(crate::project::Composite::Add), fx: Some(Vec::new()) }, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&v).unwrap()).unwrap(), v);
+        // R21a: old preferences take the best graphics adapter (automatic); a chosen one, or Off, reads back.
+        assert_eq!(d.gpu, "");
+        for g in [crate::engine::gpu::OFF, "AMD Radeon Graphics"] {
+            let p = Prefs { gpu: g.into(), ..Default::default() };
+            assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&p).unwrap()).unwrap(), p);
+        }
         // R15: old preferences have the default keys and toolbars; custom ones read back.
         assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
         let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };
