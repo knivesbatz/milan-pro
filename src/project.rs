@@ -390,6 +390,44 @@ pub struct Timeline {
     /// R8a: the busses and assignable FX chains (Project Properties › Audio, Insert › Audio Bus / Audio Assignable FX).
     #[serde(default, skip_serializing_if = "AudioSettings::is_empty")]
     pub audio: AudioSettings,
+    /// R18a: Insert › Command: metadata command markers, on the command bar.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<CommandMarker>,
+    /// R18a: Insert › Audio CD Track Region and Audio CD Track Index, on the CD layout bar (burning is R59).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cd_tracks: Vec<CdTrack>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cd_indexes: Vec<f64>,
+}
+
+/// R18a: a metadata command marker (Insert › Command): VEGAS's Command Properties.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CommandMarker {
+    pub position: f64,
+    /// URL, Text, WMClosedCaption... or a custom command.
+    pub command: String,
+    pub parameter: String,
+    pub comment: String,
+}
+
+/// R18a: an Audio CD track region with VEGAS's Edit Details columns (ISRC, copy protection, emphasis).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CdTrack {
+    pub start: f64,
+    pub end: f64,
+    pub name: String,
+    pub isrc: String,
+    pub protect: bool,
+    pub emphasis: bool,
+}
+
+impl Timeline {
+    /// R18a: the CD layout bar or the command bar has something to show (each is only shown then).
+    pub fn cd_layout(&self) -> bool {
+        !(self.cd_tracks.is_empty() && self.cd_indexes.is_empty())
+    }
 }
 
 /// R8a: the audio busses (the master bus is `Timeline::master`). Master bus mode stays stereo until R10a.
@@ -937,6 +975,10 @@ pub struct MediaItem {
     /// the file's modified time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<f64>,
+    /// R18a: the file's own markers (chapters, read with ffprobe `-show_chapters`) in seconds from the file's start, as
+    /// View › Event Media Markers shows them; empty for media imported before R18a.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub markers: Vec<(f64, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1418,6 +1460,9 @@ impl Timeline {
             audio_follows_velocity: false,
             track_groups: Vec::new(),
             audio: AudioSettings::default(),
+            commands: Vec::new(),
+            cd_tracks: Vec::new(),
+            cd_indexes: Vec::new(),
         }
     }
 
@@ -2091,6 +2136,11 @@ mod tests {
         assert!(v.get("notes").is_none() && v["settings"].get("summary").is_none());
         let n: Note = serde_json::from_str(r#"{"text":"x"}"#).unwrap();
         assert_eq!(n, Note { at: 0.0, text: "x".into(), resolved: false });
+        // R18a: no command markers, CD track regions or indexes, and no media markers; none written.
+        assert!(tl.commands.is_empty() && tl.cd_tracks.is_empty() && tl.cd_indexes.is_empty() && !tl.cd_layout() && back.media_pool[0].markers.is_empty());
+        assert!(["commands", "cd_tracks", "cd_indexes"].iter().all(|k| v["timeline"].get(*k).is_none()) && v["media_pool"][0].get("markers").is_none());
+        let cd: CdTrack = serde_json::from_str(r#"{"start":1,"end":2}"#).unwrap();
+        assert!(cd.name.is_empty() && cd.isrc.is_empty() && !cd.protect && !cd.emphasis);
     }
 
     /// R16a: Project Notes and the Summary survive save and load.
@@ -2200,8 +2250,12 @@ mod tests {
             video_streams: 2,
             timecode: Some(3600.5),
             created: Some(1_714_566_896.25),
+            markers: vec![(1.5, "Chorus".into())],
             ..Default::default()
         });
+        p.timeline.commands = vec![CommandMarker { position: 2.0, command: "URL".into(), parameter: "https://example.com".into(), comment: "Shop".into() }];
+        p.timeline.cd_tracks = vec![CdTrack { start: 2.0, end: 5.0, name: "Intro".into(), isrc: "USRC17607839".into(), protect: true, emphasis: true }];
+        p.timeline.cd_indexes = vec![3.5];
         assert_eq!(p.media_pool[0].file_time(0.5), 1.75);
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
@@ -2218,6 +2272,7 @@ mod tests {
         assert!(a.monitor == Monitor::Auto && back.timeline.audio.inputs.len() == 1);
         assert_eq!(back.settings, p.settings);
         assert_eq!((back.media_pool[0].timecode, back.media_pool[0].created), (Some(3600.5), Some(1_714_566_896.25)));
+        assert_eq!((&back.timeline.commands, &back.timeline.cd_tracks, &back.timeline.cd_indexes, &back.media_pool[0].markers), (&p.timeline.commands, &p.timeline.cd_tracks, &p.timeline.cd_indexes, &p.media_pool[0].markers));
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();
         assert_eq!((c.resample, c.channels), (None, ChannelMap::Both));

@@ -25,7 +25,7 @@ pub fn probe_media(path: &Path) -> anyhow::Result<MediaItem> {
     let mut item = MediaItem { id: uuid::Uuid::new_v4().to_string(), path: path.to_path_buf(), name, media_type, ..Default::default() };
 
     let mut cmd = crate::proc::ffprobe();
-    cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams"]).arg(path);
+    cmd.args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters"]).arg(path);
     let output = crate::proc::output(&mut cmd).map_err(|e| anyhow::anyhow!(crate::proc::tool_error(&e, "ffprobe")))?;
     if !output.status.success() && item.media_type != MediaType::Image {
         let err = String::from_utf8_lossy(&output.stderr);
@@ -200,6 +200,11 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
         .and_then(|(t, s)| crate::engine::sync::parse_timecode(&t, item.frame_rate.or_else(|| ["r_frame_rate", "avg_frame_rate"].iter().find_map(|k| s[k].as_str().and_then(parse_rate)))?))
         .or_else(|| Some(tag(&info["format"], "time_reference")?.parse::<u64>().ok()? as f64 / item.sample_rate? as f64));
     item.created = std::iter::once(&info["format"]).chain(streams).find_map(|v| crate::engine::sync::parse_date(&tag(v, "creation_time")?));
+    // R18a: chapters (MP4, MKV, an ffmetadata file's) are the media markers View › Event Media Markers shows.
+    item.markers = info["chapters"]
+        .as_array()
+        .map(|cs| cs.iter().filter_map(|c| Some((c["start_time"].as_str()?.parse::<f64>().ok()?, tag(c, "title").unwrap_or_default()))).collect())
+        .unwrap_or_default();
     if item.media_type != MediaType::Image {
         if video.is_some() {
             item.media_type = MediaType::Video;
@@ -349,6 +354,53 @@ mod tests {
         let plain = make("plain.wav", &["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "1"]);
         assert_eq!(plain.timecode, None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R18a: chapters become media markers (start and title); a file without them has none.
+    #[test]
+    fn chapters_are_media_markers() {
+        let m = parse("mp4", r#"{"streams":[{"codec_type":"audio","sample_rate":"48000"}],"chapters":[
+            {"id":0,"start_time":"0.000000","end_time":"1.500000","tags":{"title":"Intro"}},
+            {"id":1,"start_time":"1.500000","end_time":"4.000000"}]}"#);
+        assert_eq!(m.markers, [(0.0, "Intro".to_string()), (1.5, String::new())]);
+        assert!(parse("wav", r#"{"streams":[]}"#).markers.is_empty());
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored ffmpeg_reads_media_markers`
+    /// R18a acceptance: media markers parsed from an ffmetadata test file (its chapters muxed into a Matroska file).
+    #[test]
+    #[ignore]
+    fn ffmpeg_reads_media_markers() {
+        let dir = std::env::temp_dir().join(format!("milan-markers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = dir.join("chapters.txt");
+        std::fs::write(&meta, ";FFMETADATA1
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=1250
+title=Verse
+[CHAPTER]
+TIMEBASE=1/1000
+START=1250
+END=3000
+title=Chorus
+").unwrap();
+        let out = dir.join("marked.mka");
+        let ok = crate::proc::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-i"])
+            .arg(&meta)
+            .args(["-map", "0:a", "-map_chapters", "1", "-t", "3", "-c:a", "flac"])
+            .arg(&out)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        let m = super::probe_media(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        std::fs::remove_file(&meta).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        assert_eq!(m.markers, [(0.0, "Verse".to_string()), (1.25, "Chorus".to_string())]);
     }
 
     /// R3b: Stream ▸ offers each audio and picture stream; cover art is not one.

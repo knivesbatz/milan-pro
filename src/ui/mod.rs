@@ -55,7 +55,7 @@ pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar
 pub use properties::draw_properties;
 pub use scopes::{ScopePrefs, ScopeView, Scopes, draw_scopes, scopes_toolbar};
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, take_crumb};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, request_context_menu, take_command_edit, take_crumb};
 pub use toolbar::{Bar, draw_main_toolbar};
 pub use trackmotion::TrackMotionWin;
 pub use transport::{Cmd, Playback, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
@@ -271,6 +271,10 @@ pub struct EditOpts {
     /// View › Video Bus Track; R8b: View › Audio Bus Tracks.
     pub video_bus: bool,
     pub bus_tracks: bool,
+    /// R18a: View › Event Media Markers › Show Markers and Show Marker Labels; View › Event Length (VEGAS 23).
+    pub media_markers: bool,
+    pub marker_labels: bool,
+    pub event_length: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

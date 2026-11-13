@@ -1,5 +1,6 @@
 mod commands;
 mod drop;
+mod audio_editor;
 mod multicam;
 mod nested;
 mod sync;
@@ -224,6 +225,9 @@ pub struct MeridianApp {
     /// this many are left, then this New/Open/Exit (a breadcrumb click, or one of those inside a nested timeline).
     parents: Vec<Parent>,
     unwind: Option<(usize, Option<MenuAction>)>,
+    /// R18a: files open in the audio editor, watched for changes; Insert › Command / a command marker's Edit, open.
+    audio_edits: audio_editor::Watch,
+    command_props: Option<crate::ui::dialogs::CommandProps>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -417,6 +421,8 @@ impl MeridianApp {
             offscreen,
             parents: Vec::new(),
             unwind: None,
+            audio_edits: Default::default(),
+            command_props: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
@@ -568,6 +574,7 @@ impl eframe::App for MeridianApp {
         self.tick_input(ctx);
         self.tick_loudness_log();
         self.tick_sync();
+        self.tick_audio_editor(ctx);
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -987,7 +994,7 @@ impl eframe::App for MeridianApp {
         // Video and audio play on through loop wraps (both wrap themselves); a seek or a new loop region restarts them.
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
-        (self.audio.bypass_fx, self.audio.quickfade) = (self.bypass_audio_fx, self.prefs.quickfade);
+        (self.audio.bypass_fx, self.audio.quickfade, self.audio.metronome) = (self.bypass_audio_fx, self.prefs.quickfade, self.prefs.metronome);
         self.tick_multicam();
         // R9: Preferences › Audio Device takes effect (a recording keeps its device until it stops); the device opens,
         // recovers, and the input monitor follows the armed tracks and input busses.

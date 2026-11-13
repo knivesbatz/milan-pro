@@ -129,6 +129,14 @@ pub struct Prefs {
     /// and Show Full Frame in External Monitor; both off, as in VEGAS.
     pub multicam_audio: bool,
     pub multicam_full: bool,
+    /// R18a: Preferences › Audio › "Preferred audio editor" (Tools › Open in Audio Editor); None = not chosen yet.
+    pub audio_editor: Option<PathBuf>,
+    /// R18a: Options › Metronome; View › Event Media Markers › Show Markers and Show Marker Labels; View › Event Length
+    /// (VEGAS 23). All off, as in VEGAS.
+    pub metronome: bool,
+    pub media_markers: bool,
+    pub marker_labels: bool,
+    pub event_length: bool,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -275,6 +283,11 @@ impl Default for Prefs {
             loudness: Default::default(),
             multicam_audio: false,
             multicam_full: false,
+            audio_editor: None,
+            metronome: false,
+            media_markers: false,
+            marker_labels: false,
+            event_length: false,
         }
     }
 }
@@ -696,6 +709,10 @@ mod tests {
         assert!(!d.multicam_audio && !d.multicam_full);
         let m = Prefs { multicam_audio: true, multicam_full: true, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&m).unwrap()).unwrap(), m);
+        // R18a: no audio editor chosen; metronome, media markers, their labels and event lengths off (VEGAS).
+        assert!(d.audio_editor.is_none() && !d.metronome && !d.media_markers && !d.marker_labels && !d.event_length);
+        let r = Prefs { audio_editor: Some(r"C:\Editors\Sound.exe".into()), metronome: true, media_markers: true, marker_labels: true, event_length: true, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
         // R15: old preferences have the default keys and toolbars; custom ones read back.
         assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
         let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };

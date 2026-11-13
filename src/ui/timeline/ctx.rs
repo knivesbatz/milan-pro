@@ -36,6 +36,8 @@ enum Target {
     Marker(usize),
     RegionStart(usize),
     RegionEnd(usize),
+    /// R18a: a tag on the CD layout bar or the command bar.
+    Bar(super::ruler::BarTag),
     LoopBar,
     Ruler,
     TimeDisplay,
@@ -65,10 +67,13 @@ const CUT_PX: f32 = 8.0;
 fn target(g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Selection, p: Pos2, env: Option<u16>) -> Option<Target> {
     let t = theme::get();
     let tl = &project.timeline;
-    if Rect::from_min_size(g.rect.min, vec2(g.header_w, t.m.band_h)).contains(p) {
+    if Rect::from_min_size(g.rect.min, vec2(g.header_w, g.band.height())).contains(p) {
         return Some(Target::TimeDisplay);
     }
     if g.band.contains(p) {
+        if let Some((b, _)) = super::ruler::bar_tags(g, tl).into_iter().find(|(_, r)| r.contains(p)) {
+            return Some(Target::Bar(b));
+        }
         let (loop_r, marker_r, _) = band_rows(&t, g.band);
         if marker_r.contains(p) {
             let tag = |x: f32| Rect::from_min_size(pos2(x, marker_r.min.y), TAG).contains(p);
@@ -170,6 +175,17 @@ pub(super) fn menu(
 ) {
     let tid = ui.id().with("ctx_target");
     let clicked = ui.input(|i| i.pointer.button_clicked(PointerButton::Secondary).then(|| i.pointer.interact_pos()).flatten());
+    // R18a: Shift+F10 opens the focus event's menu (at its middle, where it is on screen), else the one under the pointer.
+    let key = ui.ctx().data_mut(|d| d.remove_temp::<bool>(super::context_key_id())).unwrap_or(false);
+    let at_event = || {
+        let id = sel.clips.last()?;
+        let (r, c) = (project.find_clip(id)?, project.clip(id)?);
+        let row = rows.iter().find(|w| w.is_video == r.is_video && w.idx == r.track_idx)?;
+        let (x0, x1) = (g.to_x(c.position).max(g.lanes.min.x), g.to_x(c.position + c.duration).min(g.lanes.max.x));
+        let p = pos2((x0 + x1) / 2.0, row.top + row.h / 2.0);
+        (x0 < x1 && g.lanes.contains(p)).then_some(p)
+    };
+    let clicked = clicked.or_else(|| if key { at_event().or_else(|| ui.input(|i| i.pointer.hover_pos())) } else { None });
     let open_at = drop.map(|(p, r)| (p, Target::Drop(r))).or_else(|| {
         clicked
             .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
@@ -308,6 +324,31 @@ pub(super) fn menu(
             if entry(ui, "&Delete", "", true, Mark::None) {
                 history.push(project.clone());
                 project.timeline.regions.remove(i);
+                project.mark_modified();
+            }
+        }
+        Target::Bar(b) => {
+            use super::ruler::BarTag;
+            let Some(at) = b.time(&project.timeline) else { return };
+            if entry(ui, "&Go To", "", true, Mark::None) {
+                project.timeline.cursor_position = at;
+            }
+            match b {
+                BarTag::Command(i) if entry(ui, "&Edit...", "", true, Mark::None) => super::edit_command(ui.ctx(), i),
+                BarTag::CdTrack(i, _) if entry(ui, "&Select Track", "", true, Mark::None) => {
+                    project.timeline.loop_region = project.timeline.cd_tracks.get(i).map(|c| (c.start, c.end));
+                }
+                _ => {}
+            }
+            sep(ui);
+            if entry(ui, "&Delete", "", true, Mark::None) {
+                history.push(project.clone());
+                let tl = &mut project.timeline;
+                match b {
+                    BarTag::Command(i) => _ = tl.commands.remove(i),
+                    BarTag::CdTrack(i, _) => _ = tl.cd_tracks.remove(i),
+                    BarTag::CdIndex(i) => _ = tl.cd_indexes.remove(i),
+                }
                 project.mark_modified();
             }
         }
@@ -990,7 +1031,7 @@ const AUDIO_EVENT: &[M] = &[
     C("Open in Tri&mmer", EventOpenInTrimmer),
     X("Open Parent Media in Tri&mmer", NotPlanned("R57")),
     C("Open in Audio Editor", OpenInAudioEditor),
-    X("Open Copy in Audio Editor", Later("R18a")),
+    C("Open Copy in Audio Editor", OpenCopyInAudioEditor),
     C("Edit Source Pro&ject", NestedOpen),
     C("Select &in Project Media List", EventSelectInMedia),
     S,

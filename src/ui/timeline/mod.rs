@@ -137,6 +137,30 @@ pub fn rename_event(ctx: &Context, id: &str) {
     ctx.data_mut(|d| d.insert_temp(rename_id(), id.to_string()));
 }
 
+fn command_edit_id() -> Id {
+    Id::new("milan_edit_command")
+}
+
+/// R18a: a command marker's Edit (a double-click on its tag, or its menu): the app opens Command Properties on it.
+fn edit_command(ctx: &Context, i: usize) {
+    ctx.data_mut(|d| d.insert_temp(command_edit_id(), i));
+}
+
+/// R18a: the command marker the timeline asked to edit, once.
+pub fn take_command_edit(ctx: &Context) -> Option<usize> {
+    ctx.data_mut(|d| d.remove_temp::<usize>(command_edit_id()))
+}
+
+fn context_key_id() -> Id {
+    Id::new("milan_context_key")
+}
+
+/// R18a: Shift+F10 (Context menu): the timeline opens the right-click menu of the focus event, else of the place under
+/// the pointer.
+pub fn request_context_menu(ctx: &Context) {
+    ctx.data_mut(|d| d.insert_temp(context_key_id(), true));
+}
+
 /// Timeline UI state kept in egui memory between frames.
 #[derive(Clone, Default)]
 struct TlState {
@@ -147,6 +171,8 @@ struct TlState {
     loop_drag: Option<LoopDrag>,
     /// (marker index, grab offset in px)
     marker_drag: Option<(usize, f32)>,
+    /// R18a: a command marker or CD index tag being dragged, and its grab offset in px.
+    bar_drag: Option<(ruler::BarTag, f32)>,
     /// Snap target hit by this frame's drag, for the indicator line.
     snap: Option<f64>,
     rename: Option<(Rename, String)>,
@@ -202,6 +228,9 @@ fn restore_edits(tl: &mut Timeline, b: &Timeline) {
     tl.audio_tracks.clone_from(&b.audio_tracks);
     tl.markers.clone_from(&b.markers);
     tl.regions.clone_from(&b.regions);
+    tl.commands.clone_from(&b.commands);
+    tl.cd_tracks.clone_from(&b.cd_tracks);
+    tl.cd_indexes.clone_from(&b.cd_indexes);
     tl.loop_region = b.loop_region;
 }
 
@@ -226,7 +255,9 @@ pub fn draw_timeline(
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     let rect = ui.max_rect();
-    if rect.width() < 80.0 || rect.height() < t.m.band_h + 40.0 {
+    // R18a: the band grows by the CD layout and command bars while they are shown.
+    let band_h = ruler::band_h(&t, &project.timeline);
+    if rect.width() < 80.0 || rect.height() < band_h + 40.0 {
         return None;
     }
     let (snapping, quantize, tool) = (opts.snapping, opts.quantize, opts.tool);
@@ -265,7 +296,7 @@ pub fn draw_timeline(
     // The bus tracks (Video Bus Track, R8b audio busses) dock under the tracks, above the scrollbar.
     let bus_rows = bus::rows(project, opts.video_bus, opts.bus_tracks);
     // At most half the rows area (the Video Bus Track alone always fits), so the tracks stay usable.
-    let avail = rect.height() - t.m.band_h - t.m.hscroll_h;
+    let avail = rect.height() - band_h - t.m.hscroll_h;
     let cap = (avail * 0.5).max(bus::BUS_H).min((avail - 40.0).max(0.0));
     // Whole rows only.
     let bus_h = bus_rows.iter().map(bus::row_h).scan(0.0, |h, r| {
@@ -275,7 +306,7 @@ pub fn draw_timeline(
     let make_geo = |project: &Project| {
         let tl = &project.timeline;
         let clips_left = rect.min.x + header_w + gap;
-        let rows_top = rect.min.y + t.m.band_h;
+        let rows_top = rect.min.y + ruler::band_h(&t, tl);
         let lanes = Rect::from_min_max(pos2(clips_left, rows_top), pos2(rect.max.x - t.m.scrollbar_w, rect.max.y - t.m.hscroll_h - bus_h));
         Geo {
             rect,
@@ -1047,6 +1078,9 @@ pub fn draw_timeline(
                 loop_len: media.and_then(|m| edit::loop_len(clip, m)),
                 offset: media.map_or(0.0, |m| m.file_time(0.0)),
                 empty: clip.media_id.is_none(),
+                marks: media.filter(|m| opts.media_markers && !m.markers.is_empty()).map_or(Vec::new(), |m| events::media_marks(clip, m)),
+                labels: opts.marker_labels,
+                length: (opts.event_length && !v16).then(|| project.settings.ruler_len(clip.duration)),
             };
             let mut thumb = |src: f64| pic.and_then(|m| thumbs.get(m, src)).map(|tex| tex.id());
             paint_event(&pe, &t, &ev, t.lane_bg, wave, &mut thumb);

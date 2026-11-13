@@ -1,15 +1,22 @@
-//! Generated media (`MediaItem.generator`): solid colour, gradient, checkerboard, noise and text, at any size.
-use ab_glyph::{Font, GlyphId, ScaleFont, point};
+//! Generated media (`MediaItem.generator`): solid colour, gradient, checkerboard, noise, text, credit roll and test
+//! pattern, at any size.
+use ab_glyph::{Font, FontArc, GlyphId, ScaleFont, point};
 use eframe::egui::{Color32, ColorImage};
 use crate::engine::composite::{over, par_rows, stripes};
 use crate::engine::fonts;
 use crate::engine::plugins::FxEval;
 use crate::engine::vfx::{blur, premul, transpose};
 
-/// Only animated noise changes with time; everything else renders the same at every t (so it caches).
+/// Only animated noise and the credit roll change with time; everything else renders the same at every t (so it
+/// caches).
 pub fn animated(e: &FxEval) -> bool {
-    e.id == "milan.gen.noise" && e.f("speed") > 0.0
+    (e.id == "milan.gen.noise" && e.f("speed") > 0.0) || e.id == CREDITS
 }
+
+/// R18a: the Credit Roll scrolls over its generated media's length, which `engine::plan` adds to its values under
+/// `LENGTH` (the generator's parameters do not hold it); without it (thumbnails) the credits stand centred.
+pub const CREDITS: &str = "milan.gen.credits";
+pub const LENGTH: &str = "length";
 
 /// Generator `e` at `w` x `h`, at its own time `t` (seconds); an unknown id is transparent.
 pub fn render(e: &FxEval, w: u32, h: u32, t: f64) -> ColorImage {
@@ -35,6 +42,8 @@ pub fn render(e: &FxEval, w: u32, h: u32, t: f64) -> ColorImage {
             })
         }
         "milan.gen.text" => text(e, w, h),
+        CREDITS => credits(e, w, h, t),
+        "milan.gen.test_pattern" => test_pattern(e.i("type"), w, h),
         _ => ColorImage::new([w, h], Color32::TRANSPARENT),
     }
 }
@@ -192,6 +201,129 @@ fn paint(out: &mut ColorImage, m: &ColorImage, color: [f32; 4]) {
     }
 }
 
+/// One line of text at `size`: glyphs with their x from the line start (kerned), and the line width.
+fn layout(font: &FontArc, size: f32, line: &str) -> (Vec<(GlyphId, f32)>, f32) {
+    let sf = font.as_scaled(size);
+    let (mut x, mut prev, mut g) = (0.0, None, Vec::new());
+    for ch in line.chars() {
+        let id = font.glyph_id(ch);
+        if let Some(p) = prev {
+            x += sf.kern(p, id);
+        }
+        g.push((id, x));
+        x += sf.h_advance(id);
+        prev = Some(id);
+    }
+    (g, x)
+}
+
+/// Adds the coverage of `glyphs` (from `layout`, in `font` at `size`) drawn from `x0` on baseline `base` into `cov`
+/// (`w` x `h`).
+fn stamp(cov: &mut [f32], (w, h): (usize, usize), (font, size): (&FontArc, f32), glyphs: &[(GlyphId, f32)], x0: f32, base: f32) {
+    for &(id, gx) in glyphs {
+        let Some(g) = font.outline_glyph(id.with_scale_and_position(size, point(x0 + gx, base))) else { continue };
+        let b = g.px_bounds();
+        g.draw(|px, py, c| {
+            let (x, y) = (b.min.x as i64 + px as i64, b.min.y as i64 + py as i64);
+            if (0..w as i64).contains(&x) && (0..h as i64).contains(&y) {
+                let m = &mut cov[y as usize * w + x as usize];
+                *m = (*m + c).min(1.0);
+            }
+        });
+    }
+}
+
+/// R18a: where the top of the credits (`total` px tall) is in a frame `h` px tall at time `t` of `len` seconds:
+/// scrolling up they start just under the frame and end just above it (down: the other way); with no length, centred.
+pub fn credit_top(h: f32, total: f32, t: f64, len: f64, up: bool) -> f32 {
+    if len <= 0.0 {
+        return (h - total) / 2.0;
+    }
+    let f = (t / len).clamp(0.0, 1.0) as f32;
+    let f = if up { f } else { 1.0 - f };
+    h - (h + total) * f
+}
+
+/// R18a: VEGAS's Credit Roll: header lines (a leading space) at the header size, single items centred, dual items (a
+/// tab) as two columns either side of the centre, scrolling over the media's length.
+fn credits(e: &FxEval, w: usize, h: usize, t: f64) -> ColorImage {
+    let mut out = ColorImage::new([w, h], premul(e.c("background")));
+    let font = fonts::load(e.t("font"));
+    let hf = h as f32;
+    let (hs, is) = ((e.f("header_size") * hf).max(1.0), (e.f("item_size") * hf).max(1.0));
+    let text = e.t("text").replace("\r\n", "\n");
+    let lines: Vec<(bool, &str)> = text.split('\n').map(|l| (l.starts_with(' '), l.trim())).collect();
+    let line_h = |head: bool| {
+        let sf = font.as_scaled(if head { hs } else { is });
+        (sf.height() + sf.line_gap()) * e.f("spacing")
+    };
+    let total: f32 = lines.iter().map(|(head, _)| line_h(*head)).sum();
+    let mut y = credit_top(hf, total, t, e.f(LENGTH) as f64, e.i("direction") == 0);
+    let (mut head_cov, mut item_cov) = (vec![0f32; w * h], vec![0f32; w * h]);
+    let (mid, gap) = (w as f32 / 2.0, w as f32 * 0.02);
+    for &(head, l) in &lines {
+        let (size, lh) = (if head { hs } else { is }, line_h(head));
+        if y + lh > 0.0 && y < hf {
+            let base = y + font.as_scaled(size).ascent();
+            let cov = if head { &mut head_cov } else { &mut item_cov };
+            match l.split_once('\t') {
+                Some((a, b)) if !head => {
+                    let (ga, wa) = layout(&font, size, a.trim());
+                    stamp(cov, (w, h), (&font, size), &ga, mid - gap - wa, base);
+                    stamp(cov, (w, h), (&font, size), &layout(&font, size, b.trim()).0, mid + gap, base);
+                }
+                _ => {
+                    let (g, lw) = layout(&font, size, l);
+                    stamp(cov, (w, h), (&font, size), &g, mid - lw / 2.0, base);
+                }
+            }
+        }
+        y += lh;
+    }
+    paint(&mut out, &mask(&head_cov, w, h), e.c("header_color"));
+    paint(&mut out, &mask(&item_cov, w, h), e.c("item_color"));
+    out
+}
+
+/// R18a: SMPTE colour bars (EG 1-1990, as computer RGB with 7.5 % setup black), full-height 100 % colour bars, a
+/// left-to-right grey ramp, or a white grid on black (16 cells down the height).
+fn test_pattern(kind: usize, w: usize, h: usize) -> ColorImage {
+    const BARS: [[u8; 3]; 7] = [[191, 191, 191], [191, 191, 0], [0, 191, 191], [0, 191, 0], [191, 0, 191], [191, 0, 0], [0, 0, 191]];
+    const BLACK: [u8; 3] = [19, 19, 19];
+    let rgb = |c: [u8; 3]| Color32::from_rgb(c[0], c[1], c[2]);
+    let (wf, hf) = (w as f32, h as f32);
+    match kind {
+        1 => {
+            let full = [[255, 255, 255], [255, 255, 0], [0, 255, 255], [0, 255, 0], [255, 0, 255], [255, 0, 0], [0, 0, 255], [0, 0, 0]];
+            fill(w, h, |x, _| rgb(full[(x * 8 / w).min(7)]))
+        }
+        2 => fill(w, h, |x, _| Color32::from_gray((x as f32 / (wf - 1.0).max(1.0) * 255.0).round() as u8)),
+        3 => {
+            let cell = (hf / 16.0).max(2.0);
+            let line = |v: usize| (v as f32 % cell) < 1.0;
+            fill(w, h, |x, y| if line(x) || line(y) || x + 1 == w || y + 1 == h { Color32::WHITE } else { Color32::BLACK })
+        }
+        _ => fill(w, h, |x, y| {
+            let bar = x as f32 * 7.0 / wf; // in top-bar widths
+            let yf = y as f32 / hf;
+            if yf < 0.67 {
+                rgb(BARS[(bar as usize).min(6)])
+            } else if yf < 0.75 {
+                // Reverse bars: blue, black, magenta, black, cyan, black, grey.
+                rgb([BARS[6], BLACK, BARS[4], BLACK, BARS[2], BLACK, BARS[0]][(bar as usize).min(6)])
+            } else if bar < 5.0 {
+                // -I, white, +Q, black, each 5/4 of a bar wide.
+                rgb([[0, 33, 76], [255, 255, 255], [50, 0, 106], BLACK][((bar / 1.25) as usize).min(3)])
+            } else if bar < 6.0 {
+                // PLUGE: below black, black, above black, a third of a bar each.
+                rgb([[9, 9, 9], BLACK, [29, 29, 29]][(((bar - 5.0) * 3.0) as usize).min(2)])
+            } else {
+                rgb(BLACK)
+            }
+        }),
+    }
+}
+
 /// Titles & Text: lines laid out with kerning, aligned on (x, y); drawn background, shadow, outline, then fill.
 fn text(e: &FxEval, w: usize, h: usize) -> ColorImage {
     let mut out = ColorImage::new([w, h], premul(e.c("background")));
@@ -204,39 +336,12 @@ fn text(e: &FxEval, w: usize, h: usize) -> ColorImage {
     let size = (e.f("size") * hf).max(1.0);
     let sf = font.as_scaled(size);
     let line_h = (sf.height() + sf.line_gap()) * e.f("spacing");
-    // Each line: glyphs with their x from the line start, and the line width.
-    let lines: Vec<(Vec<(GlyphId, f32)>, f32)> = s
-        .split('\n')
-        .map(|l| {
-            let (mut x, mut prev, mut g) = (0.0, None, Vec::new());
-            for ch in l.chars() {
-                let id = font.glyph_id(ch);
-                if let Some(p) = prev {
-                    x += sf.kern(p, id);
-                }
-                g.push((id, x));
-                x += sf.h_advance(id);
-                prev = Some(id);
-            }
-            (g, x)
-        })
-        .collect();
+    let lines: Vec<(Vec<(GlyphId, f32)>, f32)> = s.split('\n').map(|l| layout(&font, size, l)).collect();
     let top = e.f("y") * hf - line_h * lines.len() as f32 / 2.0;
     let anchor = [0.0, 0.5, 1.0][e.i("align").min(2)];
     let mut cov = vec![0f32; w * h];
     for (i, (glyphs, lw)) in lines.iter().enumerate() {
-        let (x0, base) = (e.f("x") * w as f32 - lw * anchor, top + i as f32 * line_h + sf.ascent());
-        for &(id, gx) in glyphs {
-            let Some(g) = font.outline_glyph(id.with_scale_and_position(size, point(x0 + gx, base))) else { continue };
-            let b = g.px_bounds();
-            g.draw(|px, py, c| {
-                let (x, y) = (b.min.x as i64 + px as i64, b.min.y as i64 + py as i64);
-                if (0..w as i64).contains(&x) && (0..h as i64).contains(&y) {
-                    let m = &mut cov[y as usize * w + x as usize];
-                    *m = (*m + c).min(1.0);
-                }
-            });
-        }
+        stamp(&mut cov, (w, h), (&font, size), glyphs, e.f("x") * w as f32 - lw * anchor, top + i as f32 * line_h + sf.ascent());
     }
     let fill_mask = mask(&cov, w, h);
     if e.on("shadow") {
@@ -340,6 +445,53 @@ mod tests {
         let bands = rows.windows(2).filter(|w| !w[0] && w[1]).count() + rows[0] as usize;
         assert_eq!(bands, 2);
         assert!(txt(&[("text", Val::T(" \n ".into()))]).pixels.iter().all(|p| *p == Color32::TRANSPARENT));
+    }
+
+    /// R18a acceptance: Test Pattern SMPTE bars pixel values (75 % bars, the reverse bars, -I, white, +Q and PLUGE).
+    #[test]
+    fn test_pattern_smpte_bars() {
+        let img = render(&ev("milan.gen.test_pattern", &[]), 700, 100, 0.0);
+        let px = |x: usize, y: usize| img.pixels[y * 700 + x];
+        let rgb = |r, g, b| Color32::from_rgb(r, g, b);
+        let top = [rgb(191, 191, 191), rgb(191, 191, 0), rgb(0, 191, 191), rgb(0, 191, 0), rgb(191, 0, 191), rgb(191, 0, 0), rgb(0, 0, 191)];
+        for (k, c) in top.iter().enumerate() {
+            assert_eq!(px(k * 100 + 50, 10), *c, "bar {k}");
+        }
+        assert_eq!((px(50, 70), px(150, 70), px(250, 70), px(650, 70)), (rgb(0, 0, 191), rgb(19, 19, 19), rgb(191, 0, 191), rgb(191, 191, 191)));
+        assert_eq!((px(60, 90), px(180, 90), px(300, 90), px(450, 90)), (rgb(0, 33, 76), Color32::WHITE, rgb(50, 0, 106), rgb(19, 19, 19)));
+        assert_eq!((px(510, 90), px(550, 90), px(580, 90), px(690, 90)), (rgb(9, 9, 9), rgb(19, 19, 19), rgb(29, 29, 29), rgb(19, 19, 19)));
+        let bars = render(&ev("milan.gen.test_pattern", &[("type", Val::F(1.0))]), 80, 10, 0.0);
+        assert_eq!((bars.pixels[5], bars.pixels[75]), (Color32::WHITE, Color32::BLACK));
+        let ramp = render(&ev("milan.gen.test_pattern", &[("type", Val::F(2.0))]), 256, 4, 0.0);
+        assert_eq!((ramp.pixels[0], ramp.pixels[255], ramp.pixels[128].r()), (Color32::BLACK, Color32::WHITE, 128));
+        assert!(!animated(&ev("milan.gen.test_pattern", &[])));
+    }
+
+    /// R18a acceptance: a credit roll's scroll position at t: under the frame at the start, centred half-way, above it
+    /// at the end (scrolling down the other way round); the rendered line follows.
+    #[test]
+    fn credit_roll_scroll_position_at_t() {
+        assert_eq!((credit_top(100.0, 50.0, 0.0, 10.0, true), credit_top(100.0, 50.0, 5.0, 10.0, true), credit_top(100.0, 50.0, 10.0, 10.0, true)), (100.0, 25.0, -50.0));
+        assert_eq!((credit_top(100.0, 50.0, 0.0, 10.0, false), credit_top(100.0, 50.0, 2.5, 0.0, true)), (-50.0, 25.0));
+        let cr = |text: &str| ev(CREDITS, &[("text", Val::T(text.into())), ("font", Val::T("no such font".into())), ("item_size", Val::F(0.2)), ("header_size", Val::F(0.3))]);
+        let mut e = cr("HHHH");
+        assert!(animated(&e));
+        e.vals.push((LENGTH, Val::F(10.0)));
+        assert!(render(&e, 200, 100, 0.0).pixels.iter().all(|p| *p == Color32::BLACK), "starts below the frame");
+        let mid = render(&e, 200, 100, 5.0);
+        let rows: Vec<usize> = (0..100).filter(|y| mid.pixels[y * 200..(y + 1) * 200].iter().any(|p| p.r() > 100)).collect();
+        let (y0, y1) = (rows[0] as f32, *rows.last().unwrap() as f32);
+        assert!(((y0 + y1) / 2.0 - 50.0).abs() < 8.0, "{y0}..{y1}");
+        // Two columns either side of the centre; a header is bigger than an item.
+        let two = render(&cr("H\tH"), 200, 100, 0.0);
+        let lit = |x: usize| (0..100).any(|y| two.pixels[y * 200 + x].r() > 100);
+        assert!(!lit(100) && (80..100).any(lit) && (101..120).any(lit));
+        let tall = |text: &str| {
+            let img = render(&cr(text), 200, 100, 0.0);
+            (0..100).filter(|y| img.pixels[y * 200..(y + 1) * 200].iter().any(|p| p.r() > 100)).count()
+        };
+        let (h, i) = (tall(" H"), tall("H"));
+        assert!(h > i, "{h} {i}");
     }
 
     #[test]

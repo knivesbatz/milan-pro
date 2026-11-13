@@ -110,12 +110,14 @@ impl Col {
     }
 }
 
-/// What a row shows: an event (by id), a marker or a region (by index).
+/// What a row shows: an event (by id), a marker, a region, a command marker or a CD track region (by index).
 #[derive(Clone, PartialEq, Debug)]
 pub enum Item {
     Event(String),
     Marker(usize),
     Region(usize),
+    Command(usize),
+    CdTrack(usize),
 }
 
 /// How a cell is edited.
@@ -174,6 +176,13 @@ impl Default for EditDetails {
 
 const ROW_H: f32 = 20.0;
 
+impl EditDetails {
+    /// R18a (screenshot harness): open on the Audio CD Track List (`cd`) or the Commands view.
+    pub fn show_markers(&mut self, cd: bool) {
+        *self = Self { show: if cd { Show::AudioCd } else { Show::Commands }, ..Self::default() };
+    }
+}
+
 /// The toolbar: Show ▾.
 pub fn edit_details_toolbar(ui: &mut Ui, v: &mut EditDetails) {
     ui.add_space(6.0);
@@ -212,11 +221,6 @@ pub fn edit_details(ui: &mut Ui, v: &mut EditDetails, project: &mut Project, his
         let head: Vec<(&str, f32)> = titles.iter().zip(cols).map(|(s, c)| (s.as_str(), c.width())).collect();
         if let Some(k) = widgets::header_row(ui, &head) {
             v.sort = Some((cols[k], v.sort == Some((cols[k], false))));
-        }
-        if rows.is_empty() && matches!(v.show, Show::AudioCd | Show::Commands) {
-            // Their markers cannot be inserted yet (Insert › Audio CD Track Region / Command are greyed).
-            ui.add_space(6.0);
-            ui.label(RichText::new("No markers of this kind: inserting them is not available yet (batch R18a).").color(t.text_dim));
         }
         for row in &rows {
             let selected = v.row.as_ref() == Some(&row.key);
@@ -292,7 +296,23 @@ fn rows(p: &Project, sel: &[String], show: Show) -> Vec<Row> {
     let text = |x: &str, how: Edit| (x.to_string(), Sort::T(x.to_string()), how);
     let check = |on: bool| (String::new(), Sort::N(on as u8 as f64), Edit::Check(on));
     match show {
-        Show::AudioCd | Show::Commands => Vec::new(),
+        // R18a: track numbers count the track regions from the first (VEGAS's "First track number on disc" is 1).
+        Show::AudioCd => tl
+            .cd_tracks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let n = tl.cd_tracks.iter().filter(|o| o.start < c.start).count() + 1;
+                let cells = vec![(n.to_string(), Sort::N(n as f64), Edit::No), time(c.start), time(c.end), len(c.end - c.start), text(&c.name, Edit::Text), text(&c.isrc, Edit::Text), check(c.protect), check(c.emphasis)];
+                Row { key: Item::CdTrack(i), cells }
+            })
+            .collect(),
+        Show::Commands => tl
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Row { key: Item::Command(i), cells: vec![time(c.position), text(&c.command, Edit::Text), text(&c.parameter, Edit::Text), text(&c.comment, Edit::Text)] })
+            .collect(),
         Show::Markers => tl.markers.iter().enumerate().map(|(i, m)| Row { key: Item::Marker(i), cells: vec![time(m.position), text(&m.name, Edit::Text)] }).collect(),
         Show::Regions => tl
             .regions
@@ -347,6 +367,51 @@ pub fn apply(p: &mut Project, key: &Item, col: Col, input: Input, opts: &EditOpt
                 }
                 Col::Name => (m.name != text?).then(|| m.name = text.unwrap_or_default().to_string())?,
                 _ => return None,
+            }
+            p.mark_modified();
+            Some(Vec::new())
+        }
+        Item::Command(i) => {
+            let c = p.timeline.commands.get_mut(*i)?;
+            let t = text?;
+            match col {
+                Col::Position => {
+                    let at = s.parse_ruler_time(t)?.max(0.0);
+                    (c.position != at).then(|| c.position = at)?;
+                }
+                Col::Command | Col::Parameter | Col::Comment => {
+                    let f = match col {
+                        Col::Command => &mut c.command,
+                        Col::Parameter => &mut c.parameter,
+                        _ => &mut c.comment,
+                    };
+                    (*f != t).then(|| *f = t.to_string())?;
+                }
+                _ => return None,
+            }
+            p.mark_modified();
+            Some(Vec::new())
+        }
+        Item::CdTrack(i) => {
+            let c = p.timeline.cd_tracks.get_mut(*i)?;
+            let (a, b) = match col {
+                Col::Prot => (c.protect = !c.protect, (c.start, c.end)).1,
+                Col::Emph => (c.emphasis = !c.emphasis, (c.start, c.end)).1,
+                Col::Name | Col::Isrc => {
+                    let f = if col == Col::Name { &mut c.name } else { &mut c.isrc };
+                    (*f != text?).then(|| *f = text.unwrap_or_default().to_string())?;
+                    (c.start, c.end)
+                }
+                Col::Start => {
+                    let a = s.parse_ruler_time(text?)?.max(0.0);
+                    (a, a + c.end - c.start)
+                }
+                Col::End => (c.start, s.parse_ruler_time(text?)?),
+                Col::Length => (c.start, c.start + s.parse_ruler_len(text?)?),
+                _ => return None,
+            };
+            if matches!(col, Col::Start | Col::End | Col::Length) {
+                ((b > a) && (a, b) != (c.start, c.end)).then(|| (c.start, c.end) = (a, b))?;
             }
             p.mark_modified();
             Some(Vec::new())
@@ -557,6 +622,36 @@ mod tests {
         apply(&mut p, &Item::Region(0), Col::Name, Input::Text("Intro".into()), &o).unwrap();
         assert!(apply(&mut p, &Item::Region(0), Col::Name, Input::Text("Intro".into()), &o).is_none(), "no change, no undo step");
         assert_eq!(p.timeline.regions[0].name, "Intro");
+    }
+
+    /// R18a: the Audio CD Track List and Commands views list their markers and edit them, each edit one undo step.
+    #[test]
+    fn audio_cd_tracks_and_commands_show_and_edit() {
+        use crate::project::{CdTrack, CommandMarker};
+        let mut p = new();
+        p.timeline.cd_tracks = vec![CdTrack { start: 4.0, end: 6.0, ..Default::default() }, CdTrack { start: 1.0, end: 4.0, name: "One".into(), ..Default::default() }];
+        p.timeline.commands = vec![CommandMarker { position: 2.0, command: "URL".into(), parameter: "https://example.com".into(), comment: String::new() }];
+        let cd = rows(&p, &[], Show::AudioCd);
+        assert_eq!(cd.iter().map(|r| r.cells[0].0.as_str()).collect::<Vec<_>>(), ["2", "1"], "numbered in time order");
+        assert_eq!((cd[1].cells[4].0.as_str(), cd[1].cells.len()), ("One", Show::AudioCd.cols().len()));
+        let cm = rows(&p, &[], Show::Commands);
+        assert_eq!((cm.len(), cm[0].cells[1].0.as_str(), cm[0].cells[2].0.as_str()), (1, "URL", "https://example.com"));
+        let o = EditOpts::default();
+        let mut h = History::default();
+        let before = p.clone();
+        apply(&mut p, &Item::CdTrack(0), Col::Isrc, Input::Text("USRC17607839".into()), &o).unwrap();
+        h.push(before);
+        apply(&mut p, &Item::CdTrack(0), Col::Prot, Input::Toggle, &o).unwrap();
+        let input = t(&p, 5.0);
+        apply(&mut p, &Item::CdTrack(0), Col::Start, input, &o).unwrap();
+        let c = &p.timeline.cd_tracks[0];
+        assert!(c.isrc == "USRC17607839" && c.protect && !c.emphasis && (c.start, c.end) == (5.0, 7.0));
+        apply(&mut p, &Item::Command(0), Col::Comment, Input::Text("Shop".into()), &o).unwrap();
+        let input = t(&p, 3.0);
+        apply(&mut p, &Item::Command(0), Col::Position, input, &o).unwrap();
+        assert_eq!((p.timeline.commands[0].comment.as_str(), p.timeline.commands[0].position), ("Shop", 3.0));
+        assert!(apply(&mut p, &Item::Command(0), Col::Comment, Input::Text("Shop".into()), &o).is_none(), "no change, no undo step");
+        assert!(h.undo(&mut p) && p.timeline.cd_tracks[0].isrc.is_empty());
     }
 
     /// Lengths are typed as shown: in Measures & Beats they count from 0.0.000 (a position from 1.1.000).

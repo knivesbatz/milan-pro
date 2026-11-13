@@ -1,5 +1,5 @@
-//! Band above the lanes (§5.9.1–5.9.2, §5.9.6, §5.9.8): time display, loop bar with yellow flags, marker bar,
-//! timecode ruler with grid lines, selection overlay and the per-look playhead.
+//! Band above the lanes (§5.9.1–5.9.2, §5.9.6, §5.9.8): time display, loop bar with yellow flags, marker bar, R18a's
+//! CD layout bar and command bar, timecode ruler with grid lines, selection overlay and the per-look playhead.
 use eframe::egui::*;
 use crate::edit;
 use crate::history::History;
@@ -34,15 +34,105 @@ pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs:
 }
 
 /// (loop bar, marker bar, ruler) rows of the band: VP16 loop 2–6 · markers 8–21 · ruler 31–46 · line 47;
-/// VP23 markers 14 · loop 8, then a dark line and a 14 px ruler standing on the bottom line (dark2026).
+/// VP23 markers 14 · loop 8, then a dark line and a 14 px ruler standing on the bottom line (dark2026). The ruler stands
+/// on the band's bottom, under the CD layout and command bars when they are shown (`band_h`).
 pub(super) fn band_rows(t: &Theme, band: Rect) -> (Rect, Rect, Rect) {
     let row = |y0: f32, h: f32| Rect::from_x_y_ranges(band.x_range(), Rangef::new(band.min.y + y0, band.min.y + y0 + h));
     if t.look() == UiLook::Vegas16 {
-        (row(2.0, 5.0), row(8.0, 14.0), row(31.0, 16.0))
+        (row(2.0, 5.0), row(8.0, 14.0), row(band.height() - 17.0, 16.0))
     } else {
         let h = band.height();
         (row(14.0, 8.0), row(0.0, 14.0), row(h - 15.0, 14.0))
     }
+}
+
+/// R18a: the CD layout bar and the command bar: 14 px rows under the marker bar, each shown while the project has CD
+/// track regions or indexes / command markers (VEGAS shows them only then).
+const BAR_H: f32 = 14.0;
+/// VEGAS's snap colours for these tags (VEGAS_UI_SPEC §2.1): CD Track, CD Index, Command Marker.
+const CD_TRACK: Color32 = Color32::from_rgb(0xE4, 0x81, 0x81);
+const CD_INDEX: Color32 = Color32::from_rgb(0xCE, 0x81, 0xE4);
+const COMMAND: Color32 = Color32::from_rgb(0x59, 0x89, 0xFF);
+
+/// The band's height: the look's, plus the CD layout and command bars that are shown.
+pub(super) fn band_h(t: &Theme, tl: &Timeline) -> f32 {
+    t.m.band_h + BAR_H * (tl.cd_layout() as u8 + !tl.commands.is_empty() as u8) as f32
+}
+
+/// (CD layout bar, command bar) rows of the band, when shown.
+pub(super) fn bar_rows(band: Rect, tl: &Timeline) -> (Option<Rect>, Option<Rect>) {
+    let row = |k: f32| Rect::from_x_y_ranges(band.x_range(), Rangef::new(band.min.y + 22.0 + BAR_H * k, band.min.y + 22.0 + BAR_H * (k + 1.0)));
+    let cd = tl.cd_layout();
+    (cd.then(|| row(0.0)), (!tl.commands.is_empty()).then(|| row(cd as u8 as f32)))
+}
+
+/// A tag on the CD layout bar or the command bar.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum BarTag {
+    Command(usize),
+    /// A CD track region's start tag, or (true) its end tag.
+    CdTrack(usize, bool),
+    CdIndex(usize),
+}
+
+impl BarTag {
+    /// Where the tag sits.
+    pub(super) fn time(self, tl: &Timeline) -> Option<f64> {
+        match self {
+            BarTag::Command(i) => tl.commands.get(i).map(|c| c.position),
+            BarTag::CdTrack(i, end) => tl.cd_tracks.get(i).map(|c| if end { c.end } else { c.start }),
+            BarTag::CdIndex(i) => tl.cd_indexes.get(i).copied(),
+        }
+    }
+
+    /// What a drag of the tag moves: command markers and indexes (a track region is edited in Edit Details).
+    fn pos_mut(self, tl: &mut Timeline) -> Option<&mut f64> {
+        match self {
+            BarTag::Command(i) => tl.commands.get_mut(i).map(|c| &mut c.position),
+            BarTag::CdIndex(i) => tl.cd_indexes.get_mut(i),
+            BarTag::CdTrack(..) => None,
+        }
+    }
+
+    /// The number in the tag: a track region's track number (in time order), an index's number within its track
+    /// region (VEGAS counts the track's start as index 1); and the label beside it.
+    pub(super) fn text(self, tl: &Timeline) -> (String, String) {
+        match self {
+            BarTag::CdTrack(i, end) => {
+                let Some(c) = tl.cd_tracks.get(i) else { return Default::default() };
+                let n = tl.cd_tracks.iter().filter(|o| o.start < c.start).count() + 1;
+                (n.to_string(), if end { String::new() } else { c.name.clone() })
+            }
+            BarTag::CdIndex(i) => {
+                let at = tl.cd_indexes.get(i).copied().unwrap_or_default();
+                let track = tl.cd_tracks.iter().find(|c| c.start <= at && at < c.end);
+                let n = track.map_or(String::new(), |c| (tl.cd_indexes.iter().filter(|&&x| x > c.start && x < at).count() + 2).to_string());
+                (n, String::new())
+            }
+            BarTag::Command(i) => {
+                let label = tl.commands.get(i).map_or(String::new(), |c| if c.comment.is_empty() { c.command.clone() } else { format!("{}: {}", c.command, c.comment) });
+                (String::new(), label)
+            }
+        }
+    }
+}
+
+/// Every tag of the CD layout bar and the command bar, with its rect (13×14; a track region's end tag left of its end).
+pub(super) fn bar_tags(g: &Geo, tl: &Timeline) -> Vec<(BarTag, Rect)> {
+    let (cd, cmd) = bar_rows(g.band, tl);
+    let tag = |r: Rect, x: f32| Rect::from_min_size(pos2(x, r.min.y), vec2(13.0, BAR_H));
+    let mut v = Vec::new();
+    if let Some(r) = cd {
+        for (i, c) in tl.cd_tracks.iter().enumerate() {
+            v.push((BarTag::CdTrack(i, false), tag(r, g.to_x(c.start).floor())));
+            v.push((BarTag::CdTrack(i, true), tag(r, g.to_x(c.end).floor() - 12.0)));
+        }
+        v.extend(tl.cd_indexes.iter().enumerate().map(|(i, &at)| (BarTag::CdIndex(i), tag(r, g.to_x(at).floor()))));
+    }
+    if let Some(r) = cmd {
+        v.extend(tl.commands.iter().enumerate().map(|(i, c)| (BarTag::Command(i), tag(r, g.to_x(c.position).floor()))));
+    }
+    v
 }
 
 /// Major tick interval: the first of 1/2/5/10/15 frames, 1/2/5/10/15/30 s, 1/2/5/10/15/30 min, 1 h that puts
@@ -220,6 +310,52 @@ pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut Hi
         }
         r.on_hover_text(&project.timeline.markers[i].name);
     }
+
+    // R18a: CD layout bar and command bar tags: a click moves the cursor there; a double-click edits a command marker
+    // (Command Properties) or selects a track region's time (VEGAS); command markers and indexes drag like markers.
+    for (b, tag) in bar_tags(g, &project.timeline) {
+        if tag.max.x < g.band.min.x || tag.min.x > g.band.max.x {
+            continue;
+        }
+        let r = ui.interact(tag, ui.id().with(("bar_tag", b)), Sense::click_and_drag());
+        let Some(at) = b.time(&project.timeline) else { continue };
+        if r.double_clicked() {
+            match b {
+                BarTag::Command(i) => super::edit_command(ui.ctx(), i),
+                BarTag::CdTrack(i, _) => project.timeline.loop_region = project.timeline.cd_tracks.get(i).map(|c| (c.start, c.end)),
+                BarTag::CdIndex(_) => {}
+            }
+        } else if r.clicked() {
+            project.timeline.cursor_position = at;
+        }
+        if r.drag_started() && b.pos_mut(&mut project.timeline).is_some() {
+            history.push(project.clone());
+            project.mark_modified();
+            st.bar_drag = Some((b, r.interact_pointer_pos().map_or(0.0, |p| p.x - tag.min.x)));
+        }
+        if let (Some((k, grab)), Some(p)) = (st.bar_drag, r.interact_pointer_pos().filter(|_| r.dragged())) {
+            if k == b {
+                let raw = g.to_time(p.x - grab).max(0.0);
+                let mut targets = edit::snap_targets(project, None);
+                targets.retain(|v| (v - at).abs() > 1e-9);
+                let pos = if snapping && !ui.input(|i| i.modifiers.shift) {
+                    g.snaps(targets).nearest(raw, SNAP_PX / g.pps).inspect(|s| st.snap = Some(*s)).unwrap_or(raw)
+                } else {
+                    raw
+                };
+                if let Some(x) = b.pos_mut(&mut project.timeline) {
+                    *x = pos;
+                }
+            }
+        }
+        if r.drag_stopped() {
+            st.bar_drag = None;
+        }
+        let (_, label) = b.text(&project.timeline);
+        if !label.is_empty() {
+            r.on_hover_text(label);
+        }
+    }
 }
 
 /// Band background, bevels, ruler ticks/labels, loop flags and marker tags.
@@ -306,6 +442,35 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         p_b.rect_filled(tag, 0.0, t.marker_flag);
         p_b.text(tag.center(), Align2::CENTER_CENTER, (i + 1).to_string(), t.bold(10.0), t.marker_text);
         p_b.text(pos2(tag.max.x + 3.0, tag.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), t.text);
+    }
+
+    // R18a: the CD layout bar and the command bar: a separator over each, the track regions' spans as a line (VP16), and
+    // their tags in VEGAS's CD Track, CD Index and Command Marker colours with the number inside and the label beside.
+    let tl = &project.timeline;
+    let (cd, cmd) = bar_rows(band, tl);
+    for row in [cd, cmd].into_iter().flatten() {
+        hline(band.x_range(), row.min.y - 1.0, if v16 { t.band_separator } else { t.line_dark });
+    }
+    if let (Some(row), true) = (cd, v16) {
+        for c in &tl.cd_tracks {
+            hline(Rangef::new(g.to_x(c.start).floor(), g.to_x(c.end).floor()), row.max.y - 1.0, CD_TRACK);
+        }
+    }
+    for (b, tag) in bar_tags(g, tl) {
+        if tag.max.x < band.min.x - 200.0 || tag.min.x > band.max.x {
+            continue;
+        }
+        let fill = match b {
+            BarTag::Command(_) => COMMAND,
+            BarTag::CdTrack(..) => CD_TRACK,
+            BarTag::CdIndex(_) => CD_INDEX,
+        };
+        let (num, label) = b.text(tl);
+        p_b.rect_filled(tag, 0.0, fill);
+        p_b.text(tag.center(), Align2::CENTER_CENTER, num, t.bold(10.0), Color32::WHITE);
+        if !label.is_empty() {
+            p_b.text(pos2(tag.max.x + 3.0, tag.center().y), Align2::LEFT_CENTER, label, t.font(t.font.ui), t.text);
+        }
     }
 
     // Region tags: start and end tags with the same number; the start carries the label (VP16: plus a line).
@@ -471,6 +636,28 @@ mod tests {
         assert_eq!(line(GridSpacing::RulerMarks, 80.0), (ruler_interval(80.0, &s), 0.0));
         s.ruler.offset = 0.25;
         assert_eq!(grid_line(GridSpacing::Seconds, &s, 80.0), (1.0, 0.75));
+    }
+
+    /// R18a: the CD layout and command bars appear under the marker bar only when there is something on them, and the
+    /// ruler moves down by their height; tags are numbered as VEGAS numbers them.
+    #[test]
+    fn cd_and_command_bars_follow_their_markers() {
+        let t = crate::ui::theme::Theme::new(crate::ui::theme::LookChoice::VEGAS16);
+        let mut tl = Timeline::new();
+        assert_eq!(band_h(&t, &tl), t.m.band_h);
+        let band = Rect::from_min_size(Pos2::ZERO, vec2(400.0, band_h(&t, &tl)));
+        assert_eq!((bar_rows(band, &tl), band_rows(&t, band).2.min.y), ((None, None), 31.0));
+        tl.cd_tracks = vec![CdTrack { start: 4.0, end: 6.0, ..Default::default() }, CdTrack { start: 0.0, end: 4.0, name: "One".into(), ..Default::default() }];
+        tl.cd_indexes = vec![1.0, 2.0, 5.0, 9.0];
+        tl.commands.push(CommandMarker { command: "URL".into(), ..Default::default() });
+        let band = Rect::from_min_size(Pos2::ZERO, vec2(400.0, band_h(&t, &tl)));
+        let (cd, cmd) = bar_rows(band, &tl);
+        assert_eq!((band.height(), cd.unwrap().min.y, cmd.unwrap().min.y, band_rows(&t, band).2.min.y), (t.m.band_h + 28.0, 22.0, 36.0, 59.0));
+        assert!(cmd.unwrap().max.y <= band_rows(&t, band).2.min.y);
+        let n = |b: BarTag| b.text(&tl).0;
+        assert_eq!((n(BarTag::CdTrack(0, false)), n(BarTag::CdTrack(1, true)), n(BarTag::CdIndex(1)), n(BarTag::CdIndex(2)), n(BarTag::CdIndex(3))), ("2".into(), "1".into(), "3".into(), "2".into(), String::new()));
+        assert_eq!(BarTag::CdTrack(1, false).text(&tl).1, "One");
+        assert_eq!((BarTag::Command(0).text(&tl).1.as_str(), BarTag::CdTrack(0, true).time(&tl)), ("URL", Some(6.0)));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
-//! are live, and Audio has the loudness log option (R16c).
+//! are live, and Audio has the preferred audio editor (R18a) and the loudness log option (R16c).
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
@@ -17,7 +17,7 @@ const ROWS23: &[&[&str]] = &[
 const GENERAL: usize = 0;
 const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
-const AUDIO: usize = 3;
+pub const AUDIO: usize = 3;
 pub const AUDIO_DEVICE: usize = 4;
 const EDITING: usize = 7;
 pub const DISPLAY: usize = 8;
@@ -142,8 +142,22 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     }
 }
 
-/// Audio (R16c): VEGAS's loudness log option; the page's other settings wait for R49.
+/// Audio: R18a's preferred audio editor (Tools › Open in Audio Editor) and R16c's loudness log option; the page's other
+/// settings wait for R49.
 fn audio(ui: &mut Ui, d: &mut Prefs) {
+    ui.label("Preferred audio editor:");
+    ui.horizontal(|ui| {
+        let mut path = d.audio_editor.as_ref().map_or(String::new(), |p| p.display().to_string());
+        if ui.add(TextEdit::singleline(&mut path).desired_width(320.0)).changed() {
+            d.audio_editor = (!path.trim().is_empty()).then(|| path.trim().into());
+        }
+        if ui.button("Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
+                d.audio_editor = Some(p);
+            }
+        }
+    });
+    ui.add_space(8.0);
     ui.checkbox(&mut d.loudness.open_editor, "Open editor when new loudness log is generated");
     ui.add_space(8.0);
     ui.label(format!("Milan Pro has no other settings on this page ({}).", Later("R49").phrase()));

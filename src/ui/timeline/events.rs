@@ -36,6 +36,37 @@ pub(super) struct Ev<'a> {
     pub offset: f64,
     /// An empty event (no media): drawn hatched.
     pub empty: bool,
+    /// R18a: View › Event Media Markers: the media's markers as (timeline time, name), and Show Marker Labels.
+    pub marks: Vec<(f64, &'a str)>,
+    pub labels: bool,
+    /// R18a: View › Event Length (VEGAS 23): the event's length, shown at its top right.
+    pub length: Option<String>,
+}
+
+/// R18a: where media `m`'s markers (seconds into its file) show in event `c`, on each pass of a looping event.
+// shortcut: placed at the event's plain rate, so a Velocity envelope moves them off; integrate it if users ask.
+pub(super) fn media_marks<'a>(c: &Clip, m: &'a crate::project::MediaItem) -> Vec<(f64, &'a str)> {
+    let (rate, end) = (c.rate.max(1e-9), c.position + c.duration);
+    let len = edit::loop_len(c, m);
+    let mut out = Vec::new();
+    for (at, name) in &m.markers {
+        let s = at - m.file_time(0.0);
+        if s < 0.0 || (m.duration > 0.0 && s > m.duration) {
+            continue;
+        }
+        for pass in 0.. {
+            let s = s + pass as f64 * len.unwrap_or(0.0);
+            let d = (s - c.in_point) / rate;
+            let t = if c.reverse { end - d } else { c.position + d };
+            if d >= 0.0 && t >= c.position && t <= end {
+                out.push((t, name.as_str()));
+            }
+            if len.is_none() || d > c.duration || pass > 10_000 {
+                break;
+            }
+        }
+    }
+    out
 }
 
 impl Ev<'_> {
@@ -104,6 +135,7 @@ pub(super) fn paint_event(
         paint_hatch(p, r, mul(ev.color, 0.7));
     }
     paint_notches(p, ev, lane_bg);
+    paint_media_marks(p, t, ev);
     if r.width() >= 3.0 {
         p.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(r.max.y - 1.0, r.max.y)), 0.0, mul(ev.color, 0.73));
     }
@@ -126,6 +158,23 @@ pub(super) fn paint_event(
     }
     if ev.dim {
         p.rect_filled(r, 0.0, lane_bg.gamma_multiply(0.5));
+    }
+}
+
+/// R18a: media markers: a line down the event in the marker colour, with the name beside it at the top when labels are
+/// on (as VEGAS draws them).
+fn paint_media_marks(p: &Painter, t: &Theme, ev: &Ev) {
+    let r = ev.rect;
+    let pm = p.with_clip_rect(r.intersect(p.clip_rect()));
+    for &(at, name) in &ev.marks {
+        let x = (r.min.x as f64 + (at - ev.clip.position) * ev.pps).floor() as f32;
+        pm.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), r.y_range()), 0.0, t.marker_flag);
+        if ev.labels && !name.is_empty() {
+            let g = pm.layout_no_wrap(name.to_string(), t.font(10.0), t.event_text);
+            let y = r.max.y - g.size().y - 3.0;
+            pm.rect_filled(Rect::from_min_size(pos2(x + 1.0, y), g.size() + vec2(4.0, 0.0)), 0.0, t.marker_flag);
+            pm.galley(pos2(x + 3.0, y), g, t.event_text);
+        }
     }
 }
 
@@ -344,7 +393,19 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
         let b = Rect::from_min_size(r.min, vec2(bw, 20.0));
         pr.rect_filled(b, 0.0, t.event_label_bg);
         pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
+        let name_w = bw;
         pr.with_clip_rect(b.shrink(1.0).intersect(pr.clip_rect())).galley(pos2(b.min.x + 4.0, b.center().y - galley.size().y * 0.5), galley, t.event_text);
+        // R18a: View › Event Length: the length in a box like the name's at the top right, where it fits beside it.
+        if let Some(len) = &ev.length {
+            let g = p.layout_no_wrap(len.clone(), t.font(t.font.event_name), t.event_text);
+            let lw = g.size().x + 8.0;
+            if r.width() >= name_w + lw + 4.0 {
+                let b = Rect::from_min_size(pos2(r.max.x - lw, r.min.y), vec2(lw, 20.0));
+                pr.rect_filled(b, 0.0, t.event_label_bg);
+                pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
+                pr.galley(pos2(b.min.x + 4.0, b.center().y - g.size().y * 0.5), g, t.event_text);
+            }
+        }
     }
     for (icon, c) in buttons(t, r, ev.is_video, ev.generated) {
         pr.rect_filled(c, CornerRadius::same(2), t.event_chip_bg);
@@ -432,5 +493,24 @@ mod tests {
         assert_eq!(notches(&c, 8.0), [9.0, 17.0]);
         c.duration = 4.0;
         assert!(notches(&c, 8.0).is_empty());
+    }
+    /// R18a: media markers land where the event plays them: after its in point, at its rate, on each loop pass;
+    /// reversed from the end; a subclip's markers count from its start.
+    #[test]
+    fn media_markers_follow_the_event() {
+        let m = crate::project::MediaItem { media_type: crate::project::MediaType::Audio, duration: 8.0, markers: vec![(1.0, "a".into()), (5.0, "b".into())], ..Default::default() };
+        let mut c = Clip::new("c", 10.0, 6.0);
+        c.looping = false;
+        assert_eq!(media_marks(&c, &m), [(11.0, "a"), (15.0, "b")]);
+        c.in_point = 3.0;
+        c.rate = 2.0;
+        assert_eq!(media_marks(&c, &m), [(11.0, "b")]);
+        (c.rate, c.looping, c.duration) = (1.0, true, 12.0); // 3..8, then 0..7 from 15
+        assert_eq!(media_marks(&c, &m), [(16.0, "a"), (12.0, "b"), (20.0, "b")]);
+        (c.looping, c.reverse, c.in_point, c.duration) = (false, true, 0.0, 8.0);
+        assert_eq!(media_marks(&c, &m), [(17.0, "a"), (13.0, "b")]);
+        let sub = crate::project::MediaItem { duration: 3.0, subclip: Some(crate::project::Subclip { parent: "m".into(), start: 4.0 }), ..m.clone() };
+        (c.reverse, c.duration) = (false, 3.0);
+        assert_eq!(media_marks(&c, &sub), [(11.0, "b")]);
     }
 }

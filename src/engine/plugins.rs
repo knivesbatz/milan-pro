@@ -550,6 +550,38 @@ pub static PLUGINS: &[PluginInfo] = &[
             preset("Subtitle", &[("y", 0.9), ("size", 0.05), ("outline", 0.003)]),
         ],
     },
+    // R18a: VEGAS's Credit Roll and Test Pattern.
+    PluginInfo {
+        id: "milan.gen.credits",
+        name: "Credit Roll",
+        kind: PluginKind::Generator,
+        group: "Text",
+        category: "Creative",
+        desc: "Scrolls credits over the generated media's length",
+        params: &[
+            // VEGAS's paste rule: a line starting with a space is a header, a line with a tab two columns (dual item).
+            text("text", "Credits (a leading space: header; a tab: two columns)", true, " Credits\nDirected by\tA. Director\nProduced by\tA. Producer\nThanks for watching").sec("Text"),
+            ParamSpec { key: "font", name: "Font", section: "", kind: ParamKind::Font { default: "Arial" } },
+            f("header_size", "Header size", 0.01, 0.3, 0.07),
+            f("item_size", "Item size", 0.01, 0.3, 0.045),
+            color("header_color", "Header color", WHITE),
+            color("item_color", "Item color", [0.85, 0.85, 0.85, 1.0]),
+            f("spacing", "Line spacing", 0.5, 3.0, 1.3).sec("Effect"),
+            choice("direction", "Effect", &["Scroll Up", "Scroll Down"], 0),
+            color("background", "Background", BLACK).sec("Background"),
+        ],
+        presets: &[DEFAULT, Preset { name: "Over Video", vals: &[("background.a", 0.0)], text: &[] }, preset("Scroll Down", &[("direction", 1.0)])],
+    },
+    PluginInfo {
+        id: "milan.gen.test_pattern",
+        name: "Test Pattern",
+        kind: PluginKind::Generator,
+        group: "Pattern",
+        category: "Utility",
+        desc: "Generates SMPTE bars, colour bars, a grey ramp or a grid",
+        params: &[choice("type", "Type", &["SMPTE Bars", "Color Bars", "Grayscale Ramp", "Grid"], 0)],
+        presets: &[preset("SMPTE Bars", &[]), preset("Color Bars", &[("type", 1.0)]), preset("Grayscale Ramp", &[("type", 2.0)]), preset("Grid", &[("type", 3.0)])],
+    },
     // ---- Compositors (the Custom compositing mode; the layer above is the map) ----
     PluginInfo {
         id: "milan.comp.bump_map",

@@ -1061,6 +1061,53 @@ pub fn send_or_quit<T>(tx: &SyncSender<T>, mut v: T, quit: &AtomicBool) -> bool 
     }
 }
 
+/// R18a: Options › Metronome: a click on every beat at the project tempo (Project Properties › Ruler), accented on the
+/// first beat of each measure, added to playback (and recording) only, as VEGAS's metronome is never rendered.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Metronome {
+    /// Seconds per beat and beats per measure.
+    pub beat: f64,
+    pub per_measure: u32,
+}
+
+impl Metronome {
+    /// A click's length in frames (20 ms).
+    const LEN: i64 = RATE as i64 / 50;
+
+    pub fn of(s: &crate::project::ProjectSettings) -> Self {
+        Self { beat: s.beat_secs(), per_measure: s.ruler.beats_per_measure.max(1) }
+    }
+
+    /// The timeline frame beat `k` falls on.
+    pub fn frame(&self, k: i64) -> i64 {
+        (k as f64 * self.beat * RATE as f64).round() as i64
+    }
+
+    /// Adds the clicks sounding in the stereo block `out` that starts at timeline frame `f0`: a decaying sine burst,
+    /// 1.5 kHz on a measure's first beat, 1 kHz on the others.
+    // shortcut: a synthesized click; VEGAS's Preferences › Audio metronome sound files and level are not offered.
+    pub fn add(&self, f0: i64, out: &mut [f32]) {
+        let n = (out.len() / 2) as i64;
+        let per = self.beat * RATE as f64;
+        if per < 1.0 {
+            return;
+        }
+        let mut k = (((f0 - Self::LEN) as f64 / per).ceil() as i64).max(0);
+        while self.frame(k) < f0 + n {
+            let at = self.frame(k);
+            let (hz, amp) = if k % self.per_measure as i64 == 0 { (1500.0, 0.5) } else { (1000.0, 0.35) };
+            for f in at.max(f0)..(at + Self::LEN).min(f0 + n) {
+                let s = (f - at) as f32;
+                let v = amp * (std::f32::consts::TAU * hz * s / RATE as f32).sin() * (1.0 - s / Self::LEN as f32);
+                let i = ((f - f0) * 2) as usize;
+                out[i] += v;
+                out[i + 1] += v;
+            }
+            k += 1;
+        }
+    }
+}
+
 /// A mixed block for the device: its timeline start frame, the timeline frames each of its frames moves on (the play
 /// rate), and the samples.
 pub type Block = (i64, f64, Vec<f32>);
@@ -1084,6 +1131,9 @@ pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option
         let (f0, n) = next_block(f, lp);
         let mut buf = vec![0.0; n * 2];
         mixer.block(&plan, f0, &mut buf);
+        if let Some(m) = &plan.metronome {
+            m.add(f0, &mut buf);
+        }
         // Later decoders that are not ready play silence instead of holding the device queue.
         mixer.wait = false;
         f = f0 + n as i64;
@@ -2255,5 +2305,25 @@ mod tests {
         assert!((out[2 * 47_999] - 0.25).abs() < 0.01, "{}", out[2 * 47_999]);
         drop(s);
         remove_dir(&dir);
+    }
+
+    /// R18a acceptance: at 120 BPM the metronome clicks on every beat, 24000 samples apart at 48 kHz, accented on the
+    /// measure's first; mixing in blocks gives the same samples as one pass; a render plan has no metronome.
+    #[test]
+    fn metronome_clicks_land_on_beats_at_120_bpm() {
+        let m = Metronome::of(&crate::project::ProjectSettings::default());
+        assert_eq!((m.beat, m.per_measure, m.frame(1), m.frame(4)), (0.5, 4, 24_000, 96_000));
+        let mut one = vec![0.0f32; 2 * 120_000];
+        m.add(0, &mut one);
+        let onsets: Vec<usize> = (1..120_000).filter(|&f| one[2 * f] != 0.0 && one[2 * (f - 1)] == 0.0).map(|f| f - 1).collect();
+        assert_eq!(onsets, [0, 24_000, 48_000, 72_000, 96_000]);
+        let peak = |at: usize| (at..at + 960).map(|f| one[2 * f].abs()).fold(0.0, f32::max);
+        assert!(peak(0) > peak(24_000) && (peak(96_000) - peak(0)).abs() < 1e-3 && one[2 * 30_000] == 0.0);
+        let mut blocks = vec![0.0f32; 2 * 120_000];
+        for (i, b) in blocks.chunks_mut(2 * 1000).enumerate() {
+            m.add(i as i64 * 1000, b);
+        }
+        assert_eq!(one, blocks);
+        assert!(compile_audio(&crate::project::Project::new("t")).metronome.is_none());
     }
 }

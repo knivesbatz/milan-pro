@@ -587,7 +587,11 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                 // Resampled: the frame after `sf` too, weighted by how far between the two this frame's time falls.
                 let next = sf.filter(|_| e.blend).map(|n| (n + 1, (ft * e.m.grid - n as f64).clamp(0.0, 1.0) as f32)).filter(|n| n.1 >= 1.0 / 512.0);
                 // A generator is evaluated at its media time; one that does not animate always at 0.
-                let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
+                let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|mut g| {
+                    // R18a: the Credit Roll scrolls over its media's length.
+                    if g.id == generate::CREDITS {
+                        g.vals.push((generate::LENGTH, plugins::Val::F(e.m.duration as f32)));
+                    }
                     let gt = if generate::animated(&g) { st + dt } else { 0.0 };
                     (g, gt)
                 });
@@ -861,6 +865,8 @@ pub struct AudioPlan {
     /// R17b: read the events' `standby` takes along (playback in multicamera editing with Edit Multicamera Audio with
     /// Video; never a render).
     pub standby: bool,
+    /// R18a: Options › Metronome (playback only; never a render).
+    pub metronome: Option<crate::engine::mix::Metronome>,
 }
 
 /// R8a: the busses and assignable FX chains in mixing order (each before the bus it goes to), each one's output as an
@@ -1031,7 +1037,7 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
             }
         })
         .collect();
-    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None, standby: false }
+    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None, standby: false, metronome: None }
 }
 
 /// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it

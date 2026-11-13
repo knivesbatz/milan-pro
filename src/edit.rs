@@ -439,6 +439,8 @@ pub fn snap_targets_except(project: &Project, ids: &[&str], tracks: Option<&[Str
     let mut v = vec![0.0, tl.cursor_position];
     v.extend(tl.markers.iter().map(|m| m.position));
     v.extend(tl.loop_region.iter().flat_map(|&(a, b)| [a, b]));
+    // R18a: VEGAS snaps to command markers, CD indexes and CD track regions too.
+    v.extend(tl.commands.iter().map(|c| c.position).chain(tl.cd_indexes.iter().copied()).chain(tl.cd_tracks.iter().flat_map(|c| [c.start, c.end])));
     let on = |t: &Track| tracks.is_none_or(|ts| ts.contains(&t.id));
     for c in tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| on(t)).flat_map(|t| &t.clips) {
         if !ids.contains(&c.id.as_str()) {
@@ -574,6 +576,79 @@ fn split_where(project: &mut Project, at: f64, pick: impl Fn(&Track, &Clip) -> b
         dissolve_lone_groups(&mut project.timeline);
     }
     changed(project, done)
+}
+
+/// R18a: Edit › Smart Split (VEGAS 23). Each of events `ids` that holds the time selection `a..b` inside it loses that
+/// stretch: it is split at both ends, the middle goes, and the part after moves back to overlap the part before by
+/// `overlap` (VEGAS: five frames), crossfading there; the two parts are grouped (with the event's group, if any).
+/// Locked events, events on locked tracks and events whose parts would be shorter than the overlap stay as they are.
+/// Returns the ripple that closes up what follows on their tracks (Auto Ripple, or Post-Edit Ripple later); None when
+/// nothing was split.
+// shortcut: VEGAS morphs across the overlap with its Warp Flow (optical flow) transition; this crossfades (a dissolve on
+// video). Add a morph transition with the GPU effects (R21b) if wanted.
+pub fn smart_split(p: &mut Project, ids: &[String], (a, b): (f64, f64), overlap: f64) -> Option<RippleOp> {
+    const EPS: f64 = 1e-9;
+    let shift = b - a + overlap;
+    let (mut tracks, mut moved) = (Vec::new(), Vec::new());
+    for t in tracks_mut(&mut p.timeline).filter(|t| !t.locked) {
+        let mut j = 0;
+        while j < t.clips.len() {
+            let c = &t.clips[j];
+            let fits = !c.locked && ids.contains(&c.id) && a - c.position > overlap + EPS && c.position + c.duration - b > overlap + EPS;
+            let parts = fits.then(|| split_clip(c, a)).flatten().and_then(|(first, rest)| Some((first, split_clip(&rest, b)?.1)));
+            if let Some((mut first, mut second)) = parts {
+                let g = first.group.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                (first.group, first.fade_out) = (Some(g.clone()), overlap);
+                (second.group, second.fade_in) = (Some(g), overlap);
+                second.position -= shift;
+                moved.push(second.id.clone());
+                t.clips[j] = first;
+                t.clips.insert(j + 1, second);
+                if !tracks.contains(&t.id) {
+                    tracks.push(t.id.clone());
+                }
+                j += 1;
+            }
+            j += 1;
+        }
+    }
+    changed(p, !moved.is_empty()).then(|| RippleOp { from: b, delta: -shift, tracks, exclude: moved, keys_from: Some(b) })
+}
+
+/// R18a: Insert › Command (or a command marker's Edit, `index`): command marker `m`; the markers stay in time order.
+/// False when nothing changed.
+pub fn set_command(p: &mut Project, index: Option<usize>, m: CommandMarker) -> bool {
+    let cs = &mut p.timeline.commands;
+    match index {
+        Some(i) if cs.get(i) == Some(&m) => return false,
+        Some(i) if i < cs.len() => cs[i] = m,
+        Some(_) => return false,
+        None => cs.push(m),
+    }
+    cs.sort_by(|a, b| a.position.total_cmp(&b.position));
+    changed(p, true)
+}
+
+/// R18a: Insert › Audio CD Track Region over the time selection `a..b`, and Audio CD Track Index at `at` (not twice at
+/// one place); both kept in time order.
+pub fn insert_cd_track(p: &mut Project, (a, b): (f64, f64)) -> bool {
+    let tl = &mut p.timeline;
+    if b <= a || tl.cd_tracks.iter().any(|c| (c.start, c.end) == (a, b)) {
+        return false;
+    }
+    tl.cd_tracks.push(CdTrack { start: a, end: b, ..Default::default() });
+    tl.cd_tracks.sort_by(|x, y| x.start.total_cmp(&y.start));
+    changed(p, true)
+}
+
+pub fn insert_cd_index(p: &mut Project, at: f64) -> bool {
+    let tl = &mut p.timeline;
+    if tl.cd_indexes.iter().any(|&x| (x - at).abs() < 1e-9) {
+        return false;
+    }
+    tl.cd_indexes.push(at.max(0.0));
+    tl.cd_indexes.sort_by(f64::total_cmp);
+    changed(p, true)
 }
 
 // ---- Nested timelines (R6b) ----
@@ -932,8 +1007,10 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
         }
     }
     if mode != RippleMode::Affected {
-        for m in tl.markers.iter_mut().filter(|m| at_or_after(m.position)) {
-            m.position = (m.position + d).max(0.0);
+        // R18a: command markers and CD indexes ride with the markers, CD track regions with the regions.
+        let points = tl.markers.iter_mut().map(|m| &mut m.position).chain(tl.commands.iter_mut().map(|c| &mut c.position)).chain(&mut tl.cd_indexes);
+        for m in points.filter(|m| at_or_after(**m)) {
+            *m = (*m + d).max(0.0);
             done = true;
         }
         let shift = |(a, b): (f64, f64)| -> (f64, f64) {
@@ -945,10 +1022,10 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
                 (a, b)
             }
         };
-        for r in &mut tl.regions {
-            let new = shift((r.start, r.end));
-            done |= new != (r.start, r.end);
-            (r.start, r.end) = new;
+        for (s, e) in tl.regions.iter_mut().map(|r| (&mut r.start, &mut r.end)).chain(tl.cd_tracks.iter_mut().map(|r| (&mut r.start, &mut r.end))) {
+            let new = shift((*s, *e));
+            done |= new != (*s, *e);
+            (*s, *e) = new;
         }
         let new = tl.loop_region.map(shift);
         done |= new != tl.loop_region;
@@ -3786,7 +3863,9 @@ pub fn insert_generated(p: &mut Project, track: Option<usize>, at: f64, fx: Fx, 
     if i == tl.video_tracks.len() {
         tl.add_video_track();
     }
-    let m = MediaItem { id: uuid::Uuid::new_v4().to_string(), name: name.into(), media_type: MediaType::Image, duration: 86400.0, generator: Some(fx), ..Default::default() };
+    // R18a: a Credit Roll is as long as its first event: it scrolls over that length (VEGAS's generated media length).
+    let duration = if fx.plugin == crate::engine::generate::CREDITS { len } else { 86400.0 };
+    let m = MediaItem { id: uuid::Uuid::new_v4().to_string(), name: name.into(), media_type: MediaType::Image, duration, generator: Some(fx), ..Default::default() };
     let mut c = Clip::from_media(&m, at.max(0.0));
     (c.duration, c.out_point) = (len, len);
     let id = c.id.clone();
@@ -6305,5 +6384,65 @@ mod tests {
         assert_eq!(tl.video_tracks[2].clips[0].in_point, 11.0);
         // No multicamera event left: nothing to expand.
         assert!(!expand_multicam(&mut p, &[id], true));
+    }
+
+    /// R18a: Smart Split cuts the selection out of the event, the rest overlapping by five frames with a crossfade, the
+    /// parts grouped; what follows ripples (one undo step, as the caller pushes one), locked events stay.
+    #[test]
+    fn smart_split_cuts_the_selection_out_and_overlaps_five_frames() {
+        let mut p = Project::new("t");
+        let (c, d) = (Clip::new("c", 0.0, 10.0), Clip::new("d", 10.0, 2.0));
+        let (id, next) = (c.id.clone(), d.id.clone());
+        p.timeline.video_tracks[0].clips = vec![c, d];
+        let o = 5.0 / 25.0;
+        assert!(smart_split(&mut p, &[id.clone()], (0.1, 5.0), o).is_none(), "the first part would be shorter than the overlap");
+        let op = smart_split(&mut p, &[id.clone()], (3.0, 5.0), o).unwrap();
+        let cl = &p.timeline.video_tracks[0].clips;
+        let (first, second) = (&cl[0], &cl[1]);
+        assert_eq!((first.id.as_str(), first.duration, first.fade_out), (id.as_str(), 3.0, o));
+        assert!((second.position - (3.0 - o)).abs() < 1e-12 && second.duration == 5.0 && second.in_point == 5.0 && second.fade_in == o);
+        assert!(first.group.is_some() && first.group == second.group);
+        assert_eq!((op.from, op.delta, op.exclude.clone()), (5.0, -(2.0 + o), vec![second.id.clone()]));
+        assert!(ripple(&mut p, &op, RippleMode::Affected));
+        let d = p.clip(&next).unwrap();
+        assert!((d.position - (10.0 - 2.0 - o)).abs() < 1e-12);
+        // A locked event is left alone.
+        let mut q = Project::new("t");
+        let mut c = Clip::new("c", 0.0, 10.0);
+        c.locked = true;
+        let id = c.id.clone();
+        q.timeline.video_tracks[0].clips = vec![c];
+        assert!(smart_split(&mut q, &[id], (3.0, 5.0), o).is_none() && !q.modified);
+    }
+
+    /// R18a: Insert › Command, Audio CD Track Region and Index keep their lists in time order and refuse no-ops.
+    #[test]
+    fn command_and_cd_markers_insert_in_order() {
+        let mut p = Project::new("t");
+        let m = |at: f64, c: &str| CommandMarker { position: at, command: c.into(), ..Default::default() };
+        assert!(set_command(&mut p, None, m(5.0, "URL")) && set_command(&mut p, None, m(2.0, "Text")));
+        assert_eq!(p.timeline.commands.iter().map(|c| c.command.as_str()).collect::<Vec<_>>(), ["Text", "URL"]);
+        assert!(!set_command(&mut p, Some(0), m(2.0, "Text")) && !set_command(&mut p, Some(9), m(1.0, "X")));
+        assert!(set_command(&mut p, Some(0), m(7.0, "Text")));
+        assert_eq!(p.timeline.commands[1].position, 7.0);
+        assert!(insert_cd_track(&mut p, (4.0, 8.0)) && insert_cd_track(&mut p, (0.0, 4.0)) && !insert_cd_track(&mut p, (0.0, 4.0)) && !insert_cd_track(&mut p, (3.0, 3.0)));
+        assert_eq!(p.timeline.cd_tracks[0].start, 0.0);
+        assert!(insert_cd_index(&mut p, 6.0) && insert_cd_index(&mut p, 5.0) && !insert_cd_index(&mut p, 5.0));
+        assert_eq!(p.timeline.cd_indexes, [5.0, 6.0]);
+        assert!(p.timeline.cd_layout());
+    }
+
+    /// R18a: command markers, CD indexes and CD track regions ripple with the markers and regions.
+    #[test]
+    fn cd_and_command_markers_ripple_with_markers() {
+        let mut p = Project::new("t");
+        p.timeline.commands.push(CommandMarker { position: 4.0, ..Default::default() });
+        p.timeline.cd_indexes.push(5.0);
+        p.timeline.cd_tracks.push(CdTrack { start: 1.0, end: 6.0, ..Default::default() });
+        let op = RippleOp { from: 3.0, delta: 2.0, tracks: Vec::new(), ..Default::default() };
+        assert!(ripple(&mut p, &op, RippleMode::AffectedMarkersOnly));
+        let tl = &p.timeline;
+        assert_eq!((tl.commands[0].position, tl.cd_indexes[0], tl.cd_tracks[0].start, tl.cd_tracks[0].end), (6.0, 7.0, 1.0, 8.0));
+        assert!(snap_targets(&p, None).contains(&7.0));
     }
 }

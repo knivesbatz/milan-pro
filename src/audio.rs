@@ -771,7 +771,7 @@ struct Session {
     stop: Arc<AtomicBool>,
     /// The plan the mixer reads once per block, and the content hash, bypass and quickfade it was compiled with.
     slot: Arc<Mutex<Arc<AudioPlan>>>,
-    hash: (u64, bool, bool, bool),
+    hash: (u64, bool, bool, bool, bool),
     /// The play rate (f64 bits): 1, or a shuttle's, which `set_rate` changes on the fly.
     rate: Arc<AtomicU64>,
     serial: u64,
@@ -836,6 +836,8 @@ pub struct Player {
     /// R17b: multicamera editing with Edit Multicamera Audio with Video: the plans keep the multicamera audio's other
     /// takes decoding, so a take switched to while playing is heard at once.
     pub standby: bool,
+    /// R18a: Options › Metronome: the plans this player compiles click on the beats.
+    pub metronome: bool,
     /// R8a: the level meters of the tracks and busses in the last plan, by id.
     pub meters: Arc<Meters>,
     /// R9: the recording input the monitor plays (the recorder pushes it), what it plays, and the input busses' meters.
@@ -872,6 +874,7 @@ impl Player {
             bypass_fx: false,
             quickfade: true,
             standby: false,
+            metronome: false,
             meters: Arc::default(),
             ring: Arc::default(),
             mon: MonPlan::default(),
@@ -1018,7 +1021,7 @@ impl Player {
                 })
             })
             .expect("spawn milan-mix");
-        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby, self.metronome);
         let calls = self.calls();
         self.session = Some(Session { watch: (calls, Instant::now()), stop, slot, hash, rate, serial: self.serial, from: start, reached: false, last: start });
     }
@@ -1045,6 +1048,7 @@ impl Player {
     /// The plan, with a meter for each of its tracks and busses (the ones they had kept, so a reader holds on).
     fn plan(&mut self, project: &Project) -> AudioPlan {
         let mut plan = AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, standby: self.standby, ..compile_audio(project) };
+        plan.metronome = self.metronome.then(|| mix::Metronome::of(&project.settings));
         let ids = plan.tracks.iter().map(|t| &t.id).chain(plan.buses.iter().map(|b| &b.id));
         self.meters = Arc::new(ids.map(|id| (id.clone(), self.meters.get(id).cloned().unwrap_or_default())).collect());
         plan.meters = Some(self.meters.clone());
@@ -1054,7 +1058,7 @@ impl Player {
     /// While playing: give the mixer the project's new plan after an edit (or a Bypass All Audio FX toggle). It is
     /// heard within about 150 ms.
     pub fn set_plan(&mut self, project: &Project) {
-        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby, self.metronome);
         if self.session.as_ref().is_none_or(|s| s.hash == hash) {
             return;
         }
@@ -1278,33 +1282,35 @@ fn retry_empty(mut decode: impl FnMut() -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
 /// Per-media peak cache filled by a background thread. Failures (after one retry) cache as empty.
 pub struct Waveforms {
     cache: HashMap<String, Option<Vec<Vec<f32>>>>,
-    /// (cache key, file, R6b: a nested timeline: its mix's peaks)
-    tx: Sender<(String, PathBuf, bool)>,
-    rx: Receiver<(String, Vec<Vec<f32>>)>,
+    /// (cache key, file, R6b: a nested timeline: its mix's peaks, the generation asked in)
+    tx: Sender<(String, PathBuf, bool, u64)>,
+    rx: Receiver<(String, Vec<Vec<f32>>, u64)>,
+    /// R18a: Rebuild Audio Peaks starts a new generation; peaks read for an older one are dropped.
+    generation: u64,
     /// Set while the timeline plays, so peak decodes leave the CPU to playback.
     paused: Arc<AtomicBool>,
 }
 
 impl Waveforms {
     pub fn new(ctx: &egui::Context) -> Self {
-        let (tx, req_rx) = mpsc::channel::<(String, PathBuf, bool)>();
+        let (tx, req_rx) = mpsc::channel::<(String, PathBuf, bool, u64)>();
         let (res_tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         let paused = Arc::new(AtomicBool::new(false));
         let p = paused.clone();
         std::thread::spawn(move || {
-            for (id, path, nested) in req_rx {
+            for (id, path, nested, generation) in req_rx {
                 while p.load(Relaxed) {
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 let read = || if nested { crate::engine::nested::peaks(&path, PEAKS_PER_SEC) } else { peaks(&path) };
-                if res_tx.send((id, retry_empty(read))).is_err() {
+                if res_tx.send((id, retry_empty(read), generation)).is_err() {
                     break;
                 }
                 ctx.request_repaint();
             }
         });
-        Self { cache: HashMap::new(), tx, rx, paused }
+        Self { cache: HashMap::new(), tx, rx, paused, generation: 0 }
     }
 
     pub fn set_paused(&self, on: bool) {
@@ -1313,10 +1319,24 @@ impl Waveforms {
 
     /// Some requested peaks have not arrived yet.
     pub fn pending(&mut self) -> bool {
-        for (id, p) in self.rx.try_iter() {
-            self.cache.insert(id, Some(p));
-        }
+        self.receive();
         self.cache.values().any(|v| v.is_none())
+    }
+
+    fn receive(&mut self) {
+        for (id, p, g) in self.rx.try_iter() {
+            if g == self.generation {
+                self.cache.insert(id, Some(p));
+            }
+        }
+    }
+
+    /// R18a: View › Rebuild Audio Peaks (every media, `None`), or a file changed by the audio editor (media `Some(id)`):
+    /// their peaks are read again when next drawn.
+    pub fn rebuild(&mut self, media: Option<&str>) {
+        self.generation += 1;
+        // Peaks still being read for the old generation are asked for again too.
+        self.cache.retain(|k, v| v.is_some() && media.is_some_and(|id| k.split('|').next() != Some(id)));
     }
 
     /// Peaks for `m`, one list per channel (1 or 2), requesting them on first use.
@@ -1324,14 +1344,12 @@ impl Waveforms {
         if m.generator.is_some() {
             return None; // generated media has no sound and no file to read
         }
-        for (id, p) in self.rx.try_iter() {
-            self.cache.insert(id, Some(p));
-        }
+        self.receive();
         // R6b: a nested timeline's peaks are its mix's, made again once it is saved.
         let key = if m.nested { format!("{}|{:?}", m.id, crate::engine::nested::version(&m.path)) } else { m.id.clone() };
         if !self.cache.contains_key(&key) {
             self.cache.insert(key.clone(), None);
-            let _ = self.tx.send((key.clone(), m.path.clone(), m.nested));
+            let _ = self.tx.send((key.clone(), m.path.clone(), m.nested, self.generation));
         }
         self.cache[&key].as_deref().filter(|p| p.first().is_some_and(|c| !c.is_empty()))
     }
@@ -1340,6 +1358,20 @@ impl Waveforms {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R18a: Rebuild Audio Peaks forgets every media's peaks, or one media's (a nested timeline's keys too), and those
+    /// still being read.
+    #[test]
+    fn rebuild_forgets_peaks() {
+        let mut w = Waveforms::new(&egui::Context::default());
+        for (k, v) in [("a", Some(vec![vec![0.5]])), ("b|7", Some(vec![vec![0.5]])), ("c", None)] {
+            w.cache.insert(k.into(), v);
+        }
+        w.rebuild(Some("b"));
+        assert!(w.cache.contains_key("a") && !w.cache.contains_key("b|7") && !w.cache.contains_key("c") && w.generation == 1);
+        w.rebuild(None);
+        assert!(w.cache.is_empty());
+    }
 
     /// The real default output device (shared mode) plays an empty timeline: inaudible (silence, master at 0), and the
     /// heard clock must advance in step with the wall clock. Never opens an input or exclusive mode.

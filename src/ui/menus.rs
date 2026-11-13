@@ -172,6 +172,11 @@ pub struct CmdState {
     pub multicam: bool,
     pub multicam_audio: bool,
     pub multicam_full: bool,
+    /// R18a: View › Event Media Markers › Show Markers and Show Marker Labels, View › Event Length, Options › Metronome.
+    pub media_markers: bool,
+    pub marker_labels: bool,
+    pub event_length: bool,
+    pub metronome: bool,
 }
 
 impl CmdState {
@@ -267,6 +272,12 @@ impl CmdState {
             MulticamTake(..) => self.multicam,
             NestedOpen => self.nested_clip,
             NestedParent => self.nested_parent,
+            // R18a. Smart Split cuts a time selection out of the selected events (VEGAS 23 only).
+            SmartSplit => v23 && self.clip && self.selection,
+            OpenInAudioEditor | OpenCopyInAudioEditor => self.audio_clip,
+            CdTrack => self.selection,
+            InsertCommand | CdIndex | MediaMarkers | MarkerLabels | Metronome | RebuildPeaks | ContextMenu => true,
+            EventLength => v23,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -326,7 +337,10 @@ impl CmdState {
             EventHeaders => self.look == UiLook::Vegas16,
             ExternalMonitor => self.external,
             Loudness(k) => return self.loudness.checked(k),
-            MediaMarkers => false,
+            MediaMarkers => self.media_markers,
+            MarkerLabels => self.marker_labels,
+            EventLength => self.event_length,
+            Metronome => self.metronome,
             Multicam => self.multicam,
             MulticamAudio => self.multicam_audio,
             MulticamFullFrame => self.multicam_full,
@@ -402,7 +416,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
-        SmartSplit | OpenInAudioEditor | InsertCommand | CdTrack | CdIndex | MediaMarkers | RebuildPeaks | ContextMenu => Later("R18a"),
         InsertAdjustmentTrack => Later("R18b"),
         Prerender | RamPreview => Later("R23"),
         PluginManager => Later("R31"),
@@ -907,14 +920,14 @@ pub const VIEW: &[M] = &[
     C("Audio Bus Tra&cks", BusTracks),
     C("Vide&o Bus Track", VideoBusTrack),
     S,
-    Sub("Eve&nt Media Markers", &[C("&Show Markers", MediaMarkers), K("Show Marker &Labels", false, Later("R18a"))]),
+    Sub("Eve&nt Media Markers", &[C("&Show Markers", MediaMarkers), C("Show Marker &Labels", MarkerLabels)]),
     C("Active Take &Information", TakeInfo),
     C("Audio Event &Waveforms", Waveforms),
     C("Event &Buttons", EventButtons),
     C("Event Fade &Lengths", FadeLengths),
     C("Video &Event Edge Edit Frames", EdgeFrames),
     C("Event Headers", EventHeaders),
-    V23(&K("Event Length", false, Later("R18a"))),
+    V23(&C("Event Length", EventLength)),
     V23(&C("Show OFX Effect Envelopes (Beta)", OfxEnvelopes)),
     S,
     Sub("&Audio Envelopes", AUDIO_ENV_VIEW),
@@ -974,11 +987,11 @@ pub const INSERT: &[M] = &[
 
 pub const TOOLS: &[M] = &[
     C("&Open in Audio Editor", OpenInAudioEditor),
-    X("Open &Copy in Audio Editor", Later("R18a")),
+    C("Open &Copy in Audio Editor", OpenCopyInAudioEditor),
     C("Edit Source Pro&ject", NestedOpen),
     Sub("&Audio", &[
-        X("&Open in Audio Editor", Later("R18a")),
-        X("Open &Copy in Audio Editor", Later("R18a")),
+        C("&Open in Audio Editor", OpenInAudioEditor),
+        C("Open &Copy in Audio Editor", OpenCopyInAudioEditor),
         C("Edit Source Pro&ject", NestedOpen),
         S,
         C("Audio &Event FX...", AudioEventFx),
@@ -1160,7 +1173,7 @@ pub const OPTIONS: &[M] = &[
     K("Slip All Ta&kes", false, NotPlanned("R58")),
     S,
     C("&Loop Playback", Loop),
-    K("Metr&onome", false, Later("R18a")),
+    C("Metr&onome", Metronome),
     Sub("&Loudness Meters", LOUDNESS),
     S,
     C("&Bypass All Audio FX", BypassAudioFx),
@@ -1688,6 +1701,35 @@ mod tests {
         assert!([MulticamCreate, MulticamExpand, Multicam, MulticamAudio, MulticamFullFrame].iter().all(|c| tools.contains(c)));
     }
 
+    /// R18a: its commands work when they can (Smart Split in VEGAS 23 with an event and a time selection, the audio
+    /// editor with an audio event, a CD track region over a time selection), the switches show their state, and nothing
+    /// in the menus waits on R18a any more.
+    #[test]
+    fn r18a_commands_work() {
+        let off = CmdState { look: UiLook::Vegas23, ..CmdState::default() };
+        let on = CmdState { clip: true, audio_clip: true, selection: true, media_markers: true, marker_labels: true, event_length: true, metronome: true, ..off.clone() };
+        for c in [SmartSplit, OpenInAudioEditor, OpenCopyInAudioEditor, CdTrack] {
+            assert!(unfinished(c).is_none() && !off.enabled(c) && on.enabled(c), "{c:?}");
+        }
+        assert!(!CmdState { look: UiLook::Vegas16, ..on.clone() }.enabled(SmartSplit) && !CmdState::default().enabled(EventLength));
+        for c in [InsertCommand, CdIndex, RebuildPeaks, ContextMenu] {
+            assert!(unfinished(c).is_none() && off.enabled(c), "{c:?}");
+        }
+        for c in [MediaMarkers, MarkerLabels, EventLength, Metronome] {
+            assert!(off.enabled(c) && off.checked(c) == Some(false) && on.checked(c) == Some(true), "{c:?}");
+        }
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R18a")), "{rows:?}");
+        let mut all = Vec::new();
+        for (_, items) in MENUS {
+            commands(items, &mut all);
+        }
+        assert!([SmartSplit, InsertCommand, CdTrack, CdIndex, OpenInAudioEditor, OpenCopyInAudioEditor, MediaMarkers, MarkerLabels, EventLength, Metronome, RebuildPeaks].iter().all(|c| all.contains(c)));
+    }
+
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.
     #[test]
     fn input_bus_command_works() {
@@ -1894,7 +1936,9 @@ mod tests {
         // Every greyed menu row has a reason by construction (`X`, `K`, `R` carry one); the list has them all.
         let mut rows = Vec::new();
         greyed(MENUS[5].1, &mut rows);
-        assert!(rows.iter().any(|(l, w)| l == "Metronome" && *w == Later("R18a")), "{rows:?}");
+        assert!(rows.iter().any(|(l, w)| l == "Slip All Takes" && *w == NotPlanned("R58")), "{rows:?}");
+        // R18a built the Metronome and the other commands it named: nothing waits on it any more.
+        assert!(!rows.iter().any(|(l, w)| l == "Metronome" || *w == Later("R18a")), "{rows:?}");
         // R1 built snapping, the grid and the ruler formats: nothing in the menus waits on it any more.
         assert!(!rows.iter().any(|(l, w)| l.contains("Grid") || l.contains("SMPTE") || *w == Later("R1")), "{rows:?}");
     }

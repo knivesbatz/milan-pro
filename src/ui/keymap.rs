@@ -128,6 +128,9 @@ pub enum Command {
     /// grid or a number key), crossfading into it when true (Ctrl).
     MulticamCreate, MulticamExpand, MulticamAudio, MulticamFullFrame,
     MulticamTake(usize, bool),
+    /// R18a: View › Event Media Markers › Show Marker Labels; View › Event Length (VEGAS 23); Options › Metronome;
+    /// Tools › Open Copy in Audio Editor.
+    MarkerLabels, EventLength, Metronome, OpenCopyInAudioEditor,
 }
 
 use Command::*;

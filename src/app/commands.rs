@@ -53,6 +53,7 @@ impl MeridianApp {
             || self.paste_attrs.is_some()
             || self.remove_fx.is_some()
             || self.expand_ask.is_some()
+            || self.command_props.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -152,6 +153,10 @@ impl MeridianApp {
             multicam: self.multicam,
             multicam_audio: self.prefs.multicam_audio,
             multicam_full: self.prefs.multicam_full,
+            media_markers: self.prefs.media_markers,
+            marker_labels: self.prefs.marker_labels,
+            event_length: self.prefs.event_length,
+            metronome: self.prefs.metronome,
         }
     }
 
@@ -332,7 +337,7 @@ impl MeridianApp {
     }
 
     /// The focus event of one kind: the last selected event of that kind (a grouped A/V pair has one of each).
-    fn focus_clip(&self, video: bool) -> Option<String> {
+    pub(super) fn focus_clip(&self, video: bool) -> Option<String> {
         self.sel.clips.iter().rev().find(|id| self.project.find_clip(id).is_some_and(|r| r.is_video == video)).cloned()
     }
 
@@ -357,6 +362,9 @@ impl MeridianApp {
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
             bus_tracks: p.bus_tracks,
+            media_markers: p.media_markers,
+            marker_labels: p.marker_labels,
+            event_length: p.event_length,
         }
     }
 
@@ -689,7 +697,7 @@ impl MeridianApp {
 
     /// Preferences, on page `page` (`dialogs::prefs::DISPLAY`...; screenshot harness) or the last one. The VP16 Display
     /// page shows where the dock area is.
-    fn open_prefs(&mut self, page: Option<usize>) {
+    pub(super) fn open_prefs(&mut self, page: Option<usize>) {
         match page {
             None => self.prefs_dlg.open(&self.prefs),
             Some(k) => self.prefs_dlg.open_on(&self.prefs, k),
@@ -1385,6 +1393,60 @@ impl MeridianApp {
             NestedCreate => self.create_nested(),
             NestedOpen => self.open_focus_nested(),
             NestedParent => self.request(ctx, MenuAction::OpenParent),
+            // R18a
+            SmartSplit => {
+                // VEGAS: a time selection over the part to remove, the event (and its group) selected.
+                let Some((a, b)) = self.project.timeline.loop_region.filter(|(a, b)| b > a) else { return };
+                let (a, b) = (self.quantized(a), self.quantized(b));
+                let ids = if self.prefs.ignore_grouping { self.sel.clips.clone() } else { edit::expand_groups(&self.project, &self.sel.clips) };
+                let (overlap, xfade, mut done) = (5.0 * exact_frame, self.prefs.auto_crossfade, false);
+                self.ripple_edit(false, |p, mode| {
+                    let op = edit::smart_split(p, &ids, (a, b), overlap)?;
+                    if let Some(m) = mode {
+                        let before = p.clone();
+                        if edit::ripple(p, &op, m) && xfade {
+                            edit::crossfade_moved(p, &before);
+                        }
+                    }
+                    done = true;
+                    Some(vec![op])
+                });
+                if !done {
+                    self.message = Some("Smart Split: make a time selection inside the selected events (not over their ends).".into());
+                }
+            }
+            InsertCommand => {
+                let at = self.quantized(self.project.timeline.cursor_position);
+                let m = crate::project::CommandMarker { position: at, command: dialogs::command_props::COMMANDS[0].into(), ..Default::default() };
+                self.command_props = Some(dialogs::CommandProps::new(None, m, self.project.settings.ruler_time(at)));
+            }
+            CdTrack => {
+                if let Some((a, b)) = self.project.timeline.loop_region.filter(|(a, b)| b > a) {
+                    let (a, b) = (self.quantized(a), self.quantized(b));
+                    self.edit(|p| edit::insert_cd_track(p, (a, b)));
+                }
+            }
+            CdIndex => {
+                let at = self.quantized(self.project.timeline.cursor_position);
+                self.edit(|p| edit::insert_cd_index(p, at));
+            }
+            MediaMarkers | MarkerLabels | EventLength | Metronome => {
+                let p = &mut self.prefs;
+                let on = match c {
+                    MediaMarkers => &mut p.media_markers,
+                    MarkerLabels => &mut p.marker_labels,
+                    EventLength => &mut p.event_length,
+                    _ => &mut p.metronome,
+                };
+                *on = !*on;
+                self.save_prefs();
+            }
+            RebuildPeaks => {
+                self.waves.rebuild(None);
+                self.message = Some("Rebuilding audio peaks...".into());
+            }
+            OpenInAudioEditor | OpenCopyInAudioEditor => self.open_in_audio_editor(c == OpenCopyInAudioEditor),
+            ContextMenu => ui::request_context_menu(ctx),
             RebuildNestedAudio => {
                 // Nested sound is mixed live, so there is no proxy to render: the nested timelines are read again.
                 crate::engine::nested::reload();
@@ -1951,6 +2013,23 @@ impl MeridianApp {
             self.vegas_report = None;
         }
         self.show_time_entry(ctx);
+        // R18a: Command Properties (Insert › Command, or Edit on a command marker's tag).
+        if let Some(i) = ui::take_command_edit(ctx).filter(|_| self.command_props.is_none()) {
+            if let Some(m) = self.project.timeline.commands.get(i) {
+                self.command_props = Some(dialogs::CommandProps::new(Some(i), m.clone(), self.project.settings.ruler_time(m.position)));
+            }
+        }
+        if let Some(d) = &mut self.command_props {
+            let s = self.project.settings.clone();
+            if let Some(ok) = d.show(ctx, |x| s.parse_ruler_time(x).is_some()) {
+                if let Some(d) = self.command_props.take().filter(|_| ok) {
+                    let mut m = d.marker;
+                    m.position = s.parse_ruler_time(&d.position).unwrap_or(m.position).max(0.0);
+                    m.command = m.command.trim().to_string();
+                    self.edit(|p| edit::set_command(p, d.index, m));
+                }
+            }
+        }
         if let Some(d) = &mut self.paste_repeat {
             let s = self.project.settings.clone();
             let every = |x: &str| crate::project::parse_time(x, s.ruler.format, &s).filter(|v| *v > 0.0);
@@ -2468,6 +2547,30 @@ impl MeridianApp {
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }
+            // R18a: CD track regions with an index and command markers on their bars; the demo media's first file given
+            // two markers, shown with labels; event lengths on (VEGAS 23); Edit Details on the Audio CD Track List or
+            // Commands view. Or Insert › Command's dialog, a Smart Split over a time selection, Preferences › Audio.
+            "cd-markers" | "commands" => {
+                use crate::project::{CdTrack, CommandMarker};
+                let tl = &mut self.project.timeline;
+                tl.cd_tracks = vec![CdTrack { start: 0.0, end: 5.0, name: "Opening".into(), isrc: "USRC17607839".into(), ..Default::default() }, CdTrack { start: 5.0, end: 11.0, name: "Finale".into(), emphasis: true, ..Default::default() }];
+                tl.cd_indexes = vec![2.5, 8.0];
+                tl.commands = vec![CommandMarker { position: 1.0, command: "URL".into(), parameter: "https://example.com".into(), comment: "Shop".into() }, CommandMarker { position: 6.5, command: "Text".into(), parameter: "Chapter two".into(), ..Default::default() }];
+                if let Some(m) = self.project.media_pool.first_mut() {
+                    m.markers = vec![(0.5, "Take 1".into()), (2.0, "Clap".into())];
+                }
+                (self.prefs.media_markers, self.prefs.marker_labels, self.prefs.event_length) = (true, true, true);
+                self.edit_details.show_markers(what == "cd-markers");
+                self.dock.open(crate::ui::dock::Panel::EditDetails);
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "command" => self.exec(ctx, InsertCommand),
+            "smart-split" => {
+                (self.project.timeline.loop_region, self.prefs.ignore_grouping) = (Some((1.0, 2.0)), false);
+                self.exec(ctx, SmartSplit);
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "prefs-audio-editor" => self.open_prefs(Some(dialogs::prefs::AUDIO)),
             "goto" => self.exec(ctx, GoTo),
             "expanded-edit" => {
                 // At the focus event's end, so the bracket and the outgoing frame show.
