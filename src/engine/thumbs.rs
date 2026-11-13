@@ -8,7 +8,8 @@ pub const W: usize = 100;
 pub const H: usize = 60;
 
 /// Sky, sun, ground and a red box.
-fn sample() -> ColorImage {
+/// The sample picture the tiles show (an OFX plug-in's tile shows it as it is: it is never imitated).
+pub fn sample() -> ColorImage {
     fill(W, H, |x, y| {
         let (xf, yf) = (x as f32, y as f32);
         if (xf - 72.0).hypot(yf - 16.0) < 9.0 {

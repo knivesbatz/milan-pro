@@ -70,6 +70,8 @@ pub struct VideoPlan {
     pub end: f64,
     /// R11: frames keep their transparency (a render template with an alpha channel); preview is over black.
     pub alpha: bool,
+    /// R33b: the project's pixel aspect ratio (OFX plug-ins are told it).
+    pub par: f64,
 }
 
 impl VideoPlan {
@@ -420,12 +422,18 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
         blur_type: s.motion_blur,
         end: crate::render::content_end(p),
         alpha: false,
+        par: if s.par > 0.0 { s.par } else { 1.0 },
     }
 }
 
-/// The enabled, known plug-ins of a chain at `t`.
-fn evals(chain: &[Fx], t: f64) -> Vec<FxEval> {
-    chain.iter().filter(|f| f.enabled).filter_map(|f| plugins::eval(f, t)).collect()
+/// The enabled, known plug-ins of a chain at `t`; OFX ones also get their frame (R33b: `full_h` is the height of the
+/// pictures they get at full quality, which sets their render scale).
+fn evals(chain: &[Fx], t: f64, full_h: u32, p: &VideoPlan) -> Vec<FxEval> {
+    let frame = |f: &Fx, mut e: FxEval| {
+        crate::engine::ofx::add_frame_vals(&mut e, &f.id, t, full_h as f64, p.fps, p.par);
+        e
+    };
+    chain.iter().filter(|f| f.enabled).filter_map(|f| plugins::eval(f, t).map(|e| frame(f, e))).collect()
 }
 
 /// Frame shown at time `t` (the cursor's frame).
@@ -564,7 +572,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
             let shown = tr.mute_env.as_ref().is_none_or(|e| e.at(ta) >= 0.5);
             let opacity = if shown { tr.level * tr.level_env.as_ref().map_or(1.0, |e| e.at(ta).clamp(0.0, 1.0)) } else { 0.0 };
             let live: Vec<&VEvent> = tr.events.iter().filter(|e| e.c.position <= te && te < e.c.position + e.c.duration).collect();
-            let adjust = if opacity > 0.0 { adjustments(tr, t, dt, opacity) } else { Vec::new() };
+            let adjust = if opacity > 0.0 { adjustments(p, tr, t, dt, opacity) } else { Vec::new() };
             // A parent stays even without a picture of its own: its children's group goes through it.
             if tr.parent.is_none() && (opacity <= 0.0 || (live.is_empty() && adjust.is_empty())) {
                 return None;
@@ -607,7 +615,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                     let gt = if generate::animated(&g) { st + dt } else { 0.0 };
                     (g, gt)
                 });
-                let fx = evals(&c.fx, la);
+                let fx = evals(&c.fx, la, e.m.h, p);
                 let masks: Vec<MaskPlan> = c
                     .masks
                     .iter()
@@ -663,7 +671,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                 motion: motion(m, size),
                 persp: if tr.composite == Composite::ThreeD { motion3d(m, size) } else { None },
                 // An Adjustment Track's FX adjust what is below it (`adjust`), not its own events.
-                fx: if tr.adjust { Vec::new() } else { evals(&tr.fx, ta) },
+                fx: if tr.adjust { Vec::new() } else { evals(&tr.fx, ta, p.h, p) },
                 fade,
                 compositor: tr.compositor.as_ref().and_then(|f| plugins::eval(f, ta)),
                 child: tr.child,
@@ -676,25 +684,25 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
         })
         .collect();
     let bus_fade = p.bus_envs.iter().find(|e| e.kind == EnvKind::FadeToColor);
-    FramePlan { alpha: p.alpha, layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
+    FramePlan { alpha: p.alpha, layers, out_fx: evals(&p.out_fx, tb, p.h, p), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
 }
 
 /// R18b: what track `tr` (at level `opacity`) adjusts below it at frame time `t` (animated values `dt` later): an
 /// Adjustment Track's FX at the level, then each Adjustment Event playing at `t` with its FX at its fades and Opacity
 /// envelope times the level. Overlapping events crossfade as their fades say (the earlier stays whole, as video
 /// events do; a transition between them acts as a dissolve). Chains with no enabled FX are left out.
-fn adjustments(tr: &VTrack, t: f64, dt: f64, opacity: f32) -> Vec<(Vec<FxEval>, f32)> {
+fn adjustments(p: &VideoPlan, tr: &VTrack, t: f64, dt: f64, opacity: f32) -> Vec<(Vec<FxEval>, f32)> {
     let te = t + 1e-6;
     let mut out = Vec::new();
     if tr.adjust {
-        out.push((evals(&tr.fx, t + dt), opacity));
+        out.push((evals(&tr.fx, t + dt, p.h, p), opacity));
     }
     let live: Vec<&Clip> = tr.adjust_events.iter().filter(|c| c.position <= te && te < c.position + c.duration).collect();
     for (i, c) in live.iter().enumerate() {
         let (local, last) = (t - c.position, i + 1 == live.len());
         let fade_out = if last { fade(c.fade_out_curve, c.duration - local, c.fade_out) } else { 1.0 };
         let a = fade(c.fade_in_curve, local, c.fade_in) * fade_out * env_at(&c.envelopes, EnvKind::Opacity, local + dt);
-        out.push((evals(&c.fx, local + dt), a * opacity));
+        out.push((evals(&c.fx, local + dt, p.h, p), a * opacity));
     }
     out.retain(|(fx, a)| !fx.is_empty() && *a > 0.0);
     out

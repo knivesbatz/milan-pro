@@ -20,6 +20,7 @@ pub mod loudness;
 pub mod mix;
 pub mod multicam;
 pub mod nested;
+pub mod ofx;
 pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;

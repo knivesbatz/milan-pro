@@ -2006,6 +2006,7 @@ dependencies = [
  "bytemuck",
  "cpal",
  "eframe",
+ "libloading",
  "png",
  "rfd",
  "serde",

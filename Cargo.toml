@@ -23,13 +23,25 @@ sha2 = "0.10"
 bytemuck = "1"
 # src/engine/generate.rs: Titles & Text glyph outlines. Already in Cargo.lock (via epaint).
 ab_glyph = "0.2"
+# milan-plugin-host.exe loads OFX plug-in binaries (ISC). Already in Cargo.lock (via glutin and others); MilanPro.exe
+# never calls it: it runs no plug-in code.
+libloading = "0.8"
 
 # src/proc.rs: Job Object that kills ffmpeg children with Milan; src/app/drop.rs: cursor during a drag from Windows.
 # Already in Cargo.lock (via other crates). R14: src/ui/monitors.rs lists the displays, their DPI, the cursor and buttons.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ErrorReporting", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 # src/wasapi.rs (R9): the WASAPI exclusive output, which cpal 0.15 lacks. The version and features cpal already uses.
 windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Security", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem"] }
+
+# R32: the OFX plug-in host, a second executable installed beside MilanPro.exe (installer/milan-pro.iss).
+[[bin]]
+name = "milan-pro"
+path = "src/main.rs"
+
+[[bin]]
+name = "milan-plugin-host"
+path = "src/bin/milan-plugin-host/main.rs"
 
 [build-dependencies]
 # build.rs: the exe's icon and version resource (MIT). Does nothing for non-Windows targets.
