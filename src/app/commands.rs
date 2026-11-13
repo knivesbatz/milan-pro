@@ -56,6 +56,7 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
+            || self.overlays.modal()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -2590,6 +2591,13 @@ impl MeridianApp {
             }
             // R19: the Video Preview with Show Playback Statistics on (stopped: the harness never plays sound).
             "playback-stats" => self.preview_view.show_stats = true,
+            // Overlay packs: a library that is never saved, in MILAN_OVERLAY_LIBRARY (else beside the demo media), with
+            // the sample pack made once by FFmpeg; thumbnails or the details list.
+            "overlays" | "overlays-details" => {
+                let dir = std::env::var_os("MILAN_OVERLAY_LIBRARY").map_or_else(|| crate::demo::media_dir().join("overlay-packs"), std::path::PathBuf::from);
+                self.overlays.harness(&dir, what == "overlays-details");
+                self.dock.open(crate::ui::dock::Panel::Overlays);
+            }
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "props-audio" => self.settings.open_tab(&self.project, 1),

@@ -877,6 +877,8 @@ const WINDOWS: &[M] = &[
     C("&Transitions", Window(Panel::Transitions)),
     C("V&ideo FX", Window(Panel::VideoFx)),
     C("Media &Generators", Window(Panel::MediaGenerators)),
+    // Milan Pro's own overlay pack library (not in VEGAS).
+    C("Overla&ys", Window(Panel::Overlays)),
     C("Compositors", Window(Panel::Compositors)),
     C("&Plug-In Manager", Window(Panel::PluginManager)),
     C("Video &Scopes", Window(Panel::VideoScopes)),

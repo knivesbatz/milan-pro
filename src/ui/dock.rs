@@ -1,4 +1,4 @@
-//! Dock areas (§4.3–4.5, §5.3): columns of tabbed window groups with tab strips at the bottom (or the top), draggable
+//! Dock areas (Â§4.3â€“4.5, Â§5.3): columns of tabbed window groups with tab strips at the bottom (or the top), draggable
 //! splitters, maximise-in-dock, close (hide), moving tabs between groups by drag or context menu, the tab overflow
 //! scroller, and the areas themselves: VP16 has one (above the timeline, or below it), VP23 four (top, bottom, left,
 //! right), each one minimised on its own (F11, Alt+F11...). R13: the built-in window layouts. R14: floating windows,
@@ -21,23 +21,25 @@ pub enum Panel {
     VideoPreview,
     Trimmer,
     MasterBus,
-    /// View › Window › Compositors (not in a default layout, as in VEGAS).
+    /// View â€º Window â€º Compositors (not in a default layout, as in VEGAS).
     Compositors,
-    /// R8b: View › Window › Mixing Console (not in a default layout).
+    /// R8b: View â€º Window â€º Mixing Console (not in a default layout).
     MixingConsole,
-    /// R16a: View › Window › Edit Details and (VEGAS 23) Project Notes (not in a default layout).
+    /// R16a: View â€º Window â€º Edit Details and (VEGAS 23) Project Notes (not in a default layout).
     EditDetails,
     ProjectNotes,
-    /// R16b: View › Window › Video Scopes (in the Color Correction layout).
+    /// R16b: View â€º Window â€º Video Scopes (in the Color Correction layout).
     VideoScopes,
-    /// R16c: View › Window › Loudness Meters (not in a default layout).
+    /// R16c: View â€º Window â€º Loudness Meters (not in a default layout).
     LoudnessMeters,
-    /// R31: View › Window › Plug-In Manager (not in a default layout).
+    /// R31: View â€º Window â€º Plug-In Manager (not in a default layout).
     PluginManager,
+    /// Milan Pro's own overlay pack library (src/ui/overlays.rs), beside Media Generators.
+    Overlays,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 17] = [
+    pub const ALL: [Panel; 18] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -55,6 +57,7 @@ impl Panel {
         Panel::VideoScopes,
         Panel::LoudnessMeters,
         Panel::PluginManager,
+        Panel::Overlays,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -77,6 +80,7 @@ impl Panel {
             Panel::VideoScopes => "Video Scopes",
             Panel::LoudnessMeters => "Loudness Meters",
             Panel::PluginManager => "Plug-In Manager",
+            Panel::Overlays => "Overlays",
         }
     }
 
@@ -86,7 +90,7 @@ impl Panel {
     }
 }
 
-/// A docking area around the timeline (§4.3). Old layouts have every group in the top one.
+/// A docking area around the timeline (Â§4.3). Old layouts have every group in the top one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Area {
     #[default]
@@ -164,7 +168,7 @@ enum FloatAction {
     Dock(Panel, Drop),
 }
 
-/// The built-in window layouts (View › Window Layouts).
+/// The built-in window layouts (View â€º Window Layouts).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Builtin {
     Default,
@@ -200,11 +204,11 @@ pub struct Dock {
     track_restore: Option<f32>,
     /// Maximize Timeline: the minimised areas and track list width before it.
     timeline_max: Option<(Vec<Area>, f32)>,
-    /// Group maximised within its area (□ on the active tab, or double-click).
+    /// Group maximised within its area (â–¡ on the active tab, or double-click).
     pub maximized: Option<usize>,
     /// The window Next/Previous Window (F6, Ctrl+Tab) reached or last clicked; None = the timeline.
     pub focus: Option<Panel>,
-    /// Preferences › Display › Position tabs at top of docked windows.
+    /// Preferences â€º Display â€º Position tabs at top of docked windows.
     pub tabs_top: bool,
     /// Where each area was drawn last frame (auto-hide keeps an area open while the pointer is over it).
     shown: [Rect; 4],
@@ -213,7 +217,7 @@ pub struct Dock {
     /// fixed builder) and the frames left to correct where Windows put it.
     pub floating: Vec<FloatWin>,
     opened: Vec<(Panel, Rect, f32, u8)>,
-    /// The window to bring to the front (a floating one by View › Window or Next Window, or the main one when Next
+    /// The window to bring to the front (a floating one by View â€º Window or Next Window, or the main one when Next
     /// Window leaves a floating one); a floating window the OS is moving.
     raise: Option<ViewportId>,
     moving: Option<Panel>,
@@ -226,7 +230,7 @@ pub struct Dock {
     drawn: Vec<Panel>,
 }
 
-/// A saved window layout (View › Window Layouts): the groups, the areas' sizes and which are minimised, and the
+/// A saved window layout (View â€º Window Layouts): the groups, the areas' sizes and which are minimised, and the
 /// track list width.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layout {
@@ -258,17 +262,18 @@ const MIN_FLOAT: Vec2 = vec2(160.0, 100.0);
 pub const MIN_AREA: f32 = 60.0;
 /// An auto-hidden area keeps this edge to hover.
 const PEEK: f32 = 6.0;
-/// The ◂ ▸ tab scroller cells (§4.4).
+/// The â—‚ â–¸ tab scroller cells (Â§4.4).
 const ARROW_W: f32 = 13.0;
 
 impl Dock {
-    /// Default layout at 1920×1080 (§4.1 / §4.2): [plug-in & media group] [Video Preview, Trimmer] [Master Bus].
+    /// Default layout at 1920Ã—1080 (Â§4.1 / Â§4.2): [plug-in & media group] [Video Preview, Trimmer] [Master Bus].
     pub fn new(t: &Theme) -> Self {
         use Panel::*;
         let (left, active, mid_w) = match t.look() {
-            UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators], 0, 835.0),
+            // Overlays (Milan Pro's own) right after Media Generators.
+            UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays], 0, 835.0),
             // Hub tabs dropped (no online service); Project Media active on first launch [I].
-            UiLook::Vegas23 => (vec![Explorer, ProjectMedia, MediaGenerators, Transitions, VideoFx, ColorGrading], 1, 750.0),
+            UiLook::Vegas23 => (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0),
         };
         Self {
             groups: vec![
@@ -301,8 +306,8 @@ impl Dock {
     }
 
     /// A built-in layout. Classic, Audio Mixing and Color Correction are decoded from VEGAS 15's
-    /// `Standard Layouts\*.VegasWindowLayout` (window ids, tab order, active tab and column widths at 1920×1080,
-    /// §4.1); Source Window and Timeline Top (VP23) are built from the VP23 default [I].
+    /// `Standard Layouts\*.VegasWindowLayout` (window ids, tab order, active tab and column widths at 1920Ã—1080,
+    /// Â§4.1); Source Window and Timeline Top (VP23) are built from the VP23 default [I].
     pub fn builtin(b: Builtin, t: &Theme) -> Self {
         use Panel::*;
         let mut d = Dock::new(t);
@@ -470,7 +475,7 @@ impl Dock {
         self.hidden.retain(|&a| a != area);
     }
 
-    /// Closing only hides the window; View › Window reopens it (§4.3).
+    /// Closing only hides the window; View â€º Window reopens it (Â§4.3).
     fn close(&mut self, g: usize, i: usize) {
         self.take(g, i);
     }
@@ -624,7 +629,7 @@ impl Dock {
         }
     }
 
-    /// Collapse the track list to its colour strips, or expand it again (§4.5).
+    /// Collapse the track list to its colour strips, or expand it again (Â§4.5).
     pub fn toggle_track_list(&mut self, t: &Theme) {
         let strip = t.m.color_strip_w;
         if self.track_list_w > strip + 1.0 {
@@ -700,7 +705,7 @@ impl Dock {
     }
 
     /// Each area's size this frame (`chrome::areas`): 0 when it has no windows or is minimised. With auto-hide on
-    /// (Preferences › Display) an area is a thin edge until the pointer is over it, a tab is dragged or `keep_open`
+    /// (Preferences â€º Display) an area is a thin edge until the pointer is over it, a tab is dragged or `keep_open`
     /// (a menu is open).
     pub fn area_sizes(&self, t: &Theme, full: Rect, auto_hide: bool, hover: Option<Pos2>, keep_open: bool) -> [f32; 4] {
         let used = self.used();
@@ -756,7 +761,7 @@ impl Dock {
                 cols.push((g, Rect::from_min_max(pos2(x, rect.min.y), pos2(x + w, rect.max.y))));
                 x += w + sw;
             }
-            // Splitters between columns (§4.5): no grip glyph, resize cursor.
+            // Splitters between columns (Â§4.5): no grip glyph, resize cursor.
             let area_cols = cols[start..].to_vec();
             for j in 0..area_cols.len().saturating_sub(1) {
                 let (g, col) = area_cols[j];
@@ -852,7 +857,7 @@ impl Dock {
     /// R14: every floating window in a native window of its own (an egui immediate viewport, drawn with the main
     /// window's frame), with `content` as in `show`. It stays above the main window while Milan Pro is the active
     /// application, as VEGAS's floating windows do. Moved (by its title bar or its tab) and let go over the docking
-    /// areas, it docks if `allow_dock` (Preferences › Display › Allow floating windows to dock), Ctrl inverting it.
+    /// areas, it docks if `allow_dock` (Preferences â€º Display â€º Allow floating windows to dock), Ctrl inverting it.
     /// `offscreen` (the screenshot harness): off every monitor, never active, no taskbar button, clicks pass through.
     pub fn show_floating(&mut self, ctx: &Context, offscreen: bool, allow_dock: bool, mut content: impl FnMut(Panel, &mut Ui, &mut Ui)) {
         let ids: Vec<ViewportId> = std::iter::once(ViewportId::ROOT).chain(self.floating.iter().map(|f| float_id(f.panel))).collect();
@@ -998,14 +1003,14 @@ impl Dock {
         let v16 = t.look() == UiLook::Vegas16;
         let p = ui.painter().clone();
         let h = t.m.tab_strip_h;
-        // Tabs at the bottom (§4.3), or at the top (Preferences › Display).
+        // Tabs at the bottom (Â§4.3), or at the top (Preferences â€º Display).
         let (strip, mut top, bottom) = if self.tabs_top {
             (Rect::from_min_size(col.min, vec2(col.width(), h)), col.min.y + h, col.max.y)
         } else {
             (Rect::from_min_max(pos2(col.min.x, col.max.y - h), col.max), col.min.y, col.max.y - h)
         };
         if v16 {
-            // 2 px top bevel (§5.3).
+            // 2 px top bevel (Â§5.3).
             hline(&p, col.x_range(), top, t.dock_bevel_1);
             hline(&p, col.x_range(), top + 1.0, t.dock_bevel_2);
             top += 2.0;
@@ -1058,14 +1063,14 @@ impl Dock {
                 p.layout_no_wrap(panel.title(look).to_owned(), font, t.tab_text)
             })
             .collect();
-        // VP16 tabs reserve room for □ × even when inactive: 8 + label + 38 (measured [L]: label + 44 at GDI widths);
+        // VP16 tabs reserve room for â–¡ Ã— even when inactive: 8 + label + 38 (measured [L]: label + 44 at GDI widths);
         // an inactive VP16 tab is followed by a 1 px separator.
         let widths: Vec<f32> = galleys
             .iter()
             .enumerate()
             .map(|(i, gl)| if v16 { 8.0 + gl.size().x + 38.0 + if i == active { 0.0 } else { 1.0 } } else { 9.0 + gl.size().x + 28.0 }.round())
             .collect();
-        // Overflow (§4.4): ◂ ▸ at the right end scroll the tabs; a tab activated elsewhere is scrolled into view.
+        // Overflow (Â§4.4): â—‚ â–¸ at the right end scroll the tabs; a tab activated elsewhere is scrolled into view.
         let overflow = widths.iter().sum::<f32>() > strip.width();
         let avail = strip.width() - if overflow { 2.0 * ARROW_W } else { 0.0 };
         let mem = ui.id().with(("dock_tab_first", tabs[0]));
@@ -1123,7 +1128,7 @@ impl Dock {
             }
             p.galley(pos2(tx, ty), galley, color);
             if v16 && is_active {
-                // □ maximise in dock and × close, each in a 13 px cell (§4.4).
+                // â–¡ maximise in dock and Ã— close, each in a 13 px cell (Â§4.4).
                 for (k, icon) in [Icon::DockMaximize, Icon::DockClose].into_iter().enumerate() {
                     let cell = Rect::from_min_size(pos2(r.max.x - 34.0 + 17.0 * k as f32, r.min.y), vec2(13.0, r.height()));
                     let br = ui.interact(cell.intersect(tabs_clip), ui.id().with(("dock_tab_btn", panel, k)), Sense::click());
@@ -1154,7 +1159,7 @@ impl Dock {
                     action = Some(TabAction::Move(panel, None));
                     ui.close_menu();
                 }
-                // VP23 docks on all four sides (§4.3), also by dragging the tab to an edge of the main window.
+                // VP23 docks on all four sides (Â§4.3), also by dragging the tab to an edge of the main window.
                 if look == UiLook::Vegas23 {
                     for a in Area::ALL.into_iter().filter(|&a| a != area) {
                         if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
@@ -1289,15 +1294,15 @@ mod tests {
         d.toggle(Panel::MasterBus);
         assert!(!d.is_open(Panel::MasterBus) && d.groups.len() == 2);
         d.toggle(Panel::MasterBus);
-        assert_eq!(d.find(Panel::MasterBus), Some((0, 5)));
+        assert_eq!(d.find(Panel::MasterBus), Some((0, 6)));
         // Moving keeps every panel exactly once and activates it in the target group.
         d.move_to(Panel::Trimmer, Some(0));
-        assert_eq!(d.find(Panel::Trimmer), Some((0, 6)));
-        assert_eq!(d.groups[0].active, 6);
+        assert_eq!(d.find(Panel::Trimmer), Some((0, 7)));
+        assert_eq!(d.groups[0].active, 7);
         d.move_to(Panel::Explorer, None);
         assert_eq!(d.groups[1].tabs, vec![Panel::Explorer]);
         let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum();
-        assert_eq!(n, 8); // Color Grading is VP23-only; Properties opens on demand
+        assert_eq!(n, 9); // Color Grading is VP23-only; Properties opens on demand
     }
 
     #[test]
@@ -1390,7 +1395,7 @@ mod tests {
         assert!(v.groups.is_empty() && v.is_open(MasterBus) && !v.is_open(Explorer));
     }
 
-    /// R14: View › Window closes a floating window and docks it again when reopened; Dock puts it in a group or a new
+    /// R14: View â€º Window closes a floating window and docks it again when reopened; Dock puts it in a group or a new
     /// column of an area; Undock and Next Window reach it.
     #[test]
     fn floating_windows_open_close_dock_and_cycle() {
@@ -1465,7 +1470,7 @@ mod tests {
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 400.0));
         d.bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 700.0));
         let press = |p: Pos2, pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
-        // Master Bus, the last column's only tab (its label, left of the □ × buttons).
+        // Master Bus, the last column's only tab (its label, left of the â–¡ Ã— buttons).
         let mut p = pos2(rect.max.x - t.m.master_bus_w + 20.0, rect.max.y - 8.0);
         frame(&ctx, &mut d, rect, vec![Event::PointerMoved(p)]);
         frame(&ctx, &mut d, rect, vec![press(p, true)]);
@@ -1489,8 +1494,8 @@ mod tests {
         use Panel::*;
         let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
         let cols = |d: &Dock| d.groups.iter().map(|g| (g.tabs.clone(), g.tabs[g.active], g.area)).collect::<Vec<_>>();
-        let left16 = vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators];
-        let left23 = vec![Explorer, ProjectMedia, MediaGenerators, Transitions, VideoFx, ColorGrading];
+        let left16 = vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays];
+        let left23 = vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading];
         use Area::{Bottom, Top};
         let table: Vec<(Builtin, &Theme, Vec<(Vec<Panel>, Panel, Area)>, Option<f32>)> = vec![
             (Builtin::Classic, &t16, vec![(left16.clone(), ProjectMedia, Bottom), (vec![Trimmer], Trimmer, Bottom), (vec![VideoPreview], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], Some(449.0)),
@@ -1630,7 +1635,7 @@ mod tests {
         assert!(d.groups[1].width > 835.0 && d.groups[1].width <= 875.0, "width {}", d.groups[1].width);
     }
 
-    /// R13: a group with more tabs than its strip shows (every window, 400 px) scrolls with ◂ ▸, so every tab can be
+    /// R13: a group with more tabs than its strip shows (every window, 400 px) scrolls with â—‚ â–¸, so every tab can be
     /// reached.
     #[test]
     fn overflowing_tabs_scroll() {
@@ -1648,12 +1653,12 @@ mod tests {
         for _ in 0..all.len() {
             click(&ctx, &mut d, rect, next);
         }
-        assert!(d.drawn.contains(&last) && !d.drawn.contains(&all[0]), "▸ brings the last tab into view: {:?}", d.drawn);
+        assert!(d.drawn.contains(&last) && !d.drawn.contains(&all[0]), "â–¸ brings the last tab into view: {:?}", d.drawn);
         for _ in 0..all.len() {
             click(&ctx, &mut d, rect, prev);
         }
-        assert!(d.drawn.contains(&all[0]) && !d.drawn.contains(&last), "◂ goes back: {:?}", d.drawn);
-        // A window activated from elsewhere (View › Window) is scrolled into view, and can be clicked there.
+        assert!(d.drawn.contains(&all[0]) && !d.drawn.contains(&last), "â—‚ goes back: {:?}", d.drawn);
+        // A window activated from elsewhere (View â€º Window) is scrolled into view, and can be clicked there.
         d.open(last);
         frame(&ctx, &mut d, rect, vec![]);
         assert!(d.drawn.contains(&last), "{:?}", d.drawn);

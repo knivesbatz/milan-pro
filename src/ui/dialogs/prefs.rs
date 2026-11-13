@@ -138,8 +138,22 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
             ui.button("Browse...").on_disabled_hover_text(&r49);
         });
     });
+    // Milan Pro's own: where the Overlays window keeps the packs it imports.
+    ui.label("Overlay pack library folder:");
+    ui.horizontal(|ui| {
+        let mut path = d.overlay_library.clone().unwrap_or_else(crate::overlays::default_library).display().to_string();
+        if ui.add(TextEdit::singleline(&mut path).desired_width(300.0)).changed() {
+            d.overlay_library = (!path.trim().is_empty()).then(|| path.trim().into());
+        }
+        if ui.button("Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_title("Overlay pack library folder").pick_folder() {
+                d.overlay_library = Some(p);
+            }
+        }
+    });
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, 4, true, false);
+        d.overlay_library = None;
     }
 }
 

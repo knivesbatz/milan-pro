@@ -118,6 +118,8 @@ pub struct MeridianApp {
     // Dock window state.
     media_view: ui::MediaView,
     explorer: ui::Explorer,
+    /// The Overlays window: the overlay pack library (src/overlays.rs).
+    overlays: ui::OverlaysView,
     choosers: [ui::Chooser; 4],
     trimmer: ui::Trimmer,
     preview_view: ui::PreviewView,
@@ -252,7 +254,21 @@ impl MeridianApp {
         ui::fonts::install(&cc.egui_ctx);
         ui::keymap::install(&cc.egui_ctx);
         // The demo harness never reads or writes the user's preferences.
-        let prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
+        let mut prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
+        // Once: the Overlays window joins each look's saved last layout, beside Media Generators (user slots stay).
+        let mut overlays_into = Vec::new();
+        if !prefs.overlays_placed {
+            for (k, l) in prefs.layouts.iter_mut().filter(|(k, _)| k.ends_with(":last")) {
+                if ui::place_in_layout(l) {
+                    overlays_into.push(k.clone());
+                }
+            }
+        }
+        // The demo harness keeps its overlay library beside the demo media, never in Documents or AppData.
+        let overlays = match (launch.demo, &prefs.overlay_library) {
+            (true, _) => ui::OverlaysView::new(crate::demo::media_dir().join("overlay-packs"), None),
+            (false, dir) => ui::OverlaysView::new(dir.clone().unwrap_or_else(crate::overlays::default_library), crate::overlays::Index::file()),
+        };
         let look = launch.look.unwrap_or(prefs.look);
         // Before the first project: its audio track starts with this chain.
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
@@ -381,6 +397,7 @@ impl MeridianApp {
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
+            overlays,
             choosers: [PluginKind::Transition, PluginKind::VideoFx, PluginKind::Generator, PluginKind::Compositor].map(ui::Chooser::new),
             trimmer,
             preview_view: ui::PreviewView::default(),
@@ -448,6 +465,13 @@ impl MeridianApp {
             slideshow: None,
             audio_transition: None,
         };
+        if !launch.demo {
+            app.prefs.overlays_placed = true;
+            if !overlays_into.is_empty() {
+                app.layouts_changed.extend(overlays_into);
+                app.save_prefs();
+            }
+        }
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
         app
@@ -696,6 +720,10 @@ impl eframe::App for MeridianApp {
                 Panel::Explorer => {
                     ui::draw_explorer_toolbar(bar, &mut self.explorer);
                     ui::draw_explorer(body, &mut self.explorer, &mut actions);
+                }
+                Panel::Overlays => {
+                    ui::draw_overlays_toolbar(bar, &mut self.overlays);
+                    ui::draw_overlays(body, &mut self.overlays, &mut self.project, &mut self.history, &mut self.sel, &mut self.thumbs, &mut actions, self.prefs.still_len);
                 }
                 Panel::Transitions | Panel::VideoFx | Panel::MediaGenerators | Panel::Compositors => {
                     let k = match panel {
@@ -950,6 +978,12 @@ impl eframe::App for MeridianApp {
         // Before the media added below is offered for auto proxies: an imported project is opened, not imported media.
         self.poll_vegas(ctx);
         self.show_dialogs(ctx);
+        let overlay_dir = match (self.demo, &self.prefs.overlay_library) {
+            (true, _) => self.overlays.lib.dir.clone(),
+            (false, Some(d)) => d.clone(),
+            (false, None) => crate::overlays::default_library(),
+        };
+        ui::overlay_dialogs(ctx, &mut self.overlays, overlay_dir);
         // R8c: after every control has drawn (the FX window too), and before the plan below picks up the writes.
         ui::automation::chooser(ctx, &mut self.project, &mut self.history);
         ui::automation::end_frame(ctx, &mut self.project);
@@ -966,6 +1000,10 @@ impl eframe::App for MeridianApp {
         while !self.dragging() {
             let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len, self.prefs.auto_crossfade) else { break };
             if let Some(before) = placed.before {
+                // Overlays dropped onto new tracks get their blend, in the drop's own undo step.
+                for p in crate::overlays::blend_new_tracks(&mut self.project, &before, &placed.ids, &self.overlays.lib.index) {
+                    self.overlays.lib.used(&p);
+                }
                 self.history.push(before);
             }
             if !placed.ids.is_empty() {
@@ -1084,7 +1122,7 @@ impl eframe::App for MeridianApp {
         // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
         let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
         if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
-            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
+            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
             shot.tick(ctx, busy);
         }
     }
@@ -1100,6 +1138,7 @@ impl eframe::App for MeridianApp {
             return;
         };
         p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
+        p.overlays_placed = true; // this layout has the Overlays window placed already (or closed on purpose)
         if let Err(e) = p.save() {
             eprintln!("Could not save the window layout: {e}");
         }

@@ -141,6 +141,10 @@ pub struct Prefs {
     pub event_length: bool,
     /// R31: the OFX plug-in folders the user added and the plug-ins turned off in the Plug-In Manager.
     pub ofx: crate::engine::ofx::OfxPrefs,
+    /// Overlay packs: Preferences › General › the library folder (None = Documents\Milan Pro\Overlay Packs), and the
+    /// Overlays window was put once beside Media Generators in the saved last layouts.
+    pub overlay_library: Option<PathBuf>,
+    pub overlays_placed: bool,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -294,6 +298,8 @@ impl Default for Prefs {
             marker_labels: false,
             event_length: false,
             ofx: Default::default(),
+            overlay_library: None,
+            overlays_placed: false,
         }
     }
 }

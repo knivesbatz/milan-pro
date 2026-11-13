@@ -4,7 +4,7 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.5). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, recording and rendering work; VST hosting is next.
+> Early development (v0.6). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, recording and rendering work; VST hosting is next.
 
 ## Features
 
@@ -18,6 +18,10 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Render As through the same engine as the preview (FFmpeg encoders)
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
+
+## Overlay packs
+
+**View > Window > Overlays** keeps your overlay video packs (light leaks, film grain, dust and scratches, bokeh, flares, frames, keyed elements) in a library folder, by default `Documents\Milan Pro\Overlay Packs` (change it in **Options > Preferences > General**). Each pack is a subfolder: **Import Pack...** copies a folder or extracts a `.zip` into the library, or links an existing folder where it is. Browse by pack, favourites, recent or search (names and tags), with thumbnails that scrub as you hover. Drag an overlay onto the timeline, or double-click it to add it at the cursor on a new track; the new track gets the overlay's blend (Normal, Screen, Add, Multiply, Overlay, or a green/blue screen key), set per pack in **Pack Properties** or per overlay from its right-click menu. Removing a copied pack moves its folder to the Recycle Bin; nothing is deleted for good. Milan Pro ships no third-party overlays; **Create Sample Pack** makes a few with FFmpeg.
 
 ## Install (Windows)
 
