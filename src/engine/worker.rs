@@ -636,6 +636,36 @@ mod tests {
         }
     }
 
+    /// R16b: `bench_playback` with the Video Scopes open and Update Scopes while Playing on: all four scopes of a
+    /// 960x540 frame 10 times a second on their own thread. `cargo test --release -- --ignored --nocapture bench_playback_with_scopes`
+    #[test]
+    #[ignore]
+    fn bench_playback_with_scopes() {
+        use crate::engine::scopes::{HistMode, Levels, Want, analyze};
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let s2 = stop.clone();
+        let scopes = std::thread::spawn(move || {
+            let (w, h) = (960, 540);
+            let img = ColorImage { size: [w, h], pixels: (0..w * h).map(|i| egui::Color32::from_rgb((i % 251) as u8, (i % 241) as u8, (i / w % 256) as u8)).collect() };
+            let want = Want { wave: true, vector: true, parade: true, hist: Some(HistMode::LumaRgb), levels: Levels::default(), composite: false, magnified: false };
+            let mut n = 0;
+            while !s2.load(Relaxed) {
+                let t = Instant::now();
+                std::hint::black_box(analyze(&img, &want));
+                n += 1;
+                std::thread::sleep(Duration::from_millis(100).saturating_sub(t.elapsed()));
+            }
+            n
+        });
+        for layers in 1..=4 {
+            let (fps, skipped, dropped) = play_layers(layers);
+            println!("bench_playback_with_scopes {layers} layer(s): {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames");
+            assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{layers} layers: {fps:.2} fps, {skipped} skipped");
+        }
+        stop.store(true, Relaxed);
+        println!("bench_playback_with_scopes: {} analyses", scopes.join().unwrap());
+    }
+
     /// Frames composed per second when nothing paces the worker: each waits for its decoders, none is skipped.
     fn unpaced_fps(layers: usize) -> f64 {
         let mut wk = Worker::new();

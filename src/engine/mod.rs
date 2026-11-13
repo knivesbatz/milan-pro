@@ -23,6 +23,7 @@ pub mod plugins;
 pub mod raster;
 pub mod render;
 pub mod resample;
+pub mod scopes;
 #[allow(dead_code)]
 pub mod thumbs;
 pub mod transition;
@@ -104,9 +105,27 @@ pub struct VideoEngine {
     loop_n: Option<(i64, i64)>,
     wraps: i64,
     last_clock: i64,
+    /// R16b: the picture without any video FX (Split-Screen View › FX Bypassed).
+    no_fx: bool,
+}
+
+/// `p` with every video FX taken off (event, track and Video Output FX), as Split-Screen View › FX Bypassed shows it.
+pub fn without_video_fx(p: &Project) -> Project {
+    let mut q = p.clone();
+    for t in &mut q.timeline.video_tracks {
+        t.fx.clear();
+        t.clips.iter_mut().for_each(|c| c.fx.clear());
+    }
+    q.timeline.master.video_fx.clear();
+    q
 }
 
 impl VideoEngine {
+    /// R16b: an engine that composes the timeline with its video FX bypassed.
+    pub fn without_fx(ctx: &egui::Context) -> Self {
+        Self { no_fx: true, ..Self::new(ctx) }
+    }
+
     pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = mpsc::channel();
         let latest = Arc::new(Mutex::new(None));
@@ -131,6 +150,7 @@ impl VideoEngine {
             loop_n: None,
             wraps: 0,
             last_clock: 0,
+            no_fx: false,
         }
     }
 
@@ -156,7 +176,7 @@ impl VideoEngine {
         // A proxy becoming ready replans, so Draft and Preview switch to it.
         let hash = content_hash(p) ^ crate::proxy::generation();
         if hash != self.sent_hash {
-            let plan = plan::compile(p);
+            let plan = if self.no_fx { plan::compile(&without_video_fx(p)) } else { plan::compile(p) };
             self.fps = plan.fps;
             let _ = self.tx.send(VCmd::Plan(Arc::new(plan)));
             (self.sent_hash, self.want) = (hash, None);
@@ -235,6 +255,20 @@ mod tests {
             e(&mut q);
             assert_ne!(content_hash(&q), h, "edit {i}");
         }
+    }
+
+    /// R16b: Split-Screen View › FX Bypassed composes the project without event, track and Video Output FX.
+    #[test]
+    fn fx_bypassed_plan_has_no_video_fx() {
+        let mut p = Project::new("t");
+        let fx = plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None);
+        p.timeline.video_tracks[0].clips.push(Clip { fx: vec![fx.clone()], ..Clip::new("c", 0.0, 2.0) });
+        p.timeline.video_tracks[0].fx = vec![fx.clone()];
+        p.timeline.master.video_fx = vec![fx];
+        let q = without_video_fx(&p);
+        assert!(q.timeline.video_tracks[0].clips[0].fx.is_empty() && q.timeline.video_tracks[0].fx.is_empty() && q.timeline.master.video_fx.is_empty());
+        assert_eq!(q.timeline.video_tracks[0].clips.len(), 1);
+        assert_eq!(p.timeline.master.video_fx.len(), 1, "the project keeps its FX");
     }
 
     /// Needs ffmpeg. The engine end to end: a paused frame arrives, then playback delivers frames in order.

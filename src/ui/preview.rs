@@ -1,12 +1,13 @@
 //! Video Preview window (§5.8): toolbar, letterboxed frame with overlays, centred transport and the 2×2 status block.
 use eframe::egui::*;
-use crate::decode::{Preview, Quality, Size};
+use std::sync::Arc;
+use crate::decode::{Isolate, Preview, Quality, Size};
 use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
 use super::menus::{Later, MenuAction};
 use super::theme::{self, UiLook};
-use super::toolbar::{arrow_menu, inert_split, split_button, text_menu, tool_button};
+use super::toolbar::{arrow_menu, split_button, text_menu, tool_button};
 use super::transport::{Cmd, Playback, cmd_button, cmd_menu};
 use super::widgets;
 
@@ -20,12 +21,75 @@ pub struct PreviewView {
     pub show_transport: bool,
     /// Simulate Device Aspect Ratio: the frame is shown at the project's pixel aspect ratio, not square pixels.
     pub simulate_par: bool,
+    /// R16b: Split-Screen View, its mode, and the part of the frame (0-1 of the unrotated frame: x0, y0, x1, y1)
+    /// that shows the frame without FX or the clipboard's (not kept between sessions, as in VEGAS).
+    pub split: bool,
+    pub split_clipboard: bool,
+    pub split_region: [f32; 4],
+    /// The last Copy Snapshot to Clipboard frame (Split-Screen View › Clipboard shows it), and its texture.
+    pub snapshot: Option<(Arc<ColorImage>, TextureHandle)>,
+    /// Where a drag in the picture started (display 0-1), while one draws a new split region.
+    split_drag: Option<Pos2>,
+    /// The output rotation the frame was last drawn with (the toolbar's Select Left / Right Half go by it).
+    rot: u16,
 }
 
 impl Default for PreviewView {
     fn default() -> Self {
-        Self { zoom: None, grid: false, safe_areas: false, show_status: true, show_transport: true, simulate_par: false }
+        Self {
+            zoom: None,
+            grid: false,
+            safe_areas: false,
+            show_status: true,
+            show_transport: true,
+            simulate_par: false,
+            split: false,
+            split_clipboard: false,
+            split_region: RIGHT_HALF,
+            snapshot: None,
+            split_drag: None,
+            rot: 0,
+        }
     }
+}
+
+const RIGHT_HALF: [f32; 4] = [0.5, 0.0, 1.0, 1.0];
+
+impl PreviewView {
+    /// The frame Split-Screen View › Clipboard puts in the region, while it is on (the scopes measure it too).
+    pub fn split_snapshot(&self) -> Option<(&Arc<ColorImage>, [f32; 4])> {
+        self.snapshot.as_ref().filter(|_| self.split && self.split_clipboard).map(|(img, _)| (img, self.split_region))
+    }
+
+    /// Select Left Half / Right Half / All of the frame as shown (turned by the output rotation); turns the split on.
+    fn select(&mut self, shown: Rect, rot: u16) {
+        self.split_region = region_of(shown, rot);
+        self.split = true;
+    }
+}
+
+/// Display point `p` (0-1 of the frame as shown, turned `rot` degrees clockwise) in the unrotated frame (0-1).
+fn unturn(p: Pos2, rot: u16) -> Pos2 {
+    match rot / 90 % 4 {
+        1 => pos2(p.y, 1.0 - p.x),
+        2 => pos2(1.0 - p.x, 1.0 - p.y),
+        3 => pos2(1.0 - p.y, p.x),
+        _ => p,
+    }
+}
+
+/// The unrotated region (x0, y0, x1, y1) under display rect `r` (0-1 of the frame as shown).
+fn region_of(r: Rect, rot: u16) -> [f32; 4] {
+    let (a, b) = (unturn(r.min, rot), unturn(r.max, rot));
+    [a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y)]
+}
+
+/// Where the unrotated `region` shows (0-1 of the frame as shown).
+fn shown_of(region: [f32; 4], rot: u16) -> Rect {
+    // Turning back is three more quarter turns.
+    let back = (360 - rot % 360) % 360;
+    let (a, b) = (unturn(pos2(region[0], region[1]), back), unturn(pos2(region[2], region[3]), back));
+    Rect::from_two_pos(a, b)
 }
 
 /// Dock toolbar row. Returns a status message (snapshot copied / saved / failed).
@@ -42,7 +106,27 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
     if tool_button(ui, Icon::TrackFx, "Video Output FX", true, false).clicked() {
         super::menus::send(ui.ctx(), super::keymap::Command::VideoOutputFx);
     }
-    inert_split(ui, Icon::SplitScreen, &Later("R16b").tip("Split-Screen View"));
+    // R16b: the region shows the frame without video FX, or the last snapshot copied to the clipboard.
+    let (main, arrow) = split_button(ui, Icon::SplitScreen, "Split-Screen View", true, view.split);
+    if main.clicked() {
+        view.split = !view.split;
+    }
+    arrow_menu(ui, &arrow, |ui| {
+        if ui.radio(!view.split_clipboard, "FX Bypassed").clicked() {
+            view.split_clipboard = false;
+        }
+        if ui.radio(view.split_clipboard, "Clipboard").clicked() {
+            view.split_clipboard = true;
+        }
+        ui.separator();
+        let rot = view.rot;
+        for (label, r) in [("Select Left Half", [0.0, 0.0, 0.5, 1.0]), ("Select Right Half", RIGHT_HALF), ("Select All", [0.0, 0.0, 1.0, 1.0])] {
+            if ui.button(label).clicked() {
+                view.select(Rect::from_min_max(pos2(r[0], r[1]), pos2(r[2], r[3])), rot);
+            }
+        }
+    });
+    preview.fx_bypassed = view.split && !view.split_clipboard;
     ui.add_space(2.0);
     let label = format!("{:?} ({:?})", preview.quality, preview.size);
     // VP16 "Best (Full) ▾" has a gap; VP23 "Preview (Auto)▾" is set tight.
@@ -63,7 +147,7 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
             }
         });
     }
-    let (main, arrow) = split_button(ui, Icon::Overlays, "Overlays", true, view.grid || view.safe_areas);
+    let (main, arrow) = split_button(ui, Icon::Overlays, "Overlays", true, view.grid || view.safe_areas || preview.isolate != Isolate::None);
     if main.clicked() {
         view.grid = !view.grid;
     }
@@ -71,14 +155,20 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         ui.checkbox(&mut view.grid, "Grid");
         ui.checkbox(&mut view.safe_areas, "Safe Areas");
         ui.separator();
-        for item in ["Isolate Red Channel", "Isolate Green Channel", "Isolate Blue Channel", "Isolate Alpha Channel", "Alpha as Grayscale"] {
-            ui.add_enabled(false, Button::new(item)).on_disabled_hover_text(Later("R16b").text());
+        // R16b: one channel at a time; choosing the one shown turns it off.
+        for (i, label) in Isolate::ALL {
+            if ui.radio(preview.isolate == i, label).clicked() {
+                preview.isolate = if preview.isolate == i { Isolate::None } else { i };
+            }
         }
     });
     let has = preview.image.is_some();
     if tool_button(ui, Icon::SnapshotCopy, "Copy Snapshot to Clipboard", has, false).clicked() {
         if let Some(img) = &preview.image {
             ui.ctx().copy_image((**img).clone());
+            // R16b: kept for Split-Screen View › Clipboard.
+            let tex = ui.ctx().load_texture("split_snapshot", img.clone(), TextureOptions::LINEAR);
+            view.snapshot = Some((img.clone(), tex));
             msg = Some(format!("Snapshot copied to the clipboard ({}x{}).", img.width(), img.height()));
         }
     }
@@ -150,12 +240,46 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     pv.rect_filled(frame, 0.0, t.preview_frame);
     // Options › Mute All Video: the frame stays empty.
     if let Some(tex) = preview.texture.as_ref().filter(|_| !preview.mute) {
-        pv.add(rotated_image(tex.id(), frame, s.rotation));
+        pv.add(rotated_image(tex.id(), frame, s.rotation, [0.0, 0.0, 1.0, 1.0]));
+        // R16b: Split-Screen View: the region from the frame without FX, or from the clipboard snapshot.
+        let other = if view.split_clipboard { view.snapshot.as_ref().map(|(_, t)| t) } else { preview.bypass_texture() };
+        if let Some(other) = other.filter(|_| view.split) {
+            pv.add(rotated_image(other.id(), frame, s.rotation, view.split_region));
+        }
     } else if let Some(err) = preview.error.as_ref().filter(|_| !preview.mute) {
         pv.text(frame.center(), Align2::CENTER_CENTER, err, t.font(12.0), t.warning_text);
     }
+    view.rot = s.rotation;
+    if view.split {
+        // The region's edge, so the split shows where it is.
+        let r = shown_of(view.split_region, s.rotation);
+        let r = Rect::from_min_max(frame.lerp_inside(r.min.to_vec2()), frame.lerp_inside(r.max.to_vec2()));
+        pv.rect_stroke(widgets::px(r), 0.0, Stroke::new(1.0_f32, Color32::from_white_alpha(140)), StrokeKind::Inside);
+    }
     paint_overlays(&pv, frame, view);
-    let resp = ui.interact(video, ui.id().with("preview_video"), Sense::click());
+    // With Split-Screen View on, a drag draws the region and a double-click takes the whole frame (VEGAS).
+    let sense = if view.split { Sense::click_and_drag() } else { Sense::click() };
+    let resp = ui.interact(video, ui.id().with("preview_video"), sense);
+    if view.split {
+        let at = |p: Pos2| ((p - frame.min) / frame.size()).clamp(Vec2::ZERO, Vec2::splat(1.0)).to_pos2();
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+        }
+        if resp.drag_started() {
+            view.split_drag = resp.interact_pointer_pos().map(at);
+        }
+        if let (Some(a), Some(b)) = (view.split_drag, resp.interact_pointer_pos().map(at)) {
+            if (b - a).length() > 0.005 {
+                view.split_region = region_of(Rect::from_two_pos(a, b), s.rotation);
+            }
+        }
+        if resp.drag_stopped() {
+            view.split_drag = None;
+        }
+        if resp.double_clicked() {
+            view.split_region = [0.0, 0.0, 1.0, 1.0];
+        }
+    }
     if let Some(d) = super::plugin_dropped(&resp) {
         let (target, before) = (crate::edit::FxTarget::VideoOutput, project.clone());
         if d.kind == crate::engine::plugins::PluginKind::VideoFx && crate::edit::add_fx(project, &target, d.fx.clone()) {
@@ -290,7 +414,7 @@ pub fn draw_external(ui: &mut Ui, project: &Project, preview: &mut Preview, fit:
     let w = if rot % 180 == 90 { frame.height() } else { frame.width() } * ui.ctx().pixels_per_point();
     preview.display_w = preview.display_w.max(w as u32);
     if let Some(tex) = preview.texture.as_ref().filter(|_| !mute) {
-        p.add(rotated_image(tex.id(), frame, rot));
+        p.add(rotated_image(tex.id(), frame, rot, [0.0, 0.0, 1.0, 1.0]));
     }
 }
 
@@ -306,14 +430,14 @@ pub fn external_frame(display: Rect, size: Vec2, quarter: bool, fit: bool, ppp: 
     Rect::from_min_max(snap(r.min), snap(r.max))
 }
 
-/// `tex` filling `r`, turned `rot` degrees clockwise (Project Properties › Output rotation).
-fn rotated_image(tex: TextureId, r: Rect, rot: u16) -> Shape {
-    let uv = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
-    let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
-    let k = (rot / 90 % 4) as usize;
+/// The `region` (0-1 of the unrotated frame: x0, y0, x1, y1) of `tex`, where it shows in the frame `r` turned `rot`
+/// degrees clockwise (Project Properties › Output rotation); the whole region fills `r`.
+fn rotated_image(tex: TextureId, r: Rect, rot: u16, region: [f32; 4]) -> Shape {
+    let shown = shown_of(region, rot);
+    let corners = [shown.left_top(), shown.right_top(), shown.right_bottom(), shown.left_bottom()];
     let mut mesh = epaint::Mesh::with_texture(tex);
-    for (i, c) in corners.into_iter().enumerate() {
-        mesh.vertices.push(epaint::Vertex { pos: c, uv: uv[(i + 4 - k) % 4], color: Color32::WHITE });
+    for c in corners {
+        mesh.vertices.push(epaint::Vertex { pos: r.lerp_inside(c.to_vec2()), uv: unturn(c, rot), color: Color32::WHITE });
     }
     mesh.indices.extend([0, 1, 2, 0, 2, 3]);
     Shape::mesh(mesh)
@@ -333,6 +457,26 @@ fn fit_rect_to_aspect(container: Rect, aspect: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R16b: Select Left Half picks the left of the frame as shown, whatever the output rotation, and the region
+    /// shows where it was drawn.
+    #[test]
+    fn split_regions_follow_the_rotation() {
+        let left = Rect::from_min_max(pos2(0.0, 0.0), pos2(0.5, 1.0));
+        assert_eq!(region_of(left, 0), [0.0, 0.0, 0.5, 1.0]);
+        // Turned 90° clockwise, the shown left half is the bottom of the frame.
+        assert_eq!(region_of(left, 90), [0.0, 0.5, 1.0, 1.0]);
+        assert_eq!(region_of(left, 180), [0.5, 0.0, 1.0, 1.0]);
+        for rot in [0, 90, 180, 270] {
+            let r = Rect::from_min_max(pos2(0.1, 0.2), pos2(0.4, 0.9));
+            let back = shown_of(region_of(r, rot), rot);
+            assert!((back.min - r.min).length() < 1e-6 && (back.max - r.max).length() < 1e-6, "{rot}: {back:?}");
+        }
+        let mut v = PreviewView::default();
+        assert!(!v.split && v.split_snapshot().is_none());
+        v.select(left, 0);
+        assert!(v.split && v.split_region == [0.0, 0.0, 0.5, 1.0]);
+    }
 
     /// R14: the external picture on a 2560x1440 display at 150 % (1706.7x960 points): 1:1 in display pixels and
     /// centred, or fitted (pillarboxed for 4:3); a quarter turn swaps the sides.

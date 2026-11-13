@@ -122,6 +122,8 @@ pub struct MeridianApp {
     console: ui::ConsoleView,
     /// R16a: the Edit Details window's view (not saved).
     edit_details: ui::EditDetails,
+    /// R16b: the Video Scopes window's thread and plots (its choices are in `prefs.scopes`).
+    scopes: ui::Scopes,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -334,6 +336,7 @@ impl MeridianApp {
             master_view: ui::MasterView::default(),
             console: ui::ConsoleView::default(),
             edit_details: ui::EditDetails::default(),
+            scopes: ui::Scopes::default(),
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -577,6 +580,7 @@ impl eframe::App for MeridianApp {
             // R8b: this frame's levels for every meter (track headers, Master Bus, Mixing Console).
             ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
+            let mut scopes_prefs = false;
             let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
             // R16a: Edit Details edits as the timeline does; its last edit's ripple, for Post-Edit Ripple.
             let (details_opts, mut details_edit) = (self.edit_opts(), None);
@@ -674,6 +678,13 @@ impl eframe::App for MeridianApp {
                     }
                 }
                 Panel::ProjectNotes => ui::project_notes(body, &mut self.project),
+                Panel::VideoScopes => {
+                    // The scopes measure the Video Preview's frame: the engine makes frames while they need them.
+                    self.preview.visible |= !self.playing || self.prefs.scopes.while_playing;
+                    scopes_prefs |= ui::scopes_toolbar(bar, &mut self.scopes, &mut self.prefs.scopes);
+                    let split = self.preview_view.split_snapshot();
+                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
+                }
                 }
             };
             self.dock.show(ui, a.dock, &mut content);
@@ -681,7 +692,7 @@ impl eframe::App for MeridianApp {
             if let Some(ops) = details_edit {
                 self.last_edit = (self.history.generation(), ops);
             }
-            if console_prefs {
+            if console_prefs || scopes_prefs {
                 self.save_prefs();
             }
             if preview_msg.is_some() {

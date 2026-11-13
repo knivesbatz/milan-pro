@@ -2397,6 +2397,22 @@ impl MeridianApp {
             "layout-classic" => self.exec(ctx, LayoutVp14),
             "layout-audio" => self.exec(ctx, LayoutAudio),
             "layout-color" => self.exec(ctx, LayoutColor),
+            // R16b: every scope at once in the Color Correction layout; the Video Scopes Settings dialog; Split-Screen
+            // View (the left half without the Sepia put on the Video Output); Overlays › Red as Grayscale.
+            "scopes-all" => {
+                self.prefs.scopes.view = crate::ui::ScopeView::All;
+                self.exec(ctx, LayoutColor);
+            }
+            "scopes-settings" => {
+                self.exec(ctx, LayoutColor);
+                self.scopes.settings = Some(self.prefs.scopes.levels);
+            }
+            "split" => {
+                use crate::engine::plugins::{find, new_fx};
+                self.project.timeline.master.video_fx.push(new_fx(find("milan.fx.sepia").unwrap(), None));
+                (self.preview_view.split, self.preview_view.split_region) = (true, [0.0, 0.0, 0.5, 1.0]);
+            }
+            "isolate" => self.preview.isolate = crate::decode::Isolate::RedGray,
             "layout-source" => self.exec(ctx, LayoutSource),
             "layout-timeline-top" => self.exec(ctx, LayoutTimelineTop),
             "docks-hidden" => self.exec(ctx, ToggleDocks),

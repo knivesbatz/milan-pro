@@ -118,6 +118,8 @@ pub struct Prefs {
     /// R15: Options › Customize Toolbar / Customize Timeline Toolbar: a bar's buttons by `toolbar::Bar::key`
     /// ("vp16:toolbar"); a bar not listed has the look's default buttons.
     pub toolbars: BTreeMap<String, Vec<String>>,
+    /// R16b: the Video Scopes window's scopes, their settings and Update Scopes while Playing.
+    pub scopes: crate::ui::ScopePrefs,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -259,6 +261,7 @@ impl Default for Prefs {
             keys: BTreeMap::new(),
             key_map: None,
             toolbars: BTreeMap::new(),
+            scopes: Default::default(),
         }
     }
 }
@@ -769,6 +772,10 @@ mod tests {
         assert_eq!((p.bus_tracks, p.console.regions, p.console.width), (false, [true, true, true, false, true, true], 1));
         let q = Prefs::parse(Ok(r#"{"ripple_mode":"AffectedMarkersOnly","console":{"regions":[true,true,true,true,true,true]}}"#.into())).unwrap();
         assert_eq!((q.ripple_mode, q.console.regions[3], q.console.channel_list), (crate::edit::RippleMode::AffectedMarkersOnly, true, true));
+        // R16b: a file from before the Video Scopes gets VEGAS's defaults; a saved choice reads back.
+        assert_eq!(p.scopes, crate::ui::ScopePrefs::default());
+        let s = Prefs::parse(Ok(r#"{"scopes":{"view":"All","levels":{"studio":true},"while_playing":true}}"#.into())).unwrap().scopes;
+        assert!(s.levels.studio && !s.levels.setup && s.while_playing && s != crate::ui::ScopePrefs::default());
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

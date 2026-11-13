@@ -28,10 +28,12 @@ pub enum Panel {
     /// R16a: View › Window › Edit Details and (VEGAS 23) Project Notes (not in a default layout).
     EditDetails,
     ProjectNotes,
+    /// R16b: View › Window › Video Scopes (in the Color Correction layout).
+    VideoScopes,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 14] = [
+    pub const ALL: [Panel; 15] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -46,6 +48,7 @@ impl Panel {
         Panel::MixingConsole,
         Panel::EditDetails,
         Panel::ProjectNotes,
+        Panel::VideoScopes,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -65,6 +68,7 @@ impl Panel {
             Panel::MixingConsole => "Mixing Console",
             Panel::EditDetails => "Edit Details",
             Panel::ProjectNotes => "Project Notes",
+            Panel::VideoScopes => "Video Scopes",
         }
     }
 
@@ -310,11 +314,11 @@ impl Dock {
                 d.height = Some(438.0);
             }
             Builtin::ColorCorrection => {
-                // VEGAS puts Video Scopes (539 px) between the group and Video Preview: R16b adds it here. VP23 brings
-                // its Color Grading window to the front [I].
+                // Video Scopes (539 px) between the group and Video Preview. VP23 brings its Color Grading window to
+                // the front [I].
                 let front = if t.look() == UiLook::Vegas23 { ColorGrading } else { ProjectMedia };
                 let active = left.tabs.iter().position(|&p| p == front).unwrap_or(0);
-                d.groups = vec![Group { active, ..left }, col(vec![VideoPreview], 539.0), col(vec![MasterBus], 127.0)];
+                d.groups = vec![Group { active, ..left }, col(vec![VideoScopes], 539.0), col(vec![VideoPreview], 539.0), col(vec![MasterBus], 127.0)];
                 d.height = Some(438.0);
             }
             Builtin::Source => {
@@ -1471,7 +1475,7 @@ mod tests {
         assert_eq!(seen, vec![Panel::MasterBus]);
     }
 
-    /// R13: each built-in layout opens the windows VEGAS's layout files show (Video Scopes waits on R16b).
+    /// R13: each built-in layout opens the windows VEGAS's layout files show (R16b: Video Scopes in Color Correction).
     #[test]
     fn builtin_layouts_open_the_vegas_panels() {
         use Panel::*;
@@ -1483,8 +1487,8 @@ mod tests {
         let table: Vec<(Builtin, &Theme, Vec<(Vec<Panel>, Panel, Area)>, Option<f32>)> = vec![
             (Builtin::Classic, &t16, vec![(left16.clone(), ProjectMedia, Bottom), (vec![Trimmer], Trimmer, Bottom), (vec![VideoPreview], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], Some(449.0)),
             (Builtin::AudioMixing, &t16, vec![([vec![MixingConsole], left16.clone()].concat(), MixingConsole, Top), (vec![VideoPreview], VideoPreview, Top)], Some(438.0)),
-            (Builtin::ColorCorrection, &t16, vec![(left16.clone(), ProjectMedia, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
-            (Builtin::ColorCorrection, &t23, vec![(left23.clone(), ColorGrading, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
+            (Builtin::ColorCorrection, &t16, vec![(left16.clone(), ProjectMedia, Top), (vec![VideoScopes], VideoScopes, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
+            (Builtin::ColorCorrection, &t23, vec![(left23.clone(), ColorGrading, Top), (vec![VideoScopes], VideoScopes, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
             (Builtin::Source, &t23, vec![(left23.clone(), ProjectMedia, Top), (vec![Trimmer], Trimmer, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], None),
             (Builtin::TimelineTop, &t23, vec![(left23.clone(), ProjectMedia, Bottom), (vec![VideoPreview, Trimmer], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], None),
         ];
@@ -1494,6 +1498,7 @@ mod tests {
             assert_eq!(if d.timeline_top() { d.bottom_h } else { d.height }, h, "{b:?}");
         }
         assert_eq!(Dock::builtin(Builtin::AudioMixing, &t16).groups[1].width, 511.0);
+        assert_eq!(Dock::builtin(Builtin::ColorCorrection, &t16).groups[1..].iter().map(|g| g.width).collect::<Vec<_>>(), [539.0, 539.0, 127.0]);
         assert_eq!(Dock::builtin(Builtin::Default, &t23).groups, Dock::new(&t23).groups);
     }
 

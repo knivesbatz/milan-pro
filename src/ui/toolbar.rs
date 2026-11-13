@@ -71,11 +71,6 @@ pub fn split_button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, active: 
     split(ui, icon, text, enabled, enabled, active)
 }
 
-/// `split_button` drawn lit with nothing behind it yet (see `inert_button`).
-pub fn inert_split(ui: &mut Ui, icon: Icon, text: &str) -> (Response, Response) {
-    split(ui, icon, text, false, true, false)
-}
-
 fn split(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, lit: bool, active: bool) -> (Response, Response) {
     let t = theme::get();
     let sense = if enabled { Sense::click() } else { Sense::hover() };

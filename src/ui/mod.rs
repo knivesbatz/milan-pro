@@ -23,6 +23,7 @@ mod pancrop;
 mod preview;
 mod project_notes;
 mod properties;
+mod scopes;
 mod status;
 #[allow(dead_code)] // full token set from the spec; later stages use the rest
 pub mod theme;
@@ -50,6 +51,7 @@ pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
 pub use pancrop::PanCropWin;
 pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
+pub use scopes::{ScopePrefs, ScopeView, Scopes, draw_scopes, scopes_toolbar};
 pub use status::draw_status_bar;
 pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event};
 pub use toolbar::{Bar, draw_main_toolbar};

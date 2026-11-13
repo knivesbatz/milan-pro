@@ -43,6 +43,67 @@ impl Size {
     pub const ALL: [Size; 4] = [Size::Auto, Size::Full, Size::Half, Size::Quarter];
 }
 
+/// R16b: Video Preview › Overlays: one channel of the frame shown (VEGAS's Red, Green, Blue and "as Grayscale" rows).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Isolate {
+    #[default]
+    None,
+    Red,
+    Green,
+    Blue,
+    RedGray,
+    GreenGray,
+    BlueGray,
+    AlphaGray,
+}
+
+impl Isolate {
+    pub const ALL: [(Isolate, &'static str); 7] = [
+        (Isolate::Red, "Red"),
+        (Isolate::Green, "Green"),
+        (Isolate::Blue, "Blue"),
+        (Isolate::RedGray, "Red as Grayscale"),
+        (Isolate::GreenGray, "Green as Grayscale"),
+        (Isolate::BlueGray, "Blue as Grayscale"),
+        (Isolate::AlphaGray, "Alpha as Grayscale"),
+    ];
+
+    /// `img` (premultiplied, as shown over black) with only this channel, in its colour or as grey.
+    pub fn apply(self, img: &ColorImage) -> ColorImage {
+        let f = |p: &egui::Color32| {
+            let [r, g, b, a] = p.to_array();
+            let px = match self {
+                Isolate::None => [r, g, b, a],
+                Isolate::Red => [r, 0, 0, a],
+                Isolate::Green => [0, g, 0, a],
+                Isolate::Blue => [0, 0, b, a],
+                Isolate::RedGray => [r, r, r, a],
+                Isolate::GreenGray => [g, g, g, a],
+                Isolate::BlueGray => [b, b, b, a],
+                Isolate::AlphaGray => [a, a, a, 255],
+            };
+            egui::Color32::from_rgba_premultiplied(px[0], px[1], px[2], px[3])
+        };
+        ColorImage { size: img.size, pixels: img.pixels.iter().map(f).collect() }
+    }
+}
+
+/// The frame of `img` as the preview shows it (`isolate`), into texture `slot`.
+fn upload(ctx: &egui::Context, slot: &mut Option<TextureHandle>, name: &str, img: &Arc<ColorImage>, isolate: Isolate) {
+    let data = egui::ImageData::Color(if isolate == Isolate::None { img.clone() } else { Arc::new(isolate.apply(img)) });
+    match slot {
+        Some(t) => t.set(data, TextureOptions::LINEAR),
+        None => *slot = Some(ctx.load_texture(name, data, TextureOptions::LINEAR)),
+    }
+}
+
+/// R16b: Split-Screen View › FX Bypassed: a second engine composing the timeline without video FX, and its frame.
+struct Bypass {
+    engine: VideoEngine,
+    image: Option<Arc<ColorImage>>,
+    texture: Option<TextureHandle>,
+}
+
 /// Preview frame width for a project `full_w` wide shown in a `display_w` wide frame.
 /// Auto picks the largest of Full / Half / Quarter that fits the display, as VEGAS reports it.
 pub fn preview_width(q: Quality, size: Size, full_w: u32, display_w: u32) -> u32 {
@@ -181,6 +242,14 @@ pub struct Preview {
     pub visible: bool,
     /// Options › Mute All Video: the Video Preview shows no frame.
     pub mute: bool,
+    /// R16b: the Overlays channel shown, and the one the textures were made with.
+    pub isolate: Isolate,
+    shown_isolate: Isolate,
+    /// R16b: Split-Screen View › FX Bypassed is on (set by the app each frame): the bypassed engine runs while it is.
+    pub fx_bypassed: bool,
+    bypass: Option<Bypass>,
+    /// Playing (with its loop region) or not, for a bypassed engine started mid-playback.
+    playing: Option<Option<(f64, f64)>>,
 }
 
 impl Preview {
@@ -218,7 +287,17 @@ impl Preview {
             engine: None,
             visible: false,
             mute: false,
+            isolate: Isolate::None,
+            shown_isolate: Isolate::None,
+            fx_bypassed: false,
+            bypass: None,
+            playing: None,
         }
+    }
+
+    /// R16b: the FX Bypassed frame's texture, while Split-Screen View › FX Bypassed is on.
+    pub fn bypass_texture(&self) -> Option<&TextureHandle> {
+        self.bypass.as_ref()?.texture.as_ref()
     }
 
     /// The timeline preview: every layer composited by the video engine.
@@ -251,27 +330,54 @@ impl Preview {
             self.error = err;
             self.set_image(ctx, img);
         }
+        // R16b: the FX Bypassed engine runs only while that split is on (it composes every frame a second time).
+        match (self.fx_bypassed, &mut self.bypass) {
+            (false, b) => *b = None,
+            (true, None) => {
+                let mut engine = VideoEngine::without_fx(ctx);
+                if let Some(lp) = self.playing {
+                    engine.play(lp);
+                }
+                self.bypass = Some(Bypass { engine, image: None, texture: None });
+            }
+            (true, Some(_)) => {}
+        }
+        if let Some(b) = &mut self.bypass {
+            if let Some((img, _)) = b.engine.update(project, w, h, q, visible) {
+                upload(ctx, &mut b.texture, "preview_bypassed", &img, self.isolate);
+                b.image = Some(img);
+            }
+        }
+        if self.isolate != self.shown_isolate {
+            self.shown_isolate = self.isolate;
+            if let Some(img) = self.image.clone() {
+                upload(ctx, &mut self.texture, "preview_frame", &img, self.isolate);
+            }
+            if let Some(b) = &mut self.bypass {
+                if let Some(img) = &b.image {
+                    upload(ctx, &mut b.texture, "preview_bypassed", img, self.isolate);
+                }
+            }
+        }
     }
 
     /// Play the timeline from the cursor (again, after a seek), looping over `loop_` if set.
     pub fn play(&mut self, loop_: Option<(f64, f64)>) {
-        if let Some(e) = &mut self.engine {
+        self.playing = Some(loop_);
+        for e in self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)) {
             e.play(loop_);
         }
     }
 
     pub fn stop(&mut self) {
-        if let Some(e) = &mut self.engine {
+        self.playing = None;
+        for e in self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)) {
             e.stop();
         }
     }
 
     fn set_image(&mut self, ctx: &egui::Context, img: Arc<ColorImage>) {
-        let data = egui::ImageData::Color(img.clone());
-        match &mut self.texture {
-            Some(t) => t.set(data, TextureOptions::LINEAR),
-            None => self.texture = Some(ctx.load_texture("preview_frame", data, TextureOptions::LINEAR)),
-        }
+        upload(ctx, &mut self.texture, "preview_frame", &img, self.shown_isolate);
         self.image = Some(img);
     }
 
@@ -513,6 +619,18 @@ mod tests {
         let mut px = [[255, 255, 255, 128], [200, 100, 0, 255], [90, 90, 90, 0], [255, 0, 64, 64]].map(|[r, g, b, a]| Color32::from_rgba_premultiplied(r, g, b, a));
         premultiply(&mut px);
         assert_eq!(px.map(|p| p.to_array()), [[128, 128, 128, 128], [200, 100, 0, 255], [0, 0, 0, 0], [64, 0, 16, 64]]);
+    }
+
+    /// R16b: Overlays shows one channel in its colour or as grey, alpha as grey on opaque.
+    #[test]
+    fn isolate_shows_one_channel() {
+        use egui::Color32;
+        let img = ColorImage { size: [1, 1], pixels: vec![Color32::from_rgba_premultiplied(100, 60, 20, 200)] };
+        let px = |i: Isolate| i.apply(&img).pixels[0].to_array();
+        assert_eq!(px(Isolate::None), [100, 60, 20, 200]);
+        assert_eq!(px(Isolate::Green), [0, 60, 0, 200]);
+        assert_eq!(px(Isolate::BlueGray), [20, 20, 20, 200]);
+        assert_eq!(px(Isolate::AlphaGray), [200, 200, 200, 255]);
     }
 
     #[test]

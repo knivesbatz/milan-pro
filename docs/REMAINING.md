@@ -133,7 +133,7 @@ What matters most:
 | 4.19 | Optional light theme | DONE | VP23 `Variant::White` (`theme.rs:17-21`) |
 | 4.20 | Smooth but restrained animations | PARTIAL | Only egui defaults plus transition-thumbnail animation (`choosers.rs:16`). There is no central animation policy, and the Windows "show animations" setting is not honoured. → R48 |
 | 4.21 | Resizable and dockable panels | DONE | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options; (R14) floating windows (`Dock::show_floating`, one egui viewport each; Undock, or drag a tab off the docking areas), dragging a tab to the main window's edge docks it in that area, a floating window moved over the dock docks under "Allow floating windows to dock" (Ctrl inverts it). Tests: `drop_targets`, `drag_tab_out_floats_it`, `floating_windows_open_close_dock_and_cycle`. |
-| 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 per look (`settings.rs`, batch 11); (R13) the built-in VEGAS layouts Classic (VEGAS Pro 14), Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. Video Scopes joins Color Correction with R16b. |
+| 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 per look (`settings.rs`, batch 11); (R13) the built-in VEGAS layouts Classic (VEGAS Pro 14), Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. (R16b) Color Correction has VEGAS's Video Scopes column (539 px) between the group and Video Preview. |
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
@@ -365,7 +365,7 @@ What matters most:
 | 11.1 | Video effects | DONE | 15 built-in FX (`engine/vfx.rs`, `plugins.rs`) |
 | 11.2 | Audio effects | DONE | EQ, compressor, gate, limiter, reverb, delay (`engine/afx.rs`) |
 | 11.3 | Color correction | DONE | `milan.fx.color_corrector`, Levels, HSL |
-| 11.4 | Color grading | DONE | `ui/color_grading.rs` (lift/gamma/gain, curves, .cube LUTs) |
+| 11.4 | Color grading | DONE | `ui/color_grading.rs` (lift/gamma/gain, curves, .cube LUTs); (R16b) the Video Scopes window (`engine/scopes.rs`, `ui/scopes.rs`: VEGAS's Vectorscope with the 75 % targets, Waveform (Luminance / Composite, IRE), Histogram (Luminance, R, G, B, Alpha, Luminance/R/G/B, Lightness/a/b, with Mean and Std Dev), RGB Parade and their combinations; Settings 7.5 IRE Setup and Studio RGB; Update Scopes while Playing) and, in the Video Preview, Split-Screen View (FX Bypassed / Clipboard, a drawn or half region) and the Isolate channel overlays. Tests: `white_peaks_at_100_ire_and_255`, `colour_bars_land_on_the_vectorscope_targets`, `histogram_counts`, `throttle_allows_ten_a_second`, `split_regions_follow_the_rotation`, `fx_bypassed_plan_has_no_video_fx`. |
 | 11.5 | Brightness and contrast | DONE | `milan.fx.brightness_contrast` |
 | 11.6 | Saturation | DONE | HSL FX |
 | 11.7 | Exposure | DONE | R7: Exposure FX, stops in linear light plus offset and gamma (`milan.fx.exposure`; +1 doubles linear values, tested). |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R16-R18 (R13, R14, R15 DONE) |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R16c-R18 (R13, R14, R15, R16a, R16b DONE) |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -628,7 +628,7 @@ The inventory as found before R0:
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b-c, R31, R10b, R8b (DONE), R59 |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c, R31, R10b, R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
@@ -636,7 +636,7 @@ The inventory as found before R0:
 - `explorer.rs:168-171`: Favorites, Start/Stop Preview, Auto Preview.
 - `media_panel.rs:161-183`: Capture, Import from Device, Get Media from the Web, Media FX, Auto Preview.
 - `master_bus.rs:69-72`: Master Bus Properties, Downmix, Dim, Mixing Console (R8b: DONE, they work).
-- `preview.rs:36-40`: External Monitor, Split-Screen.
+- `preview.rs:36-40`: External Monitor, Split-Screen (R14, R16b: DONE, they work).
 - `transport.rs:201-245`: Zoom Edit Tool, Smart Split, the three Nested Timeline buttons.
 - `toolbar.rs:207-208`: Tutorials, What's This.
 - `trimmer.rs:98`: Show Video in Preview.
@@ -762,7 +762,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R12: File > Real-Time Render (R12 moved it to R59: it exists for external hardware FX, which Milan Pro does not host; a normal render gives the same file).
 - R13/R14: the Display page docking options (R13 DONE: Automatically hide docking area, Display timeline at bottom of main window (VP16), Position tabs at top of docked windows; R14 DONE: Allow floating windows to dock).
 - R16a (DONE): region Rename (marker bar), Project Properties Summary page.
-- R16b: preview Split-Screen View and the Isolate channel overlays.
+- R16b (DONE): preview Split-Screen View and the Isolate channel overlays.
 - R18a: View > Event Length (VP23).
 - R18b: video track Set Default Track Properties.
 - R30: Tools > Advanced Save (VP23).
@@ -1262,7 +1262,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ### R13: Built-in layouts and dock commands (M)
 
 **Status: DONE.** Built as designed below, except:
-- The layout files are binary (base64 in XML); their window records were decoded by window id (32219 Explorer ... 32229 Video Scopes, 32238 Mixing Console), tab order, active tab and column rectangles. Classic is the VEGAS Pro 14 layout: the dock area below the timeline, [Project Media group] · Trimmer 610 · Video Preview 613 · Master Bus 125, height 449. Audio Mixing: [Mixing Console + the default group] · Video Preview 511, height 438 (an unidentified second tab behind Video Preview, id 32231, is left out). Color Correction: [group] · Video Scopes 539 · Video Preview 539 · Master Bus 127, height 438; Video Scopes is not built yet, so R16b adds that column; VP23 brings Color Grading to the front [I]. Source Window (VP23) puts the Trimmer and Video Preview side by side; Timeline Top (VP23) puts the default windows in the bottom area [I: no reference shows them].
+- The layout files are binary (base64 in XML); their window records were decoded by window id (32219 Explorer ... 32229 Video Scopes, 32238 Mixing Console), tab order, active tab and column rectangles. Classic is the VEGAS Pro 14 layout: the dock area below the timeline, [Project Media group] · Trimmer 610 · Video Preview 613 · Master Bus 125, height 449. Audio Mixing: [Mixing Console + the default group] · Video Preview 511, height 438 (an unidentified second tab behind Video Preview, id 32231, is left out). Color Correction: [group] · Video Scopes 539 · Video Preview 539 · Master Bus 127, height 438 (R16b added the Video Scopes column); VP23 brings Color Grading to the front [I]. Source Window (VP23) puts the Trimmer and Video Preview side by side; Timeline Top (VP23) puts the default windows in the bottom area [I: no reference shows them].
 - The dock model gains areas (`dock::Area`, `Group.area`, default Top so old layouts load as before): VP23 has four, VP16 one that sits above the timeline or, with "Display timeline at bottom of main window" off (the Classic layout), below it. Layouts save each area's size and which are minimised. Windows move to another area through the tab menu (Dock in Top/Bottom/Left/Right Docking Area, VP23); dragging to an edge comes with R14's drag-out. Groups in the left and right areas are columns too.
 - F11 minimises every area that has windows (again restores them); Maximize Timeline also collapses the track list. Next/Previous Window cycle the timeline and every window of the shown areas, bringing each to the front; a press in a window or the timeline moves that focus. Focus to Timeline also takes the keyboard from a text field.
 - Organize Layouts works on the ten slots themselves (Milan Pro has no layout files): Move Up/Down, Rename, Delete (VEGAS's Clear and Delete Layout in one), Activate; OK writes them. Reload Selected Layout goes back to the built-in or user layout last loaded or saved.
@@ -1353,6 +1353,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Notes survive save and load.
 
 ### R16b: Video Scopes (M)
+
+**Status: DONE.** Built as VEGAS 15 has it (its resource strings were read from `vegas150.exe`), which goes beyond the design below in places:
+- Video Scopes (`ui/scopes.rs`, View › Window, Ctrl+Alt+2) lists VEGAS's views: Vectorscope, Waveform, Histogram, RGB Parade, Vectorscope/Waveform, Vectorscope/Waveform/Histogram, Vectorscope/RGB Parade and All (two by two). Each scope has VEGAS's own setting above it: Vectorscope Normal / Magnified (2×), Waveform Luminance / Composite (luma ± chroma), Histogram Luminance, Red, Green, Blue, Alpha, Luminance/R/G/B and Lightness/a/b with "Mean" and "Std Dev" under each graph. The toolbar has Settings... (Video Scopes Settings: 7.5 IRE Setup and Studio RGB (16 to 235), both off, so a 100 % white frame is 100 IRE) and Update Scopes while Playing (off, as in VEGAS: the scopes keep the last frame while playing). Hovering reads IRE, hue angle and saturation, the parade value or a histogram bin. The choices are kept in the preferences (`Prefs.scopes`; an old file gets the defaults).
+- `engine/scopes.rs` measures in one pass over the Video Preview's composited frame (the engine's `Preview.image`, never decoded again): Rec. 601 luma, NTSC U/V for the vectorscope and its 75 % targets (R, Mg, B, Cy, G, Yl), code values for the histogram and parade (the settings change only the waveform and vectorscope, as in VEGAS). Frames over 0.25 MP are read every 2nd or 3rd pixel. It runs on a "milan-scopes" thread started when the window first draws, at most 10 times a second (`Throttle`); a closed or background-tab window costs nothing. With the Video Preview closed, the open scopes keep the engine making the frame at the cursor.
+- R0 gave this batch the Video Preview's Split-Screen View and the Isolate channel overlays: Split-Screen View (button and ▾: FX Bypassed / Clipboard, Select Left Half / Right Half / All; a drag in the picture draws the region, a double-click takes the whole frame; not kept between sessions, as in VEGAS). FX Bypassed composes the frame a second time without event, track and Video Output FX on a second engine that runs only while it is on (`VideoEngine::without_fx`); Clipboard shows the last Copy Snapshot to Clipboard frame, and the scopes measure that split as VEGAS's do. Overlays › Red, Green, Blue, Red / Green / Blue / Alpha as Grayscale (VEGAS 15's rows) show one channel.
+- Not built: VEGAS 2026's HDR (ST.2084) scope, skin tone line and parade Combined mode (later VEGAS versions); the composite waveform marks the two peaks of each pixel's signal, not the swing between (shortcut); overlays and split are not applied to the Trimmer.
+- Benchmarks (release, this PC): `bench_scopes` all four scopes 5.1 ms at 480x270, 5.3 ms at 960x540, 10.1 ms at 1920x1080 (Lightness/a/b alone 6.6-11.6 ms); `bench_playback` 30.09/30.09/30.08/30.08 fps for 1-4 layers, 0 skipped (before: 30.09 each, 0 skipped); `bench_playback_with_scopes` (all four scopes of a 960x540 frame 10 times a second alongside) 30.08-30.09 fps, 0 skipped.
+- Tests: `white_peaks_at_100_ire_and_255`, `colour_bars_land_on_the_vectorscope_targets`, `histogram_counts`, `composite_waveform_shows_chroma`, `splice_takes_the_region_from_the_other_frame`, `throttle_allows_ten_a_second`, `views_want_their_scopes_and_old_prefs_load`, `a_frame_is_measured_once`, `isolate_shows_one_channel`, `split_regions_follow_the_rotation`, `fx_bypassed_plan_has_no_video_fx`, `builtin_layouts_open_the_vegas_panels`, `a_bad_field_falls_back_alone`.
 
 **Scope:** waveform (luma/RGB parade), vectorscope with 75% targets, histogram and RGB parade. They are computed from the displayed composite on a worker at most 10 times a second, and work on the paused frame. Add the Video Scopes column (539 px, between the group and Video Preview) to the Color Correction layout (`Dock::builtin`, R13).
 
