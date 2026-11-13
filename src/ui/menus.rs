@@ -243,7 +243,7 @@ impl CmdState {
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
-            Loudness(_) | GenerateLoudnessLog => true,
+            Loudness(_) | GenerateLoudnessLog | RebuildNestedAudio => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -1017,7 +1017,7 @@ pub const TOOLS: &[M] = &[
     ]),
     S,
     X("&Clean Project Media", Later("R45b")),
-    X("Rebuild Offline &Nested Audio", Later("R6a")),
+    C("Rebuild Offline &Nested Audio", RebuildNestedAudio),
 ];
 
 pub const GRID_SPACING: &[M] = {
@@ -1393,12 +1393,13 @@ pub fn add_marker(project: &mut Project, history: &mut History) {
 
 /// Pick files and probe them in the background; the app adds the results when they arrive.
 pub fn import_media(ctx: &Context, importer: &Importer) {
-    use crate::media::{AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS};
+    use crate::media::{AUDIO_EXTS, IMAGE_EXTS, PROJECT_EXTS, VIDEO_EXTS};
     if let Some(paths) = rfd::FileDialog::new()
-        .add_filter("All Media", &[VIDEO_EXTS, AUDIO_EXTS, IMAGE_EXTS].concat())
+        .add_filter("All Media", &[VIDEO_EXTS, AUDIO_EXTS, IMAGE_EXTS, PROJECT_EXTS].concat())
         .add_filter("Video", VIDEO_EXTS)
         .add_filter("Audio", AUDIO_EXTS)
         .add_filter("Images", IMAGE_EXTS)
+        .add_filter("Milan Pro Projects (nested)", PROJECT_EXTS)
         .add_filter("All files", &["*"])
         .pick_files()
     {
@@ -1582,6 +1583,20 @@ mod tests {
         commands(TOOLS, &mut tools);
         commands(OPTIONS, &mut tools);
         assert!(tools.contains(&GenerateLoudnessLog) && tools.contains(&Loudness(L::ResetEngine)));
+    }
+
+    /// R6a: Tools › Rebuild Offline Nested Audio works, and nothing in the menus waits on R6a any more.
+    #[test]
+    fn rebuild_nested_audio_works() {
+        assert!(unfinished(RebuildNestedAudio).is_none() && CmdState::default().enabled(RebuildNestedAudio));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R6a")), "{rows:?}");
+        let mut tools = Vec::new();
+        commands(TOOLS, &mut tools);
+        assert!(tools.contains(&RebuildNestedAudio));
     }
 
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.

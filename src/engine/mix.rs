@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 use crate::audio::RATE;
 use crate::engine::afx::Chain;
 use crate::engine::keyframes::{db_to_gain, ramp};
+use crate::engine::nested::NestedMix;
 use crate::engine::plan::{ASrc, AudioPlan, Varispeed, fade};
 use crate::engine::resample::Resampler;
 use crate::project::{ChannelMap, Curve, Envelope};
@@ -112,11 +113,16 @@ struct Stream {
     started: bool,
     /// Samples played as silence while the decoder was starting, dropped when they arrive so the event stays in sync.
     skip: usize,
+    /// R6a: a nested timeline's mixer, told to stop waiting on its own decoders when this goes.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 impl Drop for Stream {
     /// Killed and reaped on a thread of its own: the mix thread never waits on a process.
     fn drop(&mut self) {
+        if let Some(s) = &self.stop {
+            s.store(true, Relaxed);
+        }
         let Some(p) = &self.proc else { return };
         let child = {
             let mut g = p.lock().unwrap_or_else(|e| e.into_inner());
@@ -134,7 +140,7 @@ impl Drop for Stream {
 
 impl Stream {
     fn from_rx(rx: Receiver<Vec<f32>>) -> Self {
-        Self { rx, buf: Vec::new(), pos: 0, proc: None, err: None, started: false, skip: 0 }
+        Self { rx, buf: Vec::new(), pos: 0, proc: None, err: None, started: false, skip: 0, stop: None }
     }
 
     /// A stream that has already ended: silence.
@@ -305,6 +311,22 @@ fn read_pcm(out: &mut impl Read, mut each: impl FnMut(Vec<f32>) -> bool) {
 /// Switches › Normalize: the peak |sample| of `len` seconds of `src` from its in point, read as the mixer reads it,
 /// through the event's channel map (so Left Only is measured on the left channel).
 pub fn peak(src: &ASrc, len: f64, ch: ChannelMap) -> Result<f32, String> {
+    if src.nested.is_some() {
+        // R6a: a nested timeline is measured from its mix.
+        let (mut s, never) = (spawn(src, 0)?, AtomicBool::new(false));
+        let (mut left, mut peak) = (frame(len) as usize, 0.0f32);
+        let mut pcm = vec![0.0; CHUNK * 2];
+        while left > 0 {
+            let k = left.min(CHUNK);
+            if let Some(e) = s.read(&mut pcm[..k * 2], true, Some(&never)) {
+                return Err(e);
+            }
+            map_channels(&mut pcm[..k * 2], ch, false);
+            peak = pcm[..k * 2].iter().fold(peak, |m, v| m.max(v.abs()));
+            left -= k;
+        }
+        return Ok(peak);
+    }
     let mut a = args(src, 0, channels(&src.path, src.stream) == Some(1));
     a.splice(4..4, ["-t".to_string(), format!("{len:.6}")]); // after "-ss <in point>"
     let mut cmd = crate::proc::ffmpeg();
@@ -325,16 +347,34 @@ pub fn peak(src: &ASrc, len: f64, ch: ChannelMap) -> Result<f32, String> {
 /// A decoder for `src` from `at` frames in. The process is started (about 15 ms on Windows) by the reader thread,
 /// so the mix thread returns at once and the stream plays silence until it delivers.
 fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
+    if let Some(n) = &src.nested {
+        return spawn_nested(src, n, at);
+    }
+    let src = src.clone();
+    Ok(run_ffmpeg(move || args(&src, at, channels(&src.path, src.stream) == Some(1)), None))
+}
+
+/// What writes an ffmpeg's stdin (R6a: a nested timeline's mix), on a thread of its own.
+type Feed = Box<dyn FnOnce(std::process::ChildStdin) + Send>;
+
+/// ffmpeg with the arguments `argv` makes (on the reader thread: they may probe the file) as a stream of its stdout.
+fn run_ffmpeg(argv: impl FnOnce() -> Vec<String> + Send + 'static, feed: Option<Feed>) -> Stream {
     let (tx, rx) = mpsc::sync_channel(8);
     let proc: Proc = Arc::default();
-    let (shared, src) = (proc.clone(), src.clone());
+    let shared = proc.clone();
     let err = std::thread::spawn(move || {
         let mut cmd = crate::proc::ffmpeg();
-        cmd.args(args(&src, at, channels(&src.path, src.stream) == Some(1))).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(argv()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        if feed.is_some() {
+            cmd.stdin(Stdio::piped());
+        }
         let mut child = match crate::proc::spawn(&mut cmd) {
             Ok(c) => c,
             Err(e) => return format!("{}: audio is silent", crate::proc::tool_error(&e, "ffmpeg")),
         };
+        if let (Some(f), Some(stdin)) = (feed, child.stdin.take()) {
+            std::thread::spawn(move || f(stdin));
+        }
         let (mut out, err) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
         let last = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
         {
@@ -367,6 +407,76 @@ fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
     });
     let mut s = Stream::from_rx(rx);
     (s.proc, s.err) = (Some(proc), Some(err));
+    s
+}
+
+/// R6a: nested timeline `n`'s master bus from `t0` for `len` seconds, mixed (as its own render mixes it: every decoder
+/// waited for, times its master gain) and handed to `each` in chunks until it refuses one or `stop` is set. Returns the
+/// first decoder error.
+fn mix_nested(n: &NestedMix, t0: f64, len: f64, stop: &Arc<AtomicBool>, mut each: impl FnMut(Vec<f32>) -> bool) -> String {
+    let Ok(plan) = &n.plan else { return String::new() };
+    let mut m = Mixer::ffmpeg();
+    m.render = Some(stop.clone());
+    let (mut f, f1) = (frame(t0), frame(t0) + frame(len));
+    m.warm(plan, f, (f + RATE as i64).min(f1));
+    let mut err = String::new();
+    while f < f1 && !stop.load(Relaxed) {
+        // Whole blocks from `t0`, so the same start always mixes the same blocks.
+        let k = (f1 - f).min((BLOCK * 12) as i64) as usize;
+        let mut pcm = vec![0.0f32; k * 2];
+        for (i, b) in pcm.chunks_mut(BLOCK * 2).enumerate() {
+            m.block(plan, f + (i * BLOCK) as i64, b);
+        }
+        if let Some(e) = m.error.take().filter(|_| err.is_empty()) {
+            err = e;
+        }
+        pcm.iter_mut().enumerate().for_each(|(i, v)| *v *= n.gain[i % 2]);
+        if !each(pcm) {
+            break;
+        }
+        f += k as i64;
+    }
+    err
+}
+
+/// R6a: a stream of nested timeline `n` from `at` frames into event `src`, as a file's decoder would read it: its mix
+/// on a thread of its own, through ffmpeg (fed the mix) when the event plays at another rate or pitch, or reversed.
+fn spawn_nested(src: &ASrc, n: &Arc<NestedMix>, at: i64) -> Result<Stream, String> {
+    if let Err(e) = &n.plan {
+        return Err(e.clone());
+    }
+    let (t0, len) = if src.reverse {
+        (src.in_point, ((src.dur - at as f64 / RATE as f64).max(0.0) * src.rate).min(n.end - src.in_point))
+    } else {
+        let t = src_time(src, at);
+        (t, n.end - t)
+    };
+    let len = len.max(0.0);
+    let (stop, n) = (Arc::new(AtomicBool::new(false)), n.clone());
+    let st = stop.clone();
+    let mut s = if src.rate == 1.0 && src.pitch == 0.0 && !src.reverse {
+        let (tx, rx) = mpsc::sync_channel(8);
+        let err = std::thread::spawn(move || mix_nested(&n, t0, len, &st, |pcm| tx.send(pcm).is_ok()));
+        let mut s = Stream::from_rx(rx);
+        s.err = Some(err);
+        s
+    } else {
+        let mut af = tempo_pitch(src);
+        if src.reverse {
+            af.insert(0, "areverse".into());
+        }
+        let r = RATE.to_string();
+        let mut a: Vec<String> = ["-v", "error", "-f", "f32le", "-ar", &r, "-ac", "2", "-i", "pipe:0", "-ar", &r].map(String::from).to_vec();
+        a.extend(["-af".into(), af.join(",")]);
+        a.extend(["-f", "f32le", "-"].map(String::from));
+        let feed: Feed = Box::new(move |mut stdin| {
+            use std::io::Write;
+            // shortcut: an error of the nested mix fed through ffmpeg is not reported (its tail plays as silence).
+            mix_nested(&n, t0, len, &st, |pcm| stdin.write_all(&pcm.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>()).is_ok());
+        });
+        run_ffmpeg(move || a, Some(feed))
+    };
+    s.stop = Some(stop);
     Ok(s)
 }
 
@@ -392,6 +502,7 @@ impl Live {
         // Forward streams follow the source, not the event: a move or trim during playback that keeps the source time
         // under the playhead keeps the decoder (within one frame of frame rounding).
         self.src.path == src.path
+            && self.src.nested == src.nested
             && self.src.stream == src.stream
             && self.src.rate == src.rate
             && self.src.pitch == src.pitch
@@ -566,7 +677,7 @@ impl Mixer {
     fn vlive(&mut self, id: &str, src: &ASrc, v: &Varispeed, local: f64, need: f64) -> &mut VLive {
         let key = ASrc { pos: 0.0, dur: v.len, in_point: 0.0, rate: 1.0, reverse: false, ..src.clone() };
         let same = |l: &VLive| {
-            (&l.key.path, l.key.stream, l.key.pitch, l.key.dur) == (&key.path, key.stream, key.pitch, key.dur)
+            (&l.key.path, l.key.stream, l.key.pitch, l.key.dur, &l.key.nested) == (&key.path, key.stream, key.pitch, key.dur, &key.nested)
                 && (l.key.in_point - l.s0 - v.offset).abs() < 1e-9
                 && l.s0 <= need.max(0.0) + 1e-9
         };
@@ -1873,7 +1984,7 @@ mod tests {
 
     #[test]
     fn decoder_argv() {
-        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0 };
+        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None };
         assert_eq!(
             args(&src, frame(1.0), false).join(" "),
             r"-v error -ss 3.000000 -i C:\a b.wav -vn -map 0:a:0 -ac 2 -ar 48000 -f f32le -"
@@ -1941,7 +2052,7 @@ mod tests {
             path
         };
         let mono = make("mono.wav", "aevalsrc=0.5:s=48000:d=1", &["-c:a", "pcm_s16le"]);
-        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0 };
+        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None };
         let mut s = spawn(&src(&mono, 1.0), 0).unwrap();
         let mut out = vec![0.0; 2 * 4800];
         assert_eq!(s.read(&mut out, true, None), None);
@@ -1979,7 +2090,7 @@ mod tests {
         assert!(ok);
         let m = crate::media::probe_media(&path).unwrap();
         assert_eq!(m.audio_streams, 2);
-        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream, pitch: 0.0 };
+        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream, pitch: 0.0, nested: None };
         for (stream, want) in [(0, [0.2, 0.2]), (1, [0.6, 0.3])] {
             let mut s = spawn(&src(stream), 0).unwrap();
             let mut out = vec![0.0; 2 * 4800];
@@ -2009,7 +2120,7 @@ mod tests {
             .success();
         assert!(ok);
         for (pitch, want) in [(1200.0, 2000.0), (-1200.0, 500.0)] {
-            let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch };
+            let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch, nested: None };
             let mut s = spawn(&src, 0).unwrap();
             let mut out = vec![0.0; 2 * 72_000];
             assert_eq!(s.read(&mut out, true, None), None);
@@ -2037,7 +2148,7 @@ mod tests {
             .unwrap()
             .success();
         assert!(ok);
-        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0, pitch: 0.0 };
+        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0, pitch: 0.0, nested: None };
         let mut s = spawn(&src, 0).unwrap();
         let mut out = vec![0.0; 2 * 48_000];
         assert_eq!(s.read(&mut out, true, None), None);

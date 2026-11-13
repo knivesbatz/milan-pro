@@ -1315,7 +1315,8 @@ impl Waveforms {
 
     /// Peaks for `m`, one list per channel (1 or 2), requesting them on first use.
     pub fn get(&mut self, m: &MediaItem) -> Option<&[Vec<f32>]> {
-        if m.generator.is_some() {
+        // shortcut: nor does a nested timeline (R6a) have a waveform yet: ffmpeg cannot read a project; mix its peaks if asked.
+        if m.generator.is_some() || m.nested {
             return None; // generated media has no sound and no file to read
         }
         for (id, p) in self.rx.try_iter() {

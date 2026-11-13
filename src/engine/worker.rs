@@ -97,6 +97,11 @@ struct Live<'a> {
 
 impl Live<'_> {
     fn fetch(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
+        // R6a: an offline nested timeline says why, as a missing file does.
+        if let Some(plan::Nested::Offline(why)) = s.nested.as_deref() {
+            self.err.get_or_insert_with(|| format!("{}: {why}", s.m.path.file_name().unwrap_or_default().to_string_lossy()));
+            return None;
+        }
         let key = src_key(self.pool, s, w, self.q);
         if let Some(img) = self.sources.get(&key) {
             return Some(img);
@@ -541,7 +546,7 @@ mod tests {
             stream: 0,
             flow: false,
         });
-        let at = SrcAt { m: m.clone(), sf: None, generator: None };
+        let at = SrcAt { m: m.clone(), sf: None, generator: None, nested: None };
         let solid = |c| Arc::new(ColorImage { size: [4, 4], pixels: vec![c; 16] });
         let held: HashMap<HeldKey, Arc<ColorImage>> = [((m.id.clone(), 4, 4, 0), solid(Color32::RED)), ((m.id.clone(), 4, 4, 1), solid(Color32::BLUE))].into();
         let (mut pool, mut sources, mut failed) = (DecoderPool::default(), ByteLru::new(1 << 20), HashMap::new());

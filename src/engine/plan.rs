@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::decode::Quality;
 use crate::edit::src_time;
 use crate::engine::composite::Affine;
+use crate::engine::nested::{self, NestedMix};
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
 use crate::engine::raster::MaskPlan;
@@ -51,7 +52,7 @@ impl MediaRef {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VideoPlan {
     pub w: u32,
     pub h: u32,
@@ -78,12 +79,16 @@ impl VideoPlan {
             if e.m.proxy.is_some() {
                 e.m = Arc::new(MediaRef { proxy: None, ..(*e.m).clone() });
             }
+            // R6a: nor inside a nested timeline.
+            if let Some(Ok(child)) = &mut e.nested {
+                *child = Arc::new((**child).clone().without_proxies());
+            }
         }
         self
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VTrack {
     composite: Composite,
     compositor: Option<Fx>,
@@ -106,7 +111,7 @@ pub struct VTrack {
     events: Vec<VEvent>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VEvent {
     c: Clip,
     m: Arc<MediaRef>,
@@ -116,6 +121,8 @@ struct VEvent {
     looped: Option<f64>,
     /// Resampled: the two source frames around each frame's time are blended (`m.grid` is the source's rate).
     blend: bool,
+    /// R6a: a nested timeline's plan, or why it is offline.
+    nested: Option<Result<Arc<VideoPlan>, Arc<str>>>,
 }
 
 /// One frame, resolved: tracks bottom to top.
@@ -189,6 +196,16 @@ pub struct SrcAt {
     pub sf: Option<i64>,
     /// Generated media: the generator and its time (0 unless it animates, so a static one renders once).
     pub generator: Option<(FxEval, f64)>,
+    /// R6a: a nested timeline: its frame, composed instead of decoding `m`.
+    pub nested: Option<Box<Nested>>,
+}
+
+/// R6a: a nested timeline's frame, or why it is offline (the preview says so, as for a missing file).
+#[derive(Debug)]
+pub enum Nested {
+    /// The child's frame plan; several with their weights when its own Video Bus Track blurs motion.
+    Frame(Vec<(FramePlan, f32)>),
+    Offline(Arc<str>),
 }
 
 impl FramePlan {
@@ -204,16 +221,22 @@ impl FramePlan {
         h.finish()
     }
 
-    /// Every effect this frame runs: Video Output, track and event FX.
+    /// Every effect this frame runs: Video Output, track and event FX, and those of its nested timelines.
     pub fn fx(&self) -> Vec<&FxEval> {
         let mut v: Vec<&FxEval> = self.out_fx.iter().collect();
         for l in &self.layers {
             v.extend(&l.fx);
             v.extend(&l.compositor);
             for i in &l.items {
-                match i {
-                    Item::Event(e) => v.extend(&e.fx),
-                    Item::Mix { a, b, .. } => v.extend(a.iter().chain(b).flat_map(|e| &e.fx)),
+                let evs: Vec<&EventPlan> = match i {
+                    Item::Event(e) => vec![e],
+                    Item::Mix { a, b, .. } => a.iter().chain(b).collect(),
+                };
+                for e in evs {
+                    v.extend(&e.fx);
+                    if let Some(Nested::Frame(fs)) = e.src.nested.as_deref() {
+                        v.extend(fs.iter().flat_map(|f| f.0.fx()));
+                    }
                 }
             }
         }
@@ -308,13 +331,25 @@ fn event_source(m: &Arc<MediaRef>, item: &MediaItem, c: &Clip, mode: Resample, f
 }
 
 pub fn compile(p: &Project) -> VideoPlan {
+    compile_in(p, &nested::stack_of(p))
+}
+
+/// R6a: `p` compiled inside the projects of `stack` (its own file last, when it has one): a nested timeline that is one
+/// of them is offline.
+pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
     let s = &p.settings;
     // 30000/1001, not 29.97: frame n is at n × 1001 / 30000 s, on the same grid as the ruler and the mixer.
     let fps = crate::project::exact_fps(s.frame_rate.max(1.0));
     // Even: an odd size (an imported VEGAS project) cannot be encoded 4:2:0.
     let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
-    let refs: HashMap<&str, (Arc<MediaRef>, &MediaItem)> =
-        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h), s)?), m)))).collect();
+    let kids = nested::children(p, stack);
+    // A nested timeline as its child is now (length, size, rate).
+    let refs: HashMap<&str, (Arc<MediaRef>, &MediaItem)> = p
+        .media_pool
+        .iter()
+        .map(|m| kids.get(m.id.as_str()).map_or(m, |k| &k.0))
+        .filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h), s)?), m))))
+        .collect();
     // Parent / child in the whole list (a muted parent leaves its children to composite on their own); the top track
     // cannot be a child.
     // shortcut: one level of compositing children (VEGAS nests further); add a parent stack if nested groups are asked for.
@@ -333,8 +368,11 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .filter(|c| !c.muted && c.duration > 0.0)
                 .filter_map(|c| {
                     let (m, item) = refs.get(c.media_id.as_deref()?)?;
-                    let (m, blend) = event_source(m, item, c, c.resample.unwrap_or(s.resample), fps);
-                    Some(VEvent { m, blend, generator: item.generator.clone(), looped: crate::edit::loop_len(c, item), c: c.clone() })
+                    let nested = kids.get(item.id.as_str()).map(|k| k.1.as_ref().map(|c| c.video.clone()).map_err(|e| e.as_str().into()));
+                    // shortcut: a nested timeline shows its own frames, never blended or flowed to another rate; resample
+                    // it like footage if mixed-rate nesting asks for it.
+                    let (m, blend) = if nested.is_some() { (m.clone(), false) } else { event_source(m, item, c, c.resample.unwrap_or(s.resample), fps) };
+                    Some(VEvent { m, blend, generator: item.generator.clone(), looped: crate::edit::loop_len(c, item), c: c.clone(), nested })
                 })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
@@ -545,7 +583,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                     st = st.clamp(0.0, (e.m.duration - 0.5 / p.fps).max(0.0));
                 }
                 let ft = st + e.m.offset;
-                let sf = (!e.m.still).then(|| if e.m.grid > 0.0 { (ft * e.m.grid + 1e-6).floor() as i64 } else { (ft * p.fps).round() as i64 });
+                let sf = (!e.m.still && e.nested.is_none()).then(|| if e.m.grid > 0.0 { (ft * e.m.grid + 1e-6).floor() as i64 } else { (ft * p.fps).round() as i64 });
                 // Resampled: the frame after `sf` too, weighted by how far between the two this frame's time falls.
                 let next = sf.filter(|_| e.blend).map(|n| (n + 1, (ft * e.m.grid - n as f64).clamp(0.0, 1.0) as f32)).filter(|n| n.1 >= 1.0 / 512.0);
                 // A generator is evaluated at its media time; one that does not animate always at 0.
@@ -562,7 +600,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                     .filter(|m| m.path.len() >= 3)
                     .collect();
                 let plan = |alpha| EventPlan {
-                    src: SrcAt { m: e.m.clone(), sf, generator: generator.clone() },
+                    src: SrcAt { m: e.m.clone(), sf, generator: generator.clone(), nested: nested_at(e, ft) },
                     place: place(c.pan_crop.at(la), (e.m.w as f64, e.m.h as f64), size, c.keep_aspect),
                     alpha,
                     fx: fx.clone(),
@@ -623,6 +661,19 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
     FramePlan { alpha: p.alpha, layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
 }
 
+/// R6a: the frame of nested timeline event `e` at its media time `ft`: the child's own frame there (on its own frame
+/// grid), with its own motion blur sub-frames. The parent's motion blur leaves it alone, as it does footage.
+fn nested_at(e: &VEvent, ft: f64) -> Option<Box<Nested>> {
+    Some(Box::new(match e.nested.as_ref()? {
+        Ok(v) => {
+            let n = frame_at(ft, v.fps);
+            let fp = frame_plan(v, n);
+            Nested::Frame(if fp.samples.is_empty() { vec![(fp, 1.0)] } else { fp.samples.iter().map(|&(dt, w)| (frame_plan_at(v, n, dt), w)).collect() })
+        }
+        Err(why) => Nested::Offline(why.clone()),
+    }))
+}
+
 /// Fade to Color at `t`: towards the top colour above 0, the bottom colour below; None at 0.
 fn fade_to(env: Option<&Envelope>, colors: [[u8; 3]; 2], t: f64) -> Option<([u8; 3], f32)> {
     env.map(|e| e.at(t).clamp(-1.0, 1.0)).filter(|v| v.abs() >= 1.0 / 512.0).map(|v| (colors[(v < 0.0) as usize], v.abs()))
@@ -667,6 +718,8 @@ pub struct ASrc {
     pub stream: u32,
     /// Pitch change in cents, at the same length.
     pub pitch: f32,
+    /// R6a: a nested timeline (`path` is its project): its sound is mixed from this, not decoded from `path`.
+    pub nested: Option<Arc<NestedMix>>,
 }
 
 /// R4b: how an audio event with a Velocity envelope reads its media (varispeed, `mix::Mixer::block`).
@@ -851,7 +904,27 @@ fn played_fx(fx: &[Fx], mode: AutoMode) -> Vec<Fx> {
 pub const QUICKFADE: f64 = 0.010;
 
 pub fn compile_audio(p: &Project) -> AudioPlan {
-    let media: HashMap<&str, &MediaItem> = p.media_pool.iter().filter(|m| m.sample_rate.is_some() && m.generator.is_none()).map(|m| (m.id.as_str(), m)).collect();
+    compile_audio_in(p, &nested::stack_of(p))
+}
+
+/// R6a: the sound of a nested timeline, or why it is offline.
+fn nested_mix(k: &(MediaItem, Result<Arc<nested::Child>, String>)) -> Arc<NestedMix> {
+    match &k.1 {
+        Ok(c) => c.audio.clone(),
+        Err(e) => Arc::new(NestedMix { plan: Err(e.clone()), end: 0.0, gain: [1.0; 2] }),
+    }
+}
+
+/// R6a: `p`'s sound compiled inside the projects of `stack` (see `compile_in`).
+pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
+    let kids = nested::children(p, stack);
+    let media: HashMap<&str, &MediaItem> = p
+        .media_pool
+        .iter()
+        .map(|m| kids.get(m.id.as_str()).map_or(m, |k| &k.0))
+        .filter(|m| m.sample_rate.is_some() && m.generator.is_none())
+        .map(|m| (m.id.as_str(), m))
+        .collect();
     let env = |envs: &[Envelope], kind| envs.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
     let any_solo = p.timeline.any_solo(false);
     let (order, outs, index) = bus_order(&p.timeline.audio);
@@ -879,7 +952,8 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                     // In the file: a subclip starts part way in.
                     let stream = c.stream.min(m.streams(false) - 1);
                     let pitch = c.pitch_cents;
-                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream, pitch };
+                    let nested = kids.get(m.id.as_str()).map(nested_mix);
+                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream, pitch, nested: nested.clone() };
                     let vel = crate::engine::velocity::of(c).map(|_| Varispeed {
                         clip: Clip { fx: Vec::new(), takes: Vec::new(), pan_crop: Default::default(), ..c.clone() },
                         looped: crate::edit::loop_len(c, m),
@@ -951,14 +1025,21 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
 /// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it
 /// plays, or the whole file when it loops past the end; None without audio media.
 pub fn norm_source(p: &Project, c: &Clip) -> Option<(ASrc, f64)> {
-    let m = p.media_pool.iter().find(|m| Some(&m.id) == c.media_id.as_ref() && m.sample_rate.is_some() && m.generator.is_none())?;
+    let m = p.media_pool.iter().find(|m| Some(&m.id) == c.media_id.as_ref())?;
+    // R6a: a nested timeline is measured as it is now.
+    let kid = m.nested.then(|| nested::children(p, &nested::stack_of(p)).remove(m.id.as_str())).flatten();
+    let m = kid.as_ref().map_or(m, |k| &k.0);
+    if m.sample_rate.is_none() || m.generator.is_some() {
+        return None;
+    }
     let span = c.duration * c.rate;
     let (from, len) = match crate::edit::loop_len(c, m) {
         Some(l) if c.in_point + span > l => (0.0, l),
         _ => (c.in_point, span.min(m.duration - c.in_point).max(0.0)),
     };
     let stream = c.stream.min(m.streams(false) - 1);
-    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream, pitch: 0.0 }, len))
+    let nested = kid.as_ref().map(nested_mix);
+    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream, pitch: 0.0, nested }, len))
 }
 
 #[cfg(test)]

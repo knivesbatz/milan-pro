@@ -1352,6 +1352,11 @@ impl MeridianApp {
                 self.save_prefs();
             }
             GenerateLoudnessLog => self.generate_loudness_log(ctx),
+            RebuildNestedAudio => {
+                // Nested sound is mixed live, so there is no proxy to render: the nested timelines are read again.
+                crate::engine::nested::reload();
+                self.message = Some("Nested timelines reloaded.".into());
+            }
             OutputMeters | VerticalMeters | MeterWidth(_) => {
                 let p = &mut self.prefs;
                 match c {

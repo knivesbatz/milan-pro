@@ -119,6 +119,8 @@ pub enum Command {
     RenderQueue, BatchRender, RenderAudioTracks,
     /// R16c: Options › Loudness Meters (also the window's right-click menu); Tools › Generate Loudness Log.
     Loudness(super::loudness::LoudCmd), GenerateLoudnessLog,
+    /// R6a: Tools › Rebuild Offline Nested Audio (every nested timeline read again).
+    RebuildNestedAudio,
 }
 
 use Command::*;

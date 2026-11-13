@@ -16,6 +16,10 @@ pub fn probe_media(path: &Path) -> anyhow::Result<MediaItem> {
         .to_string_lossy()
         .to_lowercase();
 
+    // R6a: a Milan Pro project is a nested timeline.
+    if PROJECT_EXTS.contains(&ext.as_str()) {
+        return crate::engine::nested::probe(path);
+    }
     let media_type = classify_extension(&ext);
 
     let mut item = MediaItem { id: uuid::Uuid::new_v4().to_string(), path: path.to_path_buf(), name, media_type, ..Default::default() };
@@ -106,9 +110,11 @@ pub fn in_pool(pool: &[MediaItem], path: &std::path::Path) -> bool {
 pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "wmv", "flv", "webm", "mxf", "mpg", "mpeg", "ts", "m2ts", "mts", "m2t", "vob", "3gp", "m4v"];
 pub const AUDIO_EXTS: &[&str] = &["mp3", "wav", "flac", "aac", "ogg", "wma", "aiff", "opus", "m4a", "ac3", "dts", "pcm"];
 pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "tiff", "tif", "bmp", "webp", "gif", "exr", "tga", "psd"];
+/// R6a: projects imported as nested timelines, as VEGAS imports a `.veg`.
+pub const PROJECT_EXTS: &[&str] = &["mnle"];
 
 pub(crate) fn classify_extension(ext: &str) -> MediaType {
-    if VIDEO_EXTS.contains(&ext) {
+    if VIDEO_EXTS.contains(&ext) || PROJECT_EXTS.contains(&ext) {
         MediaType::Video
     } else if AUDIO_EXTS.contains(&ext) {
         MediaType::Audio
@@ -290,6 +296,9 @@ mod tests {
         let m = parse("png", r#"{"streams":[{"codec_type":"video","codec_name":"png","width":64,"height":64}]}"#);
         assert_eq!(m.media_type, MediaType::Image);
         assert_eq!(parse("xyz", "{}").media_type, MediaType::Unknown);
+        // R6a: a project imports (and drops) as a nested timeline; `probe_media` reads it as one.
+        assert_eq!(classify_extension("mnle"), MediaType::Video);
+        assert!(super::probe_media(std::path::Path::new("no-such-project.mnle")).is_err());
     }
 
     /// R3b: Stream ▸ offers each audio and picture stream; cover art is not one.

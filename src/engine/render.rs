@@ -824,6 +824,96 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// R6a, needs ffmpeg: nested timelines render as their events do flat on the parent's timeline. The picture shows
+    /// the parent's track below through the child's transparency; the sound is the child's master bus, also played
+    /// reversed (through ffmpeg). `cargo test --release -- --ignored nested_render_matches_flat`
+    #[test]
+    #[ignore]
+    fn nested_render_matches_flat() {
+        let dir = std::env::temp_dir().join(format!("milan-render-nested-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, args: &[&str]| {
+            let path = dir.join(name);
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y"]).args(args).arg(&path).status().unwrap().success());
+            crate::media::probe_media(&path).unwrap()
+        };
+        let a = make("a.mov", &["-f", "lavfi", "-i", "testsrc2=d=3:s=320x240:r=30", "-f", "lavfi", "-i", "sine=f=440:d=3:r=48000", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p", "-c:a", "pcm_s16le", "-shortest"]);
+        let bars = make("bars.mp4", &["-f", "lavfi", "-i", "smptebars=d=4:s=320x240:r=30", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"]);
+        let clip = |m: &MediaItem, pos: f64, inp: f64, dur: f64| {
+            let mut c = Clip::from_media(m, pos);
+            (c.in_point, c.duration, c.out_point) = (inp, dur, inp + dur);
+            c
+        };
+        let new = |name: &str| {
+            let mut p = Project::new(name);
+            (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+            p
+        };
+        // Child 1: `a` from 0.5 s in, at 0.5 s for 2 s, fading in; its sound at -6 dB for 1.5 s.
+        let mut child = new("child");
+        let mut v = clip(&a, 0.5, 0.5, 2.0);
+        v.fade_in = 0.5;
+        child.timeline.video_tracks[0].clips.push(v);
+        let mut s = clip(&a, 0.5, 0.5, 1.5);
+        s.gain_db = -6.0;
+        child.timeline.audio_tracks[0].clips.push(s);
+        child.media_pool.push(a.clone());
+        child.save(&dir.join("child.mnle")).unwrap();
+        // Child 2 (sound only in the parent): 1 s long (a solid fills it), `a`'s 1.0..1.8 s at 0.1 s, -6 dB.
+        let mut child2 = new("child2");
+        let solid = crate::engine::plugins::find("milan.gen.solid").unwrap();
+        let g = MediaItem { id: "g".into(), media_type: crate::project::MediaType::Image, duration: 86400.0, generator: Some(crate::engine::plugins::new_fx(solid, None)), ..Default::default() };
+        child2.timeline.video_tracks[0].clips.push(clip(&g, 0.0, 0.0, 1.0));
+        let mut s2 = clip(&a, 0.1, 1.0, 0.8);
+        s2.gain_db = -6.0;
+        child2.timeline.audio_tracks[0].clips.push(s2.clone());
+        child2.media_pool = vec![a.clone(), g];
+        child2.save(&dir.join("child2.mnle")).unwrap();
+        // Nested: the bars below, child 1 at 0.5 s; child 2 reversed at 0.2 s on a second audio track.
+        let (n, n2) = (crate::media::probe_media(&dir.join("child.mnle")).unwrap(), crate::media::probe_media(&dir.join("child2.mnle")).unwrap());
+        assert!(n.nested && n.duration == 2.5 && n2.duration == 1.0);
+        let mut nested = new("nested");
+        nested.timeline.video_tracks = vec![Track::new("Nested", TrackKind::Video), Track::new("Bars", TrackKind::Video)];
+        nested.timeline.video_tracks[1].clips.push(clip(&bars, 0.0, 0.0, 3.5));
+        nested.timeline.video_tracks[0].clips.push(Clip::from_media(&n, 0.5));
+        nested.timeline.audio_tracks[0].clips.push(Clip::from_media(&n, 0.5));
+        nested.timeline.add_audio_track();
+        nested.timeline.audio_tracks[1].clips.push(Clip { reverse: true, ..Clip::from_media(&n2, 0.2) });
+        nested.media_pool = vec![bars.clone(), n, n2];
+        // Flat: the same events straight on the parent's tracks.
+        let mut flat = nested.clone();
+        let later = |c: &Clip, by: f64| Clip { position: c.position + by, ..c.clone() };
+        flat.timeline.video_tracks[0].clips = child.timeline.video_tracks[0].clips.iter().map(|c| later(c, 0.5)).collect();
+        flat.timeline.audio_tracks[0].clips = child.timeline.audio_tracks[0].clips.iter().map(|c| later(c, 0.5)).collect();
+        // Reversed in a 1 s event at 0.2 s, child 2's 0.1..0.9 s lands at 0.3..1.1 s, backwards.
+        flat.timeline.audio_tracks[1].clips = vec![Clip { reverse: true, ..later(&s2, 0.2) }];
+        flat.media_pool = vec![bars, a];
+        let run = |p: &Project, t: &Template, name: &str| {
+            let out = dir.join(name);
+            let job = start(p, t, out.clone(), (0.0, 3.5), Opts::default(), egui::Context::default());
+            assert_eq!(wait(&job), Status::Done, "{name}");
+            out
+        };
+        let (pn, pf) = (run(&nested, &BUILTIN[2], "nested.mov"), run(&flat, &BUILTIN[2], "flat.mov"));
+        for k in [10i64, 20, 35, 45, 60, 80, 95] {
+            let (g, w) = (decoded_frame(&pn, k), decoded_frame(&pf, k));
+            assert_eq!(g.len(), 320 * 240 * 4);
+            let mae = g.iter().zip(&w).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / g.len() as f64;
+            assert!(mae <= 0.5, "frame {k}: nested and flat differ by {mae:.2}/255 on average");
+        }
+        let (sn, sf) = (pcm(&run(&nested, &BUILTIN[3], "nested.wav")), pcm(&run(&flat, &BUILTIN[3], "flat.wav")));
+        assert!(sn.len() == sf.len() && sn.len() >= 2 * 167_000, "{} {}", sn.len(), sf.len());
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak(&sn[2 * 14_400..2 * 52_800]) > 0.03, "the nested sound plays, forward and reversed");
+        // Reversed, the child's quickfade ramps land one sample off the flat event's (a fade-out's last sample is a
+        // fade-in's first), within 10 ms of the reversed event's edges at 0.3 s and 1.1 s.
+        let edge = |i: usize| [14_400usize, 52_800].iter().any(|&e| i / 2 + 480 >= e && i / 2 < e + 480);
+        let worst = |at_edge: bool| sn.iter().zip(&sf).enumerate().filter(|(i, _)| edge(*i) == at_edge).fold(0.0f32, |m, (_, (a, b))| m.max((a - b).abs()));
+        assert!(worst(false) < 2.0 / 32768.0, "nested and flat sound differ by {}", worst(false));
+        assert!(worst(true) < 1e-3, "at the quickfades: {}", worst(true));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// ffprobe's view of a rendered file: streams, chapters, format duration; video frames counted.
     fn probe(path: &Path) -> serde_json::Value {
         let mut cmd = crate::proc::ffprobe();

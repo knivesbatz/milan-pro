@@ -18,6 +18,7 @@ pub mod keyframes;
 pub mod lut;
 pub mod loudness;
 pub mod mix;
+pub mod nested;
 pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;
@@ -80,6 +81,8 @@ pub fn content_hash(p: &Project) -> u64 {
     }
     let mut w = HashWriter(DefaultHasher::new());
     let _ = serde_json::to_writer(&mut w, &(&p.settings, &p.timeline, &p.media_pool));
+    // R6a: a nested timeline saved since (or any project file under it) changes the picture and the sound too.
+    w.0.write_u64(nested::stamp(p));
     w.0.finish()
 }
 

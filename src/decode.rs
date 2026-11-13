@@ -543,6 +543,11 @@ impl Thumbs {
     /// Thumbnail of `m` at source time `time` (callers quantise it), requesting it on first use.
     pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
         self.receive();
+        // shortcut: a nested timeline (R6a) has no thumbnails (ffmpeg cannot read a project); compose them through the
+        // engine if events need pictures.
+        if m.nested {
+            return None;
+        }
         let time = if m.media_type == MediaType::Image { 0.0 } else { m.file_time(time.max(0.0)) };
         let key = (key_path(m), (time * 1000.0).round() as i64);
         if !self.cache.contains_key(&key) {

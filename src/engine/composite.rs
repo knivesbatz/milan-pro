@@ -1,7 +1,7 @@
 //! CPU compositor: premultiplied 8-bit `Color32` layers, bottom to top, row stripes on scoped threads.
 use eframe::egui::{Color32, ColorImage};
 use std::sync::Arc;
-use crate::engine::plan::{EventPlan, FramePlan, Item, SrcAt, TrackPlan};
+use crate::engine::plan::{EventPlan, FramePlan, Item, Nested, SrcAt, TrackPlan};
 use crate::engine::plugins::FxEval;
 use crate::engine::{raster, transition, vfx};
 use crate::project::{Composite, Halo};
@@ -391,10 +391,21 @@ pub fn requests(fp: &FramePlan, w: usize, h: usize) -> Vec<(&SrcAt, u32, u32)> {
         let to_out = layer_to_out(l, w, h);
         for e in l.items.iter().flat_map(events) {
             let (dw, dh) = decode_size(e, to_out);
-            v.push((&e.src, dw, dh));
+            match e.src.nested.as_deref() {
+                // R6a: a nested timeline asks for what its own frame does, at the size it is composed.
+                Some(Nested::Frame(fs)) => v.extend(fs.iter().flat_map(|f| requests(&f.0, dw as usize, dh as usize))),
+                Some(Nested::Offline(_)) => {}
+                None => v.push((&e.src, dw, dh)),
+            }
         }
     }
     v
+}
+
+/// R6a: a nested timeline's frame `w` x `h` (transparent where nothing covers it), through the same sources.
+fn compose_nested(fs: &[(FramePlan, f32)], src: &mut dyn Sources, w: u32, h: u32, bilinear: bool, k: usize) -> ColorImage {
+    let frames: Vec<ColorImage> = fs.iter().map(|f| compose(&f.0, src, w as usize, h as usize, bilinear, k)).collect();
+    if frames.len() == 1 { frames.into_iter().next().expect("one frame") } else { mean(&frames, &fs.iter().map(|f| f.1).collect::<Vec<_>>()) }
 }
 
 /// The events an item draws, bottom first, with the alpha factor each gets.
@@ -413,9 +424,13 @@ fn draw_event(dst: &mut ColorImage, src: &mut dyn Sources, e: &EventPlan, to_out
         return;
     }
     let (dw, dh) = decode_size(e, to_out);
-    let Some(mut img) = src.get(&e.src, dw, dh) else { return };
+    let img = match e.src.nested.as_deref() {
+        Some(Nested::Frame(fs)) => Some(Arc::new(compose_nested(fs, src, dw, dh, bilinear, k))),
+        _ => src.get(&e.src, dw, dh),
+    };
+    let Some(mut img) = img else { return };
     if let Some((n, w)) = e.next {
-        if let Some(b) = src.get(&SrcAt { m: e.src.m.clone(), sf: Some(n), generator: None }, dw, dh) {
+        if let Some(b) = src.get(&SrcAt { m: e.src.m.clone(), sf: Some(n), generator: None, nested: None }, dw, dh) {
             blend_frames(Arc::make_mut(&mut img), &b, w, k);
         }
     }
@@ -684,7 +699,7 @@ mod tests {
     }
 
     fn event(m: &Arc<MediaRef>, pc: PanCrop, alpha: f32) -> EventPlan {
-        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0), true), alpha, fx: Vec::new(), next: None, flicker: false, masks: Vec::new() }
+        EventPlan { src: SrcAt { m: m.clone(), sf: Some(0), generator: None, nested: None }, place: plan::place(pc, (m.w as f64, m.h as f64), (1920.0, 1080.0), true), alpha, fx: Vec::new(), next: None, flicker: false, masks: Vec::new() }
     }
 
     fn layer(items: Vec<Item>, mode: Composite, opacity: f32, motion: Motion) -> TrackPlan {

@@ -918,6 +918,9 @@ pub struct MediaItem {
     pub audio_streams: u32,
     #[serde(default)]
     pub video_streams: u32,
+    /// R6a: a Milan Pro project (`.mnle`) used as media, a nested timeline (`engine::nested`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2015,6 +2018,8 @@ mod tests {
         assert!(m.subclip.is_none() && m.file_time(2.0) == 2.0);
         assert_eq!((m.audio_streams, m.streams(false)), (0, 1));
         assert!(serde_json::to_value(&p).unwrap()["media_pool"][0].get("subclip").is_none(), "nothing written for a whole file");
+        // R6a: media is a file, not a nested timeline, and that is not written.
+        assert!(!m.nested && serde_json::to_value(&p).unwrap()["media_pool"][0].get("nested").is_none());
         // R7: no masks, no parent/child compositing, no Custom compositor, 2D Shadow and Glow off, motion blur on, no
         // Video Bus Track envelopes (white over black Fade Colors), Gaussian motion blur, 2D Track Motion; none written.
         assert!(c.masks.is_empty() && !t.child && t.parent_mode == Composite::SourceAlpha && t.parent_motion.is_empty() && t.compositor.is_none());
