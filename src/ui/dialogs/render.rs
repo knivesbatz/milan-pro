@@ -263,7 +263,7 @@ impl RenderDialog {
         ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
     }
 
-    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers; multichannel waits for R10a; R12's
+    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers, the loudness log (R16c); multichannel waits for R10a; R12's
     /// Render in the background (off, as VEGAS).
     fn options(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) {
         let video = self.chosen.video.is_some();
@@ -272,6 +272,11 @@ impl RenderDialog {
             .on_disabled_hover_text("The project's Output rotation is 0°.");
         let chapters = self.chosen.container().is_some_and(|c| c.chapters);
         ui.add_enabled(chapters, Checkbox::new(&mut self.opts.markers, "Save project markers in media file")).on_disabled_hover_text("This format cannot hold markers.");
+        // R16c: `<name>_loud.txt` beside the file, measured after the master and before the codec (VEGAS).
+        let mut loud = self.opts.loudness_log.is_some();
+        if ui.add_enabled(self.chosen.audio.is_some(), Checkbox::new(&mut loud, "Save loudness log next to media file")).on_disabled_hover_text("This format has no audio.").changed() {
+            self.opts.loudness_log = loud.then_some(prefs.loudness.mode);
+        }
         ui.add_enabled(false, Checkbox::new(&mut false, "Enable multichannel mapping")).on_disabled_hover_text(super::super::menus::Later("R10a").text());
         *changed |= ui
             .checkbox(&mut prefs.render_background, "Render in the background (keep editing; progress in the status bar)")
@@ -601,7 +606,9 @@ impl RenderDialog {
         {
             return false;
         }
-        let opts = Opts { quickfade: self.quickfade, ..self.opts };
+        // The loudness log is written in the Loudness Meters' mode at the time of the render.
+        let loudness_log = self.opts.loudness_log.filter(|_| self.chosen.audio.is_some()).map(|_| prefs.loudness.mode);
+        let opts = Opts { quickfade: self.quickfade, loudness_log, ..self.opts };
         let range = self.range(project);
         match queue.add(project, &self.chosen, out, range, opts) {
             Ok(id) => {

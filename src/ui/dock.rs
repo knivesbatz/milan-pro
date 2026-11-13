@@ -30,10 +30,12 @@ pub enum Panel {
     ProjectNotes,
     /// R16b: View › Window › Video Scopes (in the Color Correction layout).
     VideoScopes,
+    /// R16c: View › Window › Loudness Meters (not in a default layout).
+    LoudnessMeters,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 15] = [
+    pub const ALL: [Panel; 16] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -49,6 +51,7 @@ impl Panel {
         Panel::EditDetails,
         Panel::ProjectNotes,
         Panel::VideoScopes,
+        Panel::LoudnessMeters,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -69,6 +72,7 @@ impl Panel {
             Panel::EditDetails => "Edit Details",
             Panel::ProjectNotes => "Project Notes",
             Panel::VideoScopes => "Video Scopes",
+            Panel::LoudnessMeters => "Loudness Meters",
         }
     }
 

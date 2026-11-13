@@ -120,6 +120,8 @@ pub struct Prefs {
     pub toolbars: BTreeMap<String, Vec<String>>,
     /// R16b: the Video Scopes window's scopes, their settings and Update Scopes while Playing.
     pub scopes: crate::ui::ScopePrefs,
+    /// R16c: Options › Loudness Meters, and Preferences › Audio › "Open editor when new loudness log is generated".
+    pub loudness: crate::ui::LoudPrefs,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -262,6 +264,7 @@ impl Default for Prefs {
             key_map: None,
             toolbars: BTreeMap::new(),
             scopes: Default::default(),
+            loudness: Default::default(),
         }
     }
 }
@@ -776,6 +779,10 @@ mod tests {
         assert_eq!(p.scopes, crate::ui::ScopePrefs::default());
         let s = Prefs::parse(Ok(r#"{"scopes":{"view":"All","levels":{"studio":true},"while_playing":true}}"#.into())).unwrap().scopes;
         assert!(s.levels.studio && !s.levels.setup && s.while_playing && s != crate::ui::ScopePrefs::default());
+        // R16c: likewise the Loudness Meters options.
+        assert_eq!(p.loudness, crate::ui::LoudPrefs::default());
+        let l = Prefs::parse(Ok(r#"{"loudness":{"mode":"Atsc","range":7,"open_editor":false}}"#.into())).unwrap().loudness;
+        assert!(l.mode == crate::engine::loudness::Mode::Atsc && l.range == 7 && !l.open_editor && l.labels);
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

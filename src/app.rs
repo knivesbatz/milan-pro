@@ -124,6 +124,10 @@ pub struct MeridianApp {
     edit_details: ui::EditDetails,
     /// R16b: the Video Scopes window's thread and plots (its choices are in `prefs.scopes`).
     scopes: ui::Scopes,
+    /// R16c: the Loudness Meters' measuring thread (its options are in `prefs.loudness`), and Tools › Generate Loudness
+    /// Log running.
+    loudness: ui::Loudness,
+    loud_log: Option<render::Job>,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -337,6 +341,8 @@ impl MeridianApp {
             console: ui::ConsoleView::default(),
             edit_details: ui::EditDetails::default(),
             scopes: ui::Scopes::default(),
+            loudness: ui::Loudness::default(),
+            loud_log: None,
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -533,6 +539,7 @@ impl eframe::App for MeridianApp {
         self.tick_shuttle(ctx);
         self.handle_keys(ctx);
         self.tick_input(ctx);
+        self.tick_loudness_log();
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -685,6 +692,7 @@ impl eframe::App for MeridianApp {
                     let split = self.preview_view.split_snapshot();
                     scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
                 }
+                Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
                 }
             };
             self.dock.show(ui, a.dock, &mut content);

@@ -10,6 +10,7 @@ use std::process::{ChildStdin, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, mpsc};
 use crate::audio::RATE;
+use crate::engine::loudness::{Log as Loudness, Mode};
 use crate::engine::mix::{self, BLOCK, Mixer};
 use crate::engine::plan::{self, VideoPlan, compile_audio};
 use crate::engine::worker::Worker;
@@ -24,6 +25,24 @@ const AUDIO_SHARE: f64 = 0.05;
 pub fn start(project: &Project, template: &Template, out: PathBuf, range: (f64, f64), opts: Opts, ctx: egui::Context) -> Job {
     let (p, t) = (project.clone(), template.clone());
     Job::start(ctx, move |ctl| render(&p, &t, &out, range, opts, ctl))
+}
+
+/// R16c: Tools › Generate Loudness Log: mix `range` (seconds) of a snapshot of `project` as a render does and write its
+/// loudness log, in `mode`, to `out` (the job's `log()` once written).
+pub fn loudness_log(project: &Project, range: (f64, f64), quickfade: bool, mode: Mode, out: PathBuf, ctx: egui::Context) -> Job {
+    let p = project.clone();
+    Job::start(ctx, move |ctl| {
+        if range.1 <= range.0 {
+            return Err("Nothing to measure: the timeline is empty".into());
+        }
+        let mut l = Loudness::new(RATE);
+        mix_range(&p, range, quickfade, ctl, 1.0, Some(&mut l), |_| true)?;
+        let source = p.path.as_ref().map_or_else(|| p.name.clone(), |x| x.display().to_string());
+        let text = l.text(&source, &format!("the project's mix, {RATE} Hz stereo, after the master"), mode, range);
+        std::fs::write(&out, text).map_err(|e| format!("Cannot write the loudness log {}: {e}", out.display()))?;
+        ctl.set_log(out);
+        Ok(())
+    })
 }
 
 /// `<out>.partial`
@@ -151,7 +170,9 @@ fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, 
     let (part, tmp, meta) = (partial(out), temp_file("f32"), temp_file("ffmeta"));
     ctl.set_temp(vec![part.clone(), tmp.clone(), meta.clone()]);
     let mut log = Log::default();
-    let r = t.check().and_then(|()| encode(p, t, range, opts, (&part, &tmp, &meta), ctl, &mut log));
+    // R16c: the loudness of the mix as it goes to the encoder (after the master, before the codec, as VEGAS logs it).
+    let mut loud = opts.loudness_log.filter(|_| t.audio.is_some()).map(|_| Loudness::new(RATE));
+    let r = t.check().and_then(|()| encode(p, t, range, opts, (&part, &tmp, &meta), ctl, &mut log, loud.as_mut()));
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(&meta);
     let r = if r.is_err() || ctl.cancelled() {
@@ -165,6 +186,16 @@ fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, 
     } else {
         // A failed rename keeps the finished render under its .partial name rather than losing it.
         std::fs::rename(&part, out).map_err(|e| format!("The render is finished as {} but could not replace {}: {e}", part.display(), out.display()))
+    };
+    // A loudness log that cannot be written fails the render, so its absence is never silent.
+    let r = match (r, loud, opts.loudness_log) {
+        (Ok(()), Some(mut l), Some(mode)) => {
+            let path = crate::render::loudness_log_path(out);
+            let format = format!("{} ({}), measured at {} Hz before the codec", t.name, t.audio_line(&p.settings).unwrap_or_default(), RATE);
+            let text = l.text(&out.display().to_string(), &format, mode, range);
+            std::fs::write(&path, text).map_err(|e| format!("The render is done, but its loudness log {} could not be written: {e}", path.display()))
+        }
+        (r, ..) => r,
     };
     let status = match &r {
         Ok(()) => "Done".to_string(),
@@ -216,7 +247,8 @@ fn write_log(out: &Path, t: &Template, range: (f64, f64), log: &Log, status: &st
     std::fs::write(&path, text).ok().map(|()| path)
 }
 
-fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp, meta): (&Path, &Path, &Path), ctl: &Ctl, log: &mut Log) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp, meta): (&Path, &Path, &Path), ctl: &Ctl, log: &mut Log, mut loud: Option<&mut Loudness>) -> Result<(), String> {
     let s = &p.settings;
     let rot = if opts.rotate { s.rotation % 360 } else { 0 };
     // Frames are composed at the template's rate (twice it, one per field, when interlaced) and quality.
@@ -237,7 +269,7 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
         let file = std::fs::File::create(tmp).map_err(|e| format!("Cannot create the render's temp audio {}: {e}", tmp.display()))?;
         let (mut file, mut err) = (BufWriter::new(file), None);
         // A refused write (disk full) leaves its error in `err`.
-        mix_range(p, (a, b), opts.quickfade, ctl, AUDIO_SHARE, |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
+        mix_range(p, (a, b), opts.quickfade, ctl, AUDIO_SHARE, loud.take(), |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
         if let Some(e) = err.or_else(|| file.flush().err()) {
             return Err(format!("Cannot write the render's temp audio {}: {e}", tmp.display()));
         }
@@ -271,7 +303,7 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
             feed_video(vp, n, f.compose, quality, alpha, stdin, ctl)
         }
         // `move`: stdin closes when the mix ends, which tells the encoder to finish.
-        _ => mix_range(p, (a, b), opts.quickfade, ctl, 1.0, move |bytes| stdin.write_all(bytes).is_ok()),
+        _ => mix_range(p, (a, b), opts.quickfade, ctl, 1.0, loud, move |bytes| stdin.write_all(bytes).is_ok()),
     };
     // stdin is closed: the encoder finishes, or is killed when the frames stopped short.
     if !matches!(fed, Ok(true)) {
@@ -305,8 +337,9 @@ fn summary(lines: &[String]) -> String {
 
 /// Mix seconds `a..b` at RATE through the master FX (Bypass All Audio FX never applies to a render), then the master
 /// gain, clamped to [-1, 1], as f32le stereo into `write` (a master limiter's output never reaches the clamp while the
-/// master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`.
-fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share: f64, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
+/// master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`. R16c: `loud` measures
+/// what is written.
+fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share: f64, mut loud: Option<&mut Loudness>, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
     let plan = plan::AudioPlan { quickfade: if quickfade { plan::QUICKFADE } else { 0.0 }, ..compile_audio(p) };
     let gain = p.timeline.master.gain;
     let mut mixer = Mixer::ffmpeg();
@@ -326,8 +359,12 @@ fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share:
         if let Some(e) = mixer.error.take() {
             return Err(e);
         }
+        buf.iter_mut().enumerate().for_each(|(i, v)| *v = (*v * gain[i % 2]).clamp(-1.0, 1.0));
+        if let Some(l) = loud.as_deref_mut() {
+            l.feed(&buf);
+        }
         bytes.clear();
-        bytes.extend(buf.iter().enumerate().flat_map(|(i, v)| (v * gain[i % 2]).clamp(-1.0, 1.0).to_le_bytes()));
+        bytes.extend(buf.iter().flat_map(|v| v.to_le_bytes()));
         if !write(&bytes) {
             return Ok(false);
         }
@@ -748,6 +785,20 @@ mod tests {
         loud.timeline.master.audio_fx = vec![crate::engine::afx::test_fx("milan.afx.limiter", &[("input", 24.0), ("ceiling", -1.0)])];
         let limited = peak(&pcm(&run(&loud, &BUILTIN[3], "limited.wav", (0.0, 3.0))));
         assert!(limited <= 10f32.powf(-1.0 / 20.0) + 1e-4 && limited > 0.85, "{limited}");
+        // R16c: Save loudness log next to media file writes `<name>_loud.txt` measuring what was rendered, and Tools ›
+        // Generate Loudness Log measures the same mix.
+        let out = dir.join("loud.wav");
+        let job = start(&p, &BUILTIN[3], out.clone(), (0.0, 3.0), Opts { loudness_log: Some(Mode::Ebu), ..Opts::default() }, egui::Context::default());
+        assert_eq!(wait(&job), Status::Done);
+        let integrated = |t: &str| t.lines().find(|l| l.starts_with("Integrated loudness:")).and_then(|l| l.split_whitespace().nth(2)).and_then(|v| v.parse::<f64>().ok()).unwrap();
+        let text = std::fs::read_to_string(dir.join("loud_loud.txt")).unwrap();
+        let mut m = crate::engine::loudness::Meter::new(48_000, false);
+        m.feed(&pcm(&out));
+        assert!(m.integrated() > -40.0 && (integrated(&text) - m.integrated()).abs() < 0.11 && text.contains("EBU R 128"), "{}\n{text}", m.integrated());
+        let tool = dir.join("timeline_loud.txt");
+        assert_eq!(wait(&loudness_log(&p, (0.0, 3.0), true, Mode::Atsc, tool.clone(), egui::Context::default())), Status::Done);
+        let again = std::fs::read_to_string(&tool).unwrap();
+        assert!(integrated(&again) == integrated(&text) && again.contains("ATSC A/85"), "{again}");
 
         // Cancel mid-render, then drop a running job (Milan closing): no output, no .partial, no temp audio.
         let mut long = p.clone();

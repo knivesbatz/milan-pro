@@ -160,6 +160,13 @@ impl Ring {
         self.head.store(h.wrapping_add(n), Release);
     }
 
+    /// Consumer: append every frame waiting to `out` (stereo).
+    pub fn take(&self, out: &mut Vec<f32>) {
+        let at = out.len();
+        out.resize(at + 2 * self.len(), 0.0);
+        self.pop(&mut out[at..]);
+    }
+
     /// Frames waiting.
     fn len(&self) -> usize {
         self.head.load(Acquire).wrapping_sub(self.tail.load(Relaxed))
@@ -468,6 +475,12 @@ struct Out {
     master: Arc<Master>,
     shared: Arc<Shared>,
     ring: Arc<Ring>,
+    /// R16c: the master output for the Loudness Meters (after the master fader, before Dim and Downmix, which only
+    /// monitor), at the device rate; a session's first frames follow a NaN frame, which resets the meter.
+    // shortcut: a device not at 48 kHz is metered after the playback resampler (linear interpolation), a hair off the
+    // mix in the highs; the loudness log measures the 48 kHz mix exactly. Tap the feed if users meter at 44.1 kHz.
+    loud: Arc<Ring>,
+    ltap: Vec<f32>,
     mon: Box<MonState>,
     /// The device rate, and RATE / rate: mixer frames per device frame.
     rate: u32,
@@ -490,7 +503,7 @@ struct Out {
 
 impl Out {
     #[allow(clippy::too_many_arguments)]
-    fn new(feeds: Receiver<Feed>, mons: Receiver<MonMsg>, bin: SyncSender<Trash>, master: Arc<Master>, shared: Arc<Shared>, ring: Arc<Ring>, mon: Box<MonState>) -> Self {
+    fn new(feeds: Receiver<Feed>, mons: Receiver<MonMsg>, bin: SyncSender<Trash>, master: Arc<Master>, shared: Arc<Shared>, ring: Arc<Ring>, loud: Arc<Ring>, mon: Box<MonState>) -> Self {
         let gain = [master.gain(0), master.gain(1)];
         let mut o = Self {
             feed: None,
@@ -500,6 +513,8 @@ impl Out {
             master,
             shared,
             ring,
+            loud,
+            ltap: vec![0.0; 2 * CHUNK],
             mon,
             rate: RATE,
             step: 1.0,
@@ -521,6 +536,7 @@ impl Out {
     fn set_rate(&mut self, rate: u32) {
         self.rate = rate.max(1);
         self.step = RATE as f64 / self.rate as f64;
+        self.loud.rate.store(self.rate, Relaxed);
     }
 
     /// The device callback: fill `out` (`ch` interleaved channels at the device rate), whose first frame is heard
@@ -535,6 +551,7 @@ impl Out {
             if let Some(old) = self.feed.replace(f) {
                 trash(&self.bin, Trash::Feed(old));
             }
+            self.loud.push(&[f32::NAN; 2]); // a new session: the loudness meters start again (VEGAS)
         }
         if self.feed.as_ref().is_some_and(|f| f.stop.load(Relaxed)) {
             if let Some(old) = self.feed.take() {
@@ -571,7 +588,9 @@ impl Out {
             }
             for k in 0..m {
                 let v = self.resampled(&mut under);
-                let y = self.master_frame([v[0] + self.mbuf[2 * k], v[1] + self.mbuf[2 * k + 1]]);
+                let (y, l) = self.master_frame([v[0] + self.mbuf[2 * k], v[1] + self.mbuf[2 * k + 1]]);
+                // A NaN or infinity from a plug-in must not read as the reset frame or poison the meter.
+                (self.ltap[2 * k], self.ltap[2 * k + 1]) = (if l[0].is_finite() { l[0] } else { 0.0 }, if l[1].is_finite() { l[1] } else { 0.0 });
                 let o = &mut out[(done + k) * ch..(done + k + 1) * ch];
                 if ch == 1 {
                     o[0] = (y[0] + y[1]) * 0.5;
@@ -579,6 +598,9 @@ impl Out {
                     (o[0], o[1]) = (y[0], y[1]);
                     o[2..].fill(0.0);
                 }
+            }
+            if self.feed.is_some() {
+                self.loud.push(&self.ltap[..2 * m]);
             }
             done += m;
         }
@@ -621,15 +643,18 @@ impl Out {
         v
     }
 
-    /// The master: fader gain and Dim (gliding), Downmix, the peak tap and the 50 ms RMS.
-    fn master_frame(&mut self, x: [f32; 2]) -> [f32; 2] {
+    /// The master: fader gain and Dim (gliding), Downmix, the peak tap and the 50 ms RMS. Also the frame for the
+    /// loudness meters: after the fader, before Dim and Downmix.
+    fn master_frame(&mut self, x: [f32; 2]) -> ([f32; 2], [f32; 2]) {
         let glide = |g: &mut f32, to: f32| *g = if (to - *g).abs() < 1e-6 { to } else { *g + (to - *g) / 96.0 };
         glide(&mut self.mono, if self.master.mono.load(Relaxed) { 1.0 } else { 0.0 });
         let dim = if self.master.dim.load(Relaxed) { DIM } else { 1.0 };
         let m = self.mono * 0.5;
-        let mut y = [0.0; 2];
+        let (mut y, mut l) = ([0.0; 2], [0.0; 2]);
         for c in 0..2 {
-            glide(&mut self.gain[c], self.master.gain(c) * dim);
+            let g = self.master.gain(c);
+            l[c] = x[c] * g;
+            glide(&mut self.gain[c], g * dim);
             let v = (x[c] * (1.0 - m) + x[1 - c] * m) * self.gain[c];
             self.master.tap(c, v);
             self.sq[c] += v * v;
@@ -642,7 +667,7 @@ impl Out {
             }
             (self.sq, self.frames) = ([0.0; 2], 0);
         }
-        y
+        (y, l)
     }
 }
 
@@ -814,6 +839,8 @@ pub struct Player {
     pub ring: Arc<Ring>,
     mon: MonPlan,
     pub mon_meters: Arc<Meters>,
+    /// R16c: the master output the Loudness Meters measure (`Out::loud`).
+    pub loud: Arc<Ring>,
 }
 
 impl Drop for Player {
@@ -845,6 +872,7 @@ impl Player {
             ring: Arc::default(),
             mon: MonPlan::default(),
             mon_meters: Arc::default(),
+            loud: Arc::default(),
         };
         p.open();
         p
@@ -863,7 +891,7 @@ impl Player {
         let (bin, bin_rx) = mpsc::sync_channel(256);
         let shared = Arc::new(Shared::default());
         let mon = Box::new(MonState::new(Arc::new(self.mon.clone())));
-        let out = Out::new(feeds, mons, bin, self.master.clone(), shared.clone(), self.ring.clone(), mon);
+        let out = Out::new(feeds, mons, bin, self.master.clone(), shared.clone(), self.ring.clone(), self.loud.clone(), mon);
         let cfg = self.config.clone();
         std::thread::Builder::new()
             .name("milan-audio-device".into())
@@ -1340,6 +1368,7 @@ mod tests {
         feeds: SyncSender<Feed>,
         mons: SyncSender<MonMsg>,
         master: Arc<Master>,
+        loud: Arc<Ring>,
         _bin: Receiver<Trash>,
     }
 
@@ -1347,10 +1376,31 @@ mod tests {
         let (feeds, frx) = mpsc::sync_channel(4);
         let (mons, mrx) = mpsc::sync_channel(8);
         let (bin, bin_rx) = mpsc::sync_channel(1024);
-        let master = Arc::new(Master::new());
-        let mut out = Out::new(frx, mrx, bin, master.clone(), Arc::default(), Arc::default(), Box::new(MonState::new(Arc::default())));
+        let (master, loud) = (Arc::new(Master::new()), Arc::new(Ring::default()));
+        let mut out = Out::new(frx, mrx, bin, master.clone(), Arc::default(), Arc::default(), loud.clone(), Box::new(MonState::new(Arc::default())));
         out.set_rate(rate);
-        Rig { out, feeds, mons, master, _bin: bin_rx }
+        Rig { out, feeds, mons, master, loud, _bin: bin_rx }
+    }
+
+    /// R16c: the loudness tap is the mix after the master fader and before Dim and Downmix, only while a session plays,
+    /// each session's frames after a NaN reset frame; at the device rate.
+    #[test]
+    fn loudness_tap_is_the_master_before_dim_and_downmix() {
+        let mut r = rig(44_100);
+        let mut got = Vec::new();
+        pull(&mut r, 4);
+        r.loud.take(&mut got);
+        assert!(got.is_empty(), "nothing plays: {got:?}");
+        assert_eq!(r.loud.rate.load(Relaxed), 44_100);
+        let mut r = rig(RATE);
+        r.master.set_gain([0.5, 0.5]);
+        let (tx, ..) = session(&r, 1);
+        tx.send((0, 1.0, [0.8, 0.2].repeat(8))).unwrap();
+        (r.master.dim.store(true, Relaxed), r.master.mono.store(true, Relaxed));
+        pull(&mut r, 3);
+        r.loud.take(&mut got);
+        assert!(got[0].is_nan() && got[1].is_nan(), "{got:?}");
+        assert_eq!(&got[2..], [0.4, 0.1].repeat(3));
     }
 
     /// A playback session on `r`: its block sender, clock and stop flag.

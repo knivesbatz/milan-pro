@@ -16,6 +16,7 @@ pub mod generate;
 pub mod keyframes;
 #[allow(dead_code)]
 pub mod lut;
+pub mod loudness;
 pub mod mix;
 pub mod plan;
 #[allow(dead_code)]

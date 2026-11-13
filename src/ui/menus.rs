@@ -155,6 +155,8 @@ pub struct CmdState {
     pub meter_width: u8,
     /// R14: Preview on External Monitor is on.
     pub external: bool,
+    /// R16c: Options › Loudness Meters.
+    pub loudness: super::loudness::LoudPrefs,
 }
 
 impl CmdState {
@@ -241,6 +243,7 @@ impl CmdState {
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
+            Loudness(_) | GenerateLoudnessLog => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -299,6 +302,7 @@ impl CmdState {
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
             ExternalMonitor => self.external,
+            Loudness(k) => return self.loudness.checked(k),
             MediaMarkers | Multicam => false,
             _ => return None,
         })
@@ -373,7 +377,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         SurroundPanner => Later("R10b"),
-        LoudnessMeters => Later("R16c"),
         Multicam => Later("R17b"),
         SmartSplit | OpenInAudioEditor | InsertCommand | CdTrack | CdIndex | MediaMarkers | RebuildPeaks | ContextMenu => Later("R18a"),
         InsertAdjustmentTrack => Later("R18b"),
@@ -481,6 +484,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
         c,
         PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutVp14 | LayoutAudio
             | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+            | Loudness(super::loudness::LoudCmd::Mode(_) | super::loudness::LoudCmd::Range(_) | super::loudness::LoudCmd::Wide(_))
     );
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
@@ -837,7 +841,7 @@ const WINDOWS: &[M] = &[
     C("S&urround Panner", SurroundPanner),
     C("Mixing Console", Window(Panel::MixingConsole)),
     C("Device Exp&lorer", DeviceExplorer),
-    C("Loudness Meters", LoudnessMeters),
+    C("Loudness Meters", Window(Panel::LoudnessMeters)),
     V23(&C("Dashboard", Dashboard)),
     V23(&C("Color Grading", Window(Panel::ColorGrading))),
     S,
@@ -988,7 +992,7 @@ pub const TOOLS: &[M] = &[
         X("&DVD...", NotPlanned("R59")),
         X("&Blu-ray Disc...", Fixed("not feasible: needs AACS licensing (VEGAS long tail R59)")),
     ]),
-    X("Generate Loudness Log", Later("R16c")),
+    C("Generate Loudness Log", GenerateLoudnessLog),
     V23(&X("Advanced Save...", Later("R30"))),
     V23(&X("Speech to Text...", NotPlanned("R59"))),
     V23(&C("Text to Speech...", TextToSpeech)),
@@ -1068,6 +1072,42 @@ pub const RULER_MENU: &[M] = &[
     V23(&C("Set Project Tempo", ProjectTempo)),
 ];
 
+/// R16c: Options › Loudness Meters, also the Loudness Meters window's right-click menu.
+pub const LOUDNESS: &[M] = {
+    use crate::engine::loudness::Mode as Md;
+    use super::loudness::LoudCmd as L;
+    &[
+        C("&Reset Clip", Loudness(L::ResetClip)),
+        C("Reset Meterin&g Engine", Loudness(L::ResetEngine)),
+        S,
+        C("EB&U R 128 Mode", Loudness(L::Mode(Md::Ebu))),
+        C("&ATSC A 85 Mode", Loudness(L::Mode(Md::Atsc))),
+        S,
+        C("True Peak &Blocking Filter", Loudness(L::BlockingFilter)),
+        Sub("&True Peak Range", &[
+            C("-12 to 0 dB", Loudness(L::Range(0))),
+            C("-24 to 0 dB", Loudness(L::Range(1))),
+            C("-42 to 0 dB", Loudness(L::Range(2))),
+            C("-60 to 0 dB", Loudness(L::Range(3))),
+            C("-78 to 0 dB", Loudness(L::Range(4))),
+            C("-90 to 0 dB", Loudness(L::Range(5))),
+            C("-120 to 0 dB", Loudness(L::Range(6))),
+            C("-138 to 0 dB", Loudness(L::Range(7))),
+        ]),
+        Sub("Loudness S&cale", &[
+            C("&EBU +9", Loudness(L::Wide(false))),
+            C("E&BU +18", Loudness(L::Wide(true))),
+            S,
+            C("&Absolute (-23 LUFS)", Loudness(L::Absolute)),
+        ]),
+        S,
+        C("Show True P&eak Meter", Loudness(L::ShowTruePeak)),
+        C("&Show Labels", Loudness(L::Labels)),
+        C("Hold Pea&ks", Loudness(L::HoldPeaks)),
+        C("Hold &Valleys", Loudness(L::HoldValleys)),
+    ]
+};
+
 pub const OPTIONS: &[M] = &[
     C("&Quantize to Frames", Quantize),
     S,
@@ -1097,36 +1137,7 @@ pub const OPTIONS: &[M] = &[
     S,
     C("&Loop Playback", Loop),
     K("Metr&onome", false, Later("R18a")),
-    Sub("&Loudness Meters", &[
-        X("&Reset Clip", Later("R16c")),
-        X("Reset Meterin&g Engine", Later("R16c")),
-        S,
-        R("EB&U R 128 Mode", true, Later("R16c")),
-        R("&ATSC A 85 Mode", false, Later("R16c")),
-        S,
-        K("True Peak &Blocking Filter", false, Later("R16c")),
-        Sub("&True Peak Range", &[
-            R("-12 to 0 dB", false, Later("R16c")),
-            R("-24 to 0 dB", false, Later("R16c")),
-            R("-42 to 0 dB", false, Later("R16c")),
-            R("-60 to 0 dB", true, Later("R16c")),
-            R("-78 to 0 dB", false, Later("R16c")),
-            R("-90 to 0 dB", false, Later("R16c")),
-            R("-120 to 0 dB", false, Later("R16c")),
-            R("-138 to 0 dB", false, Later("R16c")),
-        ]),
-        Sub("Loudness S&cale", &[
-            R("&EBU +9", true, Later("R16c")),
-            R("E&BU +18", false, Later("R16c")),
-            S,
-            R("&Absolute (-23 LUFS)", false, Later("R16c")),
-        ]),
-        S,
-        K("Show True P&eak Meter", false, Later("R16c")),
-        K("&Show Labels", true, Later("R16c")),
-        K("Hold Pea&ks", false, Later("R16c")),
-        K("Hold &Valleys", false, Later("R16c")),
-    ]),
+    Sub("&Loudness Meters", LOUDNESS),
     S,
     C("&Bypass All Audio FX", BypassAudioFx),
     S,
@@ -1546,6 +1557,33 @@ mod tests {
         assert!([RenderToNewTrack, RenderQueue, BatchRender, RenderAudioTracks].iter().all(|c| cmds.contains(c)));
     }
 
+    /// R16c: the Loudness Meters window, Generate Loudness Log and every Options › Loudness Meters row work, their marks
+    /// follow the options, and nothing in the menus waits on R16c any more.
+    #[test]
+    fn loudness_meter_commands_work() {
+        use super::super::loudness::LoudCmd as L;
+        let mut cmds = Vec::new();
+        commands(LOUDNESS, &mut cmds);
+        assert_eq!(cmds.len(), 20);
+        cmds.extend([Window(Panel::LoudnessMeters), GenerateLoudnessLog]);
+        let mut st = CmdState::default();
+        for c in &cmds {
+            assert!(unfinished(*c).is_none() && st.enabled(*c), "{c:?}");
+        }
+        assert_eq!((st.checked(Loudness(L::Range(3))), st.checked(Loudness(L::Wide(false))), st.checked(Loudness(L::HoldPeaks))), (Some(true), Some(true), Some(false)));
+        st.loudness.apply(L::Mode(crate::engine::loudness::Mode::Atsc));
+        assert_eq!((st.checked(Loudness(L::Mode(crate::engine::loudness::Mode::Ebu))), st.checked(Loudness(L::ResetClip))), (Some(false), None));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R16c")), "{rows:?}");
+        let mut tools = Vec::new();
+        commands(TOOLS, &mut tools);
+        commands(OPTIONS, &mut tools);
+        assert!(tools.contains(&GenerateLoudnessLog) && tools.contains(&Loudness(L::ResetEngine)));
+    }
+
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.
     #[test]
     fn input_bus_command_works() {
@@ -1783,7 +1821,7 @@ mod tests {
                 }
             }
         }
-        assert!(found > 200, "{found}");
+        assert!(found > 150, "{found}");
     }
 
     /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.

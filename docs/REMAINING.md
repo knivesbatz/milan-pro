@@ -404,7 +404,7 @@ What matters most:
 | 12.7 | Audio routing | DONE | See 5.18 (R8a) |
 | 12.8 | Master bus | DONE | `ui/master_bus.rs`, master FX |
 | 12.9 | Track buses | DONE | (R8a) Insert › Audio Bus, Insert › Audio Assignable FX... (opens the chain's FX window), Tools › Audio › Remove Assignable FX...; bus FX, volume, pan, mute and Volume/Pan/Mute envelopes play (`ABus`). (R8b) A bus's fader, pan, mute, FX and output on its Mixing Console strip (`edit::set_bus_out` refuses loops), and View › Audio Bus Tracks (B): a lane per bus and chain with its Volume/Pan/Mute envelopes and Mute/Vol/Pan/FX/meter in its header (`ui/timeline/bus.rs`). No bus Solo and no Master bus track yet. |
-| 12.10 | Audio meters | DONE | (R8b) Track header meters show each track's post-fader level (L/R, 2 s peak hold, clip lamps, VP16 peak readout; Show Output Meters, Use Vertical Meters, Channel Width), as do the bus track headers, the console strips and the Master Bus window, all from one per-frame fold of the lock-free `mix::Meter`s (`mixer::feed_levels`). |
+| 12.10 | Audio meters | DONE | (R8b) Track header meters show each track's post-fader level (L/R, 2 s peak hold, clip lamps, VP16 peak readout; Show Output Meters, Use Vertical Meters, Channel Width), as do the bus track headers, the console strips and the Master Bus window, all from one per-frame fold of the lock-free `mix::Meter`s (`mixer::feed_levels`). (R16c) The Loudness Meters window (`ui/loudness.rs`, `engine/loudness.rs`): ITU-R BS.1770-4 / EBU R 128 momentary, short-term and integrated loudness, loudness range and 4x true peak, with Options › Loudness Meters, Tools › Generate Loudness Log and Render Options › Save loudness log next to media file (tests `tech3341_sines_read_their_level`, `tech3341_gating_cases`, `tech3342_loudness_range`, `true_peak_finds_inter_sample_peaks`). |
 | 12.11 | Peak meters | DONE | `master_bus.rs` (peak hold, clip lamps) |
 | 12.12 | VU-style meters | DONE | (R8b) The Mixing Console's VU Meters region (off by default, as VEGAS shows peak meters): 300 ms ballistics, 0 VU = -20 dBFS (`MeterView::vu_db`, test `vu_step_reaches_99_percent_in_300_ms`). |
 | 12.13 | Multichannel audio | MISSING | → R10a |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R16c-R18 (R13, R14, R15, R16a, R16b DONE) |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R17-R18 (R13, R14, R15, R16a, R16b, R16c DONE) |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -628,7 +628,7 @@ The inventory as found before R0:
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c, R31, R10b, R8b (DONE), R59 |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c (DONE), R31, R10b, R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
@@ -1372,6 +1372,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - A test of the 10/s throttle.
 
 ### R16c: Loudness meters and loudness log (M)
+
+**Status: DONE.** Built as VEGAS has it (its help pages on loudness metering and logging), which goes beyond the design below in places:
+- Measuring (`engine/loudness.rs`, pure) follows ITU-R BS.1770-4: the K-weighting shelf and RLB high-pass (from their analogue prototypes; at 48 kHz they are the tabled coefficients to 1e-8), 100 ms sub-blocks, momentary (400 ms) and short-term (3 s) loudness every 100 ms, integrated loudness over 400 ms gating blocks with 75 % overlap and the -70 LUFS absolute and -10 LU relative gates, loudness range after EBU Tech 3342 (3 s windows, -70 LUFS and -20 LU gates, 10th to 95th percentile), and true peak with the Annex 2 48-tap 4-phase interpolating filter. Stereo, both channels weighted 1 (the master is stereo until R10a).
+- Loudness Meters window (`ui/loudness.rs`, View › Window › Loudness Meters, Ctrl+Alt+8 in VEGAS 16 and Ctrl+Alt+7 in VEGAS 23; not in a default layout): the statistics on the left (Momentary, Short, Integrated with its over-target lamp, LRA, True Peak with its over-maximum lamp), the M, S and I meters with the target line and, with Show True Peak Meter, L and R true-peak meters. Its right-click menu is Options › Loudness Meters, now live: Reset Clip (the true peaks), Reset Metering Engine, EBU R 128 Mode (-23 LUFS, -1 dBTP) / ATSC A 85 Mode (-24 LUFS, -2 dBTP), True Peak Blocking Filter (the larger of the peaks with and without a 10 Hz DC blocker, VEGAS's wording), True Peak Range (-12 ... -138 to 0 dB), Loudness Scale EBU +9 (-18 to +9 LU) / EBU +18 (-36 to +18 LU) and Absolute (-23 LUFS) (a check: LUFS instead of LU from the target, as VEGAS's help reads it), Show True Peak Meter, Show Labels, Hold Peaks and Hold Valleys. The choices are kept in the preferences (`Prefs.loudness`; an old file gets VEGAS's defaults).
+- Real time: the output callback copies the master (after the master fader, before Dim and Downmix, which only monitor) into a lock-free ring (`audio::Ring`, `Player::loud`) while a session plays, with a NaN frame at each session's start; a "milan-loudness" thread, started when the window first draws, drains it every 20 ms and measures. Neither the mix thread nor the callback takes a lock or does more than a copy. As in VEGAS the statistics start again when playback starts (or seeks) and keep their values when it stops. Shortcut: a device not at 48 kHz is metered after the playback resampler.
+- Tools › Generate Loudness Log: the time selection (else the whole timeline) mixed as a render mixes it, in the background, into `<project>_loud.txt` beside the project (an unsaved project asks where); Preferences › Audio › "Open editor when new loudness log is generated" (on) opens it. Render Options › "Save loudness log next to media file" writes `<media>_loud.txt` from the mix the encoder gets (after the master FX, before the codec, as VEGAS). The log has the file, format, mode and range, the integrated loudness, loudness range, maximum momentary, short-term and true peak, and a row per second (momentary, short-term, true peak). VEGAS's own log layout is not documented, so this one is Milan Pro's.
+- Not built: 5.1 channel weighting (R10a), the loudness of media on import (R45b).
+- Tests: `k_weighting_matches_bs1770_at_48k`, `tech3341_sines_read_their_level` (cases 1 and 2), `tech3341_gating_cases` (cases 3-5), `tech3342_loudness_range` (cases 1-3), `true_peak_finds_inter_sample_peaks`, `blocking_filter_never_lowers_the_peak`, `other_rates_and_the_log`, `loudness_tap_is_the_master_before_dim_and_downmix`, `options_follow_the_menu_and_old_prefs_load`, `loudness_meter_commands_work`, `a_bad_field_falls_back_alone`; `render_e2e` checks the render's log against the rendered file and Generate Loudness Log against it.
 
 **Scope**
 - EBU R128 / ATSC A/85: momentary, short-term and integrated LUFS, LRA, and true peak (4× oversampling). Scale options from the existing Options > Loudness Meters menu.

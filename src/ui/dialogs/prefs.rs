@@ -1,5 +1,5 @@
 //! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
-//! are live.
+//! are live, and Audio has the loudness log option (R16c).
 use eframe::egui::{self, *};
 use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
@@ -17,6 +17,7 @@ const ROWS23: &[&[&str]] = &[
 const GENERAL: usize = 0;
 const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
+const AUDIO: usize = 3;
 pub const AUDIO_DEVICE: usize = 4;
 const EDITING: usize = 7;
 pub const DISPLAY: usize = 8;
@@ -72,6 +73,7 @@ impl PrefsDialog {
                 GENERAL => general(ui, d),
                 VIDEO => video(ui, d),
                 PREVIEW_DEVICE => preview_device(ui, d, monitors.get_or_insert_with(crate::ui::monitors::list)),
+                AUDIO => audio(ui, d),
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track, bottom),
@@ -91,7 +93,6 @@ impl PrefsDialog {
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
-        "Audio" => Later("R49"),
         "VST Effects" => Later("R31"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
         _ => Later("R49"), // File I/O, Deprecated Features
@@ -138,6 +139,13 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update) = (false, true, 4, true);
     }
+}
+
+/// Audio (R16c): VEGAS's loudness log option; the page's other settings wait for R49.
+fn audio(ui: &mut Ui, d: &mut Prefs) {
+    ui.checkbox(&mut d.loudness.open_editor, "Open editor when new loudness log is generated");
+    ui.add_space(8.0);
+    ui.label(format!("Milan Pro has no other settings on this page ({}).", Later("R49").phrase()));
 }
 
 fn video(ui: &mut Ui, d: &mut Prefs) {

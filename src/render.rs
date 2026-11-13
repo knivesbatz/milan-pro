@@ -631,12 +631,20 @@ pub struct Opts {
     pub rotate: bool,
     /// Save project markers in media file (formats that hold chapters).
     pub markers: bool,
+    /// R16c: Save loudness log next to media file (`<name>_loud.txt`), in this metering mode.
+    pub loudness_log: Option<crate::engine::loudness::Mode>,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { quickfade: true, stretch: false, rotate: true, markers: false }
+        Self { quickfade: true, stretch: false, rotate: true, markers: false, loudness_log: None }
     }
+}
+
+/// R16c: where a loudness log of `media` goes: beside it, `<name>_loud.txt` (VEGAS's name).
+pub fn loudness_log_path(media: &std::path::Path) -> PathBuf {
+    let stem = media.file_stem().map_or("render".into(), |s| s.to_string_lossy().into_owned());
+    media.with_file_name(format!("{stem}_loud.txt"))
 }
 
 /// Where the composed picture goes in the output frame. The project frame (at its pixel aspect ratio, turned by

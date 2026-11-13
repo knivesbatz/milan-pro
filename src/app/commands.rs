@@ -143,6 +143,7 @@ impl MeridianApp {
             vertical_meters: self.prefs.vertical_meters,
             meter_width: self.prefs.meter_width,
             external: self.external.is_some(),
+            loudness: self.prefs.loudness,
         }
     }
 
@@ -592,6 +593,46 @@ impl MeridianApp {
                 false
             }
         }
+    }
+
+    /// R16c: Tools › Generate Loudness Log: the time selection (else the whole timeline), mixed as a render mixes it, into
+    /// `<project>_loud.txt` beside the project (an unsaved project asks where), in the background.
+    fn generate_loudness_log(&mut self, ctx: &egui::Context) {
+        if self.loud_log.is_some() {
+            self.message = Some("A loudness log is already being generated.".into());
+            return;
+        }
+        let range = self.project.timeline.loop_region.filter(|(a, b)| b > a).unwrap_or((0.0, content_end(&self.project)));
+        let out = match &self.project.path {
+            Some(p) => crate::render::loudness_log_path(p),
+            None => match rfd::FileDialog::new().add_filter("Text", &["txt"]).set_file_name(format!("{}_loud.txt", self.project.name)).save_file() {
+                Some(p) => p,
+                None => return,
+            },
+        };
+        self.loud_log = Some(crate::engine::render::loudness_log(&self.project, range, self.prefs.quickfade, self.prefs.loudness.mode, out, ctx.clone()));
+        self.message = Some("Generating the loudness log...".into());
+    }
+
+    /// Each frame: a finished loudness log is reported and, with Preferences › Audio › "Open editor when new loudness log
+    /// is generated", opened in the text editor.
+    pub(super) fn tick_loudness_log(&mut self) {
+        use crate::render::Status;
+        let Some(job) = &self.loud_log else { return };
+        match job.status() {
+            Status::Running => return,
+            Status::Done => {
+                if let Some(p) = job.log() {
+                    self.message = Some(format!("Loudness log saved to {}", p.display()));
+                    if self.prefs.loudness.open_editor {
+                        dialogs::open_file(&p);
+                    }
+                }
+            }
+            Status::Failed(e) => self.message = Some(format!("Generate Loudness Log: {e}")),
+            Status::Cancelled => {}
+        }
+        self.loud_log = None;
     }
 
     pub(super) fn save_prefs(&mut self) {
@@ -1305,6 +1346,12 @@ impl MeridianApp {
                 self.audio.master.dim.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
             }
             AudioProperties => self.settings.open_tab(&self.project, 1),
+            Loudness(k) => {
+                self.loudness.command(k);
+                self.prefs.loudness.apply(k);
+                self.save_prefs();
+            }
+            GenerateLoudnessLog => self.generate_loudness_log(ctx),
             OutputMeters | VerticalMeters | MeterWidth(_) => {
                 let p = &mut self.prefs;
                 match c {

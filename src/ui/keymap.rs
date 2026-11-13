@@ -54,7 +54,7 @@ pub enum Command {
     SaveLayoutAs, OrganizeLayouts, ReloadLayout,
     // Windows
     FocusTimeline, Window(Panel), ShowWindow(Panel), PluginManager, SurroundPanner,
-    DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
+    DeviceExplorer, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, UnfinishedFeatures, CheckForUpdates, About,
@@ -117,6 +117,8 @@ pub enum Command {
     OutputMeters, VerticalMeters, MeterWidth(u8),
     /// R12: Tools › Render Queue...; Tools › Scripting › Batch Render and Render Audio Tracks (VEGAS's bundled scripts).
     RenderQueue, BatchRender, RenderAudioTracks,
+    /// R16c: Options › Loudness Meters (also the window's right-click menu); Tools › Generate Loudness Log.
+    Loudness(super::loudness::LoudCmd), GenerateLoudnessLog,
 }
 
 use Command::*;
@@ -370,7 +372,7 @@ pub const TABLE: &[Row] = &[
     (SurroundPanner, "Surround Panner", &["Ctrl+Alt+3"], None),
     (Window(Panel::MixingConsole), "Mixing Console", &["Ctrl+Alt+5"], Some(&["Ctrl+Alt+6"])),
     (DeviceExplorer, "Device Explorer", &["Ctrl+Alt+6"], Some(&["Ctrl+Alt+7"])),
-    (LoudnessMeters, "Loudness Meters", &["Ctrl+Alt+7"], Some(&["Ctrl+Alt+8"])),
+    (Window(Panel::LoudnessMeters), "Loudness Meters", &["Ctrl+Alt+7"], Some(&["Ctrl+Alt+8"])),
     (Dashboard, "Dashboard", &["Ctrl+Alt+8"], Some(&[])),
     (Window(Panel::ColorGrading), "Color Grading", &["Alt+G"], Some(&[])),
     (MotionTracking, "Motion Tracking", &["Alt+M"], Some(&[])),
