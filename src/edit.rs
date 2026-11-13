@@ -3,13 +3,66 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use crate::project::*;
 
-/// Source length a clip may not exceed; None = unlimited (images, generated, unknown or unprobed media).
+/// Source length a clip may not exceed; None = unlimited (images, generated, unknown or unprobed media). A looping
+/// event's is infinite: it may run on past its media's end (which repeats), while its in point stays at or after 0.
 pub fn media_limit(project: &Project, clip: &Clip) -> Option<f64> {
-    let id = clip.media_id.as_deref()?;
-    let m = project.media_pool.iter().find(|m| m.id == id)?;
+    let m = media_of(project, clip)?;
+    if loop_len(clip, m).is_some() {
+        return Some(f64::INFINITY);
+    }
     (m.generator.is_none() && matches!(m.media_type, MediaType::Video | MediaType::Audio))
         .then_some(m.duration)
         .filter(|d| *d > 0.0)
+}
+
+/// The event's active take's media.
+pub fn media_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a MediaItem> {
+    let id = clip.media_id.as_deref()?;
+    project.media_pool.iter().find(|m| m.id == id)
+}
+
+/// Media shorter than this does not loop.
+// shortcut: each pass is a decoder start, so very short media holds its last frame and is silent past its end (as
+// with Loop off); loop it from a cached buffer if users ask.
+pub const MIN_LOOP: f64 = 0.05;
+
+/// The length of media `m` that event `c` repeats past its end (Switches › Loop; VEGAS repeats the whole file, or the
+/// whole subclip); None when the event does not loop or the media has no length (stills, generated media).
+pub fn loop_len(c: &Clip, m: &MediaItem) -> Option<f64> {
+    let timed = m.generator.is_none() && matches!(m.media_type, MediaType::Video | MediaType::Audio);
+    (c.looping && timed && m.duration >= MIN_LOOP).then_some(m.duration)
+}
+
+/// Source time `s` of an event looping over media `len` seconds long, wrapped into [0, len).
+pub fn loop_time(s: f64, len: f64) -> f64 {
+    // A time a hair under a wrap (float noise in a frame time) is on it.
+    (s - len * ((s + 1e-6) / len).floor()).max(0.0)
+}
+
+/// An event's passes through its media, in timeline order: (position, length, in point) of each stretch that plays the
+/// media once without wrapping. Without `len` (no loop) the event is one pass. The loop notches sit where passes meet.
+pub fn loop_passes(c: &Clip, len: Option<f64>) -> Vec<(f64, f64, f64)> {
+    let Some(len) = len.filter(|l| *l > 0.0 && c.rate > 0.0) else { return vec![(c.position, c.duration, c.in_point)] };
+    // The source span the event covers, unwrapped, cut at each multiple of the media length.
+    let (u0, u1) = (c.in_point, c.in_point + c.duration * c.rate);
+    let mut v = Vec::new();
+    let mut u = u0;
+    while u < u1 - 1e-9 {
+        let k = ((u + 1e-6) / len).floor();
+        let end = ((k + 1.0) * len).min(u1);
+        // Reversed, the source runs from the event's end back to its start.
+        let pos = c.position + if c.reverse { u1 - end } else { u - u0 } / c.rate;
+        v.push((pos, (end - u) / c.rate, (u - k * len).max(0.0)));
+        u = end;
+    }
+    if v.len() <= 1 {
+        // No wrap inside: the event exactly (its in point wrapped, after a slip past the end).
+        return vec![(c.position, c.duration, v.first().map_or(c.in_point, |p| p.2))];
+    }
+    if c.reverse {
+        v.reverse();
+    }
+    v
 }
 
 /// Source time shown at timeline time `t` (shared with the engine plan). Forward: in + (t - pos) x rate; reversed:
@@ -177,9 +230,18 @@ pub fn reverse_clips(project: &mut Project, ids: &[String]) -> bool {
 
 /// Switches › Mute: events `ids` all take the opposite of the focus (last) event's state.
 pub fn mute_clips(project: &mut Project, ids: &[String]) -> bool {
-    let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| !c.muted) else { return false };
+    switch_clips(project, ids, |c| &mut c.muted)
+}
+
+/// Switches › Loop, the same way.
+pub fn loop_clips(project: &mut Project, ids: &[String]) -> bool {
+    switch_clips(project, ids, |c| &mut c.looping)
+}
+
+fn switch_clips(project: &mut Project, ids: &[String], switch: impl Fn(&mut Clip) -> &mut bool) -> bool {
+    let Some(on) = ids.last().and_then(|id| project.clip(id)).cloned().map(|mut c| !*switch(&mut c)) else { return false };
     for c in tracks_mut(&mut project.timeline).flat_map(|t| &mut t.clips).filter(|c| ids.contains(&c.id)) {
-        c.muted = on;
+        *switch(c) = on;
     }
     changed(project, true)
 }
@@ -1214,7 +1276,7 @@ fn make_active(c: &mut Clip, t: Take) -> Take {
 
 /// Next Take / Previous Take on one event: the active take and `takes` form a ring in list order. The event keeps
 /// its place and length. False without takes.
-// shortcut: a take shorter than the event holds its last frame and is silent past its end (VEGAS loops it); loop it in the plan if users ask.
+/// A take shorter than the event loops (with Loop off it holds its last frame and is silent past its end).
 pub fn cycle_take(c: &mut Clip, forward: bool) -> bool {
     let t = match (forward, c.takes.is_empty()) {
         (_, true) => return false,
@@ -1345,6 +1407,129 @@ pub fn forget_media(tl: &mut Timeline, id: &str) {
     }
 }
 
+// ---- Empty events, subclips, attribute paste (R3a) ----
+
+/// Insert › Empty Event: an event with no media over the time selection `(a, b)` on each unlocked track `tracks` (by
+/// id). Returns the new events' ids.
+pub fn insert_empty(project: &mut Project, tracks: &[String], (a, b): (f64, f64)) -> Vec<String> {
+    let mut ids = Vec::new();
+    if b <= a {
+        return ids;
+    }
+    for t in tracks_mut(&mut project.timeline).filter(|t| !t.locked && tracks.contains(&t.id)) {
+        let c = Clip::new("", a, b - a);
+        ids.push(c.id.clone());
+        t.clips.push(c);
+        t.clips.sort_by(|x, y| x.position.total_cmp(&y.position));
+    }
+    changed(project, !ids.is_empty());
+    ids
+}
+
+/// A subclip of media `m`: `len` seconds of its file from `start` (in `m`'s own time), added to Project Media and
+/// named after it. A subclip of a subclip is a subclip of the same file. Its id; None for a stretch under a frame long
+/// or media without a timed file.
+pub fn create_subclip(project: &mut Project, media_id: &str, start: f64, len: f64) -> Option<String> {
+    let m = project.media_pool.iter().find(|m| m.id == media_id)?;
+    let ok = m.generator.is_none() && matches!(m.media_type, MediaType::Video | MediaType::Audio) && !m.is_offline();
+    let start = start.clamp(0.0, m.duration);
+    let len = len.min(m.duration - start);
+    if !ok || len < 1.0 / 1000.0 {
+        return None;
+    }
+    let n = project.media_pool.iter().filter(|s| s.subclip.is_some() && s.path == m.path).count() + 1;
+    let sub = MediaItem {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: format!("{} Subclip {n}", m.name),
+        duration: len,
+        subclip: Some(Subclip { parent: m.subclip.as_ref().map_or(m.id.clone(), |s| s.parent.clone()), start: m.file_time(start) }),
+        rel_path: None,
+        ..m.clone()
+    };
+    let id = sub.id.clone();
+    project.media_pool.push(sub);
+    project.mark_modified();
+    Some(id)
+}
+
+/// The event menu's Create Subclip: a subclip of the source span event `id` plays, which the event then uses (it
+/// looks and sounds the same). A span that wraps past the media end (a looped event) makes a subclip of the part
+/// inside the media and the event keeps its media. The subclip's id.
+pub fn subclip_event(project: &mut Project, id: &str) -> Option<String> {
+    let r = project.find_clip(id)?;
+    let c = project.clip(id)?.clone();
+    let (mid, len) = media_of(project, &c).map(|m| (m.id.clone(), m.duration))?;
+    let (a, b) = (c.in_point, c.in_point + c.duration * c.rate);
+    let fits = b <= len + 1e-6;
+    let sub = create_subclip(project, &mid, a, b - a)?;
+    let tr = &mut project.timeline.tracks_mut(r.is_video)[r.track_idx];
+    if fits && !tr.locked && !c.locked {
+        let e = &mut tr.clips[r.clip_idx];
+        (e.media_id, e.in_point) = (Some(sub.clone()), 0.0);
+        sync_out(e);
+    }
+    Some(sub)
+}
+
+/// What Paste Event Attributes carries over (Selectively Paste Event Attributes picks).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Attrs {
+    pub fx: bool,
+    pub pan_crop: bool,
+    pub envelopes: bool,
+    pub gain: bool,
+    pub rate: bool,
+    pub fades: bool,
+}
+
+impl Attrs {
+    pub const ALL: Attrs = Attrs { fx: true, pan_crop: true, envelopes: true, gain: true, rate: true, fades: true };
+}
+
+/// Paste Event Attributes: the chosen attributes of the first copied event of each kind (video, audio) go onto the
+/// unlocked events `ids` of that kind; their media, place and in point stay. FX get new instance ids; a new playback
+/// rate keeps the event's length (within its media, unless it loops).
+pub fn paste_attrs(project: &mut Project, from: &[(bool, usize, Clip)], ids: &[String], a: Attrs) -> bool {
+    let mut done = false;
+    for video in [true, false] {
+        let Some(src) = from.iter().find(|c| c.0 == video).map(|c| &c.2) else { continue };
+        let limits: HashMap<String, Option<f64>> =
+            project.timeline.tracks(video).iter().flat_map(|t| &t.clips).filter(|c| ids.contains(&c.id)).map(|c| (c.id.clone(), media_limit(project, c))).collect();
+        for t in project.timeline.tracks_mut(video).iter_mut().filter(|t| !t.locked) {
+            for c in t.clips.iter_mut().filter(|c| !c.locked && ids.contains(&c.id)) {
+                let before = c.clone();
+                if a.fx {
+                    c.fx = src.fx.iter().map(|f| Fx { id: uuid::Uuid::new_v4().to_string(), ..f.clone() }).collect();
+                }
+                if a.pan_crop && video {
+                    c.pan_crop = src.pan_crop.clone();
+                }
+                if a.envelopes {
+                    c.envelopes = src.envelopes.clone();
+                }
+                if a.gain {
+                    c.gain_db = src.gain_db;
+                }
+                if a.rate {
+                    c.rate = src.rate;
+                    if let Some(l) = limits.get(&c.id).copied().flatten() {
+                        c.duration = c.duration.min((l - c.in_point) / c.rate);
+                    }
+                }
+                if a.fades {
+                    (c.fade_in, c.fade_out, c.fade_in_curve, c.fade_out_curve) = (src.fade_in, src.fade_out, src.fade_in_curve, src.fade_out_curve);
+                }
+                c.clamp_fades();
+                sync_out(c);
+                // FX always get new ids: compare without them.
+                let same_fx = c.fx.len() == before.fx.len() && c.fx.iter().zip(&before.fx).all(|(x, y)| Fx { id: y.id.clone(), ..x.clone() } == *y);
+                done |= !same_fx || Clip { fx: before.fx.clone(), ..c.clone() } != before;
+            }
+        }
+    }
+    changed(project, done)
+}
+
 // ---- Event Properties ----
 
 /// Event Properties' rate: the same source span plays at `rate` (0.25..=4), so rate x length stays the same.
@@ -1374,7 +1559,9 @@ pub fn apply_props(project: &mut Project, id: &str, mut draft: Clip) -> bool {
     let frame = 1.0 / project.settings.frame_rate.max(1.0);
     if let Some(l) = media_limit(project, &draft) {
         draft.in_point = draft.in_point.min(l - frame * draft.rate).max(0.0);
-        draft.duration = draft.duration.min((l - draft.in_point) / draft.rate);
+        // An event already past its media end (Loop turned off) keeps its length; it may not grow further.
+        let had = project.clip(id).map_or(0.0, |c| c.duration);
+        draft.duration = draft.duration.min(((l - draft.in_point) / draft.rate).max(had));
     }
     (draft.position, draft.duration) = (draft.position.max(0.0), draft.duration.max(frame));
     draft.clamp_fades();
@@ -2113,11 +2300,149 @@ mod tests {
         let mut p = Project::new("t");
         let mut m = MediaItem { id: "v".into(), media_type: MediaType::Video, duration: 8.0, ..Default::default() };
         p.media_pool.push(m.clone());
-        let c = Clip::from_media(&m, 0.0);
+        let mut c = Clip::from_media(&m, 0.0);
+        c.looping = false;
         assert_eq!(media_limit(&p, &c), Some(8.0));
         m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default() });
         p.media_pool[0] = m;
         assert_eq!(media_limit(&p, &c), None);
+    }
+
+    /// R3a: a looping event may be dragged past its media end (only the media start bounds it); with Loop off it stops
+    /// there. Too-short media and stills never loop.
+    #[test]
+    fn a_looping_event_extends_past_its_media_end() {
+        let mut p = Project::new("t");
+        let m = MediaItem { id: "v".into(), media_type: MediaType::Video, duration: 8.0, ..Default::default() };
+        p.media_pool.push(m.clone());
+        let o = Clip::from_media(&m, 0.0);
+        assert!(o.looping, "events loop by default, as in VEGAS");
+        let limit = media_limit(&p, &o);
+        assert_eq!(limit, Some(f64::INFINITY));
+        let mut c = o.clone();
+        trim_right(&mut c, &o, 20.0, F, limit);
+        assert_eq!((c.duration, c.out_point), (20.0, 20.0));
+        trim_left(&mut c, &o, -5.0, F, limit); // the left edge stops at the media start
+        assert_eq!((c.position, c.in_point), (0.0, 0.0));
+        let mut off = o.clone();
+        off.looping = false;
+        let mut c = off.clone();
+        trim_right(&mut c, &off, 20.0, F, media_limit(&p, &off));
+        assert_eq!(c.duration, 8.0);
+        assert_eq!(loop_len(&o, &m), Some(8.0));
+        assert_eq!(loop_len(&off, &m), None);
+        assert_eq!(loop_len(&o, &MediaItem { duration: 0.01, ..m.clone() }), None);
+        assert_eq!(loop_len(&o, &MediaItem { media_type: MediaType::Image, ..m.clone() }), None);
+        // Wrapping: a hair under the end is the start again; a negative time never comes out.
+        assert_eq!((loop_time(9.0, 8.0), loop_time(16.0, 8.0), loop_time(8.0 - 1e-9, 8.0)), (1.0, 0.0, 0.0));
+    }
+
+    /// R3a: an 8 s clip extended to 20 s plays source 0..8, 0..8, 0..4; slipped, from its in point; reversed, back to front.
+    #[test]
+    fn loop_passes_split_at_the_media_end() {
+        let mut c = Clip::new("c", 1.0, 20.0);
+        assert_eq!(loop_passes(&c, Some(8.0)), [(1.0, 8.0, 0.0), (9.0, 8.0, 0.0), (17.0, 4.0, 0.0)]);
+        assert_eq!(loop_passes(&c, None), [(1.0, 20.0, 0.0)]);
+        c.rate = 2.0; // 40 s of source in 20 s: five passes of 4 s
+        assert_eq!(loop_passes(&c, Some(8.0)).len(), 5);
+        (c.rate, c.in_point, c.duration) = (1.0, 6.0, 4.0); // 6..8 then 0..2
+        assert_eq!(loop_passes(&c, Some(8.0)), [(1.0, 2.0, 6.0), (3.0, 2.0, 0.0)]);
+        c.reverse = true; // 2..0 then 8..6, from the left
+        assert_eq!(loop_passes(&c, Some(8.0)), [(1.0, 2.0, 0.0), (3.0, 2.0, 6.0)]);
+        (c.reverse, c.in_point) = (false, 10.0); // slipped past the end: inside the second pass
+        assert_eq!(loop_passes(&c, Some(8.0)), [(1.0, 4.0, 2.0)]);
+    }
+
+    /// R3a: Insert › Empty Event fills the time selection on the chosen unlocked tracks.
+    #[test]
+    fn empty_events_fill_the_selection() {
+        let mut p = Project::new("t");
+        p.timeline.audio_tracks[0].locked = true;
+        let tracks: Vec<String> = [&p.timeline.video_tracks[0], &p.timeline.audio_tracks[0]].map(|t| t.id.clone()).to_vec();
+        let ids = insert_empty(&mut p, &tracks, (2.0, 5.0));
+        assert_eq!(ids.len(), 1, "not on the locked track");
+        let c = p.clip(&ids[0]).unwrap();
+        assert_eq!((c.position, c.duration, c.media_id.as_ref()), (2.0, 3.0, None));
+        assert!(insert_empty(&mut p, &tracks, (5.0, 5.0)).is_empty());
+        // No media: nothing to draw or hear.
+        assert!(crate::engine::plan::frame_plan(&crate::engine::plan::compile(&p), 90).layers.is_empty());
+    }
+
+    /// R3a: a subclip is a stretch of its file used as a whole file: events made from it, and an event turned into
+    /// one, play the same source frames.
+    #[test]
+    fn subclips_play_their_stretch_of_the_file() {
+        let mut p = Project::new("t");
+        p.settings.frame_rate = 30.0;
+        let m = MediaItem { id: "v".into(), path: "v.mp4".into(), name: "v.mp4".into(), media_type: MediaType::Video, duration: 10.0, width: Some(64), height: Some(64), sample_rate: Some(48_000), ..Default::default() };
+        p.media_pool.push(m.clone());
+        let sid = create_subclip(&mut p, "v", 2.0, 3.0).unwrap();
+        let s = p.media_pool[1].clone();
+        assert_eq!((s.name.as_str(), s.duration, s.path.as_path(), s.subclip.as_ref().map(|x| (x.parent.as_str(), x.start))), ("v.mp4 Subclip 1", 3.0, std::path::Path::new("v.mp4"), Some(("v", 2.0))));
+        // A subclip of the subclip is of the same file, its start counted in the file.
+        let s2 = create_subclip(&mut p, &sid, 1.0, 5.0).unwrap();
+        let s2 = p.media_pool.iter().find(|x| x.id == s2).unwrap();
+        assert_eq!((s2.duration, s2.subclip.as_ref().map(|x| (x.parent.as_str(), x.start))), (2.0, Some(("v", 3.0))));
+        assert!(create_subclip(&mut p, "v", 10.0, 1.0).is_none(), "nothing left past the end");
+        // An event from the subclip shows file frame 60 + k at its frame k (2 s in, at 30 fps), and loops over 3 s.
+        let mut c = Clip::from_media(&s, 0.0);
+        c.duration = 4.0;
+        p.timeline.video_tracks[0].clips.push(c);
+        let sf = |p: &Project, n: i64| match &crate::engine::plan::frame_plan(&crate::engine::plan::compile(p), n).layers[0].items[0] {
+            crate::engine::plan::Item::Event(e) => e.src.sf,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!((sf(&p, 0), sf(&p, 45), sf(&p, 95)), (Some(60), Some(105), Some(65)));
+        // Its sound is read from the same stretch of the file, one stream per pass.
+        let mut c = Clip::from_media(&s, 0.0);
+        c.duration = 4.0;
+        p.timeline.audio_tracks[0].clips.push(c);
+        let a = crate::engine::plan::compile_audio(&p);
+        let passes: Vec<(f64, f64, f64)> = a.tracks[0].events[0].passes.iter().map(|s| (s.pos, s.dur, s.in_point)).collect();
+        assert_eq!(passes, [(0.0, 3.0, 2.0), (3.0, 1.0, 2.0)]);
+        // An event of the file turned into a subclip keeps showing the same frames.
+        let mut q = Project::new("t");
+        q.settings.frame_rate = 30.0;
+        q.media_pool.push(m.clone());
+        let mut e = Clip::from_media(&m, 1.0);
+        (e.in_point, e.duration) = (4.0, 2.0);
+        let id = e.id.clone();
+        q.timeline.video_tracks[0].clips.push(e);
+        let before: Vec<_> = (30..90).map(|n| sf(&q, n)).collect();
+        let sub = subclip_event(&mut q, &id).unwrap();
+        let e = q.clip(&id).unwrap();
+        assert_eq!((e.media_id.as_deref(), e.in_point), (Some(sub.as_str()), 0.0));
+        assert_eq!((30..90).map(|n| sf(&q, n)).collect::<Vec<_>>(), before);
+    }
+
+    /// R3a: Paste Event Attributes copies the chosen attributes of the copied event; FX only leaves fades alone.
+    #[test]
+    fn attribute_paste_copies_only_what_is_chosen() {
+        let mut p = Project::new("t");
+        let mut src = Clip::new("src", 0.0, 4.0);
+        src.fx = vec![Fx { id: "fx1".into(), plugin: "milan.fx.invert".into(), enabled: true, params: Default::default(), text: Default::default() }];
+        (src.fade_in, src.fade_out, src.gain_db, src.rate) = (1.0, 1.0, -6.0, 2.0);
+        src.pan_crop = Keyframes { keys: vec![Keyframe { t: 0.0, v: PanCrop { w: 0.5, ..Default::default() }, curve: Curve::Linear }] };
+        let mut dst = Clip::new("dst", 10.0, 4.0);
+        dst.fade_in = 0.5;
+        let id = dst.id.clone();
+        p.timeline.video_tracks[0].clips.push(dst);
+        let board = vec![(true, 0, src.clone())];
+        let fx_only = Attrs { fx: true, pan_crop: false, envelopes: false, gain: false, rate: false, fades: false };
+        assert!(paste_attrs(&mut p, &board, &[id.clone()], fx_only));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((c.fx.len(), c.fx[0].plugin.as_str(), c.fade_in, c.fade_out, c.rate), (1, "milan.fx.invert", 0.5, 0.0, 1.0));
+        assert_ne!(c.fx[0].id, "fx1", "a new FX instance");
+        assert!(c.pan_crop.keys.is_empty());
+        assert!(paste_attrs(&mut p, &board, &[id.clone()], Attrs::ALL));
+        let c = p.clip(&id).unwrap();
+        assert_eq!((c.fade_in, c.fade_out, c.rate, c.gain_db, c.pan_crop.keys.len(), c.duration, c.position), (1.0, 1.0, 2.0, -6.0, 1, 4.0, 10.0));
+        assert!(!paste_attrs(&mut p, &board, &[id.clone()], Attrs::ALL), "nothing new the second time");
+        // A copied video event pastes nothing onto audio events.
+        let a = Clip::new("a", 0.0, 2.0);
+        let aid = a.id.clone();
+        p.timeline.audio_tracks[0].clips.push(a);
+        assert!(!paste_attrs(&mut p, &board, &[aid], Attrs::ALL));
     }
 
     const F: f64 = 1.0 / 30.0;
@@ -2549,9 +2874,9 @@ mod tests {
         assert!(group(&mut p, &[v.clone(), a.clone()]) && group_of(&p, &v).is_some());
         assert!(!group(&mut p, &[v.clone()]), "one event is no group");
         assert!(clear_groups(&mut p, &[a.clone()]) && group_of(&p, &v).is_none());
-        // Deleting the expanded selection removes the whole pair.
-        let (mut p, _, a) = av_pair();
-        let all = expand_groups(&p, &[a]);
+        // Group › Delete All (R3a) deletes the expanded selection: the grouped audio goes with the video.
+        let (mut p, v, _) = av_pair();
+        let all = expand_groups(&p, &[v]);
         assert!(delete_clips(&mut p, &all));
         assert!(p.timeline.video_tracks[0].clips.is_empty() && p.timeline.audio_tracks[0].clips.is_empty());
     }
@@ -3353,10 +3678,18 @@ mod tests {
         let (mut p, id) = take_project();
         let draft = p.clip(&id).unwrap().clone();
         assert!(!apply_props(&mut p, &id, draft.clone()) && !p.modified, "an unchanged draft is no edit");
-        // Media v is 10 s: from in 5 the event can last 5 s at most; it moves after the other event.
+        // Media v is 10 s: from in 5 the event can last 5 s at most with Loop off; it moves after the other event.
         p.timeline.audio_tracks[0].clips.push(clip(4.0, 1.0, 0.0));
         let mut d = draft;
         (d.duration, d.position, d.name) = (8.0, 6.0, "Take B".into());
+        assert!(apply_props(&mut p, &id, d.clone()));
+        assert_eq!(p.clip(&id).unwrap().duration, 8.0, "a looping event runs on past its media");
+        d.looping = false;
+        assert!(apply_props(&mut p, &id, d.clone()));
+        assert_eq!(p.clip(&id).unwrap().duration, 8.0, "turning Loop off keeps the length it had");
+        d.duration = 4.0;
+        assert!(apply_props(&mut p, &id, d.clone()));
+        d.duration = 8.0;
         assert!(apply_props(&mut p, &id, d));
         let c = &p.timeline.audio_tracks[0].clips[1];
         assert_eq!((c.id.as_str(), c.position, c.duration, c.name.as_str()), (id.as_str(), 6.0, 5.0, "Take B"));
@@ -3460,6 +3793,8 @@ mod tests {
         let mut b = Clip::from_media(&p.media_pool[1], 5.0);
         (b.in_point, b.duration) = (handle_b, 5.0);
         b.out_point = b.in_point + 5.0;
+        // Loop off: past its handle an event has no more media (a looping one would repeat it).
+        (a.looping, b.looping) = (false, false);
         p.timeline.video_tracks[0].clips = vec![a, b];
         let t = p.timeline.video_tracks[0].id.clone();
         (p, t)
@@ -3538,7 +3873,7 @@ mod tests {
             p.media_pool.push(MediaItem { id: id.into(), media_type: MediaType::Video, duration: dur, ..Default::default() });
         }
         let mut a = Clip::from_media(&p.media_pool[1], 4.0);
-        (a.duration, a.out_point) = (0.3, 0.3);
+        (a.duration, a.out_point, a.looping) = (0.3, 0.3, false);
         let mut b = Clip::from_media(&p.media_pool[2], 4.3);
         (b.in_point, b.duration, b.out_point) = (5.0, 5.0, 10.0);
         p.timeline.video_tracks[0].clips = vec![pc.clone(), a, b];

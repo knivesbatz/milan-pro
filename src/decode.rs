@@ -279,6 +279,8 @@ impl Preview {
     /// `fps` is the fallback frame rate; `full_w` the width that Size::Full means.
     pub fn show(&mut self, ctx: &egui::Context, src: Option<(&MediaItem, f64)>, fps: f64, full_w: u32) {
         let max_w = self.width(full_w);
+        // A subclip's time is read from its file.
+        let src = src.map(|(m, t)| (m, m.file_time(t)));
         let rate = |m: &MediaItem| m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps.max(1.0));
         let key = src.map(|(m, t)| (key_path(m), crate::engine::plan::frame_at(t, rate(m)), max_w, self.quality));
         if key != self.key {
@@ -435,7 +437,7 @@ impl Thumbs {
     /// Thumbnail of `m` at source time `time` (callers quantise it), requesting it on first use.
     pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
         self.receive();
-        let time = if m.media_type == MediaType::Image { 0.0 } else { time.max(0.0) };
+        let time = if m.media_type == MediaType::Image { 0.0 } else { m.file_time(time.max(0.0)) };
         let key = (key_path(m), (time * 1000.0).round() as i64);
         if !self.cache.contains_key(&key) {
             if self.cache.len() >= THUMB_CACHE {

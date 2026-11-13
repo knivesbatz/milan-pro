@@ -87,7 +87,7 @@ impl Importer {
 pub fn merge_new(pool: &mut Vec<MediaItem>, items: Vec<MediaItem>) -> bool {
     let mut done = false;
     for m in items {
-        match pool.iter_mut().find(|p| p.path == m.path) {
+        match pool.iter_mut().find(|p| p.path == m.path && p.subclip.is_none()) {
             None => pool.push(m),
             Some(p) if p.is_offline() && !m.is_offline() => *p = MediaItem { id: std::mem::take(&mut p.id), ..m },
             Some(_) => continue,
@@ -99,7 +99,7 @@ pub fn merge_new(pool: &mut Vec<MediaItem>, items: Vec<MediaItem>) -> bool {
 
 /// `path` has a usable (probed) item in the pool; an offline one is probed again on import or drop.
 pub fn in_pool(pool: &[MediaItem], path: &std::path::Path) -> bool {
-    pool.iter().any(|m| m.path == path && !m.is_offline())
+    pool.iter().any(|m| m.path == path && m.subclip.is_none() && !m.is_offline())
 }
 
 /// File extensions Milan Pro imports, by kind (lower case): the Import dialog, drops and the Explorer use these.

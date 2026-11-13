@@ -390,6 +390,7 @@ mod tests {
             interlaced: false,
             proxy: None,
             grid: 0.0,
+            offset: 0.0,
         };
         assert!(!pool.wants_hw(&m("h264", 1920)));
         assert!(pool.wants_hw(&m("hevc", 1920)) && pool.wants_hw(&m("av1", 1920)) && pool.wants_hw(&m("h264", 2560)));
@@ -426,7 +427,7 @@ mod tests {
                 .unwrap()
                 .success();
             assert!(ok);
-            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0 };
+            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0 };
             let mut pool = DecoderPool::default();
             let fps = 30000.0 / 1001.0;
             pool.set_rate(fps, "30000/1001");
@@ -467,7 +468,7 @@ mod tests {
 
     /// A 64x64 30 fps video, for the ramp clips.
     fn ramp_ref() -> MediaRef {
-        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0 }
+        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0 }
     }
 
     fn gray(p: Pull) -> Option<u8> {

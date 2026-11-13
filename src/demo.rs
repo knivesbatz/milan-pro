@@ -113,7 +113,8 @@ pub fn project(theme: &Theme) -> anyhow::Result<(Project, ClipRef)> {
     };
     tl.video_tracks[0].clips = vec![ev(0, &bars, 6.0, 1.0, 5.0), ev(0, &still, 13.0, 0.0, 4.0)];
     tl.video_tracks[1].clips = vec![ev(1, &src, 0.0, 0.0, 10.0)];
-    tl.video_tracks[2].clips = vec![ev(2, &color, 2.0, 0.0, 6.0), ev(2, &src, 11.0, 3.0, 4.0)];
+    // The 6 s colour clip runs 2 s past its media end, so it loops (a notch at 8 s).
+    tl.video_tracks[2].clips = vec![ev(2, &color, 2.0, 0.0, 8.0), ev(2, &src, 11.0, 3.0, 4.0)];
     tl.audio_tracks[0].clips = vec![ev(3, &src, 0.0, 0.0, 10.0)];
     tl.audio_tracks[1].clips = vec![ev(4, &tone, 1.5, 0.5, 9.0), ev(4, &tone, 12.0, 0.0, 5.0)];
     let mk = theme.marker_flag;

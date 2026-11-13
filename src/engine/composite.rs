@@ -362,6 +362,7 @@ mod tests {
             interlaced: false,
             proxy: None,
             grid: 0.0,
+            offset: 0.0,
         })
     }
 

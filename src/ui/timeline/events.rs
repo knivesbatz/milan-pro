@@ -30,6 +30,20 @@ pub(super) struct Ev<'a> {
     pub fps: f64,
     /// Waveform vertical zoom (1 = full scale).
     pub wave_zoom: f32,
+    /// The media length a looping event repeats (`edit::loop_len`): wraps the pictures and waveform, notches the edge.
+    pub loop_len: Option<f64>,
+    /// Where the media starts in its file (a subclip's start): waveform peaks are the file's.
+    pub offset: f64,
+    /// An empty event (no media): drawn hatched.
+    pub empty: bool,
+}
+
+impl Ev<'_> {
+    /// Source time at timeline time `t`, wrapped into the media when the event loops.
+    fn src(&self, t: f64) -> f64 {
+        let s = edit::src_time(self.clip, t);
+        self.loop_len.map_or(s, |l| edit::loop_time(s, l))
+    }
 }
 
 fn mul(c: Color32, k: f32) -> Color32 {
@@ -86,6 +100,10 @@ pub(super) fn paint_event(
             paint_wave(p, ev, lane.shrink2(vec2(0.0, 1.0)), peaks, ink);
         }
     }
+    if ev.empty {
+        paint_hatch(p, r, mul(ev.color, 0.7));
+    }
+    paint_notches(p, ev, lane_bg);
     if r.width() >= 3.0 {
         p.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(r.max.y - 1.0, r.max.y)), 0.0, mul(ev.color, 0.73));
     }
@@ -108,6 +126,36 @@ pub(super) fn paint_event(
     }
     if ev.dim {
         p.rect_filled(r, 0.0, lane_bg.gamma_multiply(0.5));
+    }
+}
+
+/// Timeline times where a looping event's media wraps (its loop notches).
+fn notches(c: &Clip, len: f64) -> Vec<f64> {
+    edit::loop_passes(c, Some(len)).into_iter().skip(1).map(|p| p.0).collect()
+}
+
+/// Loop notches: a small V cut into the top edge where the media starts again (none closer than 4 px apart).
+fn paint_notches(p: &Painter, ev: &Ev, lane_bg: Color32) {
+    let Some(len) = ev.loop_len.filter(|l| l / ev.clip.rate.max(1e-9) * ev.pps >= 4.0) else { return };
+    let (r, vis) = (ev.rect, p.clip_rect());
+    let p = p.with_clip_rect(r.intersect(vis));
+    for t in notches(ev.clip, len) {
+        let x = (r.min.x as f64 + (t - ev.clip.position) * ev.pps) as f32;
+        if x >= vis.min.x - 4.0 && x <= vis.max.x + 4.0 {
+            p.add(Shape::convex_polygon(vec![pos2(x - 4.0, r.min.y), pos2(x + 4.0, r.min.y), pos2(x, r.min.y + 5.0)], lane_bg, Stroke::NONE));
+        }
+    }
+}
+
+/// Diagonal hatching over an empty event.
+fn paint_hatch(p: &Painter, r: Rect, ink: Color32) {
+    let vis = r.intersect(p.clip_rect());
+    let p = p.with_clip_rect(vis);
+    let h = r.height();
+    let mut x = r.min.x + ((vis.min.x - h - r.min.x) / 8.0).floor().max(0.0) * 8.0;
+    while x < vis.max.x {
+        p.line_segment([pos2(x, r.max.y), pos2(x + h, r.min.y)], Stroke::new(1.0_f32, ink));
+        x += 8.0;
     }
 }
 
@@ -150,7 +198,7 @@ fn paint_filmstrip(p: &Painter, ev: &Ev, v16: bool, area: Rect, thumb: &mut dyn 
         // Frame-quantised source time at the thumbnail's left edge (with the event's rate and direction). Reversed, a
         // frame samples where it ends, as the engine does, so the first tile is not one frame past the source span.
         let t = ev.clip.position + (x - area.min.x) as f64 / ev.pps;
-        let src = edit::src_time(ev.clip, if ev.clip.reverse { t + frame } else { t }).max(0.0);
+        let src = ev.src(if ev.clip.reverse { t + frame } else { t }).max(0.0);
         let src = (src / frame).floor() * frame;
         if let Some(tex) = thumb(src) {
             let uv = Rect::from_min_max(Pos2::ZERO, pos2((tr.width() / w).min(1.0), 1.0));
@@ -168,11 +216,15 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
     let spp = 1.0 / ev.pps;
     // Scaled by the event gain.
     let gain = crate::engine::keyframes::db_to_gain(ev.clip.gain_db) * ev.wave_zoom.max(1.0);
-    let src = |x: f32| edit::src_time(ev.clip, ev.clip.position + (x - area.min.x) as f64 * spp);
+    let src = |x: f32| ev.offset + ev.src(ev.clip.position + (x - area.min.x) as f64 * spp);
     let mut x = vis.min.x.floor();
     while x < vis.max.x {
-        // The source span under this pixel column (read backwards when reversed).
-        let (s0, s1) = (src(x), src(x + 1.0));
+        // The source span under this pixel column (read backwards when reversed); a column across a loop wrap reads
+        // from its start only, not the whole media between.
+        let (s0, mut s1) = (src(x), src(x + 1.0));
+        if (s1 - s0).abs() > 2.0 * spp * ev.clip.rate {
+            s1 = s0;
+        }
         let a = (s0.min(s1) * PEAKS_PER_SEC).max(0.0) as usize;
         let z = ((s0.max(s1) * PEAKS_PER_SEC) as usize).max(a + 1).min(peaks.len());
         let pk = peaks.get(a..z).map_or(0.0, |s| s.iter().fold(0.0_f32, |m, v| m.max(*v))) * gain;
@@ -359,4 +411,24 @@ pub(super) fn paint_fade_tag(p: &Painter, t: &Theme, at: Pos2, text: String) {
     p.rect_filled(r, 0.0, t.length_tag_bg);
     p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, t.length_tag_text), StrokeKind::Inside);
     p.galley(r.min + vec2(3.0, 1.0), galley, t.length_tag_text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R3a: an 8 s clip extended to 20 s is notched at 8 and 16 s, where its media starts again; reversed, where the
+    /// source wraps going backwards.
+    #[test]
+    fn loop_notches_sit_where_the_media_wraps() {
+        let mut c = Clip::new("c", 0.0, 20.0);
+        assert_eq!(notches(&c, 8.0), [8.0, 16.0]);
+        c.position = 2.0;
+        c.in_point = 3.0; // 3..8, then 0..8, then 0..7
+        assert_eq!(notches(&c, 8.0), [7.0, 15.0]);
+        c.reverse = true; // 7..0, 8..0, 8..3 from the left
+        assert_eq!(notches(&c, 8.0), [9.0, 17.0]);
+        c.duration = 4.0;
+        assert!(notches(&c, 8.0).is_empty());
+    }
 }

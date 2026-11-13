@@ -8,7 +8,7 @@ use crate::edit;
 use crate::history::History;
 use crate::project::*;
 use super::icons::{Icon, paint_icon};
-use super::menus::{Later, NotPlanned, Why};
+use super::menus::{NotPlanned, Why};
 use super::toolbar::{arrow_menu, text_menu, tool_button};
 use super::{MediaDrag, theme};
 
@@ -61,7 +61,10 @@ impl Trimmer {
 }
 
 fn media_index(project: &Project, path: &Path) -> Option<usize> {
-    project.media_pool.iter().position(|m| m.path == path)
+    // The whole file (a subclip's parent) when it is in the pool.
+    // shortcut: the Trimmer keeps files, not items, so a subclip opens as its whole file; key it by item to trim subclips.
+    let at = |whole: bool| project.media_pool.iter().position(|m| m.path == path && (!whole || m.subclip.is_none()));
+    at(true).or_else(|| at(false))
 }
 
 /// Add the range at the timeline cursor (A) or ending at it (Shift+A); the cursor moves past an added event.
@@ -206,9 +209,10 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
         if let Some(peaks) = waves.get(&m).map(|c| &c[0]) {
             let n = wave.width() as usize;
             let cy = wave.center().y;
+            let at = |f: f64| (m.file_time(f * dur) * PEAKS_PER_SEC) as usize; // peaks are the file's
             for k in 0..n {
-                let s0 = (k as f64 / n as f64 * dur * PEAKS_PER_SEC) as usize;
-                let s1 = (((k + 1) as f64 / n as f64 * dur * PEAKS_PER_SEC) as usize).max(s0 + 1);
+                let s0 = at(k as f64 / n as f64);
+                let s1 = at((k + 1) as f64 / n as f64).max(s0 + 1);
                 let v = peaks.get(s0..s1.min(peaks.len())).and_then(|s| s.iter().copied().reduce(f32::max)).unwrap_or(0.0);
                 let hh = v * wave.height() * 0.45;
                 let x = wave.min.x + k as f32 + 0.5;
@@ -337,7 +341,13 @@ fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut
             add_to_timeline(project, history, idx, tr.range(m), true, still_len, xfade);
         }
         off(ui, "Fit to Fill", NotPlanned("R58"));
-        off(ui, "Create Subclip", Later("R3a"));
+        // The in/out range (or the whole media) becomes a new item in Project Media; one undo step.
+        if item(ui, "Create Subclip", m.media_type != MediaType::Image && m.generator.is_none()) {
+            let (before, (a, b)) = (project.clone(), tr.range(m));
+            if edit::create_subclip(project, &m.id, a, b - a).is_some() {
+                history.push(before);
+            }
+        }
         ui.separator();
         if item(ui, "Set In (I)", true) {
             tr.mark_in = Some(tr.cursor);

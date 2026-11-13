@@ -57,7 +57,7 @@ impl FileDrop {
     pub fn items(&self, paths: &[PathBuf], pool: &[MediaItem]) -> Option<Vec<MediaItem>> {
         let mut out = Vec::new();
         for p in paths {
-            if let Some(m) = pool.iter().find(|m| m.path == *p && !m.is_offline()) {
+            if let Some(m) = pool.iter().find(|m| m.path == *p && m.subclip.is_none() && !m.is_offline()) {
                 out.push(m.clone());
             } else if let Ok(m) = self.probed.get(p)? {
                 out.push(m.clone());
@@ -93,7 +93,7 @@ impl FileDrop {
         if added {
             project.mark_modified();
         }
-        let idxs: Vec<usize> = d.paths.iter().filter_map(|p| project.media_pool.iter().position(|m| m.path == *p)).collect();
+        let idxs: Vec<usize> = d.paths.iter().filter_map(|p| project.media_pool.iter().position(|m| m.path == *p && m.subclip.is_none())).collect();
         let (ids, refused) = match &d.place {
             Some((track, time, mode)) => {
                 // A track deleted while probing: new tracks, as below the last track.

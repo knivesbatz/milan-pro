@@ -163,6 +163,8 @@ pub struct MeridianApp {
     cursor_preview: Option<(f64, Option<(f64, f64)>, (f64, f64))>,
     /// Edit › Paste Repeat..., open.
     paste_repeat: Option<crate::ui::dialogs::PasteRepeat>,
+    /// Edit › Selectively Paste Event Attributes..., open.
+    paste_attrs: Option<crate::ui::dialogs::PasteAttrs>,
 }
 
 impl MeridianApp {
@@ -303,6 +305,7 @@ impl MeridianApp {
             mute_video: false,
             cursor_preview: None,
             paste_repeat: None,
+            paste_attrs: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);

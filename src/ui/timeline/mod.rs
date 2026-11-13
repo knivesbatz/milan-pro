@@ -975,6 +975,9 @@ pub fn draw_timeline(
                 pps: g.pps,
                 fps,
                 wave_zoom: opts.wave_zoom,
+                loop_len: media.and_then(|m| edit::loop_len(clip, m)),
+                offset: media.map_or(0.0, |m| m.file_time(0.0)),
+                empty: clip.media_id.is_none(),
             };
             let mut thumb = |src: f64| pic.and_then(|m| thumbs.get(m, src)).map(|tex| tex.id());
             paint_event(&pe, &t, &ev, t.lane_bg, wave, &mut thumb);

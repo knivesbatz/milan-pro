@@ -268,6 +268,9 @@ pub struct Clip {
     /// Inactive takes; the active take is the event's own media.
     #[serde(default)]
     pub takes: Vec<Take>,
+    /// Switches › Loop (on by default, as in VEGAS): the event may run past its media's end, which then repeats.
+    #[serde(default = "yes")]
+    pub looping: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -299,6 +302,18 @@ pub struct MediaItem {
     /// `path` relative to the project's folder, written on save; where Open looks when `path` is gone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rel_path: Option<PathBuf>,
+    /// A subclip (Create Subclip): a stretch of its parent's file, used as if it were the whole file. `path` is the
+    /// parent's and `duration` the stretch's length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subclip: Option<Subclip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Subclip {
+    /// The media item it was made from.
+    pub parent: String,
+    /// Where it starts in the file, in seconds.
+    pub start: f64,
 }
 
 /// `path` relative to the folder `base` (with `..` steps); None on another drive or for a relative `path`.
@@ -323,6 +338,11 @@ impl MediaItem {
     /// Never probed: a file that was missing when a VEGAS project was imported (no picture or sound known).
     pub fn is_offline(&self) -> bool {
         self.generator.is_none() && self.width.is_none() && self.sample_rate.is_none()
+    }
+
+    /// Time in the file of time `t` of this item (a subclip starts part way into its file).
+    pub fn file_time(&self, t: f64) -> f64 {
+        t + self.subclip.as_ref().map_or(0.0, |s| s.start)
     }
 }
 
@@ -781,6 +801,7 @@ impl Clip {
             envelopes: Vec::new(),
             group: None,
             takes: Vec::new(),
+            looping: true,
         }
     }
 
@@ -1164,7 +1185,7 @@ mod tests {
         strip(&mut v["settings"], &["ruler"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes"]);
         strip(&mut v["timeline"]["audio_tracks"][0], &["fx"]);
-        let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes"];
+        let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes", "looping"];
         strip(&mut v["timeline"]["video_tracks"][0]["clips"][0], &clip_keys);
         strip(&mut v["media_pool"][0], &["has_alpha", "rotation", "color_matrix", "interlaced", "generator"]);
         let back: Project = serde_json::from_value(v).unwrap();
@@ -1186,8 +1207,11 @@ mod tests {
         assert_eq!((c.fade_in_curve, c.fade_out_curve), (Curve::Smooth, Curve::Smooth));
         assert!(c.group.is_none() && c.takes.is_empty() && c.fx.is_empty() && c.transition.is_none());
         assert!(c.pan_crop.keys.is_empty() && c.envelopes.is_empty());
+        assert!(c.looping, "R3a: an old event loops, as VEGAS events do by default");
         let m = &back.media_pool[0];
         assert!(!m.has_alpha && !m.interlaced && m.rotation == 0 && m.color_matrix.is_none() && m.generator.is_none());
+        assert!(m.subclip.is_none() && m.file_time(2.0) == 2.0);
+        assert!(serde_json::to_value(&p).unwrap()["media_pool"][0].get("subclip").is_none(), "nothing written for a whole file");
     }
 
     #[test]
@@ -1212,6 +1236,7 @@ mod tests {
         c.envelopes = vec![env(EnvKind::Volume), env(EnvKind::Velocity)];
         c.group = Some("g1".into());
         c.takes = vec![Take { media_id: "m2".into(), in_point: 2.0, name: "Take 2".into() }];
+        c.looping = false;
         let t = &mut p.timeline.video_tracks[0];
         t.composite = Composite::Screen;
         t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0 }, curve: Curve::Smooth }] };
@@ -1231,8 +1256,10 @@ mod tests {
             color_matrix: Some("bt709".into()),
             interlaced: true,
             generator: Some(fx("milan.gen.text")),
+            subclip: Some(Subclip { parent: "m".into(), start: 1.25 }),
             ..Default::default()
         });
+        assert_eq!(p.media_pool[0].file_time(0.5), 1.75);
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&p).unwrap());

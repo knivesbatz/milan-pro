@@ -241,7 +241,7 @@ pub(super) fn menu(
         }
         Target::Lane(v, i) => lane(ui, project, history, &sel.tracks, st, v, i),
         Target::Selection => {
-            off(ui, "&Insert Empty Event", Later("R3a"));
+            cmd(ui, "&Insert Empty Event", InsertEmptyEvent);
             cmd(ui, "&Zoom Selection", ZoomSelection);
         }
         Target::MarkerBar => marker_bar(ui, project, history),
@@ -277,7 +277,7 @@ pub(super) fn menu(
                 off(ui, "&Rename", Later("R16a"));
             }
             sep(ui);
-            off(ui, "&Create Subclip", Later("R3a"));
+            off(ui, "&Create Subclip", Fixed("timeline regions are not media: create subclips in the Trimmer or from an event"));
             sep(ui);
             if entry(ui, "&Delete", "", true, Mark::None) {
                 history.push(project.clone());
@@ -761,8 +761,8 @@ const EVENT_SHARED: &[M] = &[
     S,
     C("Cu&t", Cut),
     C("&Copy", Copy),
-    X("Paste E&vent Attributes", Later("R3a")),
-    X("Selectively Paste Event Attributes...", Later("R3a")),
+    C("Paste E&vent Attributes", PasteAttributes),
+    C("Selectively Paste Event Attributes...", PasteAttributesSelect),
     S,
     C("&Delete", Delete),
     C("Tri&m", Trim),
@@ -777,14 +777,14 @@ const EVENT_TAIL: &[M] = &[
     Sub("Switc&hes", &[
         C("&Mute", EventMute),
         C("&Lock", EventLock),
-        K("L&oop", true, Later("R3a")),
+        C("L&oop", EventLoop),
         S,
         K("Maintain &Aspect Ratio", true, Later("R3b")),
         V23(&K("Auto Normalize", false, Later("R3b"))),
         V23(&R("Optical Flow", false, Later("R3b"))),
     ]),
     Sub("T&ake", menus::TAKE),
-    Sub("&Group", &[C("Create &New", Group), S, C("&Remove From", RemoveFromGroup), C("&Clear", ClearGroup), C("&Select All", SelectGroup)]),
+    Sub("&Group", menus::GROUP),
     Sub("&Stream", menus::STREAM),
     Sub("&Synchronize", &[X("By Moving", NotPlanned("R58")), X("By Slipping", NotPlanned("R58"))]),
     X("Create Sync &Link with Selected Events", NotPlanned("R58")),
@@ -809,7 +809,7 @@ const VIDEO_EVENT: &[M] = &[
     C("Video &Event FX...", VideoEventFx),
     X("Red E&ye Reduction...", NotPlanned("R58")),
     Inline(EVENT_SHARED),
-    X("Create Su&bclip", Later("R3a")),
+    C("Create Su&bclip", CreateSubclip),
     C("Rever&se", EventReverse),
     S,
     C("Select Events to E&nd", SelectEventsToEnd),
@@ -832,7 +832,7 @@ const AUDIO_EVENT: &[M] = &[
     C("Audio Event &FX...", AudioEventFx),
     X("Apply Non-Real-Time Event FX...", NotPlanned("R58")),
     Inline(EVENT_SHARED),
-    X("Create Su&bclip", Later("R3a")),
+    C("Create Su&bclip", CreateSubclip),
     C("&Reverse", EventReverse),
     S,
     C("Select Events to E&nd", SelectEventsToEnd),

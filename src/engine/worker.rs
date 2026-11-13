@@ -489,6 +489,7 @@ mod tests {
             interlaced: false,
             proxy: None,
             grid: 0.0,
+            offset: 0.0,
         });
         let at = SrcAt { m: m.clone(), sf: None, generator: None };
         let solid = |c| Arc::new(ColorImage { size: [4, 4], pixels: vec![c; 16] });

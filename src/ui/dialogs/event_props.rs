@@ -110,7 +110,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         ui.add_enabled(on, Checkbox::new(&mut d.reverse, "Reverse"));
         ui.add_enabled(on, Checkbox::new(&mut d.muted, "Mute"));
         ui.checkbox(&mut d.locked, "Lock");
-        ui.add_enabled(false, Checkbox::new(&mut true, "Loop")).on_disabled_hover_text(Later("R3a").text());
+        ui.add_enabled(on, Checkbox::new(&mut d.looping, "Loop"));
     });
     // VEGAS switches Milan Pro does not have.
     ui.add_enabled_ui(false, |ui| {

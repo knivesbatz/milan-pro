@@ -43,6 +43,7 @@ impl MeridianApp {
             || self.vegas_report.is_some()
             || self.recorded.is_some()
             || self.paste_repeat.is_some()
+            || self.paste_attrs.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -55,6 +56,7 @@ impl MeridianApp {
             clip: clip.is_some(),
             clip_locked: clip.is_some_and(|c| c.locked),
             clip_muted: clip.is_some_and(|c| c.muted),
+            clip_looping: clip.is_some_and(|c| c.looping),
             video_clip: self.focus_clip(true).is_some(),
             audio_clip: self.focus_clip(false).is_some(),
             takes: self.project.find_clips(&self.sel.clips).iter().any(|r| !tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].takes.is_empty()),
@@ -763,9 +765,62 @@ impl MeridianApp {
             EventLock => {
                 self.edit_selected(edit::toggle_clip_lock);
             }
-            EventReverse | EventMute => {
+            EventReverse | EventMute | EventLoop => {
                 let ids = self.sel.clips.clone();
-                self.edit(|p| if c == EventReverse { edit::reverse_clips(p, &ids) } else { edit::mute_clips(p, &ids) });
+                self.edit(|p| match c {
+                    EventReverse => edit::reverse_clips(p, &ids),
+                    EventMute => edit::mute_clips(p, &ids),
+                    _ => edit::loop_clips(p, &ids),
+                });
+            }
+            CreateSubclip => {
+                let Some(id) = self.sel.clips.last().cloned() else { return };
+                let mut sub = None;
+                self.edit(|p| {
+                    sub = edit::subclip_event(p, &id);
+                    sub.is_some()
+                });
+                self.message = Some(match sub.and_then(|s| self.project.media_pool.iter().find(|m| m.id == s)) {
+                    Some(m) => format!("Created subclip \"{}\" in Project Media.", m.name),
+                    None => "Only an event with video or audio media can make a subclip.".into(),
+                });
+            }
+            PasteAttributes => {
+                let (clips, ids) = (self.clipboard.clone(), self.sel.clips.clone());
+                self.edit(|p| edit::paste_attrs(p, &clips, &ids, edit::Attrs::ALL));
+            }
+            PasteAttributesSelect => self.paste_attrs = Some(dialogs::PasteAttrs::new()),
+            InsertEmptyEvent => {
+                // On the selected tracks, else the focus event's track (VEGAS inserts on the selected tracks).
+                let Some(range) = self.project.timeline.loop_region else { return };
+                let mut tracks = self.sel.tracks.clone();
+                if tracks.is_empty() {
+                    let focus = self.selected_clip.as_ref().and_then(|r| self.project.timeline.tracks(r.is_video).get(r.track_idx));
+                    tracks.extend(focus.map(|t| t.id.clone()));
+                }
+                let mut ids = Vec::new();
+                self.edit(|p| {
+                    ids = edit::insert_empty(p, &tracks, range);
+                    !ids.is_empty()
+                });
+                if ids.is_empty() {
+                    self.message = Some("Select an unlocked track to insert the empty event on.".into());
+                } else {
+                    (self.sel.clips, self.sel.env) = (ids, None);
+                }
+            }
+            GroupCut | GroupCopy | GroupDelete => {
+                // The whole group of every selected event, whatever Ignore Event Grouping says.
+                self.sel.clips = edit::expand_groups(&self.project, &self.sel.clips);
+                self.sel.env = None;
+                match c {
+                    GroupCut => self.exec_one(ctx, Cut),
+                    GroupCopy => self.exec_one(ctx, Copy),
+                    _ => {
+                        let ids = self.sel.clips.clone();
+                        self.delete_rippled(&ids);
+                    }
+                }
             }
             EventOpenInTrimmer | EventSelectInMedia => {
                 let Some(cr) = &self.selected_clip else { return };
@@ -1382,7 +1437,7 @@ impl MeridianApp {
         self.default_track = None;
         self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
-        (self.paste_repeat, self.cursor_preview, self.sel_history) = (None, None, Default::default());
+        (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {
@@ -1505,6 +1560,12 @@ impl MeridianApp {
                 if let Some(d) = self.paste_repeat.take().filter(|_| ok) {
                     self.paste_repeat(d.count.max(1) as usize, if d.even { every(&d.every) } else { None });
                 }
+            }
+        }
+        if let Some(ok) = self.paste_attrs.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.paste_attrs.take().filter(|_| ok) {
+                let (clips, ids) = (self.clipboard.clone(), self.sel.clips.clone());
+                self.edit(|p| edit::paste_attrs(p, &clips, &ids, d.attrs));
             }
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);

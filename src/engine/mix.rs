@@ -376,11 +376,12 @@ impl Mixer {
     /// Open the streams for what plays in frames [w0, w1) now, so their first decode is not heard as a gap.
     pub fn warm(&mut self, plan: &AudioPlan, w0: i64, w1: i64) {
         self.pass += 1;
-        for e in plan.tracks.iter().flat_map(|t| &t.events) {
-            let (ps, pe) = (frame(e.src.pos), frame(e.src.pos + e.src.dur));
+        // Each pass of a looping event too, so the stream after a wrap is ready when it is heard.
+        for src in plan.tracks.iter().flat_map(|t| &t.events).flat_map(|e| &e.passes) {
+            let (ps, pe) = (frame(src.pos), frame(src.pos + src.dur));
             let a = w0.max(ps);
             if a < pe.min(w1) {
-                self.stream(&e.src, a - ps);
+                self.stream(src, a - ps);
             }
         }
     }
@@ -423,10 +424,18 @@ impl Mixer {
                 pcm.clear();
                 pcm.resize((b - a) as usize * 2, 0.0);
                 let wait = self.wait;
-                let l = self.stream(&e.src, a - ps);
-                (l.next, l.t) = (b - ps, l.t + (b - a) as f64 * e.src.rate / r);
-                if let Some(err) = l.s.read(&mut pcm, wait, stop.as_deref()) {
-                    self.error.get_or_insert(err);
+                // A looping event reads each pass through its media from a stream of its own.
+                for src in &e.passes {
+                    let qs = frame(src.pos);
+                    let (pa, pb) = (a.max(qs), b.min(frame(src.pos + src.dur)));
+                    if pb <= pa {
+                        continue;
+                    }
+                    let l = self.stream(src, pa - qs);
+                    (l.next, l.t) = (pb - qs, l.t + (pb - pa) as f64 * src.rate / r);
+                    if let Some(err) = l.s.read(&mut pcm[(pa - a) as usize * 2..(pb - a) as usize * 2], wait, stop.as_deref()) {
+                        self.error.get_or_insert(err);
+                    }
                 }
                 if fx_on && !e.fx.is_empty() {
                     let mut ch = ev_old.remove(&e.id).unwrap_or_default();
@@ -643,6 +652,38 @@ mod tests {
         asked.lock().unwrap().clear();
         mix(&p, &mut opener(asked.clone()), 3, 4);
         assert_eq!(*asked.lock().unwrap(), [(3.0, 1)]);
+    }
+
+    /// R3a: an 8 s clip extended to 20 s plays source 0..8, 0..8, 0..4, each pass from a stream of its own, and a block
+    /// across a wrap reads both sides. The fake decoder plays its source time as the sample value.
+    #[test]
+    fn a_looping_event_restarts_its_media_at_each_pass() {
+        let mut p = solo_track();
+        p.media_pool[0].duration = 8.0;
+        p.timeline.audio_tracks[0].clips[0].duration = 20.0;
+        let opened = Arc::new(Mutex::new(Vec::new()));
+        let log = opened.clone();
+        let mut m = Mixer::new(Box::new(move |src: &ASrc, at| {
+            log.lock().unwrap().push((src.pos, src.in_point, at));
+            let total = frame(src.pos + src.dur) - frame(src.pos);
+            let (tx, rx) = mpsc::sync_channel(1 << 16);
+            let pcm: Vec<f32> = (at..total).flat_map(|k| [(src.in_point + k as f64 / RATE as f64) as f32; 2]).collect();
+            for c in pcm.chunks(4800) {
+                tx.send(c.to_vec()).unwrap();
+            }
+            Ok(Stream::from_rx(rx))
+        }));
+        let at = |m: &mut Mixer, t: f64| mix(&p, m, frame(t), 1)[0];
+        for (t, src) in [(1.0, 1.0), (7.5, 7.5), (8.5, 0.5), (15.0, 7.0), (16.25, 0.25), (19.5, 3.5)] {
+            let got = at(&mut m, t);
+            assert!((got as f64 - src).abs() < 1e-4, "{t} s plays source {got}, not {src}");
+        }
+        // One block across the wrap at 8 s: the end of the first pass, then the start of the second.
+        let out = left(&mix(&p, &mut m, frame(8.0) - 2, 4));
+        let want = [8.0 - 2.0 / RATE as f64, 8.0 - 1.0 / RATE as f64, 0.0, 1.0 / RATE as f64].map(|v| (v as f32 * 1e4).round() / 1e4);
+        assert_eq!(out, want);
+        let opened = opened.lock().unwrap();
+        assert!(opened.iter().all(|&(pos, inp, _)| inp == 0.0 && [0.0, 8.0, 16.0].contains(&pos)), "{opened:?}");
     }
 
     #[test]

@@ -62,6 +62,9 @@ pub enum Command {
     ExitEditMode, SelectAfterCursor, SelectEventsToEnd,
     /// Options › Mute All Audio / Mute All Video (playback only).
     MuteAllAudio, MuteAllVideo,
+    /// Switches › Loop; Insert › Empty Event; the event menu's Create Subclip; Edit › (Selectively) Paste Event
+    /// Attributes; Group › Cut All / Copy All / Delete All.
+    EventLoop, InsertEmptyEvent, CreateSubclip, PasteAttributes, PasteAttributesSelect, GroupCut, GroupCopy, GroupDelete,
     /// Video Event Pan/Crop on the focus event; Track Motion on the focus video track.
     EventPanCrop, TrackMotion,
     /// The FX window on the focus video event, the focus video track or the Video Output.

@@ -565,6 +565,7 @@ mod tests {
                 interlaced: false,
                 proxy,
                 grid: 0.0,
+                offset: 0.0,
             };
             // Same quality (scaler) for both: Preview reads the proxy when there is one, else the source.
             let (with, without) = (media(Some(proxy.clone())), media(None));

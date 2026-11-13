@@ -52,8 +52,9 @@ pub struct CmdState {
     /// An event is selected (and whether the focus event is locked); `n_sel` events are.
     pub clip: bool,
     pub clip_locked: bool,
-    /// The focus event's Switches › Mute.
+    /// The focus event's Switches › Mute and Loop.
     pub clip_muted: bool,
+    pub clip_looping: bool,
     /// A video event is selected (Pan/Crop, Video Event FX); an audio event is (Audio Event FX). A grouped A/V pair
     /// sets both.
     pub video_clip: bool,
@@ -133,7 +134,10 @@ impl CmdState {
             Redo => self.can_redo,
             ClearHistory => self.can_undo || self.can_redo,
             TrimStart | TrimEnd | EventLock | SelEventStart | SelEventEnd | EventOpenInTrimmer | EventSelectInMedia
-            | EventProperties | EventReverse | EventMute | RenameEvent => self.clip,
+            | EventProperties | EventReverse | EventMute | RenameEvent | EventLoop | CreateSubclip => self.clip,
+            PasteAttributes | PasteAttributesSelect => self.clipboard && self.n_sel > 0,
+            InsertEmptyEvent => self.selection,
+            GroupCut | GroupCopy | GroupDelete => self.in_group,
             NextTake | PrevTake | ChooseActiveTake | DeleteActiveTake | DeleteTake => self.takes,
             // With nothing selected, Split splits every event under the cursor.
             Split | SelectAll | SelectNone | Quantize | MinimizeTracks => true,
@@ -202,6 +206,7 @@ impl CmdState {
             IgnoreGrouping => self.ignore_group,
             EventLock => self.clip_locked,
             EventMute => self.clip_muted,
+            EventLoop => self.clip_looping,
             SpacePlayPause => self.space_pauses,
             Quantize => self.quantize,
             ShowEnvelopes => self.show_env,
@@ -630,7 +635,7 @@ const TOOLS_SUB: &[M] = &[
 const SWITCHES: &[M] = &[
     C("&Mute", EventMute),
     C("&Lock", EventLock),
-    K("L&oop", true, Later("R3a")),
+    C("L&oop", EventLoop),
     S,
     K("&Invert Phase", false, Later("R3b")),
     K("&Normalize", false, Later("R3b")),
@@ -657,16 +662,17 @@ pub const TAKE: &[M] = &[
     C("&Delete...", DeleteTake),
 ];
 
-const GROUP: &[M] = &[
+/// Edit › Group and the event menu's Group ▸.
+pub const GROUP: &[M] = &[
     C("Create &New", Group),
     S,
     C("&Remove From", RemoveFromGroup),
     C("&Clear", ClearGroup),
     C("&Select All", SelectGroup),
     S,
-    X("Cut &All", Later("R3a")),
-    X("Cop&y All", Later("R3a")),
-    X("&Delete All", Later("R3a")),
+    C("Cut &All", GroupCut),
+    C("Cop&y All", GroupCopy),
+    C("&Delete All", GroupDelete),
 ];
 
 pub const CHANNELS: &[M] = &[
@@ -688,8 +694,8 @@ pub const EDIT: &[M] = &[
     C("&Paste", Paste),
     C("P&aste Repeat...", PasteRepeat),
     C("Pa&ste Insert", PasteInsert),
-    X("Paste E&vent Attributes", Later("R3a")),
-    X("Selectively Paste Event Attributes...", Later("R3a")),
+    C("Paste E&vent Attributes", PasteAttributes),
+    C("Selectively Paste Event Attributes...", PasteAttributesSelect),
     S,
     C("&Delete", Delete),
     C("Tri&m", Trim),
@@ -831,7 +837,7 @@ pub const INSERT: &[M] = &[
     X("Audio In&put Bus", Later("R8a")),
     X("Audio Assignable &FX...", Later("R8a")),
     S,
-    X("&Empty Event", Later("R3a")),
+    C("&Empty Event", InsertEmptyEvent),
     V23(&X("Adjustment Event", Later("R18b"))),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
     V23(&X("&Slideshow...", Later("R18b"))),
@@ -1361,6 +1367,29 @@ mod tests {
             greyed(items, &mut rows);
         }
         assert!(!rows.iter().any(|(_, w)| *w == Later("R2")), "{rows:?}");
+    }
+
+    /// R3a: the Loop switch, empty events, subclips, attribute paste and the group commands work, each once there is
+    /// something to act on; nothing in the menus waits on R3a any more.
+    #[test]
+    fn loop_empty_subclip_attribute_and_group_commands_work() {
+        let r3a = [EventLoop, InsertEmptyEvent, CreateSubclip, PasteAttributes, PasteAttributesSelect, GroupCut, GroupCopy, GroupDelete];
+        let mut st = CmdState::default();
+        for c in r3a {
+            assert!(unfinished(c).is_none() && !st.enabled(c), "{c:?}");
+        }
+        st.clip = true;
+        assert!(st.enabled(EventLoop) && st.enabled(CreateSubclip) && !st.enabled(PasteAttributes));
+        assert_eq!(st.checked(EventLoop), Some(false));
+        st.clip_looping = true;
+        assert_eq!(st.checked(EventLoop), Some(true));
+        (st.clipboard, st.n_sel, st.selection, st.in_group) = (true, 1, true, true);
+        assert!(r3a.iter().all(|c| st.enabled(*c)));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R3a")), "{rows:?}");
     }
 
     #[test]

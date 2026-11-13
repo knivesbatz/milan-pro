@@ -34,6 +34,8 @@ pub struct MediaRef {
     /// The frame rate `SrcAt::sf` counts in: 0 for the project's; the source's own when a higher-rate source plays
     /// slower or faster, so slow motion reaches every source frame.
     pub grid: f64,
+    /// Where a subclip starts in its file (0 for a whole file): `sf` counts from the file's start.
+    pub offset: f64,
 }
 
 impl MediaRef {
@@ -74,6 +76,8 @@ struct VEvent {
     m: Arc<MediaRef>,
     /// The media's generator (generated media only).
     generator: Option<Fx>,
+    /// The media length the event repeats (`edit::loop_len`).
+    looped: Option<f64>,
 }
 
 /// One frame, resolved: tracks bottom to top.
@@ -192,6 +196,7 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
         interlaced: m.interlaced,
         proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
         grid: 0.0,
+        offset: m.file_time(0.0),
     })
 }
 
@@ -201,8 +206,8 @@ pub fn compile(p: &Project) -> VideoPlan {
     let fps = crate::project::exact_fps(s.frame_rate.max(1.0));
     // Even: an odd size (an imported VEGAS project) cannot be encoded 4:2:0.
     let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
-    let refs: HashMap<&str, (Arc<MediaRef>, &Option<Fx>)> =
-        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h))?), &m.generator)))).collect();
+    let refs: HashMap<&str, (Arc<MediaRef>, &MediaItem)> =
+        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h))?), m)))).collect();
     let tracks = p
         .timeline
         .shown_video_tracks()
@@ -213,11 +218,11 @@ pub fn compile(p: &Project) -> VideoPlan {
                 .iter()
                 .filter(|c| !c.muted && c.duration > 0.0)
                 .filter_map(|c| {
-                    let (m, generator) = refs.get(c.media_id.as_deref()?)?;
+                    let (m, item) = refs.get(c.media_id.as_deref()?)?;
                     // Off normal speed, a source with more frames than the project is read on its own frame grid.
                     let fine = !m.still && m.fps > fps * 1.001 && (c.rate - 1.0).abs() > 1e-9;
                     let m = if fine { Arc::new(MediaRef { grid: m.fps, ..(**m).clone() }) } else { m.clone() };
-                    Some(VEvent { m, generator: (*generator).clone(), c: c.clone() })
+                    Some(VEvent { m, generator: item.generator.clone(), looped: crate::edit::loop_len(c, item), c: c.clone() })
                 })
                 .collect();
             events.sort_by(|a, b| a.c.position.total_cmp(&b.c.position));
@@ -322,10 +327,15 @@ pub fn frame_plan(p: &VideoPlan, n: i64) -> FramePlan {
                 let alpha = fade_out * env_at(&c.envelopes, EnvKind::Opacity, local);
                 // Reversed, a frame samples where it ends (its start, mirrored), so it shows exactly the forward frames backwards.
                 let mut st = src_time(c, if c.reverse { t + 1.0 / p.fps } else { t });
+                // A looping event repeats its media past the end; otherwise the last frame holds.
+                if let Some(len) = e.looped {
+                    st = crate::edit::loop_time(st, len);
+                }
                 if e.m.duration > 0.0 {
                     st = st.clamp(0.0, (e.m.duration - 0.5 / p.fps).max(0.0));
                 }
-                let sf = (!e.m.still).then(|| if e.m.grid > 0.0 { (st * e.m.grid + 1e-6).floor() as i64 } else { (st * p.fps).round() as i64 });
+                let ft = st + e.m.offset;
+                let sf = (!e.m.still).then(|| if e.m.grid > 0.0 { (ft * e.m.grid + 1e-6).floor() as i64 } else { (ft * p.fps).round() as i64 });
                 // A generator is evaluated at its media time; one that does not animate always at 0.
                 let generator = e.generator.as_ref().and_then(|g| plugins::eval(g, st)).map(|g| {
                     let gt = if generate::animated(&g) { st } else { 0.0 };
@@ -403,7 +413,10 @@ pub struct ASrc {
 pub struct AEvent {
     /// The clip id: keys its FX state.
     pub id: String,
+    /// The whole event (its place and length: fades, envelopes and FX are event-relative).
     pub src: ASrc,
+    /// What is read: the event, or for a looping event one stream per pass through its media (`edit::loop_passes`).
+    pub passes: Vec<ASrc>,
     /// Event gain, linear.
     pub gain: f32,
     pub fade_in: f64,
@@ -457,10 +470,13 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 .filter(|c| !c.muted && c.duration > 0.0 && c.rate > 0.0)
                 .filter_map(|c| {
                     let m = media.get(c.media_id.as_deref()?)?;
+                    // In the file: a subclip starts part way in.
+                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse };
                     Some(AEvent {
                         id: c.id.clone(),
                         fx: c.fx.clone(),
-                        src: ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: c.in_point, rate: c.rate, reverse: c.reverse },
+                        passes: crate::edit::loop_passes(c, crate::edit::loop_len(c, m)).into_iter().map(|(pos, dur, in_point)| src(pos, dur, in_point)).collect(),
+                        src: src(c.position, c.duration, c.in_point),
                         gain: crate::engine::keyframes::db_to_gain(c.gain_db),
                         fade_in: c.fade_in,
                         fade_out: c.fade_out,
@@ -624,6 +640,34 @@ mod tests {
         // At normal speed the project grid is exact and stays (no extra frames read).
         p.timeline.video_tracks[0].clips[0].rate = 1.0;
         assert_eq!(drawn(&p, 301.0 / 30.0)[0].1, Some(1));
+    }
+
+    /// R3a: an 8 s clip extended to 20 s shows source 0..8, 0..8, 0..4; with Loop off the last frame holds. Its sound
+    /// is read in the same three passes.
+    #[test]
+    fn a_looping_event_repeats_its_media() {
+        let mut p = project();
+        p.timeline.video_tracks[1].visible = false;
+        p.media_pool[0].duration = 8.0;
+        p.media_pool[0].sample_rate = Some(48_000);
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.position, c.in_point, c.duration) = (0.0, 0.0, 20.0);
+        let sf = |p: &Project, t: f64| drawn(p, t)[0].1.unwrap();
+        assert_eq!([0.0, 7.9, 8.0, 15.0, 16.0, 19.9].map(|t| sf(&p, t)), [0, 237, 0, 210, 0, 117]);
+        p.timeline.video_tracks[0].clips[0].looping = false;
+        assert!((239..=240).contains(&sf(&p, 19.9)), "the last frame holds (as before R3a)");
+        // A reversed loop runs back through each pass.
+        let c = &mut p.timeline.video_tracks[0].clips[0];
+        (c.looping, c.reverse) = (true, true);
+        assert_eq!([0.0, 3.9, 4.0, 19.9, 599.0 / 30.0].map(|t| sf(&p, t)), [119, 2, 239, 2, 0]);
+        // Audio: one stream per pass.
+        let mut c = p.timeline.video_tracks[0].clips[0].clone();
+        c.reverse = false;
+        p.timeline.audio_tracks[0].clips.push(c);
+        let a = compile_audio(&p);
+        let passes: Vec<(f64, f64, f64)> = a.tracks[0].events[0].passes.iter().map(|s| (s.pos, s.dur, s.in_point)).collect();
+        assert_eq!(passes, [(0.0, 8.0, 0.0), (8.0, 8.0, 0.0), (16.0, 4.0, 0.0)]);
+        assert_eq!((a.tracks[0].events[0].src.pos, a.tracks[0].events[0].src.dur), (0.0, 20.0), "fades span the whole event");
     }
 
     /// An odd size (an imported VEGAS project) is composed one pixel smaller, as 4:2:0 encoders need.

@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 184 |
-| PARTIAL | 150 |
-| MISSING | 86 |
+| DONE | 186 |
+| PARTIAL | 149 |
+| MISSING | 85 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). The gaps are event looping, velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The gaps are velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -172,10 +172,10 @@ What matters most:
 | 5.23 | Ripple editing | DONE | Auto Ripple plus post-edit ripple modes |
 | 5.24 | Slip editing | DONE | Batch 7 |
 | 5.25 | Slide editing | DONE | Batch 7 |
-| 5.26 | Looping (events) | MISSING | `edit::media_limit` (`edit.rs:7`) stops events at the media end. The Loop switch is a greyed toggle (`menus.rs:524`). Loop playback works. → R3a |
+| 5.26 | Looping (events) | DONE | R3a: Switches › Loop (on by default, `Clip.looping`; event menu, Edit › Switches, Event Properties). A looping event drags past its media end (`edit::media_limit` is unbounded on the right) and repeats the whole file (or subclip): video wraps in `plan::frame_plan` (`edit::loop_time`), audio reads one stream per pass (`edit::loop_passes`, `AEvent.passes`, `mix::Mixer::block`), so preview and render match; notches mark each wrap (`ui/timeline/events.rs`). Takes shorter than the event loop. Tests `a_looping_event_repeats_its_media`, `a_looping_event_restarts_its_media_at_each_pass`, `loop_notches_sit_where_the_media_wraps`, `loop_passes_split_at_the_media_end` |
 | 5.27 | Playback rate adjustment | DONE | `Clip.rate`, Event Properties |
 | 5.28 | Reverse playback (events) | PARTIAL | `Clip.reverse` renders correctly. Preview shows only some frames (per-frame respawn, `FEATURE_PLAN.md:242`). → R20 |
-| 5.29 | Clip grouping | PARTIAL | Create/remove/clear/select work. Group Cut/Copy/Delete All are greyed (`menus.rs:558-560`). → R3a |
+| 5.29 | Clip grouping | DONE | Create/remove/clear/select, and (R3a) Group › Cut All / Copy All / Delete All in Edit › Group and the event menu: the whole group of every selected event, whatever Ignore Event Grouping says (`app/commands.rs`). Test `groups_expand_split_and_dissolve` |
 | 5.30 | Event envelopes | PARTIAL | Volume, pan, mute and opacity work. Velocity, Freeze Frame and Transition Progress are greyed (`ctx.rs:807`). → R4a |
 | 5.31 | Fade-in and fade-out | DONE | Fade curves and crossfades |
 | 5.32 | Audio and video synchronization | DONE | Grouped A/V, audio master clock (`FEATURE_PLAN.md` 1.6) |
@@ -857,6 +857,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R3a: Event looping, empty events, subclips, attribute paste, group operations (M)
+
+**Status: DONE.** Built as designed below, except:
+- Loop repeats the whole file (or subclip) from its start, as VEGAS does, not from the in point: source time wraps modulo the media length (`edit::loop_time`), and the audio plan cuts a looping event into passes (`edit::loop_passes`, one mixer stream each). Only the right edge runs on past the media; the in point stays at or after 0. Loop off keeps Milan's media-end limit for drags; an event already past the end then holds its last frame and is silent there. Media under 50 ms does not loop (`edit::MIN_LOOP`).
+- `MediaItem.subclip` is `Subclip { parent, start }` with `duration` the subclip's length and `path` the parent's file; `MediaItem::file_time` adds the start for the plan, mixer, thumbnails, preview and waveforms. Create Subclip comes from the Trimmer's More menu (in/out range, or the whole media) and the event menu (the event then uses the subclip; a span that wraps past the media end only adds it to Project Media). Not built: the naming dialog (subclips are named "<media> Subclip n"; rename them in Project Media), and opening a subclip in the Trimmer shows its whole file. The timeline region tags' Create Subclip says why it is greyed (regions are not media).
+- Insert Empty Event uses the selected tracks, else the focus event's track. Empty events are hatched.
+- Paste Event Attributes takes the first copied event of each kind (video onto video, audio onto audio); Selectively Paste offers Event FX, Pan/Crop, Envelopes, Gain, Playback rate and Fades. A pasted rate keeps the event's length.
+- The event menu's Group ▸ now has Cut All / Copy All / Delete All too, as Edit › Group does.
 
 **Scope**
 - The event Loop switch and events extended past media end (looped, with notch marks).
