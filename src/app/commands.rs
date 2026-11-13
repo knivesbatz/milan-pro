@@ -1136,6 +1136,18 @@ impl MeridianApp {
                 self.sel.env = None; // a hidden envelope's points cannot stay selected
                 self.save_prefs();
             }
+            PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => {
+                let cents = match c {
+                    PitchUp => 100.0,
+                    PitchDown => -100.0,
+                    PitchCentUp => 1.0,
+                    PitchCentDown => -1.0,
+                    PitchOctUp => 1200.0,
+                    _ => -1200.0,
+                };
+                let ids = self.sel.clips.clone();
+                self.edit(|p| edit::shift_pitch(p, &ids, cents));
+            }
             EventVelocity | FreezeFrame | TransitionProgress => {
                 let ids: Vec<String> = self.sel.clips.iter().filter(|id| self.project.find_clip(id).is_some_and(|r| r.is_video)).cloned().collect();
                 let at = self.project.timeline.cursor_position;
@@ -1802,17 +1814,36 @@ impl MeridianApp {
         }
     }
 
-    /// J / L shuttle at rates other than normal playback: the cursor moves silently.
+    /// J / L shuttle (and the Rate slider) at rates other than normal playback: the sound plays at the shuttle's speed,
+    /// varispeed (R4b), and its clock moves the cursor; without a device the frame time does.
     pub(super) fn tick_shuttle(&mut self, ctx: &egui::Context) {
-        if self.shuttle == 0.0 || self.shuttle == 1.0 {
+        let rate = self.shuttle;
+        if rate == 0.0 || rate == 1.0 {
+            if self.shuttle_audio.take().is_some() {
+                self.audio.stop();
+            }
             return;
         }
+        let cursor = self.project.timeline.cursor_position;
+        // A seek (a click on the ruler) starts the sound again from the cursor; a new rate is heard on the fly.
+        let seek = self.shuttle_audio.is_some() && cursor != self.shuttle_pos;
+        if seek || !self.audio.running() || (self.shuttle_audio != Some(rate) && !self.audio.set_rate(rate)) {
+            self.audio.start(ctx, &self.project, cursor, None, rate);
+        } else {
+            self.audio.set_plan(&self.project);
+        }
+        self.shuttle_audio = Some(rate);
         let dt = ctx.input(|i| i.stable_dt).min(0.1) as f64;
+        let t = match self.audio.position() {
+            Some(t) => t,
+            None => cursor + rate * dt,
+        };
         let tl = &mut self.project.timeline;
-        tl.cursor_position = (tl.cursor_position + self.shuttle * dt).max(0.0);
+        tl.cursor_position = t.max(0.0);
         if tl.cursor_position == 0.0 {
             self.shuttle = 0.0;
         }
+        self.shuttle_pos = tl.cursor_position;
         ctx.request_repaint();
     }
 

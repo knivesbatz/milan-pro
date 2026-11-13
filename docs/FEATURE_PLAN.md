@@ -397,7 +397,7 @@ Stream lifecycle:
    - When the device is back, the session restarts at the cursor.
 5. **Unchanged.**
    - Master gain and peaks stay in `Feed`; `ui/master_bus.rs` is unchanged.
-   - Shuttle and Rate ≠ 1 stay silent, as today.
+   - Shuttle and Rate ≠ 1 stay silent, as today (R4b has since made them audible: `docs/REMAINING.md`).
 6. **Known limit.** rodio gives no latency figure, so the playhead runs about 10-20 ms ahead of what is heard. The fix (cpal timestamps) is deferred.
 
 ### 1.7 Render path

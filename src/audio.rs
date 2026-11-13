@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::R
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crate::engine::mix::{self, Mixer, frame};
+use crate::engine::mix::{self, Block, Mixer, frame};
 use crate::engine::plan::{AudioPlan, QUICKFADE, compile_audio};
 use crate::edit;
 use crate::project::{MediaItem, NormSpan, Normalized, Project, Track};
@@ -78,13 +78,16 @@ impl Master {
 
 /// rodio source fed with mixed blocks (start frame, samples). Its clock is the master clock.
 struct Feed {
-    rx: Receiver<(i64, Vec<f32>)>,
+    rx: Receiver<Block>,
     buf: Vec<f32>,
     pos: usize,
+    /// The current block's start (timeline frame) and play rate: its sample `pos` is timeline sample f0 x 2 + pos x rate.
+    f0: i64,
+    rate: f64,
     /// Underrun silence must come in whole frames or L/R would swap.
     odd: bool,
     /// Timeline sample (frame x 2 + channel) after the last one handed to the device. Set from each block's start
-    /// frame, so it follows loop wraps exactly.
+    /// frame and rate, so it follows loop wraps and shuttle speeds exactly.
     clock: Arc<AtomicI64>,
     /// Every call, underruns included: the watchdog's sign that the device is alive.
     calls: Arc<AtomicU64>,
@@ -95,9 +98,9 @@ struct Feed {
 }
 
 impl Feed {
-    fn new(rx: Receiver<(i64, Vec<f32>)>, clock: Arc<AtomicI64>, calls: Arc<AtomicU64>, stop: Arc<AtomicBool>, master: Arc<Master>) -> Self {
+    fn new(rx: Receiver<Block>, clock: Arc<AtomicI64>, calls: Arc<AtomicU64>, stop: Arc<AtomicBool>, master: Arc<Master>) -> Self {
         let gain = [master.gain(0), master.gain(1)];
-        Self { rx, buf: Vec::new(), pos: 0, odd: false, clock, calls, stop, master, gain }
+        Self { rx, buf: Vec::new(), pos: 0, f0: 0, rate: 1.0, odd: false, clock, calls, stop, master, gain }
     }
 }
 
@@ -110,15 +113,15 @@ impl Iterator for Feed {
         }
         if self.pos >= self.buf.len() && !self.odd {
             // A finished mixer (Disconnected) leaves silence until the session stops.
-            if let Ok((f0, b)) = self.rx.try_recv() {
-                (self.buf, self.pos) = (b, 0);
+            if let Ok((f0, rate, b)) = self.rx.try_recv() {
+                (self.buf, self.pos, self.f0, self.rate) = (b, 0, f0, rate);
                 self.clock.store(f0 * 2, Relaxed);
             }
         }
         if let Some(&s) = self.buf.get(self.pos) {
             let ch = self.pos % 2;
             self.pos += 1;
-            self.clock.fetch_add(1, Relaxed);
+            self.clock.store(self.f0 * 2 + (self.pos as f64 * self.rate).round() as i64, Relaxed);
             let g = &mut self.gain[ch];
             let to = self.master.gain(ch);
             *g = if (to - *g).abs() < 1e-6 { to } else { *g + (to - *g) / 96.0 };
@@ -169,6 +172,8 @@ struct Session {
     /// The plan the mixer reads once per block, and the content hash, bypass and quickfade it was compiled with.
     slot: Arc<Mutex<Arc<AudioPlan>>>,
     hash: (u64, bool, bool),
+    /// The play rate (f64 bits): 1, or a shuttle's, which `set_rate` changes on the fly.
+    rate: Arc<AtomicU64>,
 }
 
 pub struct Player {
@@ -248,9 +253,10 @@ impl Player {
         }
     }
 
-    /// Play the timeline's audio from `from`, looping over `lp` (seconds) inside the mixer if set.
+    /// Play the timeline's audio from `from`, looping over `lp` (seconds) inside the mixer if set, at `rate` (1, or a
+    /// J / L shuttle's: then varispeed, backwards below 0, and without a loop).
     /// Without a device no session starts, and `position()` stays None so the caller keeps its own clock.
-    pub fn start(&mut self, ctx: &egui::Context, project: &Project, from: f64, lp: Option<(f64, f64)>) {
+    pub fn start(&mut self, ctx: &egui::Context, project: &Project, from: f64, lp: Option<(f64, f64)>, rate: f64) {
         self.stop();
         self.poll_device();
         let handle = match &self.device {
@@ -276,18 +282,31 @@ impl Player {
         }
         let slot = Arc::new(Mutex::new(Arc::new(self.plan(project))));
         let lp = lp.map(|(a, b)| (frame(a), frame(b)));
-        let (s, quit, error, ctx) = (slot.clone(), stop.clone(), self.error.clone(), ctx.clone());
+        let rate = Arc::new(AtomicU64::new(rate.to_bits()));
+        let (s, r, quit, error, ctx) = (slot.clone(), rate.clone(), stop.clone(), self.error.clone(), ctx.clone());
         std::thread::Builder::new()
             .name("milan-mix".into())
             .spawn(move || {
-                mix::run(&s, Mixer::ffmpeg(), from, lp, &tx, &quit, |e| {
+                mix::run(&s, Mixer::ffmpeg(), from, lp, &r, &tx, &quit, |e| {
                     *error.lock().unwrap() = Some(e);
                     ctx.request_repaint();
                 })
             })
             .expect("spawn milan-mix");
         let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade);
-        self.session = Some(Session { clock, calls, watch: (0, Instant::now()), stop, slot, hash });
+        self.session = Some(Session { clock, calls, watch: (0, Instant::now()), stop, slot, hash, rate });
+    }
+
+    /// Change a running shuttle's rate (heard within the device queue); false when there is no shuttle to change, as
+    /// normal playback cannot become one.
+    pub fn set_rate(&mut self, rate: f64) -> bool {
+        let Some(s) = &self.session else { return false };
+        let old = f64::from_bits(s.rate.load(Relaxed));
+        let ok = old != 1.0 && rate != 1.0;
+        if ok {
+            s.rate.store(rate.to_bits(), Relaxed);
+        }
+        ok
     }
 
     fn plan(&self, project: &Project) -> AudioPlan {
@@ -522,7 +541,7 @@ impl Waveforms {
 mod tests {
     use super::*;
 
-    fn feed(master: Arc<Master>) -> (mpsc::SyncSender<(i64, Vec<f32>)>, Feed) {
+    fn feed(master: Arc<Master>) -> (mpsc::SyncSender<Block>, Feed) {
         let (tx, rx) = mpsc::sync_channel(4);
         let (clock, calls, stop) = (Arc::new(AtomicI64::new(0)), Arc::new(AtomicU64::new(0)), Arc::new(AtomicBool::new(false)));
         (tx, Feed::new(rx, clock, calls, stop, master))
@@ -548,7 +567,7 @@ mod tests {
         let master = Arc::new(Master::new());
         master.set_gain([0.5, 0.0]);
         let (tx, mut feed) = feed(master.clone());
-        tx.send((0, vec![0.8, 0.8, -1.0, 0.2])).unwrap();
+        tx.send((0, 1.0, vec![0.8, 0.8, -1.0, 0.2])).unwrap();
         let out: Vec<f32> = (0..4).map(|_| feed.next().unwrap()).collect();
         assert_eq!(out, [0.4, 0.0, -0.5, 0.0]);
         assert_eq!(master.take_peaks(), [0.5, 0.0]);
@@ -560,7 +579,7 @@ mod tests {
     fn master_gain_changes_glide() {
         let master = Arc::new(Master::new());
         let (tx, mut feed) = feed(master.clone());
-        tx.send((0, vec![1.0; 2 * RATE as usize / 50])).unwrap();
+        tx.send((0, 1.0, vec![1.0; 2 * RATE as usize / 50])).unwrap();
         assert_eq!((feed.next(), feed.next()), (Some(1.0), Some(1.0)));
         master.set_gain([0.0, 0.0]);
         let out: Vec<f32> = (0..2 * RATE as usize / 50 - 2).map(|_| feed.next().unwrap()).collect();
@@ -572,8 +591,8 @@ mod tests {
     #[test]
     fn feed_clock_follows_block_starts() {
         let (tx, mut feed) = feed(Arc::new(Master::new()));
-        tx.send((100, vec![0.1; 4])).unwrap();
-        tx.send((10, vec![0.2; 4])).unwrap(); // a loop wrap back to frame 10
+        tx.send((100, 1.0, vec![0.1; 4])).unwrap();
+        tx.send((10, 1.0, vec![0.2; 4])).unwrap(); // a loop wrap back to frame 10
         let clock = feed.clock.clone();
         let frames = || clock.load(Relaxed) as f64 / 2.0;
         for _ in 0..4 {
@@ -593,6 +612,22 @@ mod tests {
         assert_eq!(feed.calls.load(Relaxed), 10);
         feed.stop.store(true, Relaxed);
         assert_eq!(feed.next(), None);
+    }
+
+    /// R4b: shuttle 2x for 1 s advances the clock 2 s; backwards it runs back.
+    #[test]
+    fn shuttle_clock_advances_by_the_rate() {
+        let (tx, mut feed) = feed(Arc::new(Master::new()));
+        tx.send((RATE as i64, 2.0, vec![0.0; 2 * RATE as usize])).unwrap();
+        tx.send((3 * RATE as i64, -4.0, vec![0.0; 2 * RATE as usize / 4])).unwrap();
+        for _ in 0..2 * RATE as usize {
+            feed.next();
+        }
+        assert_eq!(clock_secs(feed.clock.load(Relaxed)), 3.0);
+        for _ in 0..2 * RATE as usize / 4 {
+            feed.next();
+        }
+        assert_eq!(clock_secs(feed.clock.load(Relaxed)), 2.0);
     }
 
     #[test]

@@ -124,6 +124,11 @@ pub struct MeridianApp {
     time_entry: Option<crate::ui::dialogs::TimeEntry>,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
     shuttle: f64,
+    /// The rate of the shuttle sound playing (R4b), and the cursor it last set (another value is a seek).
+    shuttle_audio: Option<f64>,
+    shuttle_pos: f64,
+    /// The Rate slider is being dragged: it shuttles at its rate, and stops when let go.
+    rate_drag: bool,
     /// Options › Bypass All Audio FX (playback only, for this session).
     bypass_audio_fx: bool,
     /// The recording input: open while a track is armed (the meter), recording into a file from `rec_start`.
@@ -285,6 +290,9 @@ impl MeridianApp {
             unfinished_open: false,
             time_entry: None,
             shuttle: 0.0,
+            shuttle_audio: None,
+            shuttle_pos: 0.0,
+            rate_drag: false,
             bypass_audio_fx: false,
             input: None,
             rec_start: None,
@@ -592,7 +600,12 @@ impl eframe::App for MeridianApp {
             }
             // The Rate area spans the horizontal scrollbar row and the transport row (§5.9.3).
             let rate = a.rate.with_min_y(a.timeline.max.y - t.m.hscroll_h);
-            ui::draw_rate(ui, rate, self.playing, &mut self.project);
+            match ui::draw_rate(ui, rate, self.playing) {
+                // The Rate slider shuttles while it is dragged (not while playing) and springs back to 0.
+                Some(r) if !self.playing => (self.shuttle, self.rate_drag) = (if r.abs() < 0.01 { 0.0 } else { r as f64 }, true),
+                None if self.rate_drag => (self.shuttle, self.rate_drag) = (0.0, false),
+                _ => {}
+            }
             transport_action = ui::draw_transport(
                 ui,
                 a.transport,
@@ -741,9 +754,10 @@ impl eframe::App for MeridianApp {
         (self.audio.bypass_fx, self.audio.quickfade) = (self.bypass_audio_fx, self.prefs.quickfade);
         if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
             self.audio.stop();
+            self.shuttle_audio = None;
             if self.playing {
                 self.preview.play(lp);
-                self.audio.start(ctx, &self.project, cursor, lp);
+                self.audio.start(ctx, &self.project, cursor, lp, 1.0);
             } else {
                 self.preview.stop();
             }
@@ -755,7 +769,7 @@ impl eframe::App for MeridianApp {
                 self.audio.reopen();
             } else if !self.audio.running() {
                 // The device has (re)opened: carry on from the cursor.
-                self.audio.start(ctx, &self.project, cursor, lp);
+                self.audio.start(ctx, &self.project, cursor, lp, 1.0);
             } else {
                 self.audio.set_plan(&self.project);
             }

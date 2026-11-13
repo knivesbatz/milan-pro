@@ -207,6 +207,7 @@ impl CmdState {
             EventSwitch(s) => if s.video() { self.video_clip } else { self.audio_clip },
             SetResample(_) => self.video_clip,
             SetChannels(_) => self.audio_clip,
+            PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
             Quickfade => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
@@ -329,7 +330,6 @@ impl Why {
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
-        PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => Later("R4b"),
         GroupMute | GroupSolo => Later("R5"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         VideoBusTrack => Later("R7"),

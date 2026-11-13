@@ -1791,27 +1791,65 @@ fn free_video_events<'a>(project: &'a mut Project, ids: &[String]) -> impl Itera
     project.timeline.video_tracks.iter_mut().filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(move |c| !c.locked && ids.contains(&c.id))
 }
 
+/// R4b: the audio events that follow video event `id`'s Velocity envelope: unlocked, in its group, at its place and
+/// length (the audio of an A/V pair). They play a copy of it (`sync_velocity`), which is not drawn.
+fn velocity_followers(project: &Project, id: &str) -> Vec<String> {
+    let Some(c) = project.clip(id) else { return Vec::new() };
+    let Some(g) = &c.group else { return Vec::new() };
+    let same = |a: &Clip| a.group.as_ref() == Some(g) && !a.locked && (a.position - c.position).abs() < 1e-6 && (a.duration - c.duration).abs() < 1e-6;
+    project.timeline.audio_tracks.iter().filter(|t| !t.locked).flat_map(|t| &t.clips).filter(|a| same(a)).map(|a| a.id.clone()).collect()
+}
+
+/// R4b: the audio of video event `id` follows its speed: its followers get a copy of its Velocity envelope (or lose
+/// theirs with it). VEGAS leaves the audio at normal speed; Milan Pro keeps an A/V pair in step.
+fn sync_velocity(project: &mut Project, id: &str) {
+    let ids = velocity_followers(project, id);
+    let env = project.clip(id).and_then(|c| c.envelopes.iter().find(|e| e.kind == EnvKind::Velocity)).cloned();
+    for a in project.timeline.audio_tracks.iter_mut().flat_map(|t| &mut t.clips).filter(|a| ids.contains(&a.id)) {
+        a.envelopes.retain(|e| e.kind != EnvKind::Velocity);
+        a.envelopes.extend(env.clone());
+    }
+}
+
 /// Insert/Remove Envelope › Velocity on video events `ids`: all take the opposite of the focus (last) event's state.
 /// A new one runs at 100%.
 pub fn toggle_velocity(project: &mut Project, ids: &[String]) -> bool {
     let Some(on) = ids.last().and_then(|id| project.clip(id)).map(|c| crate::engine::velocity::of(c).is_none()) else { return false };
-    let mut done = false;
+    let mut done = Vec::new();
     // Events that already have one keep it (their points are the user's).
     for c in free_video_events(project, ids).filter(|c| crate::engine::velocity::of(c).is_some() != on) {
         c.envelopes.retain(|e| e.kind != EnvKind::Velocity);
         if on {
             c.envelopes.push(new_envelope(EnvKind::Velocity));
         }
-        done = true;
+        done.push(c.id.clone());
+    }
+    for id in &done {
+        sync_velocity(project, id);
+    }
+    changed(project, !done.is_empty())
+}
+
+/// Event Properties › Pitch change, by `cents` (the Pitch Up / Down keys), on the unlocked audio events `ids`, within
+/// two octaves either way.
+pub fn shift_pitch(project: &mut Project, ids: &[String], cents: f32) -> bool {
+    let mut done = false;
+    for c in project.timeline.audio_tracks.iter_mut().filter(|t| !t.locked).flat_map(|t| &mut t.clips).filter(|c| !c.locked && ids.contains(&c.id)) {
+        let p = (c.pitch_cents + cents).clamp(-PITCH_MAX, PITCH_MAX).round();
+        done |= p != c.pitch_cents;
+        c.pitch_cents = p;
     }
     changed(project, done)
 }
+
+/// The largest pitch change, in cents.
+pub const PITCH_MAX: f32 = 2400.0;
 
 /// Freeze Frame at Cursor: a Velocity envelope (added at 100% if there is none) that steps to a 0% Hold point at the
 /// cursor (`t`, timeline time): the speed up to the cursor is kept (a point there holds its value), and the frame at
 /// the cursor holds until the next point, or to the event's end.
 pub fn freeze_frame(project: &mut Project, ids: &[String], t: f64) -> bool {
-    let mut done = false;
+    let mut done = Vec::new();
     for c in free_video_events(project, ids).filter(|c| t > c.position && t < c.position + c.duration) {
         let local = t - c.position;
         if !c.envelopes.iter().any(|e| e.kind == EnvKind::Velocity) {
@@ -1824,9 +1862,12 @@ pub fn freeze_frame(project: &mut Project, ids: &[String], t: f64) -> bool {
         keys.retain(|k| (k.t - local).abs() > KEY_EPS);
         let i = keys.partition_point(|k| k.t < local);
         keys.splice(i..i, [Keyframe { t: local, v, curve: Curve::Hold }, Keyframe { t: local, v: 0.0, curve: Curve::Hold }]);
-        done = true;
+        done.push(c.id.clone());
     }
-    changed(project, done)
+    for id in &done {
+        sync_velocity(project, id);
+    }
+    changed(project, !done.is_empty())
 }
 
 /// Insert/Remove Envelope › Transition Progress on the transitions of video events `ids` (into and out of each):
@@ -1913,7 +1954,11 @@ pub fn with_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl 
         return false;
     }
     if kind != EnvKind::TransitionProgress {
-        return !out && c.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+        let done = !out && c.envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
+        if done && kind == EnvKind::Velocity && r.is_video {
+            sync_velocity(project, id);
+        }
+        return done;
     }
     let Some(tr) = (if out { c.transition_out.as_mut() } else { c.transition.as_mut() }).filter(|t| !t.progress.is_empty()) else { return false };
     let mut e = Envelope { kind, points: std::mem::take(&mut tr.progress) };
@@ -2881,6 +2926,50 @@ mod tests {
         // Remove: Insert/Remove Envelope › Velocity toggles.
         assert!(toggle_velocity(&mut p, &[id.clone()]) && crate::engine::velocity::of(p.clip(&id).unwrap()).is_none());
         assert!(toggle_velocity(&mut p, &[id.clone()]) && p.clip(&id).unwrap().envelopes[0].points.keys[0].v == 1.0);
+    }
+
+    /// R4b: the audio of an A/V pair (grouped, same place and length) follows its video event's Velocity: inserted,
+    /// frozen, edited and removed with it. Audio elsewhere, or moved off, keeps its own speed.
+    #[test]
+    fn audio_follows_its_video_velocity() {
+        let mut p = Project::new("t");
+        let (mut v, mut a, mut other) = (clip(10.0, 6.0, 1.0), clip(10.0, 6.0, 1.0), clip(10.0, 5.0, 1.0));
+        for c in [&mut v, &mut a, &mut other] {
+            (c.envelopes, c.group) = (Vec::new(), Some("g".into()));
+        }
+        let (vid, aid, oid) = (v.id.clone(), a.id.clone(), other.id.clone());
+        p.timeline.video_tracks[0].clips.push(v);
+        p.timeline.audio_tracks[0].clips.extend([a, other]);
+        let vel = |p: &Project, id: &str| crate::engine::velocity::of(p.clip(id).unwrap()).map(|e| e.points.keys.clone());
+        assert!(toggle_velocity(&mut p, &[vid.clone()]));
+        assert!(vel(&p, &aid).is_some() && vel(&p, &oid).is_none(), "the other length is not its pair");
+        assert!(freeze_frame(&mut p, &[vid.clone()], 12.0));
+        assert!(edit_envelope(&mut p, &vid, EnvKind::Velocity, |e| {
+            e.points.keys[0].v = 2.0;
+            true
+        }));
+        assert_eq!(vel(&p, &aid), vel(&p, &vid));
+        assert_eq!(src_time(p.clip(&aid).unwrap(), 11.0), src_time(p.clip(&vid).unwrap(), 11.0));
+        assert!(toggle_velocity(&mut p, &[vid.clone()]) && vel(&p, &aid).is_none());
+    }
+
+    /// R4b: Pitch Up / Down move the selected audio events' pitch by semitones, cents and octaves, within two octaves;
+    /// video events have none.
+    #[test]
+    fn pitch_keys_shift_audio_events() {
+        let mut p = Project::new("t");
+        let (a, v) = (clip(0.0, 4.0, 0.0), clip(0.0, 4.0, 0.0));
+        let ids = [a.id.clone(), v.id.clone()];
+        p.timeline.audio_tracks[0].clips.push(a);
+        p.timeline.video_tracks[0].clips.push(v);
+        let pitch = |p: &Project| (p.clip(&ids[0]).unwrap().pitch_cents, p.clip(&ids[1]).unwrap().pitch_cents);
+        assert!(shift_pitch(&mut p, &ids, 100.0) && shift_pitch(&mut p, &ids, -1.0));
+        assert_eq!(pitch(&p), (99.0, 0.0));
+        for _ in 0..3 {
+            shift_pitch(&mut p, &ids, 1200.0);
+        }
+        assert_eq!(pitch(&p).0, 2400.0);
+        assert!(!shift_pitch(&mut p, &ids, 1.0), "at the limit nothing changes");
     }
 
     #[test]

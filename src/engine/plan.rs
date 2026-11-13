@@ -488,6 +488,52 @@ pub struct ASrc {
     pub reverse: bool,
     /// The file's audio stream (`-map 0:a:N`, Stream ▸).
     pub stream: u32,
+    /// Pitch change in cents, at the same length.
+    pub pitch: f32,
+}
+
+/// R4b: how an audio event with a Velocity envelope reads its media (varispeed, `mix::Mixer::block`).
+#[derive(Debug)]
+pub struct Varispeed {
+    /// The event as `edit::src_time` needs it: place, length, in point, rate, direction and the envelope.
+    pub clip: Clip,
+    /// The media length it repeats past its end (Switches › Loop), and its length: past it the event is silent.
+    pub looped: Option<f64>,
+    pub len: f64,
+    /// Where the media starts in its file (a subclip's start).
+    pub offset: f64,
+}
+
+impl Varispeed {
+    /// Media seconds heard `local` seconds into the event, unwrapped (a looping event runs on past the media end).
+    pub fn time(&self, local: f64) -> f64 {
+        src_time(&self.clip, self.clip.position + local)
+    }
+
+    /// Where unwrapped time `s` is in the media, or None where the event is silent (before the media, or past its
+    /// end without Loop).
+    pub fn at(&self, s: f64) -> Option<f64> {
+        match self.looped {
+            Some(len) => Some(crate::edit::loop_time(s, len)),
+            None => (0.0..self.len).contains(&s).then_some(s),
+        }
+    }
+
+    /// The earliest media time heard from `local` seconds in to the event's end (every 10 ms and at each envelope
+    /// point), so a decoder opened there has all the rest.
+    pub fn earliest(&self, local: f64) -> f64 {
+        let d = self.clip.duration;
+        let n = ((d - local) / 0.01).ceil().clamp(1.0, 100_000.0) as usize;
+        let keys = crate::engine::velocity::of(&self.clip).into_iter().flat_map(|e| e.points.keys.iter().map(|k| k.t));
+        let ts = (0..=n).map(|i| local + (d - local) * i as f64 / n as f64).chain(keys.filter(|t| *t > local && *t < d));
+        let (lo, hi) = ts.map(|t| self.time(t)).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), s| (a.min(s), b.max(s)));
+        match self.looped {
+            // A wrap ahead brings the media start back.
+            Some(len) if lo < 0.0 || hi >= len => 0.0,
+            Some(len) => crate::edit::loop_time(lo, len),
+            None => lo.max(0.0),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -498,6 +544,8 @@ pub struct AEvent {
     pub src: ASrc,
     /// What is read: the event, or for a looping event one stream per pass through its media (`edit::loop_passes`).
     pub passes: Vec<ASrc>,
+    /// R4b: a Velocity envelope (the one its video event's has, `edit::sync_velocity`): read varispeed instead.
+    pub vel: Option<Varispeed>,
     /// Event gain with the Normalize gain, linear.
     pub gain: f32,
     /// Channels ▸ and Switches › Invert Phase, applied to the PCM as it is read.
@@ -564,11 +612,19 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                     let m = media.get(c.media_id.as_deref()?)?;
                     // In the file: a subclip starts part way in.
                     let stream = c.stream.min(m.streams(false) - 1);
-                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream };
+                    let pitch = c.pitch_cents;
+                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream, pitch };
+                    let vel = crate::engine::velocity::of(c).map(|_| Varispeed {
+                        clip: Clip { fx: Vec::new(), takes: Vec::new(), pan_crop: Default::default(), ..c.clone() },
+                        looped: crate::edit::loop_len(c, m),
+                        len: m.duration,
+                        offset: m.file_time(0.0),
+                    });
                     Some(AEvent {
                         id: c.id.clone(),
                         fx: c.fx.clone(),
                         passes: crate::edit::loop_passes(c, crate::edit::loop_len(c, m)).into_iter().map(|(pos, dur, in_point)| src(pos, dur, in_point)).collect(),
+                        vel,
                         src: src(c.position, c.duration, c.in_point),
                         gain: crate::engine::keyframes::db_to_gain(c.gain_db + crate::edit::normalize_gain(c)),
                         channels: c.channels,
@@ -608,7 +664,7 @@ pub fn norm_source(p: &Project, c: &Clip) -> Option<(ASrc, f64)> {
         _ => (c.in_point, span.min(m.duration - c.in_point).max(0.0)),
     };
     let stream = c.stream.min(m.streams(false) - 1);
-    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream }, len))
+    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream, pitch: 0.0 }, len))
 }
 
 #[cfg(test)]

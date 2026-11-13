@@ -21,6 +21,7 @@ pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;
 pub mod render;
+pub mod resample;
 #[allow(dead_code)]
 pub mod thumbs;
 pub mod transition;

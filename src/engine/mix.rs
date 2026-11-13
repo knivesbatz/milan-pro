@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -12,7 +12,8 @@ use std::time::{Duration, SystemTime};
 use crate::audio::RATE;
 use crate::engine::afx::Chain;
 use crate::engine::keyframes::{db_to_gain, ramp};
-use crate::engine::plan::{ASrc, AudioPlan, fade};
+use crate::engine::plan::{ASrc, AudioPlan, Varispeed, fade};
+use crate::engine::resample::Resampler;
 use crate::project::{ChannelMap, Curve, Envelope};
 
 /// Frames per mixed block (about 21 ms).
@@ -21,6 +22,8 @@ pub const BLOCK: usize = 1024;
 const CHUNK: usize = RATE as usize / 4;
 /// A decoder silent this long is given up on, so a hung source cannot hold the mix thread forever.
 const TIMEOUT: Duration = Duration::from_secs(2);
+/// Varispeed slower than this (a freeze, a stopped shuttle) is silent: a held sample is only a DC offset.
+const MIN_SPEED: f64 = 0.01;
 
 /// Timeline frame (at RATE) of time `t`.
 pub fn frame(t: f64) -> i64 {
@@ -41,6 +44,18 @@ fn atempo(rate: f64) -> Vec<String> {
     if (r - 1.0).abs() > 1e-9 {
         v.push(format!("atempo={r}"));
     }
+    v
+}
+
+/// The filters that play `src` at its rate and pitch. A pitch change (Event Properties › Pitch change) is a resample
+/// (asetrate) that atempo puts back to length, so the event keeps its length and stays in sync.
+fn tempo_pitch(src: &ASrc) -> Vec<String> {
+    if src.pitch == 0.0 {
+        return atempo(src.rate);
+    }
+    let sr = (RATE as f64 * 2f64.powf(src.pitch as f64 / 1200.0)).round();
+    let mut v = vec![format!("aresample={RATE}"), format!("asetrate={sr}"), format!("aresample={RATE}")];
+    v.extend(atempo(src.rate * RATE as f64 / sr));
     v
 }
 
@@ -68,7 +83,7 @@ pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
         a.extend(["-ac", "2"].map(String::from));
     }
     a.extend(["-ar".into(), RATE.to_string()]);
-    let mut af = atempo(src.rate);
+    let mut af = tempo_pitch(src);
     if src.reverse {
         af.insert(0, "areverse".into());
     }
@@ -155,22 +170,67 @@ impl Stream {
                     }
                     Err(e) => {
                         out[k..].fill(0.0);
-                        if e == RecvTimeoutError::Timeout {
-                            // Started, then stalled. Killing ffmpeg ends its reader, so later reads are silent instead of waiting again.
-                            if let Some(p) = &self.proc {
-                                if let Some(c) = p.lock().unwrap_or_else(|e| e.into_inner()).1.as_mut() {
-                                    let _ = c.kill();
-                                }
-                            }
-                            return Some("Audio decoding stopped responding: an event is silent".into());
-                        }
-                        return self.err.take().and_then(|j| j.join().ok()).filter(|e| !e.is_empty());
+                        return self.ended_with(e);
                     }
                 }
             }
             let n = (self.buf.len() - self.pos).min(out.len() - k);
             out[k..k + n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
             (self.pos, k) = (self.pos + n, k + n);
+        }
+        None
+    }
+
+    /// The stream has ended (Disconnected: the decoder's error, if any) or stalled after it started (Timeout: ffmpeg is
+    /// killed, which ends its reader, so later reads are silent instead of waiting again).
+    fn ended_with(&mut self, e: RecvTimeoutError) -> Option<String> {
+        if e == RecvTimeoutError::Timeout {
+            if let Some(p) = &self.proc {
+                if let Some(c) = p.lock().unwrap_or_else(|e| e.into_inner()).1.as_mut() {
+                    let _ = c.kill();
+                }
+            }
+            return Some("Audio decoding stopped responding: an event is silent".into());
+        }
+        self.err.take().and_then(|j| j.join().ok()).filter(|e| !e.is_empty())
+    }
+}
+
+/// R4b: a varispeed event's decoder and all it has read: the media from `s0` on, at rate 1 (and the event's pitch),
+/// so the event can read anywhere in it (backwards, held, at any speed).
+// shortcut: what was read stays until the event stops playing (about 23 MB per stereo minute, as with areverse);
+// drop what the rest of the event no longer reaches if long varispeed events become common.
+struct VLive {
+    /// What the decoder reads (`in_point` is `s0` in the file).
+    key: ASrc,
+    s0: f64,
+    buf: Vec<f32>,
+    ended: bool,
+    used: u64,
+    s: Stream,
+}
+
+impl VLive {
+    /// Read on until `frames` frames are held or the decoder ends. Waits for the decoder only when `wait` (a session's
+    /// first block, a render: then until `stop`); otherwise frames not read yet play as silence.
+    fn fill(&mut self, frames: usize, wait: bool, stop: Option<&AtomicBool>) -> Option<String> {
+        while !self.ended && self.buf.len() < frames * 2 {
+            let got = if !wait {
+                self.s.rx.try_recv().map_err(|e| if e == TryRecvError::Empty { RecvTimeoutError::Timeout } else { RecvTimeoutError::Disconnected })
+            } else if let Some(stop) = stop {
+                recv_until(&self.s.rx, stop)
+            } else {
+                self.s.rx.recv_timeout(TIMEOUT)
+            };
+            match got {
+                Ok(b) => self.buf.extend_from_slice(&b),
+                // Not started yet (a cold disk) is waited for again next block, as `Stream::read` does.
+                Err(RecvTimeoutError::Timeout) if !wait || stop.is_some() || self.buf.is_empty() => break,
+                Err(e) => {
+                    self.ended = true;
+                    return self.s.ended_with(e);
+                }
+            }
         }
         None
     }
@@ -331,7 +391,11 @@ impl Live {
         }
         // Forward streams follow the source, not the event: a move or trim during playback that keeps the source time
         // under the playhead keeps the decoder (within one frame of frame rounding).
-        self.src.path == src.path && self.src.stream == src.stream && self.src.rate == src.rate && (self.t - src_time(src, at)).abs() <= src.rate / RATE as f64 + 1e-9
+        self.src.path == src.path
+            && self.src.stream == src.stream
+            && self.src.rate == src.rate
+            && self.src.pitch == src.pitch
+            && (self.t - src_time(src, at)).abs() <= src.rate / RATE as f64 + 1e-9
     }
 }
 
@@ -340,6 +404,9 @@ type Open = Box<dyn FnMut(&ASrc, i64) -> Result<Stream, String> + Send>;
 pub struct Mixer {
     open: Open,
     streams: Vec<Live>,
+    /// Varispeed events' decoders by clip id, and the resampler that reads them.
+    vstreams: HashMap<String, VLive>,
+    rs: Resampler,
     round: u64,
     pass: u64,
     /// Wait for decoders that have not started yet (a session's first block, a render); otherwise they play silence.
@@ -378,6 +445,8 @@ impl Mixer {
         Self {
             open,
             streams: Vec::new(),
+            vstreams: HashMap::new(),
+            rs: Resampler::default(),
             round: 0,
             pass: 0,
             wait: true,
@@ -414,15 +483,80 @@ impl Mixer {
         l
     }
 
+    /// The decoder of varispeed event `id`, opened (or opened again) so it holds media time `need` (seconds) on. A new
+    /// one starts at the earliest time the event reaches from `local` (seconds into it) to its end.
+    fn vlive(&mut self, id: &str, src: &ASrc, v: &Varispeed, local: f64, need: f64) -> &mut VLive {
+        let key = ASrc { pos: 0.0, dur: v.len, in_point: 0.0, rate: 1.0, reverse: false, ..src.clone() };
+        let same = |l: &VLive| {
+            (&l.key.path, l.key.stream, l.key.pitch, l.key.dur) == (&key.path, key.stream, key.pitch, key.dur)
+                && (l.key.in_point - l.s0 - v.offset).abs() < 1e-9
+                && l.s0 <= need.max(0.0) + 1e-9
+        };
+        if !self.vstreams.get(id).is_some_and(same) {
+            let s0 = (v.earliest(local).min(need) - 0.05).max(0.0);
+            let key = ASrc { in_point: v.offset + s0, ..key };
+            let s = (self.open)(&key, 0).unwrap_or_else(|e| {
+                self.error.get_or_insert(e);
+                Stream::ended()
+            });
+            self.vstreams.insert(id.to_string(), VLive { key, s0, buf: Vec::new(), ended: false, used: 0, s });
+        }
+        let l = self.vstreams.get_mut(id).expect("just opened");
+        l.used = self.round;
+        l
+    }
+
+    /// R4b: frames [k0, k1) of varispeed event `e` (counted from its start) into `out`: its media at each frame's time
+    /// (`Varispeed::time`), band-limited to the speed there. Silence slower than MIN_SPEED and where the event is past
+    /// its media.
+    fn varispeed(&mut self, e: &crate::engine::plan::AEvent, v: &Varispeed, k0: i64, k1: i64, out: &mut [f32], wait: bool, stop: Option<&AtomicBool>) {
+        let r = RATE as f64;
+        // Each frame's unwrapped media time, and the next one's (the last frame's speed).
+        let times: Vec<f64> = (k0..=k1).map(|k| v.time(k as f64 / r)).collect();
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for w in times.windows(2) {
+            if let Some(s) = v.at(w[0]) {
+                let d = Resampler::reach((w[1] - w[0]) * r) as f64 / r;
+                (lo, hi) = (lo.min(s - d), hi.max(s + d));
+            }
+        }
+        out.fill(0.0);
+        if lo > hi {
+            return; // silent throughout
+        }
+        let l = self.vlive(&e.id, &e.src, v, k0 as f64 / r, lo);
+        if let Some(err) = l.fill(((hi - l.s0) * r).ceil() as usize + 1, wait, stop) {
+            self.error.get_or_insert(err);
+        }
+        let l = &self.vstreams[&e.id];
+        for (o, w) in out.chunks_exact_mut(2).zip(times.windows(2)) {
+            let speed = (w[1] - w[0]) * r;
+            if let Some(s) = v.at(w[0]).filter(|_| speed.abs() >= MIN_SPEED) {
+                let [a, b] = self.rs.read(&l.buf, (s - l.s0) * r, speed);
+                (o[0], o[1]) = (a, b);
+            }
+        }
+    }
+
     /// Open the streams for what plays in frames [w0, w1) now, so their first decode is not heard as a gap.
     pub fn warm(&mut self, plan: &AudioPlan, w0: i64, w1: i64) {
         self.pass += 1;
-        // Each pass of a looping event too, so the stream after a wrap is ready when it is heard.
-        for src in plan.tracks.iter().flat_map(|t| &t.events).flat_map(|e| &e.passes) {
-            let (ps, pe) = (frame(src.pos), frame(src.pos + src.dur));
-            let a = w0.max(ps);
-            if a < pe.min(w1) {
-                self.stream(src, a - ps);
+        for e in plan.tracks.iter().flat_map(|t| &t.events) {
+            if let Some(v) = &e.vel {
+                let (ps, pe) = (frame(e.src.pos), frame(e.src.pos + e.src.dur));
+                let a = w0.max(ps);
+                if a < pe.min(w1) {
+                    self.vlive(&e.id, &e.src, v, (a - ps) as f64 / RATE as f64, f64::INFINITY);
+                }
+                continue;
+            }
+            // Each pass of a looping event too, so the stream after a wrap is ready when it is heard.
+            for src in &e.passes {
+                let (ps, pe) = (frame(src.pos), frame(src.pos + src.dur));
+                let a = w0.max(ps);
+                if a < pe.min(w1) {
+                    self.stream(src, a - ps);
+                }
             }
         }
     }
@@ -434,6 +568,7 @@ impl Mixer {
         // Streams nothing used in the last block, or warmed for this one, are closed.
         let round = self.round;
         self.streams.retain(|l| l.used == round);
+        self.vstreams.retain(|_, l| l.used == round);
         self.round += 1;
         self.pass += 1;
         out.fill(0.0);
@@ -465,8 +600,11 @@ impl Mixer {
                 pcm.clear();
                 pcm.resize((b - a) as usize * 2, 0.0);
                 let wait = self.wait;
+                if let Some(v) = &e.vel {
+                    self.varispeed(e, v, a - ps, b - ps, &mut pcm, wait, stop.as_deref());
+                }
                 // A looping event reads each pass through its media from a stream of its own.
-                for src in &e.passes {
+                for src in e.passes.iter().filter(|_| e.vel.is_none()) {
                     let qs = frame(src.pos);
                     let (pa, pb) = (a.max(qs), b.min(frame(src.pos + src.dur)));
                     if pb <= pa {
@@ -565,10 +703,18 @@ pub fn send_or_quit<T>(tx: &SyncSender<T>, mut v: T, quit: &AtomicBool) -> bool 
     }
 }
 
+/// A mixed block for the device: its timeline start frame, the timeline frames each of its frames moves on (the play
+/// rate), and the samples.
+pub type Block = (i64, f64, Vec<f32>);
+
 /// The "milan-mix" thread: blocks from frame `from`, each mixed from the newest plan in `slot` (so edits are heard
 /// within the channel's depth) and sent with its start frame, looping over `lp` (frames). It never ends by itself:
 /// past the content end it plays silence until the app stops it there, so an edit that extends the content is heard.
-pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option<(i64, i64)>, tx: &SyncSender<(i64, Vec<f32>)>, quit: &AtomicBool, mut on_error: impl FnMut(String)) {
+/// A `rate` other than 1 at the start is a shuttle (`shuttle`), which reads `rate` again each block.
+pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option<(i64, i64)>, rate: &AtomicU64, tx: &SyncSender<Block>, quit: &AtomicBool, mut on_error: impl FnMut(String)) {
+    if f64::from_bits(rate.load(Relaxed)) != 1.0 {
+        return shuttle(slot, mixer, from, rate, tx, quit, on_error);
+    }
     let ahead = RATE as i64; // streams open 1 s before they are heard
     let lp_end = lp.map_or(i64::MAX, |l| l.1);
     // The first block's decoders all start now, in parallel.
@@ -593,9 +739,79 @@ pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option
         if let Some(e) = mixer.error.take() {
             on_error(e);
         }
-        if !send_or_quit(tx, (f0, buf), quit) {
+        if !send_or_quit(tx, (f0, 1.0, buf), quit) {
             break;
         }
+    }
+}
+
+/// R4b: J / L shuttle and the Rate slider. The timeline is mixed at 1x and played at `rate` (read again each block;
+/// below 0 backwards), varispeed, so the pitch follows the speed as a tape's does (VEGAS's shuttle). Backwards, the
+/// timeline is mixed a chunk at a time before what was heard, each chunk's decoders opened afresh. Playback only: no
+/// loop, and it ends backwards at 0.
+fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &AtomicU64, tx: &SyncSender<Block>, quit: &AtomicBool, mut on_error: impl FnMut(String)) {
+    let mut rs = Resampler::default();
+    // Mixed timeline frames lo .. lo + held.len() / 2.
+    let (mut lo, mut held) = (from, Vec::<f32>::new());
+    let mut t = from as f64;
+    while !quit.load(Relaxed) && t >= 0.0 {
+        let r = f64::from_bits(rate.load(Relaxed));
+        let plan = slot.lock().unwrap().clone();
+        let end = t + BLOCK as f64 * r;
+        let reach = Resampler::reach(r) as i64;
+        let (need_lo, need_hi) = (t.min(end).floor() as i64 - reach, t.max(end).ceil() as i64 + reach + 1);
+        let hi = lo + (held.len() / 2) as i64;
+        if held.is_empty() || need_hi <= lo || need_lo >= hi {
+            // Nothing held is of use (the start): mix from where it is needed, in the direction of play.
+            held.clear();
+            lo = if r >= 0.0 { need_lo } else { need_hi };
+        }
+        // Forwards: mix on after what is held (its decoders read on).
+        while lo + ((held.len() / 2) as i64) < need_hi {
+            let (f, at) = (lo + (held.len() / 2) as i64, held.len());
+            held.resize(at + BLOCK * 2, 0.0);
+            mixer.block(&plan, f, &mut held[at..]);
+            mixer.wait = false;
+        }
+        if r > 0.0 {
+            // Decoders for what plays in the next second open now, as in normal playback.
+            let hi = lo + (held.len() / 2) as i64;
+            mixer.warm(&plan, hi, hi + (RATE as f64 * r.max(1.0)) as i64);
+        }
+        // Backwards: mix a chunk (a quarter second of play) before it, waiting for its new decoders.
+        let chunk = ((r.abs() * RATE as f64 / 4.0) as usize / BLOCK + 1) * BLOCK;
+        while lo > need_lo {
+            let f = lo - chunk as i64;
+            let mut c = vec![0.0; chunk * 2];
+            mixer.wait = true;
+            for (i, b) in c.chunks_mut(BLOCK * 2).enumerate() {
+                mixer.block(&plan, f + (i * BLOCK) as i64, b);
+            }
+            held.splice(0..0, c);
+            lo = f;
+        }
+        let mut buf = vec![0.0; BLOCK * 2];
+        if r.abs() >= MIN_SPEED {
+            for (k, o) in buf.chunks_exact_mut(2).enumerate() {
+                let [a, b] = rs.read(&held, t + k as f64 * r - lo as f64, r);
+                (o[0], o[1]) = (a, b);
+            }
+        }
+        // What play has passed is dropped.
+        if r >= 0.0 {
+            let d = ((need_lo - lo).max(0) as usize).min(held.len() / 2);
+            held.drain(..d * 2);
+            lo += d as i64;
+        } else {
+            held.truncate(((need_hi - lo).max(0) as usize * 2).min(held.len()));
+        }
+        if let Some(e) = mixer.error.take() {
+            on_error(e);
+        }
+        if quit.load(Relaxed) || !send_or_quit(tx, (t.round() as i64, r, buf), quit) {
+            break;
+        }
+        t = end;
     }
 }
 
@@ -734,6 +950,88 @@ mod tests {
         assert_eq!(out, want);
         let opened = opened.lock().unwrap();
         assert!(opened.iter().all(|&(pos, inp, _)| inp == 0.0 && [0.0, 8.0, 16.0].contains(&pos)), "{opened:?}");
+    }
+
+    /// A fake decoder that plays `f(media seconds)` on both channels (from its in point).
+    fn media(f: fn(f64) -> f32) -> Mixer {
+        Mixer::new(Box::new(move |src: &ASrc, at| {
+            let total = frame(src.pos + src.dur) - frame(src.pos);
+            let (tx, rx) = mpsc::sync_channel(1 << 16);
+            let pcm: Vec<f32> = (at..total).flat_map(|k| [f(src.in_point + k as f64 / RATE as f64); 2]).collect();
+            for c in pcm.chunks(4800) {
+                tx.send(c.to_vec()).unwrap();
+            }
+            Ok(Stream::from_rx(rx))
+        }))
+    }
+
+    fn sine_1k(s: f64) -> f32 {
+        (2.0 * std::f64::consts::PI * 1000.0 * s).sin() as f32
+    }
+
+    /// Sign changes of the left channel per second.
+    fn crossings_hz(out: &[f32]) -> f64 {
+        let l: Vec<f32> = out.iter().step_by(2).copied().collect();
+        let n = l.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+        n as f64 / 2.0 / (l.len() as f64 / RATE as f64)
+    }
+
+    /// R4b: an audio event with a Velocity envelope plays varispeed: a 1 kHz sine at 200% measures 2 kHz; at -100% it
+    /// runs backwards; a freeze is silent; past the media without Loop it is silent.
+    #[test]
+    fn velocity_plays_audio_varispeed() {
+        let vel = |keys: &[(f64, f32, Curve)]| crate::project::Envelope { kind: EnvKind::Velocity, points: Keyframes { keys: keys.iter().map(|&(t, v, curve)| Keyframe { t, v, curve }).collect() } };
+        let mut p = solo_track();
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        c.duration = 1.0;
+        c.envelopes.push(vel(&[(0.0, 2.0, Curve::Linear)]));
+        assert!(compile_audio(&p).tracks[0].events[0].vel.is_some());
+        let out = mix(&p, &mut media(sine_1k), 0, RATE as usize);
+        let hz = crossings_hz(&out[2000..2 * 47_000]);
+        assert!((hz - 2000.0).abs() < 20.0, "{hz} Hz");
+        // Played in blocks it is the same sound (preview and render agree).
+        let mut m = media(sine_1k);
+        let blocks: Vec<f32> = (0..8).flat_map(|i| mix(&p, &mut m, i * BLOCK as i64, BLOCK)).collect();
+        assert!(blocks.iter().zip(&out).all(|(a, b)| (a - b).abs() < 1e-6));
+        // -100% from 0.5 s: media 0.5 - t.
+        let c = &mut p.timeline.audio_tracks[0].clips[0];
+        (c.in_point, c.looping, c.envelopes) = (0.5, false, vec![vel(&[(0.0, -1.0, Curve::Linear)])]);
+        let out = left(&mix(&p, &mut media(|s| s as f32), 0, frame(0.8) as usize));
+        assert!((out[frame(0.25) as usize] - 0.25).abs() < 1e-3, "{}", out[frame(0.25) as usize]);
+        assert!(out[frame(0.6) as usize] == 0.0, "before the media start is silent");
+        // A freeze (0% from 0.5 s) is silent there.
+        p.timeline.audio_tracks[0].clips[0].envelopes = vec![vel(&[(0.0, 1.0, Curve::Hold), (0.5, 0.0, Curve::Hold)])];
+        let out = left(&mix(&p, &mut media(|s| s as f32 + 1.0), 0, frame(0.8) as usize));
+        assert!((out[frame(0.25) as usize] - 1.75).abs() < 1e-3 && out[frame(0.7) as usize] == 0.0);
+    }
+
+    /// R4b: the shuttle plays the timeline at its rate: 2x reads two timeline seconds a second, -1x runs backwards, and
+    /// each block carries its rate (the device clock's).
+    #[test]
+    fn shuttle_plays_the_timeline_at_its_rate() {
+        let p = solo_track();
+        let run_at = |from: f64, rate: f64, blocks: usize| {
+            let slot = Mutex::new(Arc::new(compile_audio(&p)));
+            let (tx, rx) = mpsc::sync_channel(4);
+            let (quit, r) = (AtomicBool::new(false), AtomicU64::new(rate.to_bits()));
+            std::thread::scope(|s| {
+                let (slot, quit, r) = (&slot, &quit, &r);
+                s.spawn(move || run(slot, media(|s| s as f32 / 10.0), frame(from), None, r, &tx, quit, |e| panic!("{e}")));
+                let got: Vec<Block> = rx.iter().take(blocks).collect();
+                quit.store(true, Relaxed);
+                got
+            })
+        };
+        let b = run_at(1.0, 2.0, 3);
+        assert_eq!((b[0].0, b[0].1, b[1].0), (frame(1.0), 2.0, frame(1.0) + 2 * BLOCK as i64));
+        for (k, v) in b[1].2.iter().step_by(2).enumerate() {
+            let want = (1.0 + (2 * BLOCK + 2 * k) as f64 / RATE as f64) / 10.0;
+            assert!((*v as f64 - want).abs() < 1e-4, "{k}: {v} vs {want}");
+        }
+        let b = run_at(2.0, -1.0, 12);
+        let v = b[10].2[200];
+        let want = (2.0 - (10 * BLOCK + 100) as f64 / RATE as f64) / 10.0;
+        assert!((v as f64 - want).abs() < 1e-4, "{v} vs {want}");
     }
 
     /// A decoder whose left channel is 0.25 and right 0.75.
@@ -999,7 +1297,7 @@ mod tests {
     }
 
     /// Runs a session on a fake decoder and returns its first `blocks` blocks.
-    fn session(p: &Project, from: f64, lp: Option<(f64, f64)>, blocks: usize) -> Vec<(i64, Vec<f32>)> {
+    fn session(p: &Project, from: f64, lp: Option<(f64, f64)>, blocks: usize) -> Vec<Block> {
         let slot = Mutex::new(Arc::new(compile_audio(p)));
         let (tx, rx) = mpsc::sync_channel(4);
         let quit = AtomicBool::new(false);
@@ -1007,7 +1305,7 @@ mod tests {
         std::thread::scope(|s| {
             let (slot, quit) = (&slot, &quit);
             // The thread owns `tx`, so the receiver sees the end of a session that stops by itself.
-            s.spawn(move || run(slot, ones(), frame(from), lp, &tx, quit, |e| panic!("{e}")));
+            s.spawn(move || run(slot, ones(), frame(from), lp, &AtomicU64::new(1f64.to_bits()), &tx, quit, |e| panic!("{e}")));
             let got: Vec<_> = rx.iter().take(blocks).collect();
             quit.store(true, Relaxed);
             got
@@ -1025,7 +1323,7 @@ mod tests {
         let (a, b) = (frame(0.5), frame(2.0));
         let mut f = a;
         let mut wrapped = false;
-        for (f0, buf) in &blocks {
+        for (f0, _, buf) in &blocks {
             if f == b {
                 (f, wrapped) = (a, true); // t0 jumps from b back to a
             }
@@ -1041,7 +1339,7 @@ mod tests {
         let blocks = session(&p, 0.98, None, 100);
         assert_eq!(blocks.len(), 100);
         let mut f = frame(0.98);
-        for (f0, buf) in &blocks {
+        for (f0, _, buf) in &blocks {
             assert_eq!(*f0, f);
             assert_eq!(buf.iter().any(|&v| v != 0.0), f < frame(1.0), "block at {f0}");
             f += buf.len() as i64 / 2;
@@ -1138,7 +1436,7 @@ mod tests {
 
     #[test]
     fn decoder_argv() {
-        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0 };
+        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0 };
         assert_eq!(
             args(&src, frame(1.0), false).join(" "),
             r"-v error -ss 3.000000 -i C:\a b.wav -vn -map 0:a:0 -ac 2 -ar 48000 -f f32le -"
@@ -1147,6 +1445,9 @@ mod tests {
         let a = args(&ASrc { rate: 2.0, reverse: true, ..src.clone() }, frame(1.0), false);
         assert_eq!(a[2..6], ["-ss", "2.000000", "-t", "6.000000"]);
         assert!(a.windows(2).any(|w| w == ["-af", "areverse,atempo=2"]));
+        // R4b: an octave up is a resample to 96 kHz read as 48 kHz, put back to length (at 1.5x: atempo 0.75).
+        let a = args(&ASrc { pitch: 1200.0, rate: 1.5, ..src.clone() }, 0, false);
+        assert!(a.windows(2).any(|w| w == ["-af", "aresample=48000,asetrate=96000,aresample=48000,atempo=0.75"]), "{a:?}");
         // Mono goes to both sides at unity.
         assert_eq!(
             args(&src, 0, true).join(" "),
@@ -1203,7 +1504,7 @@ mod tests {
             path
         };
         let mono = make("mono.wav", "aevalsrc=0.5:s=48000:d=1", &["-c:a", "pcm_s16le"]);
-        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0 };
+        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0 };
         let mut s = spawn(&src(&mono, 1.0), 0).unwrap();
         let mut out = vec![0.0; 2 * 4800];
         assert_eq!(s.read(&mut out, true, None), None);
@@ -1241,7 +1542,7 @@ mod tests {
         assert!(ok);
         let m = crate::media::probe_media(&path).unwrap();
         assert_eq!(m.audio_streams, 2);
-        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream };
+        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream, pitch: 0.0 };
         for (stream, want) in [(0, [0.2, 0.2]), (1, [0.6, 0.3])] {
             let mut s = spawn(&src(stream), 0).unwrap();
             let mut out = vec![0.0; 2 * 4800];
@@ -1252,6 +1553,35 @@ mod tests {
         assert!((peak(&src(1), 1.0, ChannelMap::Both).unwrap() - 0.6).abs() < 1e-3);
         assert!((peak(&src(1), 1.0, ChannelMap::RightOnly).unwrap() - 0.3).abs() < 1e-3);
         assert!((peak(&src(0), 0.5, ChannelMap::Both).unwrap() - 0.2).abs() < 1e-3);
+        remove_dir(&dir);
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored ffmpeg_pitch_keeps_the_length`
+    /// R4b: a 1 kHz sine pitched +12 semitones measures 2 kHz and lasts as long; -12 measures 500 Hz.
+    #[test]
+    #[ignore]
+    fn ffmpeg_pitch_keeps_the_length() {
+        let dir = std::env::temp_dir().join(format!("milan-mixpitch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sine.wav");
+        let ok = crate::proc::ffmpeg()
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=1000:d=1:sample_rate=48000", "-c:a", "pcm_f32le"])
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        for (pitch, want) in [(1200.0, 2000.0), (-1200.0, 500.0)] {
+            let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch };
+            let mut s = spawn(&src, 0).unwrap();
+            let mut out = vec![0.0; 2 * 72_000];
+            assert_eq!(s.read(&mut out, true, None), None);
+            drop(s);
+            let len = out.iter().rposition(|v| v.abs() > 1e-3).unwrap() / 2;
+            assert!((len as f64 / RATE as f64 - 1.0).abs() < 0.03, "pitch {pitch}: lasts {len} frames");
+            let hz = crossings_hz(&out[2 * 4800..2 * 43_200]);
+            assert!((hz - want).abs() < want * 0.02, "pitch {pitch}: {hz} Hz");
+        }
         remove_dir(&dir);
     }
 
@@ -1270,7 +1600,7 @@ mod tests {
             .unwrap()
             .success();
         assert!(ok);
-        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0 };
+        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0, pitch: 0.0 };
         let mut s = spawn(&src, 0).unwrap();
         let mut out = vec![0.0; 2 * 48_000];
         assert_eq!(s.read(&mut out, true, None), None);

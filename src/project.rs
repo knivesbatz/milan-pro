@@ -364,6 +364,14 @@ pub struct Clip {
     /// frames). None or 1 = off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undersample: Option<f64>,
+    /// Event Properties › Pitch change (audio), in cents: the pitch moves, the length does not (VEGAS's Pitch Up /
+    /// Down keys: = and - a semitone, with Ctrl a cent, with Shift an octave).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub pitch_cents: f32,
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -937,6 +945,7 @@ impl Clip {
             reduce_flicker: false,
             resample: None,
             undersample: None,
+            pitch_cents: 0.0,
         }
     }
 
@@ -1352,8 +1361,11 @@ mod tests {
         // R4a: Fade Colors white over black (VEGAS's), no transition out, no velocity.
         assert_eq!(t.fade_colors, [[255, 255, 255], [0, 0, 0]]);
         assert!(c.transition_out.is_none() && crate::engine::velocity::of(c).is_none());
+        // R4b: no pitch change, and none written.
+        assert_eq!(c.pitch_cents, 0.0);
         let v = serde_json::to_value(&p).unwrap();
         assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("transition_out").is_none(), "nothing written without one");
+        assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("pitch_cents").is_none());
         let tr: Transition = serde_json::from_str(r#"{"plugin":"milan.tr.dissolve"}"#).unwrap();
         assert!(tr.progress.is_empty() && serde_json::to_value(&tr).unwrap().get("progress").is_none(), "an old transition is linear");
         assert_eq!(back.settings.resample, Resample::Disable);
@@ -1392,6 +1404,7 @@ mod tests {
         (c.invert, c.normalize, c.auto_normalize, c.channels, c.stream) = (true, true, true, ChannelMap::Combine, 2);
         c.normalized = Some(Normalized { db: 4.5, span: NormSpan { media: Some("m".into()), stream: 2, channels: ChannelMap::Combine, in_point: 1.0, duration: 4.0, rate: 0.5 } });
         (c.keep_aspect, c.reduce_flicker, c.resample, c.undersample) = (false, true, Some(Resample::OpticalFlow), Some(0.25));
+        c.pitch_cents = -1250.0;
         let t = &mut p.timeline.video_tracks[0];
         t.composite = Composite::Screen;
         t.motion = Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { x: 0.1, y: -0.2, w: 0.5, h: 0.5, rot: 45.0 }, curve: Curve::Smooth }] };

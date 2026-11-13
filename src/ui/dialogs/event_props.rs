@@ -4,7 +4,6 @@
 use eframe::egui::*;
 use crate::edit;
 use crate::project::{Clip, Curve, MediaItem, Project, format_timecode, parse_timecode};
-use super::super::menus::Later;
 
 pub struct EventProps {
     pub id: String,
@@ -146,7 +145,14 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
                 d.normalized = None;
             }
         });
-        ui.add_enabled(false, Checkbox::new(&mut false, "Pitch change")).on_disabled_hover_text(Later("R4b").text());
+        // VEGAS's Pitch change, in semitones: the pitch moves, the length does not.
+        super::row(ui, "Pitch change:", W, on, |ui| {
+            let max = crate::edit::PITCH_MAX / 100.0;
+            let mut st = d.pitch_cents / 100.0;
+            if num_edit(ui, &mut st, -max..=max, 0.05, 2, " semitones") {
+                d.pitch_cents = (st * 100.0).round();
+            }
+        });
     }
 }
 

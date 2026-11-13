@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 187 |
-| PARTIAL | 149 |
+| DONE | 188 |
+| PARTIAL | 148 |
 | MISSING | 84 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The gaps are audio varispeed, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair follows its velocity, J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). The gaps are masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -176,7 +176,7 @@ What matters most:
 | 5.27 | Playback rate adjustment | DONE | `Clip.rate`, Event Properties |
 | 5.28 | Reverse playback (events) | PARTIAL | `Clip.reverse` renders correctly. Preview shows only some frames (per-frame respawn, `FEATURE_PLAN.md:242`). → R20 |
 | 5.29 | Clip grouping | DONE | Create/remove/clear/select, and (R3a) Group › Cut All / Copy All / Delete All in Edit › Group and the event menu: the whole group of every selected event, whatever Ignore Event Grouping says (`app/commands.rs`). Test `groups_expand_split_and_dissolve` |
-| 5.30 | Event envelopes | DONE | Volume, pan, mute and opacity work. R4a: event Velocity (-100%..1000%, `engine/velocity.rs`, `edit::src_time`), Freeze Frame at Cursor (`edit::freeze_frame`) and Transition Progress (`Transition.progress`), inserted from the event menu and Insert › Video Envelopes, drawn and edited on the event (`ui/timeline/envelopes.rs`); video track Mute and Fade to Color envelopes with Fade Colors. Tests `velocity_drives_the_source_time`, `track_mute_fade_to_color_and_velocity`, `progress_fade_out_transition_and_fade_to_color`, `render_e2e` (parity). Audio events follow velocity in R4b |
+| 5.30 | Event envelopes | DONE | Volume, pan, mute and opacity work. R4a: event Velocity (-100%..1000%, `engine/velocity.rs`, `edit::src_time`), Freeze Frame at Cursor (`edit::freeze_frame`) and Transition Progress (`Transition.progress`), inserted from the event menu and Insert › Video Envelopes, drawn and edited on the event (`ui/timeline/envelopes.rs`); video track Mute and Fade to Color envelopes with Fade Colors. Tests `velocity_drives_the_source_time`, `track_mute_fade_to_color_and_velocity`, `progress_fade_out_transition_and_fade_to_color`, `render_e2e` (parity). R4b: the audio of an A/V pair (grouped, same place and length) plays a copy of its video event's Velocity envelope, varispeed (`edit::sync_velocity`, `mix::Mixer::varispeed`, `engine/resample.rs`); tests `audio_follows_its_video_velocity`, `velocity_plays_audio_varispeed` |
 | 5.31 | Fade-in and fade-out | DONE | Fade curves and crossfades |
 | 5.32 | Audio and video synchronization | DONE | Grouped A/V, audio master clock (`FEATURE_PLAN.md` 1.6) |
 | 5.33 | Precise frame-level editing | DONE | Quantize to Frames |
@@ -206,7 +206,7 @@ What matters most:
 | 6.12 | Efficient seeking | PARTIAL | A forward step on a live stream is fast. A random seek respawns ffmpeg (about 200-800 ms for long GOPs). → R20 |
 | 6.13 | Scrubbing | PARTIAL | Known bug: scrub jumps up to about 0.7-1.2 s. → R20 |
 | 6.14 | Frame-by-frame navigation | DONE | `PrevFrame`/`NextFrame` |
-| 6.15 | Variable playback speed | PARTIAL | J/K/L shuttle moves the picture but is silent (`FEATURE_PLAN.md:400`). → R4b |
+| 6.15 | Variable playback speed | DONE | R4b: J / K / L shuttle (1x to 8x each way) and the Rate slider play the timeline's sound at their speed, varispeed and backwards below 0 (`mix::shuttle`, `engine/resample.rs`, a 32-tap windowed sinc); the device clock moves the cursor by the rate (`audio::Feed`, `Player::set_rate`). Tests `shuttle_plays_the_timeline_at_its_rate`, `shuttle_clock_advances_by_the_rate`, `snr_above_90_db_at_ratio_0_9` |
 | 6.16 | Preview quality settings | DONE | Draft/Preview/Good/Best (`decode.rs:13`) |
 | 6.17 | Proxy media | DONE | `proxy.rs`, batch 12 |
 | 6.18 | Optimized timeline playback | DONE | Fast-path compositor, pre-warm (`plan::upcoming`) |
@@ -579,7 +579,7 @@ What matters most:
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
-| Professional audio editing system | PARTIAL | R4b, R8-R10 |
+| Professional audio editing system | PARTIAL | R8-R10 |
 | Professional rendering engine | PARTIAL | R11, R12, R22 |
 | Modular effects and transitions system | DONE | R7 for masks |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
@@ -621,7 +621,7 @@ The inventory as found before R0:
 | Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b, R23, R23, R14 |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
-| Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b |
+| Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
 | Markers | InsertCommand, CdTrack, CdIndex | R18a |
 | Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5, R8c |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
@@ -955,6 +955,12 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R4b: Audio varispeed, shuttle audio, pitch commands (L)
+
+**Status: DONE.** Built as designed below, except:
+- VEGAS leaves audio at normal speed under a video Velocity envelope. Milan Pro keeps an A/V pair in step instead: the audio events grouped with a video event at its place and length get a copy of its envelope whenever it is inserted, frozen, edited or removed (`edit::sync_velocity`); the copy is not drawn. Audio moved off its pair keeps the copy it has. A project saved by R4a copies it at the next edit of the envelope.
+- Velocity audio is varispeed (the pitch follows rate x velocity, as a tape's does), Loop included; below 1% speed (a freeze) it is silent. The decoder reads the media at rate 1 from the earliest time the rest of the event reaches and keeps it (`mix::VLive`), so reverse and freeze need no areverse; the resampler reads it at each frame's exact time (`plan::Varispeed`), so preview and render match.
+- Pitch is `Clip.pitch_cents`, within ±2 octaves: = / - a semitone, Ctrl a cent, Shift an octave (VEGAS's keys) on the selected audio events, and Event Properties › Pitch change (semitones). It is ffmpeg `asetrate` put back to length by `atempo` in the decoder, so there is no `engine/pitch.rs`. Not built: VEGAS's Ctrl+Shift+= reset, the Time stretch/pitch shift method list and the pitch shown on the event.
+- The shuttle mixes the timeline at 1x and resamples the mix at the rate, read again each block, so the Rate slider and J / L change speed without restarting; backwards it mixes a quarter second of play at a time before what was heard (new decoders each chunk). No loop while shuttling.
 
 **Scope**
 - Audio follows the velocity envelope.

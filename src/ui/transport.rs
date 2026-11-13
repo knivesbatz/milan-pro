@@ -286,8 +286,9 @@ fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
 }
 
 /// Rate area in the track-list column (§5.9.3): "Rate: 0.00" at x=6 and a −4…+4 shuttle slider from x=90 to
-/// x=240 with a white ▲ under 1.0. Dragging the thumb shuttles the cursor at that rate; it springs back to 0.
-pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool, project: &mut Project) {
+/// x=240 with a white ▲ under 1.0. Returns the rate while the thumb is dragged (the app shuttles at it, with sound);
+/// let go, it springs back to 0.
+pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool) -> Option<f32> {
     let t = theme::get();
     let p = ui.painter();
     p.rect_filled(rect, 0.0, if t.look() == UiLook::Vegas16 { t.band_bg } else { t.toolbar_bg });
@@ -301,18 +302,14 @@ pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool, project: &mut Project) {
     let cy = rect.center().y.round();
     let (x0, x1) = (rect.min.x + 90.0, (rect.min.x + 240.0).min(rect.max.x - 8.0));
     let mut rate = 0.0_f32;
+    let mut dragged = None;
     if x1 - x0 >= 30.0 {
         let to_x = |r: f32| (x0 + (r + 4.0) / 8.0 * (x1 - x0)).round();
         let hit = Rect::from_x_y_ranges(Rangef::new(x0 - 8.0, x1 + 8.0), Rangef::new(cy - 9.0, cy + 9.0));
         let resp = ui.interact(hit, ui.id().with("rate_slider"), Sense::drag()).on_hover_text("Rate");
         if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged()) {
             rate = ((pos.x - x0) / (x1 - x0) * 8.0 - 4.0).clamp(-4.0, 4.0);
-            if !playing && rate.abs() > 0.01 {
-                let tl = &mut project.timeline;
-                let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
-                tl.cursor_position = (tl.cursor_position + rate as f64 * dt).max(0.0);
-                ui.ctx().request_repaint();
-            }
+            dragged = Some(rate);
         }
         p.rect_filled(Rect::from_min_max(pos2(x0, cy), pos2(x1, cy + 1.0)), 0.0, t.fader_track);
         let normal = to_x(1.0);
@@ -322,6 +319,7 @@ pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool, project: &mut Project) {
     }
     let shown = if rate != 0.0 { rate } else if playing { 1.0 } else { 0.0 };
     p.text(pos2(rect.min.x + 6.0, cy), Align2::LEFT_CENTER, format!("Rate: {shown:.2}"), t.font(t.font.ui), t.text);
+    dragged
 }
 
 #[cfg(test)]
