@@ -11,6 +11,7 @@ mod remove_fx;
 mod render;
 mod shortcuts;
 mod take_chooser;
+mod template;
 mod unfinished;
 mod update;
 mod welcome;

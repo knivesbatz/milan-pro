@@ -31,7 +31,8 @@ pub struct DecSpec<'a> {
     pub scaler: &'static str,
     pub hw: bool,
     pub matrix: Option<&'static str>,
-    pub interlaced: bool,
+    /// The deinterlace filter ahead of the rate filter ("" for a progressive source or no deinterlacing).
+    pub deint: &'static str,
     /// The video stream (`-map 0:v:N`).
     pub stream: u32,
     /// Optical Flow: motion-interpolated frames (minterpolate) instead of the latest source frame.
@@ -55,7 +56,7 @@ pub fn args(s: &DecSpec) -> Vec<String> {
     let rate = if s.flow { format!("minterpolate=fps={}:mi_mode=mci", s.fps_str) } else { format!("fps={}:round=up:start_time=0", s.fps_str) };
     a.push(format!(
         "{}{rate},scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
-        if s.interlaced { "yadif=deint=interlaced," } else { "" },
+        s.deint,
         s.w,
         s.h,
         s.scaler,
@@ -215,8 +216,8 @@ impl DecoderPool {
         let proxy = m.proxy_for(q);
         let (path, hw) = (proxy.unwrap_or(&m.path), hw && proxy.is_none());
         // The proxy was deinterlaced when it was made.
-        let interlaced = m.interlaced && proxy.is_none();
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, interlaced, stream: m.stream, flow: m.flow };
+        let deint = if proxy.is_none() { m.deint } else { "" };
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, deint, stream: m.stream, flow: m.flow };
         let s = spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
         if self.streams.len() >= MAX_STREAMS {
             if let Some(i) = (0..self.streams.len()).min_by_key(|&i| self.streams[i].used) {
@@ -366,7 +367,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), interlaced: false, stream: 0, flow: false }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), deint: "", stream: 0, flow: false }
     }
 
     #[test]
@@ -376,7 +377,7 @@ mod tests {
             args(&spec(p)).join(" "),
             r"-v error -threads 2 -ss 2.969633 -i C:\clips\a b.mp4 -map 0:v:0 -an -sn -dn -vf fps=30000/1001:round=up:start_time=0,scale=960:540:flags=fast_bilinear:in_color_matrix=bt709:out_range=full,format=rgba -f rawvideo -"
         );
-        let a = args(&DecSpec { hw: true, interlaced: true, matrix: None, ..spec(p) });
+        let a = args(&DecSpec { hw: true, deint: "yadif=deint=interlaced,", matrix: None, ..spec(p) });
         assert_eq!(a[4..6], ["-hwaccel", "auto"]);
         assert!(a.iter().any(|x| x.starts_with("yadif=deint=interlaced,fps=") && x.contains("in_color_matrix=auto")));
         // R3b: Stream 2 and Optical Flow.
@@ -398,7 +399,7 @@ mod tests {
             has_alpha: false,
             matrix: None,
             codec: Some(codec.into()),
-            interlaced: false,
+            deint: "",
             proxy: None,
             grid: 0.0,
             offset: 0.0,
@@ -440,7 +441,7 @@ mod tests {
                 .unwrap()
                 .success();
             assert!(ok);
-            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false };
+            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false };
             let mut pool = DecoderPool::default();
             let fps = 30000.0 / 1001.0;
             pool.set_rate(fps, "30000/1001");
@@ -481,7 +482,7 @@ mod tests {
 
     /// A 64x64 30 fps video, for the ramp clips.
     fn ramp_ref() -> MediaRef {
-        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, interlaced: false, proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false }
+        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false }
     }
 
     fn gray(p: Pull) -> Option<u8> {

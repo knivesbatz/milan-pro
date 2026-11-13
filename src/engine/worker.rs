@@ -534,7 +534,7 @@ mod tests {
             has_alpha: false,
             matrix: None,
             codec: None,
-            interlaced: false,
+            deint: "",
             proxy: None,
             grid: 0.0,
             offset: 0.0,

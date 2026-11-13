@@ -1,56 +1,64 @@
 //! File › Render As (VP16, light native dialog with a Formats tree) / File › Render (VP23, dark dialog with a
-//! category tree and a template grid), §5.15.1 and §5.15.3. Templates are Milan Pro's ffmpeg presets; the render runs
-//! through the engine (`engine::render`).
+//! category tree and a template grid), §5.15.1 and §5.15.3. Templates are the built-in delivery templates and the
+//! user's own (kept in the preferences); Customize Template edits a copy. The render runs through the engine
+//! (`engine::render`) and leaves a log.
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
 use crate::project::{Project, format_timecode};
-use crate::render::{Job, PRESETS, Status, content_end};
-use super::super::menus::Later;
+use crate::render::{BUILTIN, Job, Opts, Status, Template, content_end};
+use crate::settings::Prefs;
+use super::template::{Closed, Editor};
 use super::super::theme::{self, UiLook};
 
-/// Format group and description per preset (same order as `PRESETS`).
-const INFO: [(&str, &str); 5] = [
-    ("MP4 (H.264 / AAC)", "Use this setting to create a high-quality file at the project size, suited to uploading and playback."),
-    ("MP4 (HEVC / AAC)", "High-efficiency video at the project size: smaller files for the same quality."),
-    ("QuickTime (ProRes 422)", "Intermediate-quality master for further editing and grading."),
-    ("Wave (PCM)", "Uncompressed 16-bit stereo audio mix."),
-    ("MP3 Audio", "Compressed 320 kbps stereo audio mix."),
+/// VP23 left tree: (label, depth). Rows 3-10 are `Template::usecase` 0-7.
+const TREE23: [(&str, u8); 14] = [
+    ("Favorites", 0),
+    ("Recent", 0),
+    ("Usecase", 0),
+    ("YouTube", 1),
+    ("Social Media", 1),
+    ("Web & Streaming", 1),
+    ("Video VFX & Master", 1),
+    ("Image Compositing", 1),
+    ("DVD & Blu-ray", 1),
+    ("Audio Mix & Master", 1),
+    ("Podcast & Audio Streaming", 1),
+    ("Video", 0),
+    ("Image Sequence", 0),
+    ("Audio", 0),
 ];
-/// VP23 left tree: (label, depth, filter). Filter: None = every template.
-const TREE23: [(&str, u8, Option<bool>); 14] = [
-    ("Favorites", 0, None),
-    ("Recent", 0, None),
-    ("Usecase", 0, None),
-    ("YouTube", 1, Some(true)),
-    ("Social Media", 1, Some(true)),
-    ("Web & Streaming", 1, Some(true)),
-    ("Video VFX & Master", 1, Some(true)),
-    ("Image Compositing", 1, Some(true)),
-    ("DVD & Blu-ray", 1, Some(true)),
-    ("Audio Mix & Master", 1, Some(false)),
-    ("Podcast & Audio Streaming", 1, Some(false)),
-    ("Video", 0, Some(true)),
-    ("Image Sequence", 0, Some(true)),
-    ("Audio", 0, Some(false)),
-];
+
+/// Filters (VP16) / Filter (VP23): what the template list leaves out.
+#[derive(Default, Clone, Copy)]
+struct Filter {
+    favorites: bool,
+    match_video: bool,
+    match_audio: bool,
+}
 
 pub struct RenderDialog {
     pub open: bool,
     /// Options › Quickfade Audio Edits, set by the app: renders apply it as playback does.
     pub quickfade: bool,
-    preset: usize,
+    /// The template Render uses: a copy of a listed one, or one changed in Customize Template.
+    chosen: Template,
     job: Option<Job>,
     /// "Render loop region only" (used while the loop region is set).
     loop_only: bool,
+    /// Render Options: stretch, rotation, markers.
+    opts: Opts,
     folder: String,
     name: String,
     /// The project (path, name) Name and Folder were filled from.
     seeded: Option<(Option<PathBuf>, String)>,
     search: String,
-    favorites: [bool; 5],
+    filter: Filter,
     node: usize,
-    /// VP16 tree: which format groups are expanded.
-    expanded: [bool; 5],
+    /// VP16 tree: the format groups expanded.
+    expanded: Vec<String>,
+    /// VP23 View › Details (a table) instead of Thumbnails.
+    details: bool,
+    editor: Option<Editor>,
 }
 
 impl Default for RenderDialog {
@@ -59,40 +67,56 @@ impl Default for RenderDialog {
         Self {
             open: false,
             quickfade: true,
-            preset: 0,
+            chosen: BUILTIN[0].clone(),
             job: None,
             // VEGAS: on whenever there is a loop region; an untick is kept for the session.
             loop_only: true,
+            opts: Opts::default(),
             folder: folder.display().to_string(),
             name: String::new(),
             seeded: None,
             search: String::new(),
-            favorites: [false; 5],
+            filter: Filter::default(),
             node: 2,
-            expanded: [true, false, false, false, false],
+            expanded: vec![BUILTIN[0].format()],
+            details: false,
+            editor: None,
         }
     }
 }
 
 impl RenderDialog {
-    pub fn show(&mut self, ctx: &Context, project: &Project) {
+    /// True when the preferences changed (a favourite, a saved or deleted template, the recent list).
+    pub fn show(&mut self, ctx: &Context, project: &Project, prefs: &mut Prefs) -> bool {
         if !self.open {
-            return;
+            return false;
         }
         self.seed(project);
+        let mut changed = false;
         let v16 = theme::get().look() == UiLook::Vegas16;
-        let (title, size) = if v16 { ("Render As", vec2(640.0, 640.0)) } else { ("Render", vec2(960.0, 470.0)) };
-        let (render, close) = super::modal(ctx, "render_as", title, size, |ui| if v16 { self.body16(ui, project) } else { self.body23(ui, project) });
-        if render {
-            self.start(ctx, project);
-        }
-        if close {
+        let (title, size) = if v16 { ("Render As", vec2(640.0, 700.0)) } else { ("Render", vec2(960.0, 520.0)) };
+        let (render, close) = super::modal(ctx, "render_as", title, size, |ui| if v16 { self.body16(ui, project, prefs, &mut changed) } else { self.body23(ui, project, prefs, &mut changed) });
+        if let Some(ed) = &mut self.editor {
+            match ed.show(ctx, &project.settings, &mut prefs.render_templates, &mut changed) {
+                Some(Closed::Ok(t)) => (self.chosen, self.editor) = (t, None),
+                Some(Closed::Cancel) => self.editor = None,
+                None => {}
+            }
+        } else if render {
+            changed |= self.start(ctx, project, prefs);
+        } else if close {
             // Closing the window abandons the render rather than leaving an invisible ffmpeg running.
             if let Some(j) = &self.job {
                 j.cancel();
             }
             (self.job, self.open) = (None, false);
         }
+        changed
+    }
+
+    /// Open Customize Template on the chosen template.
+    pub fn customize(&mut self) {
+        self.editor = Some(Editor::new(&self.chosen));
     }
 
     fn running(&self) -> bool {
@@ -117,8 +141,11 @@ impl RenderDialog {
         }
     }
 
+    /// The output file; for an image sequence its first frame, `<name>_000000.<ext>` (VEGAS's numbering).
     fn out_path(&self) -> PathBuf {
-        Path::new(&self.folder).join(format!("{}.{}", self.name, PRESETS[self.preset].ext))
+        let ext = self.chosen.ext();
+        let file = if self.chosen.sequence() { format!("{}_000000.{ext}", self.name) } else { format!("{}.{ext}", self.name) };
+        Path::new(&self.folder).join(file)
     }
 
     /// Why Name and Folder as typed cannot be rendered to, if they cannot. A ':' would write into an NTFS stream of
@@ -137,8 +164,23 @@ impl RenderDialog {
         None
     }
 
+    /// The templates the list shows, built-in first, after the search and the filters.
+    fn listed<'a>(&self, project: &Project, prefs: &'a Prefs) -> Vec<&'a Template> {
+        let q = self.search.to_lowercase();
+        let s = &project.settings;
+        BUILTIN
+            .iter()
+            .chain(&prefs.render_templates)
+            .filter(|t| q.is_empty() || t.name.to_lowercase().contains(&q) || t.format().to_lowercase().contains(&q) || t.notes.to_lowercase().contains(&q))
+            .filter(|t| !self.filter.favorites || prefs.render_favorites.contains(&t.name))
+            .filter(|t| !self.filter.match_video || t.matches_video(s))
+            .filter(|t| !self.filter.match_audio || t.matches_audio(s))
+            .collect()
+    }
+
     fn output_fields(&mut self, ui: &mut Ui) {
-        let ext = PRESETS[self.preset].ext;
+        let ext = self.chosen.ext();
+        let seq = self.chosen.sequence();
         super::row(ui, "Folder:", 50.0, !self.running(), |ui| {
             ui.add(TextEdit::singleline(&mut self.folder).desired_width(ui.available_width() - 90.0));
             if ui.button("Browse...").clicked() {
@@ -149,22 +191,35 @@ impl RenderDialog {
         });
         super::row(ui, "Name:", 50.0, !self.running(), |ui| {
             ui.add(TextEdit::singleline(&mut self.name).desired_width(ui.available_width() - 90.0));
-            ui.label(format!(".{ext}"));
+            ui.label(if seq { format!("_000000.{ext}") } else { format!(".{ext}") });
         });
     }
 
     fn details(&self, ui: &mut Ui, project: &Project) {
-        let p = &PRESETS[self.preset];
+        let t = &self.chosen;
         let s = &project.settings;
-        ui.label(RichText::new(p.name).strong());
-        ui.label(format!("Notes:  {}", INFO[self.preset].1));
-        if p.video.is_some() {
-            ui.label(format!("Video:  {:.3} fps; {}x{}; Progressive", s.frame_rate, s.width, s.height));
+        ui.label(RichText::new(&t.name).strong());
+        ui.label(format!("Notes:  {}", t.notes));
+        if let Some(v) = t.video_line(s, self.opts.rotate) {
+            ui.label(format!("Video:  {v}"));
         }
-        ui.label(format!("Audio:  {} Hz; Stereo", p.sample_rate(s.sample_rate)));
+        if let Some(a) = t.audio_line(s) {
+            ui.label(format!("Audio:  {a}"));
+        }
         let (a, b) = self.range(project);
         let what = if (a, b) == (0.0, content_end(project)) { "whole timeline" } else { "loop region" };
         ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
+    }
+
+    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers; multichannel waits for R10a.
+    fn options(&mut self, ui: &mut Ui, project: &Project) {
+        let video = self.chosen.video.is_some();
+        ui.add_enabled(video, Checkbox::new(&mut self.opts.stretch, "Stretch video to fill output frame size (do not letterbox)"));
+        ui.add_enabled(video && project.settings.rotation != 0, Checkbox::new(&mut self.opts.rotate, "Use project output rotation setting"))
+            .on_disabled_hover_text("The project's Output rotation is 0°.");
+        let chapters = self.chosen.container().is_some_and(|c| c.chapters);
+        ui.add_enabled(chapters, Checkbox::new(&mut self.opts.markers, "Save project markers in media file")).on_disabled_hover_text("This format cannot hold markers.");
+        ui.add_enabled(false, Checkbox::new(&mut false, "Enable multichannel mapping")).on_disabled_hover_text(super::super::menus::Later("R10a").text());
     }
 
     /// Progress / result block and the bottom buttons. True when Render was clicked.
@@ -174,21 +229,31 @@ impl RenderDialog {
                 ui.add(ProgressBar::new(j.fraction()).show_percentage());
                 ui.label(j.eta().map_or("Estimating time remaining...".to_string(), |e| format!("{e:.0} s remaining")));
             }
-            Some((j, Status::Done)) => {
+            Some((j, st)) => {
                 ui.horizontal(|ui| {
-                    ui.label(format!("Rendered {}", j.out.display()));
-                    if ui.button("Open Folder").clicked() {
-                        open_folder(&j.out);
+                    match &st {
+                        Status::Done => {
+                            ui.label(format!("Rendered {}", j.out.display()));
+                            if ui.button("Open Folder").clicked() {
+                                open_folder(&j.out);
+                            }
+                        }
+                        Status::Cancelled => {
+                            ui.label("Render cancelled.");
+                        }
+                        _ => {
+                            ui.colored_label(theme::get().warning_text, "Render failed:");
+                        }
+                    }
+                    if let Some(log) = j.log() {
+                        if ui.link("Show log").on_hover_text(log.display().to_string()).clicked() {
+                            open_file(&log);
+                        }
                     }
                 });
-            }
-            Some((_, Status::Failed(e))) => {
-                let warn = theme::get().warning_text;
-                ui.colored_label(warn, "Render failed:");
-                ScrollArea::vertical().max_height(80.0).show(ui, |ui| ui.monospace(e));
-            }
-            Some((_, Status::Cancelled)) => {
-                ui.label("Render cancelled.");
+                if let Status::Failed(e) = st {
+                    ScrollArea::vertical().max_height(80.0).show(ui, |ui| ui.monospace(e));
+                }
             }
             None => {}
         }
@@ -196,8 +261,8 @@ impl RenderDialog {
         let empty = b <= a;
         let has_loop = project.timeline.loop_region.is_some_and(|(a, b)| b > a);
         let running = self.running();
-        let bad = self.out_error();
-        if let (Some(e), false) = (bad, running) {
+        let bad = self.out_error().map(String::from).or_else(|| self.chosen.check().err());
+        if let (Some(e), false) = (&bad, running) {
             ui.colored_label(theme::get().warning_text, e);
         }
         let mut render = false;
@@ -221,141 +286,207 @@ impl RenderDialog {
         render
     }
 
-    fn body16(&mut self, ui: &mut Ui, project: &Project) -> bool {
+    fn customize_button(&mut self, ui: &mut Ui, label: &str, size: Vec2) {
+        if ui.add_enabled(!self.running(), Button::new(label).min_size(size)).clicked() {
+            self.customize();
+        }
+    }
+
+    fn body16(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) -> bool {
         ui.label("Output File");
         self.output_fields(ui);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(TextEdit::singleline(&mut self.search).hint_text("Search render templates").desired_width(300.0));
-            super::fixed_combo(ui, "render_filter", "Filters", 120.0, Later("R11"));
+            ui.menu_button("Filters ⏷", |ui| {
+                ui.checkbox(&mut self.filter.favorites, "Show favorites only");
+                let mut m = self.filter.match_video && self.filter.match_audio;
+                if ui.checkbox(&mut m, "Match project settings").changed() {
+                    (self.filter.match_video, self.filter.match_audio) = (m, m);
+                }
+            });
         });
         let d = theme::get().dialog();
-        let q = self.search.to_lowercase();
+        let listed = self.listed(project, prefs);
+        let searching = !self.search.is_empty() || self.filter.favorites || self.filter.match_video || self.filter.match_audio;
+        let mut groups: Vec<String> = Vec::new();
+        for t in &listed {
+            if !groups.contains(&t.format()) {
+                groups.push(t.format());
+            }
+        }
+        let mut star_hit = None;
         Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical().id_salt("render_tree").max_height(220.0).auto_shrink(false).show(ui, |ui| {
                 ui.label(RichText::new("Formats").strong());
-                for (k, p) in PRESETS.iter().enumerate() {
-                    if !q.is_empty() && !p.name.to_lowercase().contains(&q) && !INFO[k].0.to_lowercase().contains(&q) {
-                        continue;
-                    }
-                    let arrow = if self.expanded[k] { "⏷" } else { "⏵" };
-                    if ui.selectable_label(false, format!("{arrow} {}", INFO[k].0)).clicked() {
-                        self.expanded[k] = !self.expanded[k];
-                    }
-                    if self.expanded[k] || !q.is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            star(ui, &mut self.favorites[k]);
-                            if ui.selectable_label(self.preset == k, format!("Project settings ({})", p.name)).clicked() {
-                                self.preset = k;
+                for g in &groups {
+                    let open = searching || self.expanded.contains(g);
+                    if ui.selectable_label(false, format!("{} {g}", if open { "⏷" } else { "⏵" })).clicked() {
+                        match self.expanded.iter().position(|x| x == g) {
+                            Some(k) => {
+                                self.expanded.remove(k);
                             }
-                        });
+                            None => self.expanded.push(g.clone()),
+                        }
                     }
+                    if open {
+                        for t in listed.iter().filter(|t| &t.format() == g) {
+                            ui.horizontal(|ui| {
+                                ui.add_space(24.0);
+                                if star(ui, prefs.render_favorites.contains(&t.name)) {
+                                    star_hit = Some(t.name.clone());
+                                }
+                                if ui.selectable_label(self.chosen == **t, &t.name).clicked() {
+                                    self.chosen = (*t).clone();
+                                }
+                            });
+                        }
+                    }
+                }
+                if groups.is_empty() {
+                    ui.label("No templates match.");
                 }
             });
         });
+        if let Some(n) = star_hit {
+            toggle_favorite(prefs, n);
+            *changed = true;
+        }
         ui.label("Description:");
         Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(6).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(90.0);
             self.details(ui, project);
         });
-        ui.add_enabled_ui(false, |ui| {
-            ui.button("Customize Template...").on_disabled_hover_text(Later("R11").text());
-        });
+        self.customize_button(ui, "Customize Template...", vec2(0.0, 0.0));
         super::group(ui, "Render Options");
-        ui.add_enabled_ui(false, |ui| {
-            for (o, why) in [
-                ("Stretch video to fill output frame size (do not letterbox)", Later("R11")),
-                ("Use project output rotation setting", Later("R11")),
-                ("Save project markers in media file", Later("R11")),
-                ("Enable multichannel mapping", Later("R10a")),
-            ] {
-                ui.checkbox(&mut false, o).on_disabled_hover_text(why.text());
-            }
-        });
+        ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project));
         ui.add_space(4.0);
         self.footer(ui, project, "Render")
     }
 
-    fn body23(&mut self, ui: &mut Ui, project: &Project) -> bool {
+    fn body23(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) -> bool {
         let t = theme::get();
         let d = t.dialog();
         ui.horizontal(|ui| {
             ui.label(RichText::new("Render:").strong());
             ui.label(&project.name);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                super::fixed_combo(ui, "render_view", "View", 70.0, Later("R11"));
-                super::fixed_combo(ui, "render_filt", "Filter", 70.0, Later("R11"));
+                ui.menu_button("View ⏷", |ui| {
+                    for (details, label) in [(false, "Thumbnails"), (true, "Details")] {
+                        if ui.radio(self.details == details, label).clicked() {
+                            self.details = details;
+                            ui.close_menu();
+                        }
+                    }
+                });
+                ui.menu_button("Filter ⏷", |ui| {
+                    ui.checkbox(&mut self.filter.match_video, "Match project video settings");
+                    ui.checkbox(&mut self.filter.match_audio, "Match project audio settings");
+                    if ui.button("Show all formats").clicked() {
+                        self.filter = Filter::default();
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("⚙ Render options", |ui| ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project)));
             });
         });
-        let filter = TREE23[self.node].2;
         let mut render = false;
+        let listed = self.listed(project, prefs);
+        let shown: Vec<&Template> = listed
+            .into_iter()
+            .filter(|tp| match self.node {
+                0 => prefs.render_favorites.contains(&tp.name),
+                1 => prefs.render_recent.contains(&tp.name),
+                2 => true,
+                3..=10 => tp.usecase() == self.node - 3,
+                11 => tp.video.is_some() && !tp.sequence(),
+                12 => tp.sequence(),
+                _ => tp.video.is_none(),
+            })
+            .collect();
+        let mut star_hit = None;
         ui.horizontal_top(|ui| {
             // Category tree.
             Frame::NONE.fill(d.field).inner_margin(4).show(ui, |ui| {
                 ui.set_width(190.0);
-                ui.set_height(330.0);
+                ui.set_height(380.0);
                 // Frames inherit the row's horizontal layout; the tree is a column.
                 ui.vertical(|ui| self.tree23(ui));
             });
             ui.vertical(|ui| {
-                // Template grid: 4 columns of icon + bold title + 2-line description.
-                let q = self.search.to_lowercase();
-                let shown: Vec<usize> = (0..PRESETS.len())
-                    .filter(|&k| match (self.node, filter) {
-                        (0, _) => self.favorites[k],
-                        (_, Some(video)) => PRESETS[k].video.is_some() == video,
-                        _ => true,
-                    })
-                    .filter(|&k| q.is_empty() || PRESETS[k].name.to_lowercase().contains(&q))
-                    .collect();
                 Frame::NONE.fill(d.field).inner_margin(6).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.set_height(150.0);
-                    Grid::new("render_grid").num_columns(4).spacing(vec2(10.0, 10.0)).show(ui, |ui| {
-                        for (n, &k) in shown.iter().enumerate() {
-                            let (r, hit) = ui.allocate_exact_size(vec2(170.0, 56.0), Sense::click());
-                            let p = ui.painter();
-                            if self.preset == k {
-                                p.rect_filled(r, t.m.widget_radius, t.preset_tile_selected);
-                            } else if hit.hovered() {
-                                p.rect_filled(r, t.m.widget_radius, t.button_hover_bg);
-                            }
-                            let icon = Rect::from_min_size(r.min + vec2(4.0, 8.0), vec2(34.0, 26.0));
-                            p.rect_stroke(icon, 2.0, Stroke::new(1.5_f32, d.text), StrokeKind::Inside);
-                            if PRESETS[k].video.is_some() {
-                                let c = icon.center();
-                                p.add(Shape::convex_polygon(vec![c + vec2(-4.0, -6.0), c + vec2(6.0, 0.0), c + vec2(-4.0, 6.0)], d.text, Stroke::NONE));
-                            } else {
-                                p.circle_filled(icon.center(), 6.0, d.text);
-                            }
-                            p.text(pos2(icon.max.x + 6.0, r.min.y + 6.0), Align2::LEFT_TOP, INFO[k].0, t.bold(12.0), d.text);
-                            let ink = if self.preset == k { t.text_bright } else { t.text_dim };
-                            let desc = p.layout(INFO[k].1.to_string(), t.font(11.0), ink, r.max.x - icon.max.x - 10.0);
-                            p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 22.0), desc, ink);
-                            if hit.clicked() {
-                                self.preset = k;
-                            }
-                            if n % 4 == 3 {
+                    ui.set_height(170.0);
+                    ScrollArea::vertical().id_salt("render_grid_scroll").auto_shrink(false).show(ui, |ui| {
+                        if self.details {
+                            Grid::new("render_details").num_columns(4).striped(true).show(ui, |ui| {
+                                for h in ["", "Name", "Format", "Video"] {
+                                    ui.label(RichText::new(h).strong());
+                                }
                                 ui.end_row();
-                            }
+                                for tp in &shown {
+                                    if star(ui, prefs.render_favorites.contains(&tp.name)) {
+                                        star_hit = Some(tp.name.clone());
+                                    }
+                                    if ui.selectable_label(self.chosen == **tp, &tp.name).clicked() {
+                                        self.chosen = (*tp).clone();
+                                    }
+                                    ui.label(tp.format());
+                                    ui.label(tp.video_line(&project.settings, self.opts.rotate).unwrap_or_default());
+                                    ui.end_row();
+                                }
+                            });
+                        } else {
+                            Grid::new("render_grid").num_columns(4).spacing(vec2(10.0, 10.0)).show(ui, |ui| {
+                                for (n, tp) in shown.iter().enumerate() {
+                                    let (r, hit) = ui.allocate_exact_size(vec2(170.0, 56.0), Sense::click());
+                                    let p = ui.painter();
+                                    if self.chosen == **tp {
+                                        p.rect_filled(r, t.m.widget_radius, t.preset_tile_selected);
+                                    } else if hit.hovered() {
+                                        p.rect_filled(r, t.m.widget_radius, t.button_hover_bg);
+                                    }
+                                    let icon = Rect::from_min_size(r.min + vec2(4.0, 8.0), vec2(34.0, 26.0));
+                                    p.rect_stroke(icon, 2.0, Stroke::new(1.5_f32, d.text), StrokeKind::Inside);
+                                    if tp.video.is_some() {
+                                        let c = icon.center();
+                                        p.add(Shape::convex_polygon(vec![c + vec2(-4.0, -6.0), c + vec2(6.0, 0.0), c + vec2(-4.0, 6.0)], d.text, Stroke::NONE));
+                                    } else {
+                                        p.circle_filled(icon.center(), 6.0, d.text);
+                                    }
+                                    let ink = if self.chosen == **tp { t.text_bright } else { t.text_dim };
+                                    let w = r.max.x - icon.max.x - 10.0;
+                                    let title = p.layout_no_wrap(tp.name.clone(), t.bold(12.0), d.text);
+                                    p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 6.0), title, d.text);
+                                    let desc = p.layout(tp.notes.clone(), t.font(11.0), ink, w);
+                                    p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 22.0), desc, ink);
+                                    if hit.clicked() {
+                                        self.chosen = (*tp).clone();
+                                    }
+                                    if hit.secondary_clicked() {
+                                        star_hit = Some(tp.name.clone());
+                                    }
+                                    hit.on_hover_text(format!("{}\nRight-click: add to or remove from Favorites", tp.format()));
+                                    if n % 4 == 3 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                        }
+                        if shown.is_empty() {
+                            ui.label(RichText::new("No templates here.").color(t.text_dim));
                         }
                     });
-                    if shown.is_empty() {
-                        ui.label(RichText::new("No templates here.").color(t.text_dim));
-                    }
                 });
                 ui.horizontal_top(|ui| {
                     Frame::NONE.fill(d.field).inner_margin(6).show(ui, |ui| {
                         ui.set_width(ui.available_width() - 110.0);
-                        ui.set_height(88.0);
+                        ui.set_height(100.0);
                         ui.vertical(|ui| self.details(ui, project));
                     });
-                    ui.add_enabled_ui(false, |ui| {
-                        ui.add(Button::new("Customize...").min_size(vec2(100.0, 30.0))).on_disabled_hover_text(Later("R11").text());
-                    });
+                    self.customize_button(ui, "Customize...", vec2(100.0, 30.0));
                 });
                 Frame::NONE.fill(d.field).inner_margin(6).show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -364,12 +495,16 @@ impl RenderDialog {
                 render = self.footer(ui, project, "Render...");
             });
         });
+        if let Some(n) = star_hit {
+            toggle_favorite(prefs, n);
+            *changed = true;
+        }
         render
     }
 
     fn tree23(&mut self, ui: &mut Ui) {
         ui.add(TextEdit::singleline(&mut self.search).hint_text("Search").desired_width(180.0));
-        for (k, (label, depth, _)) in TREE23.iter().enumerate() {
+        for (k, (label, depth)) in TREE23.iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.add_space(*depth as f32 * 16.0);
                 let text = if k == 0 { format!("★ {label}") } else { label.to_string() };
@@ -380,7 +515,8 @@ impl RenderDialog {
         }
     }
 
-    fn start(&mut self, ctx: &Context, project: &Project) {
+    /// Start the render (after asking before replacing a file). True when the recent list changed.
+    fn start(&mut self, ctx: &Context, project: &Project, prefs: &mut Prefs) -> bool {
         let out = self.out_path();
         if out.exists()
             && rfd::MessageDialog::new()
@@ -390,21 +526,32 @@ impl RenderDialog {
                 .show()
                 != rfd::MessageDialogResult::Yes
         {
-            return;
+            return false;
         }
-        self.job = Some(crate::engine::render::start(project, &PRESETS[self.preset], out, self.range(project), self.quickfade, ctx.clone()));
+        let opts = Opts { quickfade: self.quickfade, ..self.opts };
+        self.job = Some(crate::engine::render::start(project, &self.chosen, out, self.range(project), opts, ctx.clone()));
+        let name = self.chosen.name.clone();
+        prefs.render_recent.retain(|r| *r != name);
+        prefs.render_recent.insert(0, name);
+        prefs.render_recent.truncate(10);
+        true
     }
 }
 
-/// Favourite ☆ that turns gold when set.
-fn star(ui: &mut Ui, on: &mut bool) -> bool {
-    let t = theme::get();
-    let color = if *on { t.snap.cursor } else { t.text_dim };
-    let r = ui.add(Label::new(RichText::new(if *on { "★" } else { "☆" }).color(color)).sense(Sense::click()));
-    if r.clicked() {
-        *on = !*on;
+fn toggle_favorite(prefs: &mut Prefs, name: String) {
+    match prefs.render_favorites.iter().position(|f| *f == name) {
+        Some(k) => {
+            prefs.render_favorites.remove(k);
+        }
+        None => prefs.render_favorites.push(name),
     }
-    r.clicked()
+}
+
+/// Favourite ☆ that turns gold when set. True when clicked.
+fn star(ui: &mut Ui, on: bool) -> bool {
+    let t = theme::get();
+    let color = if on { t.snap.cursor } else { t.text_dim };
+    ui.add(Label::new(RichText::new(if on { "★" } else { "☆" }).color(color)).sense(Sense::click())).clicked()
 }
 
 #[cfg(test)]
@@ -443,6 +590,27 @@ mod tests {
         d.seed(&b);
         assert_eq!((d.name.as_str(), d.folder.as_str()), ("b", r"D:\B"));
     }
+
+    /// Search, favourites and Match project settings narrow the list; a sequence is named by its first frame.
+    #[test]
+    fn the_list_follows_search_and_filters() {
+        let p = Project::new("p");
+        let mut prefs = Prefs { render_favorites: vec!["Web 720p".into()], ..Default::default() };
+        prefs.render_templates.push(Template { name: "My 4K".into(), ..BUILTIN[6].clone() });
+        let mut d = RenderDialog { search: "dnxhr".into(), ..Default::default() };
+        assert!(d.listed(&p, &prefs).iter().all(|t| t.format().contains("DNxHR") || t.name.contains("DNxHR")) && d.listed(&p, &prefs).len() == 6);
+        d.search = "4k".into();
+        assert_eq!(d.listed(&p, &prefs).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["YouTube 2160p", "My 4K"]);
+        d.search.clear();
+        d.filter.favorites = true;
+        assert_eq!(d.listed(&p, &prefs).len(), 1);
+        d.filter = Filter { match_video: true, ..Default::default() };
+        let names: Vec<&str> = d.listed(&p, &prefs).iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"YouTube 1080p") && !names.contains(&"Web 720p") && !names.contains(&"My 4K"), "{names:?}");
+        d.chosen = BUILTIN.iter().find(|t| t.sequence()).unwrap().clone();
+        (d.folder, d.name) = (r"C:\v".into(), "Shot".into());
+        assert_eq!(d.out_path(), Path::new(r"C:\v\Shot_000000.png"));
+    }
 }
 
 /// Show `path` selected in Explorer.
@@ -456,5 +624,18 @@ pub fn open_folder(path: &Path) {
     }
     #[cfg(not(windows))]
     cmd.arg(path.parent().unwrap_or(path));
+    let _ = cmd.spawn();
+}
+
+/// Open `path` in its default app (a render log in the text editor).
+fn open_file(path: &Path) {
+    let mut cmd = std::process::Command::new("explorer");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(format!("\"{}\"", path.display())).creation_flags(0x08000000);
+    }
+    #[cfg(not(windows))]
+    cmd.arg(path);
     let _ = cmd.spawn();
 }

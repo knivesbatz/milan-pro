@@ -582,7 +582,7 @@ fn layer_onto(dst: &mut ColorImage, src: &mut dyn Sources, l: &TrackPlan, biline
 /// Bus Track's Fade to Color. A compositing parent's children (just below it) are composited together first, then the
 /// parent over them, then the group through Parent Motion with the Parent Composite Mode.
 pub fn compose(fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> ColorImage {
-    let mut acc = ColorImage::new([w, h], Color32::BLACK);
+    let mut acc = ColorImage::new([w, h], if fp.alpha { Color32::TRANSPARENT } else { Color32::BLACK });
     let mut group: Option<ColorImage> = None;
     let blank = || ColorImage::new([w, h], Color32::TRANSPARENT);
     for l in &fp.layers {
@@ -665,7 +665,7 @@ mod tests {
             has_alpha: false,
             matrix: None,
             codec: None,
-            interlaced: false,
+            deint: "",
             proxy: None,
             grid: 0.0,
             offset: 0.0,
@@ -865,7 +865,7 @@ mod tests {
         child.child = true;
         let mut parent = track("mask");
         (parent.mode, parent.parent) = (Composite::Multiply, Some((Composite::SourceAlpha, Affine::scale(1.0, 1.0))));
-        let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![bg, child, parent] };
+        let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![bg, child, parent] };
         let out = compose(&fp, &mut ById, W, H, true, 1);
         assert_eq!((px(&out, 10, 50), px(&out, W - 10, 50)), ([200, 0, 0, 255], [0, 0, 200, 255]));
         // Parent Composite Mode Add: the masked child adds onto the background.
@@ -889,13 +889,13 @@ mod tests {
         let m = media(1920, 1080);
         let mut l = layer(vec![Item::Event(event(&m, PanCrop::default(), 1.0))], Composite::SourceAlpha, 1.0, Motion { w: 0.5, h: 0.5, ..Default::default() });
         l.shadow = Some(Halo { x: 0.3, y: 0.0, blur: 0.0, intensity: 1.0, color: [0.0, 1.0, 0.0] });
-        let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] };
+        let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] };
         let out = compose(&fp, &mut Halves(Color32::RED, Color32::RED), W, H, true, 1);
         // The picture spans x 48..144; its shadow 30% of 192 (58 px) to the right: green from 144 to 202.
         assert_eq!((px(&out, 100, 54), px(&out, 160, 54), px(&out, 20, 54)), ([255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 0, 255]));
         let mut e = event(&m, PanCrop::default(), 1.0);
         e.masks = vec![raster::MaskPlan { path: vec![[0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.5, 0.0, 0.0, 0.0, 0.0, 0.0], [0.5, 1.0, 0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]], negative: false, opacity: 1.0, feather: 0.0 }];
-        let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] };
+        let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] };
         let out = compose(&fp, &mut Halves(Color32::WHITE, Color32::WHITE), W, H, true, 1);
         assert_eq!((px(&out, 20, 54), px(&out, W - 20, 54)), ([255, 255, 255, 255], [0, 0, 0, 255]));
     }
@@ -918,7 +918,7 @@ mod tests {
         let m = media(1920, 1080);
         let mut l = layer(vec![Item::Event(event(&m, PanCrop::default(), 1.0))], Composite::ThreeD, 1.0, Motion::default());
         l.persp = Some(h);
-        let out = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::RED), W, H, true, 1);
+        let out = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::RED), W, H, true, 1);
         assert_eq!((px(&out, W / 2, H / 2), px(&out, 5, H / 2)), ([255, 0, 0, 255], [0, 0, 0, 255]));
     }
 
@@ -934,7 +934,7 @@ mod tests {
     #[test]
     fn fast_path_equals_general_path() {
         let m = media(1920, 1080);
-        let fp = |mode| FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, PanCrop::default(), 0.8))], mode, 0.5, Motion::default())] };
+        let fp = |mode| FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, PanCrop::default(), 0.8))], mode, 0.5, Motion::default())] };
         let fast = compose(&fp(Composite::SourceAlpha), &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         // Normal through the scratch layer: blending a layer with the general formula at opacity 0.5.
         let mut general = ColorImage::new([W, H], Color32::BLACK);
@@ -1036,7 +1036,7 @@ mod tests {
         let m = media(1920, 1080);
         let mut e = event(&m, PanCrop::default(), 1.0);
         e.next = Some((1, 0.5));
-        let out = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] }, &mut PerFrame, W, H, true, 1);
+        let out = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] }, &mut PerFrame, W, H, true, 1);
         assert_eq!(px(&out, W / 2, H / 2), [150, 150, 150, 255]);
     }
 
@@ -1047,7 +1047,7 @@ mod tests {
         let (bottom, top) = (l(Color32::from_gray(200)), l(Color32::from_gray(100)));
         let mut acc = ColorImage::new([W, H], Color32::BLACK);
         for (layer, c) in [bottom, top] {
-            let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer] };
+            let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer] };
             let mut s = Halves(c, c);
             for l in &fp.layers {
                 draw_items(&mut acc, &mut s, l, l.opacity, true, 1, true);
@@ -1069,7 +1069,7 @@ mod tests {
         let (x, _) = p.apply(0.75, 0.5);
         assert!((x - 1.0).abs() < 1e-9);
         let flip = PanCrop { w: -1.0, ..Default::default() };
-        let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, flip, 1.0))], Composite::SourceAlpha, 1.0, Motion::default())] };
+        let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(event(&m, flip, 1.0))], Composite::SourceAlpha, 1.0, Motion::default())] };
         let out = compose(&fp, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         assert_eq!(px(&out, 5, 50), [0, 0, 255, 255]); // the source's right half is now on the left
         assert_eq!(px(&out, W - 5, 50), [255, 0, 0, 255]);
@@ -1107,7 +1107,7 @@ mod tests {
         let push = preset_eval(find("milan.tr.push").unwrap(), None);
         let pip = Motion { w: 0.5, h: 0.5, ..Default::default() };
         let mix = || Item::Mix { a: Some(event(&m, PanCrop::default(), 1.0)), b: Some(event(&m, PanCrop::default(), 1.0)), p: 0.5, kind: Some(push.clone()) };
-        let fast = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![mix()], Composite::SourceAlpha, 1.0, pip)] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        let fast = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![mix()], Composite::SourceAlpha, 1.0, pip)] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         for y in 0..H {
             for x in 0..W {
                 let inside = (W / 4..3 * W / 4).contains(&x) && (H / 4..3 * H / 4).contains(&y);
@@ -1117,7 +1117,7 @@ mod tests {
         assert_ne!(px(&fast, W / 2, H / 2), [0, 0, 0, 255]);
         let mut l = layer(vec![mix()], Composite::SourceAlpha, 1.0, pip);
         l.fx = vec![preset_eval(find("milan.fx.brightness_contrast").unwrap(), None)]; // identity
-        let with_fx = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        let with_fx = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         for (a, b) in fast.pixels.iter().zip(&with_fx.pixels) {
             assert!(a.to_array().into_iter().zip(b.to_array()).all(|(x, y)| x.abs_diff(y) <= 1), "{a:?} {b:?}");
         }
@@ -1130,16 +1130,16 @@ mod tests {
         let inv = preset_eval(find("milan.fx.invert").unwrap(), None);
         let mut e = event(&m, PanCrop::default(), 1.0);
         e.fx = vec![inv.clone()];
-        let fp = FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] };
+        let fp = FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(e)], Composite::SourceAlpha, 1.0, Motion::default())] };
         let out = compose(&fp, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         assert_eq!((px(&out, 5, 50), px(&out, W - 5, 50)), ([0, 255, 255, 255], [255, 255, 0, 255]));
         // The same effect as a track FX, through the scratch layer.
         let mut l = layer(vec![Item::Event(event(&m, PanCrop::default(), 1.0))], Composite::SourceAlpha, 1.0, Motion::default());
         l.fx = vec![inv.clone()];
-        let track = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        let track = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![l] }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         assert!(track.pixels == out.pixels);
         // Video Output FX run on the finished frame, black background included.
-        let white = compose(&FramePlan { fade: None, samples: Vec::new(), out_fx: vec![inv], layers: Vec::new() }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
+        let white = compose(&FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: vec![inv], layers: Vec::new() }, &mut Halves(Color32::RED, Color32::BLUE), W, H, true, 1);
         assert!(white.pixels.iter().all(|p| *p == Color32::WHITE));
     }
 }

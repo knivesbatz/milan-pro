@@ -35,16 +35,16 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 207 |
-| PARTIAL | 137 |
-| MISSING | 76 |
+| DONE | 223 |
+| PARTIAL | 126 |
+| MISSING | 71 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
 - **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
-- **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
+- **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. Missing: hardware encoders (R22), queue and batch, and the dialog is still modal (R12). An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps:** no schema version, no `.bak` on save, no crash-recovery prompt, fixed 120 s autosave, no logging (the release exe has no console, so `eprintln!` goes nowhere), no diagnostic report.
@@ -122,8 +122,8 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). 15 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R10a, R11, R40b |
-| 4.12 | Render / export controls | PARTIAL | `ui/dialogs/render.rs`: 5 presets. "Customize Template..." and the render options are greyed. → R11 |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b), Summary (R16a). → R10a, R40b |
+| 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a; non-modal render → R12 |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
@@ -227,45 +227,45 @@ What matters most:
 | 7.2 | Codec availability, hardware acceleration, licensing and distribution researched | MISSING | Not documented. Section 4.3 is the raw data. → R37, R56 |
 | 7.3 | H.264 / AVC | PARTIAL | Decode and encode (libx264) work. Not covered by a format test. → R37 |
 | 7.4 | H.265 / HEVC | PARTIAL | Decode and encode (libx265) work. Not tested. → R37 |
-| 7.5 | AV1 | PARTIAL | Decodes. No AV1 render preset, though libsvtav1, libaom and av1_nvenc are in the build. → R11, R37 |
-| 7.6 | VP8 | PARTIAL | Decodes. No render preset (libvpx is present). → R11, R37 |
-| 7.7 | VP9 | PARTIAL | As VP8 (libvpx-vp9 is present). → R11, R37 |
+| 7.5 | AV1 | PARTIAL | Decodes. R11: renders with libsvtav1 ("AV1 (SVT)" template, MP4 or WebM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not covered by a format test. → R37 |
+| 7.6 | VP8 | PARTIAL | Decodes. R11: "VP8 WebM" template (libvpx), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.7 | VP9 | PARTIAL | Decodes. R11: "VP9 WebM" template (libvpx-vp9), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.8 | MPEG-1 | PARTIAL | Decodes. Not tested. No preset. → R37 |
-| 7.9 | MPEG-2 | PARTIAL | Decodes. Not tested. No preset. → R11, R37 |
+| 7.9 | MPEG-2 | PARTIAL | Decodes. R11: "MPEG-2 TS" and "MPEG-2 Program Stream" templates (also interlaced: upper field first, checked with `idet`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.10 | MPEG-4 Part 2 | PARTIAL | Decodes. Not tested. → R37 |
-| 7.11 | ProRes | PARTIAL | Decodes. Render offers 422 only (`render.rs:47`); 4444 with alpha and the other profiles are missing. → R11, R37 |
-| 7.12 | DNxHD | PARTIAL | Decodes. No preset (dnxhd encoder present). → R11, R37 |
-| 7.13 | DNxHR | PARTIAL | As DNxHD. → R11, R37 |
-| 7.14 | CineForm | PARTIAL | Decodes. No preset (cfhd encoder present). → R11, R37 |
+| 7.11 | ProRes | PARTIAL | Decodes. R11: renders every profile (Proxy, LT, 422, HQ, 4444, 4444 XQ); "ProRes 4444 (alpha)" keeps transparency where nothing covers the frame (`VideoPlan.alpha`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.12 | DNxHD | PARTIAL | Decodes. R11: DNxHD is a Customize profile (constant bit rate; its fixed sizes and rates are FFmpeg's); no built-in template, DNxHR has them. Decode not tested. → R37 |
+| 7.13 | DNxHR | PARTIAL | Decodes. R11: DNxHR LB/SQ/HQ/HQX/444 templates in MOV and DNxHR HQ in MXF, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.14 | CineForm | PARTIAL | Decodes. R11: "CineForm" template (cfhd, quality presets), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.15 | MJPEG | PARTIAL | Decodes. Not tested. → R37 |
 | 7.16 | Theora | PARTIAL | Decodes. Not tested. → R37 |
-| 7.17 | FFV1 | PARTIAL | Decodes. No preset. → R11, R37 |
+| 7.17 | FFV1 | PARTIAL | Decodes. R11: "FFV1 MKV archive" template (lossless RGB, FLAC), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.18 | Animation codecs (QuickTime Animation/qtrle, PNG-in-MOV, UT Video) | PARTIAL | Decode (alpha is handled, `media.rs:131`). Not tested. → R37 |
 | 7.19 | RAW video formats | NOT FEASIBLE | R3D, BRAW and ARRIRAW need proprietary SDKs that an MIT project cannot redistribute; FFmpeg has no decoders for them. Deliverable: documented in FORMAT_SUPPORT.md, plus an optional runtime-loaded BRAW SDK study (R41). CinemaDNG and DNG stills are tested in R37. |
 | 7.20 | WAV | PARTIAL | Works. Not covered by a format test. → R37 |
 | 7.21 | AIFF | PARTIAL | Decodes. Not tested. → R37 |
 | 7.22 | MP3 | PARTIAL | Decode and encode. Not tested. → R37 |
 | 7.23 | AAC | PARTIAL | Decode and encode. Not tested. → R37 |
-| 7.24 | FLAC | PARTIAL | Decodes. No render preset. → R11, R37 |
-| 7.25 | ALAC | PARTIAL | Decodes. No preset. → R11, R37 |
-| 7.26 | OGG Vorbis | PARTIAL | Decodes. No preset. → R11, R37 |
-| 7.27 | Opus | PARTIAL | Decodes. No preset. → R11, R37 |
+| 7.24 | FLAC | PARTIAL | Decodes. R11: "FLAC audio" template (16/24-bit), FLAC in MKV, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.25 | ALAC | PARTIAL | Decodes. R11: "ALAC audio" template (.m4a), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.26 | OGG Vorbis | PARTIAL | Decodes. R11: "Ogg Vorbis audio" and VP8 WebM templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.27 | Opus | PARTIAL | Decodes. R11: "Opus audio" and VP9 WebM templates (48 kHz), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.28 | WMA | PARTIAL | Decodes (wmav2; WMA Pro and Lossless partly). Not tested. → R37 |
 | 7.29 | PCM | DONE | WAV preset, pcm_s16le in the ProRes MOV |
-| 7.30 | AC-3 | PARTIAL | Decode and encode available. No preset. → R11, R37 |
-| 7.31 | E-AC-3 | PARTIAL | As AC-3. → R11, R37 |
+| 7.30 | AC-3 | PARTIAL | Decodes. R11: "AC-3 audio" template and AC-3 in the MPEG-2 templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
+| 7.31 | E-AC-3 | PARTIAL | Decodes. R11: "E-AC-3 audio" template, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.32 | DTS where supportable | PARTIAL | Decodes (dca). The encoder is experimental and core-only; licensing is to be documented. → R37, R56 |
 | 7.33 | Multichannel audio (formats) | MISSING | The mixer forces stereo (`mix.rs:68`, `-ac 2`); 5.1 sources are downmixed silently. → R10a |
 | 7.34 | MP4 | DONE | Import and render |
 | 7.35 | MOV | DONE | Import and render |
-| 7.36 | MKV | PARTIAL | Import only. No MKV render. → R11 |
-| 7.37 | AVI | PARTIAL | Import only. → R11 |
-| 7.38 | MPEG-TS | PARTIAL | Import (`.ts`, `.m2ts`, `.mts`). No render. → R11 |
-| 7.39 | MPEG-PS | PARTIAL | Import (`.mpg`, `.vob`). No render. → R11 |
-| 7.40 | WebM | PARTIAL | Import only. → R11 |
-| 7.41 | MXF | PARTIAL | Import only (XDCAM/XAVC untested; spanned clips not joined). → R11, R41 |
+| 7.36 | MKV | DONE | Import; R11 render ("FFV1 MKV archive", any listed codec through Customize Template), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
+| 7.37 | AVI | DONE | Import; R11 render ("AVI (MJPEG)"), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
+| 7.38 | MPEG-TS | DONE | Import (`.ts`, `.m2ts`, `.mts`); R11 render ("MPEG-2 TS", `.m2ts`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
+| 7.39 | MPEG-PS | DONE | Import (`.mpg`, `.vob`); R11 render ("MPEG-2 Program Stream", `.mpg`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
+| 7.40 | WebM | DONE | Import; R11 render ("VP9 WebM", "VP8 WebM"), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
+| 7.41 | MXF | PARTIAL | Import (XDCAM/XAVC untested; spanned clips not joined). R11: "MXF DNxHR HQ" render (OP1a, 48 kHz PCM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. → R41 |
 | 7.42 | WAV container | DONE | |
-| 7.43 | AIFF container | PARTIAL | Import only. → R11 |
+| 7.43 | AIFF container | DONE | Import; R11 render ("AIFF audio", 8/16/24/32-bit big-endian PCM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
 | 7.44 | PNG | DONE | `media.rs:108` |
 | 7.45 | JPEG | DONE | |
 | 7.46 | TIFF | PARTIAL | Imported, but 16-bit and float TIFF are squeezed to 8-bit. → R40b |
@@ -421,15 +421,15 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 13.1 | Dedicated rendering engine | DONE | `engine/render.rs` (same plan, compositor and mixer as preview) |
-| 13.2 | Render presets | PARTIAL | 5 fixed presets (`render.rs:29`) → R11 |
-| 13.3 | Custom resolutions | MISSING | Renders at project size only. "Customize Template..." greyed (`dialogs/render.rs:260`) → R11 |
-| 13.4 | Custom frame rates | MISSING | → R11 |
-| 13.5 | Custom bitrates | MISSING | Fixed CRF and fixed 320k → R11 |
-| 13.6 | Audio export configuration | PARTIAL | The sample rate follows the project. No codec, bitrate or channel choice. → R11 |
-| 13.7 | Codec selection | PARTIAL | Only by picking one of the 5 presets → R11 |
-| 13.8 | Hardware encoding | MISSING | The bundled FFmpeg has h264/hevc/av1 NVENC, QSV, AMF and MF encoders (section 4.3). None is used. → R22, R11 |
+| 13.2 | Render presets | DONE | R11: `render::Template` (serde), 38 built-ins in `render::BUILTIN`, user templates in the preferences; `encoder_argv_for_every_template` |
+| 13.3 | Custom resolutions | DONE | R11: Customize Template › Frame size (the project's or any 16-8192), letterboxed or stretched (`render::fit`), turned by Output rotation; `interlace_rotation_and_letterbox_filters`; letterbox, stretch and rotation checked in `render_templates_e2e` |
+| 13.4 | Custom frame rates | DONE | R11: the plan is compiled at the template's rate (`engine/render.rs::encode`); interlaced output composes one frame per field and weaves them; a 30p project rendered at 29.97i in `render_templates_e2e` |
+| 13.5 | Custom bitrates | DONE | R11: constant quality / VBR (average, maximum) / CBR per codec (`Template::video_args`); audio bit rates per codec |
+| 13.6 | Audio export configuration | DONE | R11: audio codec, bit rate, sample rate (the project's or fixed, raised or capped to what the codec takes: `pick_rate`), mono or stereo, bit depth (`Template::audio_args`). Multichannel → 13.11 |
+| 13.7 | Codec selection | DONE | R11: Customize Template › Format and Codec (`render::CONTAINERS`, `VCODECS`, `ACODECS`); combinations a format cannot hold are refused (`Template::check`: VP9 in MOV) |
+| 13.8 | Hardware encoding | MISSING | The bundled FFmpeg has h264/hevc/av1 NVENC, QSV, AMF and MF encoders (section 4.3). None is used: R11 offers tested software encoders only, since a hardware encoder needs the runtime test R22 builds before it can be offered. → R22 |
 | 13.9 | Software encoding | DONE | libx264, libx265, prores_ks, pcm, libmp3lame |
-| 13.10 | Quality settings | MISSING | → R11 |
+| 13.10 | Quality settings | DONE | R11: Project Properties › Full-resolution rendering quality (Good for a new project, as VEGAS) and the template's Video rendering quality; encoder speed presets; renders never decode proxies (`VideoPlan::without_proxies`) |
 | 13.11 | Multi-channel audio export | MISSING | "Enable multichannel mapping" greyed (`dialogs/render.rs:269`) → R10a |
 | 13.12 | Batch rendering | MISSING | → R12 |
 | 13.13 | Render queue | MISSING | → R12 |
@@ -437,8 +437,8 @@ What matters most:
 | 13.15 | Estimated completion | DONE | `j.eta()` |
 | 13.16 | Cancellation | DONE | `j.cancel()`; `.partial` deleted |
 | 13.17 | Failure recovery | PARTIAL | A failed render cleans up its temp files and shows the FFmpeg error tail. No retry, no queue resume after a crash. → R12 |
-| 13.18 | Export logs | MISSING | → R11 |
-| 13.19 | Configurable presets for common delivery formats | PARTIAL | No user templates; no YouTube/Vimeo/archive/intermediate set. → R11 |
+| 13.18 | Export logs | DONE | R11: every render writes `%LOCALAPPDATA%\MilanPro\logs\render\<date>-<time>-<n> <file>.log` (command, FFmpeg version, timings, frames, status, all FFmpeg output; `engine/render.rs::write_log`); Show log in the dialog |
+| 13.19 | Configurable presets for common delivery formats | DONE | R11: YouTube 1080p/2160p, Vimeo, Web 720p, Social Vertical, ProRes 422 HQ/4444 (alpha), DNxHR LB/SQ/HQ/HQX/444, CineForm, FFV1 MKV archive, VP9/VP8 WebM, AV1, MPEG-2 TS/PS, AVI MJPEG, PNG/TIFF/EXR/DPX sequences, FLAC, ALAC, AAC, Opus, Vorbis, AC-3, E-AC-3, AIFF; user templates saved and deleted in Customize Template |
 | 13.20 | Background rendering while editing continues | PARTIAL | The render runs on its own thread, but the dialog is modal (`commands.rs:34`, `render.open` in `modal_open`), so editing is blocked. → R12 |
 | 13.21 | Renderer reproduces timeline FX, transitions, compositing, audio | DONE | One `plan::compile` for preview and render |
 
@@ -580,7 +580,7 @@ What matters most:
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
 | Professional audio editing system | PARTIAL | R8-R10 |
-| Professional rendering engine | PARTIAL | R11, R12, R22 |
+| Professional rendering engine | PARTIAL | R12, R22 (R11 DONE) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
 | VEGAS project import/interchange | PARTIAL | R25-R30 |
@@ -1201,6 +1201,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R11: Render templates, custom settings, more formats, render logs (L)
+
+**Status: DONE.** Built as designed below, except:
+- Hardware encoders are not offered: R22 owns their runtime test, and R11 lists no encoder that a test has not passed. The codec lists are tested software encoders (`render::VCODECS`, `ACODECS`); every codec × pixel format and format × audio codec pair they allow was encoded with the bundled FFmpeg.
+- Image sequences render as `<name>_000000.<ext>` files, staged in a `.partial` folder and moved in when complete. DNxHD (fixed rasters) is a Customize profile, not a built-in. DNxHR cannot be interlaced (FFmpeg 9 refuses).
+- R0's Project Properties items are built: Field order, Pixel aspect ratio, Output rotation, Full-resolution rendering quality, Deinterlace method, Adjust source media, audio Bit depth, and the preview's Simulate Device Aspect Ratio. Bit depth applies to renders that follow the project; recordings stay 32-bit float (a superset).
+- VP23 Filter offers Match project video / audio settings and Show all formats; View offers Thumbnails and Details; the Render options are a gear menu. Favorites and Recent are kept in the preferences.
+- `docs/FORMAT_SUPPORT.md` is created with the render table; R37 adds the decode half.
 
 **Scope**
 - Customize Template dialog: resolution, frame rate, PAR, field order, codec (from the R22 capability list or FFmpeg's encoder list), rate control (CRF/CQ/VBR/CBR with bitrate), preset/speed, pixel format/bit depth, audio codec/bitrate/sample rate/channels.

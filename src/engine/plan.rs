@@ -29,7 +29,8 @@ pub struct MediaRef {
     /// ffmpeg `in_color_matrix`, None = auto.
     pub matrix: Option<&'static str>,
     pub codec: Option<String>,
-    pub interlaced: bool,
+    /// The deinterlace filter (Project Properties › Deinterlace method) for an interlaced source, else "".
+    pub deint: &'static str,
     /// A ready video proxy (`proxy::ready`), decoded instead of `path` at Draft and Preview quality.
     pub proxy: Option<PathBuf>,
     /// The frame rate `SrcAt::sf` counts in: 0 for the project's; the source's own when a higher-rate source plays
@@ -66,6 +67,20 @@ pub struct VideoPlan {
     blur_type: BlurType,
     /// Content end (seconds).
     pub end: f64,
+    /// R11: frames keep their transparency (a render template with an alpha channel); preview is over black.
+    pub alpha: bool,
+}
+
+impl VideoPlan {
+    /// R11: a render decodes the sources themselves, whatever its quality (VEGAS never renders from proxies).
+    pub fn without_proxies(mut self) -> Self {
+        for e in self.tracks.iter_mut().flat_map(|t| t.events.iter_mut()) {
+            if e.m.proxy.is_some() {
+                e.m = Arc::new(MediaRef { proxy: None, ..(*e.m).clone() });
+            }
+        }
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -106,6 +121,8 @@ struct VEvent {
 /// One frame, resolved: tracks bottom to top.
 #[derive(Debug)]
 pub struct FramePlan {
+    /// R11: composed over transparency (a render with an alpha channel), not black.
+    pub alpha: bool,
     pub layers: Vec<TrackPlan>,
     pub out_fx: Vec<FxEval>,
     /// The Video Bus Track's Fade to Color, after the Video Output FX.
@@ -220,7 +237,9 @@ pub fn matrix(m: &MediaItem) -> Option<&'static str> {
 }
 
 /// `project` is the project frame size, which generated media render at.
-fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
+/// R11: with Adjust source media on, a source keeps its shape in a project of non-square pixels (its square-pixel
+/// width counts `par` times fewer project pixels) and an interlaced one is deinterlaced; off, it is used as it is.
+fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSettings) -> Option<MediaRef> {
     let generator = m.generator.as_ref();
     match generator {
         // A generator this build does not know draws nothing.
@@ -233,6 +252,8 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
         (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
         _ => (1920, 1080),
     };
+    let par = if s.adjust_media && s.par > 0.0 { s.par } else { 1.0 };
+    let w = if generator.is_some() { w } else { ((w as f64 / par).round() as u32).max(1) };
     Some(MediaRef {
         id: m.id.as_str().into(),
         path: m.path.clone(),
@@ -244,7 +265,7 @@ fn media_ref(m: &MediaItem, project: (u32, u32)) -> Option<MediaRef> {
         has_alpha: m.has_alpha || generator.is_some(),
         matrix: matrix(m),
         codec: m.codec.clone(),
-        interlaced: m.interlaced,
+        deint: if m.interlaced && s.adjust_media { s.deinterlace.filter() } else { "" },
         proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
         grid: 0.0,
         offset: m.file_time(0.0),
@@ -293,7 +314,7 @@ pub fn compile(p: &Project) -> VideoPlan {
     // Even: an odd size (an imported VEGAS project) cannot be encoded 4:2:0.
     let (w, h) = (s.width.max(2) & !1, s.height.max(2) & !1);
     let refs: HashMap<&str, (Arc<MediaRef>, &MediaItem)> =
-        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h))?), m)))).collect();
+        p.media_pool.iter().filter_map(|m| Some((m.id.as_str(), (Arc::new(media_ref(m, (w, h), s)?), m)))).collect();
     // Parent / child in the whole list (a muted parent leaves its children to composite on their own); the top track
     // cannot be a child.
     // shortcut: one level of compositing children (VEGAS nests further); add a parent stack if nested groups are asked for.
@@ -349,6 +370,7 @@ pub fn compile(p: &Project) -> VideoPlan {
         bus_colors: p.timeline.master.fade_colors,
         blur_type: s.motion_blur,
         end: crate::render::content_end(p),
+        alpha: false,
     }
 }
 
@@ -598,7 +620,7 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
         })
         .collect();
     let bus_fade = p.bus_envs.iter().find(|e| e.kind == EnvKind::FadeToColor);
-    FramePlan { layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
+    FramePlan { alpha: p.alpha, layers, out_fx: evals(&p.out_fx, tb), fade: fade_to(bus_fade, p.bus_colors, tb), samples: Vec::new() }
 }
 
 /// Fade to Color at `t`: towards the top colour above 0, the bottom colour below; None at 0.
@@ -1444,6 +1466,33 @@ mod tests {
         assert!(r("b").proxy.is_none());
         // A frame that now decodes from the proxy is a different cached picture.
         assert_ne!(frame_plan(&vp, 345).key(), before);
+        // R11: a render never decodes the proxy, whatever its quality.
+        let vp = vp.without_proxies();
+        assert!(vp.tracks.iter().flat_map(|t| &t.events).all(|e| e.m.proxy.is_none()));
+    }
+
+    /// R11: Adjust source media keeps a square-pixel source's shape in a project of wide pixels and deinterlaces
+    /// interlaced sources with the project's method; off, sources are used as they are.
+    #[test]
+    fn adjust_source_media_conforms_shape_and_fields() {
+        use crate::project::Deinterlace;
+        let mut p = project();
+        let mut m = media("il", MediaType::Video);
+        (m.width, m.height, m.interlaced) = (Some(1920), Some(1080), true);
+        p.timeline.video_tracks[0].clips[0].media_id = Some("il".into());
+        p.media_pool.push(m);
+        (p.settings.par, p.settings.deinterlace) = (1.2121, Deinterlace::Blend);
+        let r = |p: &Project| {
+            let vp = compile(p);
+            let m = vp.tracks.iter().flat_map(|t| &t.events).map(|e| e.m.clone()).find(|m| &*m.id == "il").unwrap();
+            (m.w, m.h, m.deint)
+        };
+        assert_eq!(r(&p), (1584, 1080, Deinterlace::Blend.filter()));
+        p.settings.deinterlace = Deinterlace::None;
+        assert_eq!(r(&p).2, "");
+        p.settings.adjust_media = false;
+        p.settings.deinterlace = Deinterlace::Interpolate;
+        assert_eq!(r(&p), (1920, 1080, ""));
     }
 
     #[test]

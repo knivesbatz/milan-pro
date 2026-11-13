@@ -31,6 +31,103 @@ pub struct ProjectSettings {
     /// envelope mixes.
     #[serde(default, deserialize_with = "lenient")]
     pub motion_blur: BlurType,
+    /// R11: Project Properties › Field order, Pixel aspect ratio and Output rotation (degrees clockwise: 0, 90, 180,
+    /// 270). Render templates that follow the project take the field order and pixel aspect ratio.
+    #[serde(default, deserialize_with = "lenient")]
+    pub field_order: FieldOrder,
+    #[serde(default = "one")]
+    pub par: f64,
+    #[serde(default)]
+    pub rotation: u16,
+    /// R11: Full-resolution rendering quality. A project saved before R11 rendered at Best, so it keeps Best.
+    #[serde(default = "best", deserialize_with = "lenient_best")]
+    pub render_quality: crate::decode::Quality,
+    /// R11: Deinterlace method. A project saved before R11 interpolated (yadif), so it keeps Interpolate.
+    #[serde(default = "Deinterlace::interpolate", deserialize_with = "lenient")]
+    pub deinterlace: Deinterlace,
+    /// R11: "Adjust source media to better match project or render settings": interlaced sources are deinterlaced and
+    /// sources keep their shape in a project of non-square pixels. Off, media is used as it is.
+    #[serde(default = "yes")]
+    pub adjust_media: bool,
+    /// R11: audio Bit depth (8, 16, 24 or 32 = float): the PCM, FLAC and ALAC renders that follow the project.
+    #[serde(default = "sixteen")]
+    pub bit_depth: u8,
+}
+
+/// Project Properties › Field order (and a render template's).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FieldOrder {
+    #[default]
+    Progressive,
+    Upper,
+    Lower,
+}
+
+impl FieldOrder {
+    pub const ALL: [FieldOrder; 3] = [FieldOrder::Progressive, FieldOrder::Upper, FieldOrder::Lower];
+
+    pub fn name(self) -> &'static str {
+        ["None (progressive scan)", "Upper field first", "Lower field first"][self as usize]
+    }
+}
+
+/// Project Properties › Deinterlace method, for interlaced sources.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Deinterlace {
+    None,
+    /// Both fields averaged (VEGAS's default): a vertical [1 2 1] / 4 blend of the woven frame.
+    #[default]
+    Blend,
+    /// One field at a time, the missing lines interpolated (yadif).
+    Interpolate,
+}
+
+impl Deinterlace {
+    pub const ALL: [Deinterlace; 3] = [Deinterlace::None, Deinterlace::Blend, Deinterlace::Interpolate];
+
+    fn interpolate() -> Self {
+        Deinterlace::Interpolate
+    }
+
+    pub fn name(self) -> &'static str {
+        ["None", "Blend fields", "Interpolate fields"][self as usize]
+    }
+
+    /// The decoder's filter, ahead of its frame-rate filter ("" for None).
+    pub fn filter(self) -> &'static str {
+        match self {
+            Deinterlace::None => "",
+            Deinterlace::Blend => "convolution=0m='0 1 0 0 2 0 0 1 0':1m='0 1 0 0 2 0 0 1 0':2m='0 1 0 0 2 0 0 1 0':0rdiv=0.25:1rdiv=0.25:2rdiv=0.25,",
+            Deinterlace::Interpolate => "yadif=deint=interlaced,",
+        }
+    }
+}
+
+/// Project Properties › Pixel aspect ratio: VEGAS's list.
+pub const PARS: [(f64, &str); 8] = [
+    (1.0, "1.0000 (Square)"),
+    (0.9091, "0.9091 (NTSC DV)"),
+    (1.2121, "1.2121 (NTSC DV Widescreen)"),
+    (1.0926, "1.0926 (PAL DV)"),
+    (1.4568, "1.4568 (PAL DV Widescreen)"),
+    (1.3333, "1.3333 (HDV 1080)"),
+    (1.5, "1.5000 (DVCPRO HD)"),
+    (2.0, "2.0000 (Anamorphic 2:1)"),
+];
+
+/// Project Properties › Output rotation.
+pub const ROTATIONS: [(u16, &str); 4] = [(0, "0° (original)"), (90, "90° clockwise"), (180, "180°"), (270, "90° counterclockwise")];
+
+fn best() -> crate::decode::Quality {
+    crate::decode::Quality::Best
+}
+
+fn sixteen() -> u8 {
+    16
+}
+
+fn lenient_best<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::decode::Quality, D::Error> {
+    Ok(crate::decode::Quality::deserialize(serde_json::Value::deserialize(d)?).unwrap_or(crate::decode::Quality::Best))
 }
 
 /// Project Properties › Motion blur type (VEGAS's six): symmetric about the frame, or asymmetric (trailing only).
@@ -1203,6 +1300,14 @@ impl Default for ProjectSettings {
             ruler: Ruler::default(),
             resample: Resample::Smart,
             motion_blur: BlurType::Gaussian,
+            field_order: FieldOrder::Progressive,
+            par: 1.0,
+            rotation: 0,
+            // VEGAS: "Unless you have specific performance problems, choose Good"; Blend fields; 16-bit audio.
+            render_quality: crate::decode::Quality::Good,
+            deinterlace: Deinterlace::Blend,
+            adjust_media: true,
+            bit_depth: 16,
         }
     }
 }
@@ -1801,7 +1906,7 @@ mod tests {
             }
         };
         strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
-        strip(&mut v["settings"], &["ruler", "resample"]);
+        strip(&mut v["settings"], &["ruler", "resample", "field_order", "par", "rotation", "render_quality", "deinterlace", "adjust_media", "bit_depth"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes", "invert", "fade_colors"]);
         strip(&mut v["timeline"]["audio_tracks"][0], &["fx", "invert", "fade_colors"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes", "looping"];
@@ -1850,6 +1955,14 @@ mod tests {
         let tr: Transition = serde_json::from_str(r#"{"plugin":"milan.tr.dissolve"}"#).unwrap();
         assert!(tr.progress.is_empty() && serde_json::to_value(&tr).unwrap().get("progress").is_none(), "an old transition is linear");
         assert_eq!(back.settings.resample, Resample::Disable);
+        // R11: progressive, square, unrotated, adjusted, 16-bit; it renders at Best and deinterlaces with yadif, as before.
+        let s = &back.settings;
+        assert_eq!((s.field_order, s.par, s.rotation, s.adjust_media, s.bit_depth), (FieldOrder::Progressive, 1.0, 0, true, 16));
+        assert_eq!((s.render_quality, s.deinterlace), (crate::decode::Quality::Best, Deinterlace::Interpolate));
+        let n = Project::new("n").settings;
+        assert_eq!((n.render_quality, n.deinterlace), (crate::decode::Quality::Good, Deinterlace::Blend), "VEGAS's defaults");
+        let s: ProjectSettings = serde_json::from_str(r#"{"width":2,"height":2,"frame_rate":25,"sample_rate":48000,"render_quality":"Ultra","deinterlace":"Smart"}"#).unwrap();
+        assert_eq!((s.render_quality, s.deinterlace), (crate::decode::Quality::Best, Deinterlace::Blend), "values from a newer build");
         assert_eq!(Project::new("n").settings.resample, Resample::Smart, "a new project resamples smartly, as VEGAS 16");
         let m = &back.media_pool[0];
         assert!(!m.has_alpha && !m.interlaced && m.rotation == 0 && m.color_matrix.is_none() && m.generator.is_none());

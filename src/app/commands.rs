@@ -2074,6 +2074,10 @@ impl MeridianApp {
                 self.exec(ctx, PasteRepeat);
             }
             "render" => self.render.open = true,
+            "render-template" => {
+                self.render.open = true;
+                self.render.customize();
+            }
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,

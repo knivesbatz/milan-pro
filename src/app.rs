@@ -744,7 +744,9 @@ impl eframe::App for MeridianApp {
         }
         self.normalizer.tick(ctx, &mut self.project);
         self.render.quickfade = self.prefs.quickfade;
-        self.render.show(ctx, &self.project);
+        if self.render.show(ctx, &self.project, &mut self.prefs) {
+            self.save_prefs();
+        }
         self.settings.show(ctx, &mut self.project, &mut self.history);
         if !self.demo {
             self.autosave.tick(ctx, &self.project);

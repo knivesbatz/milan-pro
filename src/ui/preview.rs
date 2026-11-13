@@ -18,11 +18,13 @@ pub struct PreviewView {
     pub safe_areas: bool,
     pub show_status: bool,
     pub show_transport: bool,
+    /// Simulate Device Aspect Ratio: the frame is shown at the project's pixel aspect ratio, not square pixels.
+    pub simulate_par: bool,
 }
 
 impl Default for PreviewView {
     fn default() -> Self {
-        Self { zoom: None, grid: false, safe_areas: false, show_status: true, show_transport: true }
+        Self { zoom: None, grid: false, safe_areas: false, show_status: true, show_transport: true, simulate_par: false }
     }
 }
 
@@ -130,19 +132,22 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     let video = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - status_h - transport_h));
 
     let s = &project.settings;
-    let aspect = s.width as f32 / s.height.max(1) as f32;
+    // R11: Simulate Device Aspect Ratio widens (or narrows) the frame by the pixel aspect ratio; Output rotation turns it.
+    let par = if view.simulate_par { s.par.clamp(0.1, 10.0) as f32 } else { 1.0 };
+    let quarter = s.rotation % 180 == 90;
+    let shown = vec2(s.width as f32 * par, s.height.max(1) as f32);
+    let shown = if quarter { vec2(shown.y, shown.x) } else { shown };
     let frame = match view.zoom {
-        Some(z) => widgets::px(Rect::from_center_size(video.center(), vec2(s.width as f32, s.height as f32) * z)),
-        None => fit_rect_to_aspect(video, aspect),
+        Some(z) => widgets::px(Rect::from_center_size(video.center(), shown * z)),
+        None => fit_rect_to_aspect(video, shown.x / shown.y),
     };
-    preview.display_w = frame.width().max(2.0) as u32;
+    // The decode width: the frame's own width as shown, in project pixels.
+    preview.display_w = ((if quarter { frame.height() } else { frame.width() }) / par).max(2.0) as u32;
     let pv = p.with_clip_rect(video.intersect(p.clip_rect()));
     pv.rect_filled(frame, 0.0, t.preview_frame);
     // Options › Mute All Video: the frame stays empty.
     if let Some(tex) = preview.texture.as_ref().filter(|_| !preview.mute) {
-        let [w, h] = tex.size();
-        let r = fit_rect_to_aspect(frame, w as f32 / h.max(1) as f32);
-        pv.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        pv.add(rotated_image(tex.id(), frame, s.rotation));
     } else if let Some(err) = preview.error.as_ref().filter(|_| !preview.mute) {
         pv.text(frame.center(), Align2::CENTER_CENTER, err, t.font(12.0), t.warning_text);
     }
@@ -159,7 +164,9 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     }
     let v16_menu = theme::get().look() == UiLook::Vegas16;
     super::menus::context(&resp, |ui| {
-        ui.add_enabled(false, Button::new("Simulate Device Aspect Ratio")).on_disabled_hover_text(Later("R11").text());
+        if ui.checkbox(&mut view.simulate_par, "Simulate Device Aspect Ratio").clicked() {
+            ui.close_menu();
+        }
         if ui.radio(view.zoom.is_none(), "Scale Video to Fit Preview Window").clicked() {
             view.zoom = None;
             ui.close_menu();
@@ -265,6 +272,19 @@ fn paint_overlays(p: &Painter, frame: Rect, view: &PreviewView) {
             p.rect_stroke(r, 0.0, stroke, StrokeKind::Inside);
         }
     }
+}
+
+/// `tex` filling `r`, turned `rot` degrees clockwise (Project Properties › Output rotation).
+fn rotated_image(tex: TextureId, r: Rect, rot: u16) -> Shape {
+    let uv = [pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)];
+    let corners = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
+    let k = (rot / 90 % 4) as usize;
+    let mut mesh = epaint::Mesh::with_texture(tex);
+    for (i, c) in corners.into_iter().enumerate() {
+        mesh.vertices.push(epaint::Vertex { pos: c, uv: uv[(i + 4 - k) % 4], color: Color32::WHITE });
+    }
+    mesh.indices.extend([0, 1, 2, 0, 2, 3]);
+    Shape::mesh(mesh)
 }
 
 fn fit_rect_to_aspect(container: Rect, aspect: f32) -> Rect {

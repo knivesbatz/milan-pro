@@ -89,6 +89,11 @@ pub struct Prefs {
     /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
     #[serde(deserialize_with = "lenient_layouts")]
     pub layouts: BTreeMap<String, Layout>,
+    /// R11: the user's render templates (Customize Template › Save), the favourite templates' names and the names of
+    /// the templates last rendered with (most recent first).
+    pub render_templates: Vec<crate::render::Template>,
+    pub render_favorites: Vec<String>,
+    pub render_recent: Vec<String>,
 }
 
 /// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
@@ -205,6 +210,9 @@ impl Default for Prefs {
             playback_device: None,
             buffer_frames: 0,
             layouts: BTreeMap::new(),
+            render_templates: Vec::new(),
+            render_favorites: Vec::new(),
+            render_recent: Vec::new(),
         }
     }
 }
@@ -417,9 +425,30 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             dialogs::row(ui, "Height:", 60.0, true, |ui| ui.add(egui::DragValue::new(&mut d.height).range(16..=8192)));
         });
         ui.vertical(|ui| {
-            dialogs::row(ui, "Field order:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_field", "None (progressive scan)", 150.0, Later("R11")));
-            dialogs::row(ui, "Pixel aspect ratio:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_par", "1.0000 (Square)", 150.0, Later("R11")));
-            dialogs::row(ui, "Output rotation:", 96.0, false, |ui| dialogs::fixed_combo(ui, "pp_rot", "0° (original)", 150.0, Later("R11")));
+            use crate::project::{FieldOrder, PARS, ROTATIONS};
+            dialogs::row(ui, "Field order:", 96.0, true, |ui| {
+                egui::ComboBox::from_id_salt("pp_field").width(150.0).selected_text(d.field_order.name()).show_ui(ui, |ui| {
+                    for f in FieldOrder::ALL {
+                        ui.selectable_value(&mut d.field_order, f, f.name());
+                    }
+                });
+            });
+            dialogs::row(ui, "Pixel aspect ratio:", 96.0, true, |ui| {
+                let sel = PARS.iter().find(|p| (p.0 - d.par).abs() < 1e-4).map_or(format!("{:.4}", d.par), |p| p.1.to_string());
+                egui::ComboBox::from_id_salt("pp_par").width(150.0).selected_text(sel).show_ui(ui, |ui| {
+                    for (p, label) in PARS {
+                        ui.selectable_value(&mut d.par, p, label);
+                    }
+                });
+            });
+            dialogs::row(ui, "Output rotation:", 96.0, true, |ui| {
+                let sel = ROTATIONS.iter().find(|r| r.0 == d.rotation).map_or("0° (original)", |r| r.1);
+                egui::ComboBox::from_id_salt("pp_rot").width(150.0).selected_text(sel).show_ui(ui, |ui| {
+                    for (r, label) in ROTATIONS {
+                        ui.selectable_value(&mut d.rotation, r, label);
+                    }
+                });
+            });
         });
     });
     dialogs::row(ui, "Frame rate:", 70.0, true, |ui| {
@@ -438,27 +467,38 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         ("ACES version:", "1.0", Later("R40b")),
         ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
         ("View transform:", "Off", Later("R40b")),
-        ("Full-resolution rendering quality:", "Good", Later("R11")),
-        ("Deinterlace method:", "Blend fields", Later("R11")),
     ];
     if v23 {
         grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
         grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
     }
-    let blur_at = grid.len() - 1; // VEGAS lists Motion blur type above Deinterlace method
     for (k, (label, value, why)) in grid.into_iter().enumerate() {
-        if k == blur_at {
-            dialogs::row(ui, "Motion blur type:", 175.0, true, |ui| {
-                use crate::project::BlurType;
-                egui::ComboBox::from_id_salt("pp_blur").width(200.0).selected_text(d.motion_blur.name()).show_ui(ui, |ui| {
-                    for b in BlurType::ALL {
-                        ui.selectable_value(&mut d.motion_blur, b, b.name());
-                    }
-                });
-            });
-        }
         dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
+    // VEGAS's order: Full-resolution rendering quality, Motion blur type, Deinterlace method, then Resample mode.
+    dialogs::row(ui, "Full-resolution rendering quality:", 175.0, true, |ui| {
+        egui::ComboBox::from_id_salt("pp_quality").width(200.0).selected_text(format!("{:?}", d.render_quality)).show_ui(ui, |ui| {
+            for q in crate::decode::Quality::ALL {
+                ui.selectable_value(&mut d.render_quality, q, format!("{q:?}"));
+            }
+        });
+    });
+    dialogs::row(ui, "Motion blur type:", 175.0, true, |ui| {
+        use crate::project::BlurType;
+        egui::ComboBox::from_id_salt("pp_blur").width(200.0).selected_text(d.motion_blur.name()).show_ui(ui, |ui| {
+            for b in BlurType::ALL {
+                ui.selectable_value(&mut d.motion_blur, b, b.name());
+            }
+        });
+    });
+    dialogs::row(ui, "Deinterlace method:", 175.0, true, |ui| {
+        use crate::project::Deinterlace;
+        egui::ComboBox::from_id_salt("pp_deint").width(200.0).selected_text(d.deinterlace.name()).show_ui(ui, |ui| {
+            for m in Deinterlace::ALL {
+                ui.selectable_value(&mut d.deinterlace, m, m.name());
+            }
+        });
+    });
     dialogs::row(ui, "Resample mode:", 175.0, true, |ui| {
         use crate::project::Resample::*;
         // VEGAS 23 calls Smart "Frame blend" and offers Optical Flow in place of Force.
@@ -469,8 +509,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             }
         });
     });
-    ui.add_enabled(false, egui::Checkbox::new(&mut true, "Adjust source media to better match project or render settings"))
-        .on_disabled_hover_text(Later("R11").text());
+    ui.checkbox(&mut d.adjust_media, "Adjust source media to better match project or render settings");
     ui.add_enabled_ui(false, |ui| {
         ui.label("Prerendered files folder:").on_disabled_hover_text(Later("R23").text());
         ui.horizontal(|ui| {
@@ -534,7 +573,16 @@ fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
             }
         });
     });
-    dialogs::row(ui, "Bit depth:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bits", "16", 200.0, Later("R11")));
+    // shortcut: Bit depth sets the PCM/FLAC/ALAC renders that follow the project; recordings stay 32-bit float (never
+    // less than any setting); write recordings at the project depth if a user needs smaller takes.
+    dialogs::row(ui, "Bit depth:", 150.0, true, |ui| {
+        let name = |b: u8| if b == 32 { "32 (floating point)".to_string() } else { b.to_string() };
+        egui::ComboBox::from_id_salt("pa_bits").width(200.0).selected_text(name(d.bit_depth)).show_ui(ui, |ui| {
+            for b in [8, 16, 24, 32] {
+                ui.selectable_value(&mut d.bit_depth, b, name(b));
+            }
+        });
+    });
     dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0, Later("R4b")));
 }
 
@@ -553,6 +601,13 @@ mod tests {
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
+        // R11: old preferences have no user templates, favourites or recent renders; a saved template reads back.
+        assert!(d.render_templates.is_empty() && d.render_favorites.is_empty() && d.render_recent.is_empty());
+        let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
+        let t = Prefs { render_templates: vec![mine], render_favorites: vec!["Mine".into()], render_recent: vec!["Web 720p".into()], ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&t).unwrap()).unwrap(), t);
+        let partial = serde_json::from_str::<crate::render::Template>(r#"{"name":"Old","container":"mov","video":{"codec":"prores_ks"}}"#).unwrap();
+        assert_eq!((partial.video.unwrap().rate, partial.audio.unwrap().codec.as_str()), (crate::render::Rate::Quality(18), "aac"), "missing fields take the defaults");
         // R9: old preferences play on the Windows default device at its default buffer, as before.
         assert_eq!(d.device(), crate::audio::DeviceConfig::default());
         assert_eq!(d.device_type, crate::audio::DeviceType::SoundMapper);

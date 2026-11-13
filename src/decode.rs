@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::engine::VideoEngine;
 use crate::project::{Fx, MediaItem, MediaType, Project};
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Quality {
     Draft,
     Preview,

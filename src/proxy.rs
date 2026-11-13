@@ -562,7 +562,7 @@ mod tests {
                 has_alpha: false,
                 matrix: Some("bt709"),
                 codec: m.codec.clone(),
-                interlaced: false,
+                deint: "",
                 proxy,
                 grid: 0.0,
                 offset: 0.0,
