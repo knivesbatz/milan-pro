@@ -3,6 +3,7 @@
 use eframe::egui::*;
 use crate::decode::Thumbs;
 use crate::edit;
+use crate::engine::sync::{self, By};
 use crate::history::History;
 use crate::media::Importer;
 use crate::project::*;
@@ -237,7 +238,8 @@ pub fn draw_media_browser(
         };
         for (i, r) in resps {
             let (video, nested) = (crate::proxy::is_video(&project.media_pool[i]), project.media_pool[i].nested);
-            item_interaction(ui, &r, i, view.sel.contains(&i), video, nested, &mut cmd);
+            let timecode = || targets(view, &items, i).iter().any(|&k| project.media_pool[k].timecode.is_some());
+            item_interaction(ui, &r, i, view.sel.contains(&i), video, nested, &timecode, &mut cmd);
             // The payload is every selected item when the grabbed one is selected, so they are added across time.
             if r.drag_started() {
                 r.dnd_set_drag_payload(MediaDrag::Pool(targets(view, &items, i), None));
@@ -266,6 +268,18 @@ pub fn draw_media_browser(
             let ids = edit::drop_media(project, &targets(view, &items, i), None, Some((video, 0)), at, still_len, xfade);
             if !ids.is_empty() {
                 history.push(before);
+            }
+        }
+        Some((i, ItemCmd::LayOut(by))) => {
+            // One undo step, the earliest stamp at the cursor; media without one is skipped and said so (as VEGAS does).
+            let (before, at) = (project.clone(), project.timeline.cursor_position);
+            let (ids, skipped) = edit::lay_out_tracks(project, &targets(view, &items, i), at, |m| sync::stamp(m, by));
+            if !ids.is_empty() {
+                history.push(before);
+            }
+            if skipped > 0 {
+                let what = if by == By::Timecode { "media timecode" } else { "a date/time stamp" };
+                super::hint(ui.ctx(), format!("Lay Out Tracks: {skipped} of the media had no {what} and were skipped."));
             }
         }
         Some((i, ItemCmd::Remove)) => {
@@ -316,12 +330,15 @@ enum ItemCmd {
     Properties,
     /// R6b: Edit Source Project (a nested timeline).
     EditSource,
+    /// R17a: Lay Out Tracks Using Media Timecode / Date/Time Stamp.
+    LayOut(By),
 }
 
 /// `selected`: a right-click on a selected item keeps the selection, so its menu acts on all of it.
-/// `video`: the item is file-based video without alpha, which Create Video Proxy needs; `nested`: a nested timeline.
+/// `video`: the item is file-based video without alpha, which Create Video Proxy needs; `nested`: a nested timeline;
+/// `timecode`: it (or another item the menu acts on) has media timecode, asked only while the menu is open.
 #[allow(clippy::too_many_arguments)]
-fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool, nested: bool, cmd: &mut Option<(usize, ItemCmd)>) {
+fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool, nested: bool, timecode: &dyn Fn() -> bool, cmd: &mut Option<(usize, ItemCmd)>) {
     if r.double_clicked() {
         *cmd = Some((i, ItemCmd::Trim));
     } else if r.clicked() || (r.secondary_clicked() && !selected) {
@@ -351,6 +368,10 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool
         menus::show(ui, ITEM_REST);
         item(ui, "R&eplace...", ItemCmd::Replace, true);
         menus::show(ui, ITEM_TAIL);
+        // R17a: greyed, as in VEGAS, when none of the media has timecode.
+        item(ui, "Lay Out Tracks Using Media &Timecode", ItemCmd::LayOut(By::Timecode), timecode());
+        item(ui, "Lay Out Tracks Using Media &Date/Time Stamp", ItemCmd::LayOut(By::Date), true);
+        menus::show(ui, ITEM_VIEW);
         item(ui, "&Properties...", ItemCmd::Properties, true);
         menus::show(ui, ITEM_V23);
     });
@@ -382,8 +403,9 @@ const ITEM_TAIL: &[menus::M] = &[
     X("Rotate 90° Co&unterclockwise", NotPlanned("R57")),
     X("Rotate 90° Clock&wise", NotPlanned("R57")),
     S,
-    X("Lay Out Tracks Using Media &Timecode", Later("R17a")),
-    X("Lay Out Tracks Using Media &Date/Time Stamp", Later("R17a")),
+];
+
+const ITEM_VIEW: &[menus::M] = &[
     S,
     Sub("V&iew", &[X("Columns", NotPlanned("R57"))]),
     X("&Auto-Size Columns", NotPlanned("R57")),
@@ -400,7 +422,7 @@ const ITEM_V23: &[menus::M] = &[
 ];
 
 /// The Project Media item menu's tables, for the Unfinished Features list.
-pub const ITEM_MENUS: &[&[menus::M]] = &[ITEM_TOP, ITEM_ADD, ITEM_BIN, ITEM_REST, ITEM_TAIL, ITEM_V23];
+pub const ITEM_MENUS: &[&[menus::M]] = &[ITEM_TOP, ITEM_ADD, ITEM_BIN, ITEM_REST, ITEM_TAIL, ITEM_VIEW, ITEM_V23];
 
 fn tree(ui: &mut Ui, view: &mut MediaView) {
     let mut node = |ui: &mut Ui, depth, exp: Option<&mut bool>, icon, label: &str, n: Node| {

@@ -483,7 +483,7 @@ impl MeridianApp {
     /// One undoable edit that rippled (or, with Auto Ripple off, may be rippled later by Post-Edit Ripple): `f`
     /// edits and returns the ripple ops that close or open its gaps, which are applied with the ripple mode when
     /// Auto Ripple is on (or `force`, for Paste Insert).
-    fn ripple_edit(&mut self, force: bool, f: impl FnOnce(&mut Project, Option<edit::RippleMode>) -> Option<Vec<edit::RippleOp>>) {
+    pub(super) fn ripple_edit(&mut self, force: bool, f: impl FnOnce(&mut Project, Option<edit::RippleMode>) -> Option<Vec<edit::RippleOp>>) {
         let mode = (force || self.prefs.auto_ripple).then_some(self.prefs.ripple_mode);
         let mut ops = None;
         if self.edit(|p| {
@@ -1354,6 +1354,7 @@ impl MeridianApp {
                 self.save_prefs();
             }
             GenerateLoudnessLog => self.generate_loudness_log(ctx),
+            Synchronize(by) => self.synchronize(ctx, by),
             NestedCreate => self.create_nested(),
             NestedOpen => self.open_focus_nested(),
             NestedParent => self.request(ctx, MenuAction::OpenParent),
@@ -2413,6 +2414,13 @@ impl MeridianApp {
                     }
                     ui::automation::open_chooser(ctx, &tid);
                 }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            // R17a: every demo event selected and lined up by its media's date/time stamp (the status bar says what moved).
+            "sync-date" => {
+                let tl = &self.project.timeline;
+                self.sel.clips = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+                self.exec(ctx, Synchronize(crate::engine::sync::By::Date));
                 self.project.modified = false; // the harness closes without a save prompt
             }
             "goto" => self.exec(ctx, GoTo),

@@ -31,8 +31,8 @@ impl Show {
         match self {
             Show::AudioCd => &[CdTrack, Start, End, Length, Name, Isrc, Prot, Emph],
             Show::Commands => &[Position, Command, Parameter, Comment],
-            // shortcut: VEGAS's Timecode In / Out, Tape Name and Snap Offset are left out: Milan Pro keeps none of them
-            // (media timecode arrives with R17a).
+            // shortcut: VEGAS's Timecode In / Out, Tape Name and Snap Offset are left out: Milan Pro keeps no tape names or
+            // snap offsets; Timecode In / Out could come from `MediaItem.timecode` (R17a) when they are wanted.
             Show::Events | Show::SelectedEvents => &[Track, Start, End, Length, Takes, TakeName, TakeStart, FilePath, Select, Mute, Loop, Lock, Normalize],
             Show::Markers => &[Position, Name],
             Show::Regions => &[Start, End, Length, Name],

@@ -192,6 +192,14 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
             item.codec = s["codec_name"].as_str().map(String::from);
         }
     }
+    // R17a: start timecode (the container's tag, a `tmcd` or video stream's) at the picture's rate (else the tmcd
+    // track's), else a BWF time reference (samples since midnight); the recording's creation time.
+    let tag = |v: &serde_json::Value, key: &str| v["tags"].as_object()?.iter().find(|(k, _)| k.eq_ignore_ascii_case(key))?.1.as_str().map(str::to_owned);
+    let tc = std::iter::once(&info["format"]).chain(streams).find_map(|v| Some((tag(v, "timecode")?, v)));
+    item.timecode = tc
+        .and_then(|(t, s)| crate::engine::sync::parse_timecode(&t, item.frame_rate.or_else(|| ["r_frame_rate", "avg_frame_rate"].iter().find_map(|k| s[k].as_str().and_then(parse_rate)))?))
+        .or_else(|| Some(tag(&info["format"], "time_reference")?.parse::<u64>().ok()? as f64 / item.sample_rate? as f64));
+    item.created = std::iter::once(&info["format"]).chain(streams).find_map(|v| crate::engine::sync::parse_date(&tag(v, "creation_time")?));
     if item.media_type != MediaType::Image {
         if video.is_some() {
             item.media_type = MediaType::Video;
@@ -299,6 +307,48 @@ mod tests {
         // R6a: a project imports (and drops) as a nested timeline; `probe_media` reads it as one.
         assert_eq!(classify_extension("mnle"), MediaType::Video);
         assert!(super::probe_media(std::path::Path::new("no-such-project.mnle")).is_err());
+    }
+
+    /// R17a: a start timecode from the container, a tmcd track (at the picture's rate) or a BWF time reference; the
+    /// creation time; none on a file without them.
+    #[test]
+    fn timecode_and_creation_time_are_read() {
+        let m = parse("mov", r#"{"format":{"tags":{"creation_time":"2024-05-01T12:34:56.000000Z"}},"streams":[
+            {"codec_type":"video","r_frame_rate":"30000/1001","avg_frame_rate":"30000/1001"},
+            {"codec_type":"data","codec_tag_string":"tmcd","tags":{"timecode":"01:00:00;00"}}]}"#);
+        assert!((m.timecode.unwrap() - 107_892.0 * 1001.0 / 30_000.0).abs() < 1e-9 && m.created == Some(1_714_566_896.0));
+        let m = parse("mxf", r#"{"format":{"tags":{"TIMECODE":"10:00:00:00"}},"streams":[{"codec_type":"video","r_frame_rate":"25/1"}]}"#);
+        assert_eq!(m.timecode, Some(36_000.0));
+        let m = parse("wav", r#"{"format":{"tags":{"time_reference":"172800000"}},"streams":[{"codec_type":"audio","sample_rate":"48000"}]}"#);
+        assert_eq!((m.timecode, m.created), (Some(3600.0), None));
+        let m = parse("mp4", r#"{"streams":[{"codec_type":"video","r_frame_rate":"25/1"}]}"#);
+        assert_eq!((m.timecode, m.created), (None, None));
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored ffmpeg_reads_media_timecode`
+    /// Real files with timecode metadata: a QuickTime with a drop-frame tmcd track, an MXF and a BWF WAV.
+    #[test]
+    #[ignore]
+    fn ffmpeg_reads_media_timecode() {
+        let dir = std::env::temp_dir().join(format!("milan-timecode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, args: &[&str]| {
+            let path = dir.join(name);
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y"]).args(args).arg(&path).status().unwrap().success(), "{name}");
+            super::probe_media(&path).unwrap()
+        };
+        let v = ["-f", "lavfi", "-i", "testsrc=s=64x36:r=30000/1001:d=1"];
+        let mov = make("df.mov", &[&v[..], &["-c:v", "mpeg4", "-timecode", "01:02:03;04", "-metadata", "creation_time=2024-05-01T12:34:56Z"]].concat());
+        let frames = ((62 * 60 + 3) * 30 + 4 - 2 * (62 - 6)) as f64; // 2 numbers dropped a minute, not at 0/10/20...
+        assert!((mov.timecode.unwrap() - frames * 1001.0 / 30_000.0).abs() < 1e-9, "{:?}", mov.timecode);
+        assert_eq!(mov.created, Some(1_714_566_896.0));
+        let mxf = make("ndf.mxf", &["-f", "lavfi", "-i", "testsrc=s=64x36:r=25:d=1", "-c:v", "mpeg2video", "-timecode", "10:00:00:12"]);
+        assert_eq!(mxf.timecode, Some(36_000.48));
+        let wav = make("bwf.wav", &["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "1", "-write_bext", "1", "-metadata", "time_reference=172824000"]);
+        assert_eq!(wav.timecode, Some(3600.5));
+        let plain = make("plain.wav", &["-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "1"]);
+        assert_eq!(plain.timecode, None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// R3b: Stream ▸ offers each audio and picture stream; cover art is not one.

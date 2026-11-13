@@ -26,6 +26,7 @@ pub mod raster;
 pub mod render;
 pub mod resample;
 pub mod scopes;
+pub mod sync;
 #[allow(dead_code)]
 pub mod thumbs;
 pub mod transition;

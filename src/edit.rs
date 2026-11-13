@@ -1627,6 +1627,152 @@ pub fn drop_media_as(project: &mut Project, idxs: &[usize], range: Option<(f64, 
     apply_drop(project, plan, xfade)
 }
 
+// ---- R17a: Synchronize and Lay Out Tracks ----
+
+/// Selected events as Tools › Multicamera › Synchronize ... moves them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SyncUnit {
+    /// The events that move together: a selected event with its group mates, or with Ignore Event Grouping only the
+    /// selected events of its group.
+    pub ids: Vec<String>,
+    /// The event whose media is read (the first `usable` one, selected ones first; it may be an unselected group mate,
+    /// the sound of a selected video event).
+    pub key: Option<String>,
+    /// It has a selected event on the topmost track that has one: it stays, and the others are matched to it.
+    pub reference: bool,
+}
+
+/// The selection `sel` as units, top track first (VEGAS aligns to the topmost track's events). `usable(event, is
+/// video)` says whether an event's media can be matched.
+pub fn sync_units(p: &Project, sel: &[String], ignore_grouping: bool, usable: impl Fn(&Clip, bool) -> bool) -> Vec<SyncUnit> {
+    let nv = p.timeline.video_tracks.len();
+    let row = |r: &ClipRef| if r.is_video { r.track_idx } else { nv + r.track_idx };
+    let clip = |r: &ClipRef| &p.timeline.tracks(r.is_video)[r.track_idx].clips[r.clip_idx];
+    let mut refs = p.find_clips(sel);
+    refs.sort_by(|a, b| row(a).cmp(&row(b)).then(clip(a).position.total_cmp(&clip(b).position)));
+    let Some(top) = refs.first().map(row) else { return Vec::new() };
+    let mut units: Vec<SyncUnit> = Vec::new();
+    for r in &refs {
+        let id = &clip(r).id;
+        if units.iter().any(|u| u.ids.contains(id)) {
+            continue;
+        }
+        let mates = expand_groups(p, std::slice::from_ref(id));
+        let ids: Vec<String> = if ignore_grouping { mates.iter().filter(|m| sel.contains(m)).cloned().collect() } else { mates.clone() };
+        let (picked, rest): (Vec<&String>, Vec<&String>) = mates.iter().partition(|m| sel.contains(m));
+        let key = picked.into_iter().chain(rest).find(|k| p.find_clip(k).is_some_and(|r| usable(clip(&r), r.is_video))).cloned();
+        let reference = refs.iter().any(|q| row(q) == top && ids.contains(&clip(q).id));
+        units.push(SyncUnit { ids, key, reference });
+    }
+    units
+}
+
+/// Any of events `ids` is locked or on a locked track (Synchronize leaves the unit where it is).
+pub fn sync_locked(p: &Project, ids: &[String]) -> bool {
+    p.find_clips(ids).iter().any(|r| {
+        let t = &p.timeline.tracks(r.is_video)[r.track_idx];
+        t.locked || t.clips[r.clip_idx].locked
+    })
+}
+
+/// What Synchronize does with what it found.
+#[derive(Debug, Default, PartialEq)]
+pub struct SyncPlan {
+    /// (unit ids, seconds) to move.
+    pub moves: Vec<(Vec<String>, f64)>,
+    /// Each unit left where it is: its key event's name and why.
+    pub refused: Vec<String>,
+    /// Units now aligned (moved, or already in place).
+    pub aligned: usize,
+}
+
+/// Synchronize's plan from the non-reference `units`' offsets (`results`, in order, or why there is none). Locked
+/// units stay. One that would start before the timeline's start moves everything later instead, the references too;
+/// with a reference locked it is refused.
+pub fn plan_sync(p: &Project, units: &[SyncUnit], results: Vec<Result<f64, String>>) -> SyncPlan {
+    let name = |u: &SyncUnit| u.key.iter().chain(&u.ids).find_map(|id| p.clip(id)).map_or_else(String::new, |c| format!("\"{}\"", c.name));
+    let start = |ids: &[String]| p.find_clips(ids).iter().map(|r| p.timeline.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].position).fold(f64::INFINITY, f64::min);
+    let (refs, others): (Vec<&SyncUnit>, Vec<&SyncUnit>) = units.iter().partition(|u| u.reference);
+    let mut plan = SyncPlan::default();
+    let mut moves = Vec::new();
+    for (u, r) in others.iter().zip(results) {
+        match r {
+            Err(e) => plan.refused.push(format!("{} ({e})", name(u))),
+            Ok(_) if sync_locked(p, &u.ids) => plan.refused.push(format!("{} (locked)", name(u))),
+            Ok(d) => {
+                plan.aligned += 1;
+                if d.abs() > 1e-9 {
+                    moves.push((u.ids.clone(), d, name(u)));
+                }
+            }
+        }
+    }
+    let early = moves.iter().map(|(ids, d, _)| -(start(ids) + d)).fold(0.0, f64::max);
+    if early > 1e-9 && refs.iter().any(|u| sync_locked(p, &u.ids)) {
+        moves.retain(|(ids, d, n)| {
+            let fits = start(ids) + d >= -1e-9;
+            if !fits {
+                plan.refused.push(format!("{n} (it would start before the timeline does)"));
+                plan.aligned -= 1;
+            }
+            fits
+        });
+    } else if early > 1e-9 {
+        moves.iter_mut().for_each(|m| m.1 += early);
+        moves.extend(refs.iter().map(|u| (u.ids.clone(), early, String::new())));
+    }
+    plan.moves = moves.into_iter().map(|(ids, d, _)| (ids, d)).collect();
+    plan
+}
+
+/// Synchronize's `moves` as one edit: each unit moves as a Move drag of it would (`lock_env`: Lock Envelopes to
+/// Events, when nothing ripples), with automatic crossfades when `xfade`. Each move leaves a ripple (its tracks from
+/// where it was, by what it moved), applied with `mode` (Auto Ripple) or returned for Post-Edit Ripple; it never moves
+/// an event of `units`, so a ripple cannot undo the alignment. None when nothing moved.
+pub fn apply_sync(p: &mut Project, units: &[SyncUnit], moves: &[(Vec<String>, f64)], mode: Option<RippleMode>, lock_env: bool, xfade: bool) -> Option<Vec<RippleOp>> {
+    let before = p.clone();
+    let keep: Vec<String> = units.iter().flat_map(|u| u.ids.clone()).collect();
+    let mut ops = Vec::new();
+    for (ids, dt) in moves {
+        let refs = p.find_clips(ids);
+        let from = refs.iter().map(|r| p.timeline.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].position).fold(f64::INFINITY, f64::min);
+        let mut tracks: Vec<String> = refs.iter().map(|r| p.timeline.tracks(r.is_video)[r.track_idx].id.clone()).collect();
+        tracks.sort();
+        tracks.dedup();
+        if move_clips(p, ids, *dt, 0, lock_env && mode.is_none()) {
+            ops.push(RippleOp { from, delta: *dt, tracks, exclude: keep.clone(), keys_from: None });
+        }
+    }
+    if ops.is_empty() {
+        return None;
+    }
+    if let Some(m) = mode {
+        ripple_all(p, &ops, m);
+    }
+    if xfade {
+        let moved: Vec<String> = moves.iter().flat_map(|m| m.0.clone()).collect();
+        auto_crossfade(p, &before, &moved);
+    }
+    Some(ops)
+}
+
+/// Project Media › Lay Out Tracks Using Media Timecode / Date/Time Stamp: media `idxs` added at once, each on new
+/// tracks of its own (VEGAS gives each tape its tracks; Milan Pro keeps no tape names, so each file gets its own),
+/// placed so their `stamp`s line up, the earliest at `at`. Media without a stamp (and stills) are skipped. Returns
+/// the new event ids and how many were skipped.
+pub fn lay_out_tracks(project: &mut Project, idxs: &[usize], at: f64, stamp: impl Fn(&MediaItem) -> Option<f64>) -> (Vec<String>, usize) {
+    let pool = project.media_pool.clone();
+    let picked: Vec<(&MediaItem, f64)> = idxs.iter().filter_map(|&i| pool.get(i)).filter(|m| matches!(m.media_type, MediaType::Video | MediaType::Audio)).filter_map(|m| Some((m, stamp(m)?))).collect();
+    let skipped = idxs.len() - picked.len();
+    let Some(t0) = picked.iter().map(|p| p.1).reduce(f64::min) else { return (Vec::new(), skipped) };
+    let items: Vec<_> = picked.iter().map(|(m, _)| (*m, None)).collect();
+    let mut plan = plan_drop_as(&project.timeline, &items, None, at, 0.0, DropMode::AcrossTracks);
+    for (_, _, c) in &mut plan.events {
+        c.position += picked.iter().find(|(m, _)| c.media_id.as_ref() == Some(&m.id)).map_or(0.0, |p| p.1 - t0);
+    }
+    (apply_drop(project, plan, false), skipped)
+}
+
 /// Fade In ▸ / Fade Out ▸ curve of event `id`.
 pub fn set_fade_curve(project: &mut Project, id: &str, is_in: bool, curve: Curve) -> bool {
     edit_clips(project, &[id.to_string()], |c| {
@@ -5626,5 +5772,107 @@ mod tests {
         assert_eq!((e.at(1.0), e.at(2.05)), (-1.0, -15.0));
         assert!((e.at(6.0) - -6.0).abs() < 1e-5 && e.points.keys.last().unwrap().t == 10.0);
         assert!(e.points.keys.iter().all(|k| k.t <= 2.1 + 1e-9 || k.t == 10.0));
+    }
+
+    /// R17a: two cameras and a recorder: camera A's grouped pair on the top tracks, camera B's pair, a locked recorder.
+    fn sync_project() -> (Project, [String; 6]) {
+        let mut p = Project::new("t");
+        p.timeline.add_track(true);
+        p.timeline.add_track(false);
+        p.timeline.add_track(false);
+        let ev = |name: &str, at: f64, len: f64, group: Option<&str>| {
+            let mut c = Clip::new(name, at, len);
+            c.group = group.map(String::from);
+            c
+        };
+        let (v1, a1, v2, a2, x, a3) = (ev("v1", 0.0, 10.0, Some("g1")), ev("a1", 0.0, 10.0, Some("g1")), ev("v2", 5.0, 10.0, Some("g2")), ev("a2", 5.0, 10.0, Some("g2")), ev("x", 20.0, 2.0, None), ev("a3", 1.0, 4.0, None));
+        let ids = [&v1, &a1, &v2, &a2, &x, &a3].map(|c| c.id.clone());
+        let tl = &mut p.timeline;
+        (tl.video_tracks[0].clips, tl.video_tracks[1].clips) = (vec![v1], vec![v2, x]);
+        (tl.audio_tracks[0].clips, tl.audio_tracks[1].clips, tl.audio_tracks[2].clips) = (vec![a1], vec![a2], vec![a3]);
+        tl.audio_tracks[2].clips[0].locked = true;
+        (p, ids)
+    }
+
+    /// R17a: the selection as Synchronize units (group mates move along, the topmost track's stay), the plan (locked
+    /// units stay, none goes before 0) and the move: one undo step, rippled as Auto Ripple says, never rippling a
+    /// synchronized event.
+    #[test]
+    fn synchronize_respects_groups_locks_and_ripple_in_one_undo_step() {
+        let (p, [v1, a1, v2, a2, x, a3]) = sync_project();
+        let sound = |_: &Clip, video: bool| !video;
+        let sel = [v1.clone(), a2.clone(), a3.clone()];
+        let units = sync_units(&p, &sel, false, sound);
+        let want = |ids: &[&String], key: &String, reference| SyncUnit { ids: ids.iter().map(|s| s.to_string()).collect(), key: Some(key.clone()), reference };
+        assert_eq!(units, [want(&[&a1, &v1], &a1, true), want(&[&v2, &a2], &a2, false), want(&[&a3], &a3, false)], "a selected picture is matched by its sound");
+        // Ignore Event Grouping: only selected events move; the picture's unselected sound is still what is read.
+        let loose = sync_units(&p, &sel, true, sound);
+        assert_eq!(loose, [want(&[&v1], &a1, true), want(&[&a2], &a2, false), want(&[&a3], &a3, false)]);
+
+        let plan = plan_sync(&p, &units, vec![Ok(-3.0), Ok(2.0)]);
+        assert_eq!((plan.moves.clone(), plan.aligned), (vec![(vec![v2.clone(), a2.clone()], -3.0)], 1));
+        assert_eq!(plan.refused, ["\"a3\" (locked)"]);
+        let mut h = crate::history::History::default();
+        let mut q = p.clone();
+        let ops = apply_sync(&mut q, &units, &plan.moves, None, false, false).unwrap();
+        h.push(p.clone());
+        let at = |p: &Project, id: &str| p.clip(id).unwrap().position;
+        assert_eq!([at(&q, &v2), at(&q, &a2), at(&q, &x), at(&q, &v1), at(&q, &a3)], [2.0, 2.0, 20.0, 0.0, 1.0]);
+        assert_eq!(ops.len(), 1);
+        assert!(ops[0].from == 5.0 && ops[0].delta == -3.0 && ops[0].exclude.contains(&a1), "kept for Post-Edit Ripple: {ops:?}");
+        assert!(q.modified && h.lens() == (1, 0));
+        h.undo(&mut q);
+        assert_eq!([at(&q, &v2), at(&q, &a2)], [5.0, 5.0], "one step undoes it all");
+        // Auto Ripple (Affected Tracks): what followed on camera B's tracks closes up with it; nothing else moves.
+        let mut q = p.clone();
+        apply_sync(&mut q, &units, &plan.moves, Some(RippleMode::Affected), false, false).unwrap();
+        assert_eq!([at(&q, &v2), at(&q, &x), at(&q, &v1), at(&q, &a3)], [2.0, 17.0, 0.0, 1.0]);
+        // Ripple All moves every track but never a synchronized event.
+        let mut q = p.clone();
+        apply_sync(&mut q, &units, &plan.moves, Some(RippleMode::All), false, false).unwrap();
+        assert_eq!([at(&q, &v2), at(&q, &x), at(&q, &v1), at(&q, &a1)], [2.0, 17.0, 0.0, 0.0]);
+
+        // Camera B belongs 1 s before the timeline's start: everything moves 1 s later instead, the reference too.
+        let plan = plan_sync(&p, &units, vec![Ok(-6.0), Err("no confident audio match".into())]);
+        assert_eq!(plan.moves, [(vec![v2.clone(), a2.clone()], -5.0), (vec![a1.clone(), v1.clone()], 1.0)]);
+        assert_eq!((plan.aligned, plan.refused.clone()), (1, vec!["\"a3\" (no confident audio match)".to_string()]));
+        let mut q = p.clone();
+        apply_sync(&mut q, &units, &plan.moves, None, false, false).unwrap();
+        assert_eq!([at(&q, &v2), at(&q, &v1)], [0.0, 1.0]);
+        // ...unless the reference is locked: then it is refused.
+        let mut locked = p.clone();
+        locked.timeline.video_tracks[0].locked = true;
+        let plan = plan_sync(&locked, &units, vec![Ok(-6.0), Ok(0.0)]);
+        assert!(plan.moves.is_empty() && plan.aligned == 0, "{plan:?}");
+        assert_eq!(plan.refused.len(), 2);
+        // Nothing to move: no edit.
+        assert!(apply_sync(&mut p.clone(), &units, &[], None, false, false).is_none());
+    }
+
+    /// R17a acceptance: three clips with known start timecodes laid out on tracks of their own, lined up by timecode,
+    /// the earliest at the cursor; a still and a clip without timecode are skipped.
+    #[test]
+    fn lay_out_tracks_by_timecode() {
+        let mut p = media_project();
+        let tc = |s: &str| crate::engine::sync::parse_timecode(s, 25.0);
+        p.media_pool[0].timecode = tc("01:00:02:00");
+        p.media_pool[2].timecode = tc("00:59:59:12");
+        let w = MediaItem { id: "w".into(), path: "w".into(), name: "w".into(), media_type: MediaType::Video, duration: 3.0, timecode: tc("01:00:10:06"), ..Default::default() };
+        let none = MediaItem { id: "n".into(), path: "n".into(), name: "n".into(), media_type: MediaType::Video, duration: 3.0, ..Default::default() };
+        p.media_pool.extend([w, none]);
+        let (ids, skipped) = lay_out_tracks(&mut p, &[0, 1, 2, 3, 4], 1.0, |m| m.timecode);
+        assert_eq!((ids.len(), skipped), (4, 2));
+        let close = |got: Vec<(usize, f64, f64, String)>, want: &[(usize, f64, &str)]| {
+            assert_eq!(got.len(), want.len(), "{got:?}");
+            for (g, w) in got.iter().zip(want) {
+                assert!(g.0 == w.0 && (g.1 - w.1).abs() < 1e-9 && g.3 == w.2, "{got:?}");
+            }
+        };
+        // v (01:00:02:00) 2.52 s after a (00:59:59:12), w (01:00:10:06) 10.76 s after; each on new tracks.
+        close(laid_out(&p, true), &[(1, 3.52, "v"), (2, 11.76, "w")]);
+        close(laid_out(&p, false), &[(1, 3.52, "v"), (2, 1.0, "a")]);
+        assert!(p.modified);
+        let (ids, skipped) = lay_out_tracks(&mut p, &[4], 0.0, |m| m.timecode);
+        assert!(ids.is_empty() && skipped == 1);
     }
 }

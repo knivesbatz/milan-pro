@@ -121,6 +121,8 @@ pub enum Command {
     Loudness(super::loudness::LoudCmd), GenerateLoudnessLog,
     /// R6a: Tools › Rebuild Offline Nested Audio (every nested timeline read again).
     RebuildNestedAudio,
+    /// R17a: Tools › Multicamera › Synchronize Audio / Media Timecode / Date/Time Stamp to Align Events.
+    Synchronize(crate::engine::sync::By),
 }
 
 use Command::*;

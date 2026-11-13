@@ -11,6 +11,7 @@ use crate::history::History;
 use crate::media::Importer;
 use crate::project::*;
 use crate::edit::{RippleMode, Switch};
+use crate::engine::sync::By;
 use crate::settings::EnvView;
 use super::chrome;
 use super::EditTool;
@@ -251,6 +252,7 @@ impl CmdState {
             RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
             Loudness(_) | GenerateLoudnessLog | RebuildNestedAudio => true,
             NestedCreate => self.n_sel > 0,
+            Synchronize(_) => self.n_sel >= 2,
             NestedOpen => self.nested_clip,
             NestedParent => self.nested_parent,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
@@ -1013,9 +1015,9 @@ pub const TOOLS: &[M] = &[
         C("&Render Audio Tracks", RenderAudioTracks),
     ]),
     Sub("&Multicamera", &[
-        X("Synchronize Audio to A&lign Events", Later("R17a")),
-        X("Synchronize Media &Timecode to Align Events", Later("R17a")),
-        X("Synchronize &Date/Time Stamp to Align Events", Later("R17a")),
+        C("Synchronize Audio to A&lign Events", Synchronize(By::Audio)),
+        C("Synchronize Media &Timecode to Align Events", Synchronize(By::Timecode)),
+        C("Synchronize &Date/Time Stamp to Align Events", Synchronize(By::Date)),
         X("&Create Multicamera Track", Later("R17b")),
         X("E&xpand to Multiple Tracks...", Later("R17b")),
         S,
@@ -1627,6 +1629,27 @@ mod tests {
         let mut tools = Vec::new();
         commands(TOOLS, &mut tools);
         assert_eq!(tools.iter().filter(|c| **c == NestedOpen).count(), 2, "Tools › Edit Source Project and Tools › Audio › Edit Source Project");
+    }
+
+    /// R17a: Tools › Multicamera › Synchronize ... work with two or more events selected, and nothing in the menus (Project
+    /// Media's included) waits on R17a any more.
+    #[test]
+    fn synchronize_commands_work() {
+        let (one, two) = (CmdState { n_sel: 1, ..CmdState::default() }, CmdState { n_sel: 2, ..CmdState::default() });
+        for c in [Synchronize(By::Audio), Synchronize(By::Timecode), Synchronize(By::Date)] {
+            assert!(unfinished(c).is_none() && !one.enabled(c) && two.enabled(c), "{c:?}");
+        }
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        for items in crate::ui::media_panel::ITEM_MENUS {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R17a")), "{rows:?}");
+        let mut tools = Vec::new();
+        commands(TOOLS, &mut tools);
+        assert!(tools.contains(&Synchronize(By::Audio)) && tools.contains(&Synchronize(By::Date)));
     }
 
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.

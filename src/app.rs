@@ -1,6 +1,7 @@
 mod commands;
 mod drop;
 mod nested;
+mod sync;
 
 use eframe::egui;
 use crate::audio::{Player, Waveforms};
@@ -129,6 +130,8 @@ pub struct MeridianApp {
     /// Log running.
     loudness: ui::Loudness,
     loud_log: Option<render::Job>,
+    /// R17a: Synchronize Audio to Align Events analysing.
+    syncing: Option<sync::Syncing>,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -357,6 +360,7 @@ impl MeridianApp {
             scopes: ui::Scopes::default(),
             loudness: ui::Loudness::default(),
             loud_log: None,
+            syncing: None,
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -556,6 +560,7 @@ impl eframe::App for MeridianApp {
         self.handle_keys(ctx);
         self.tick_input(ctx);
         self.tick_loudness_log();
+        self.tick_sync();
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -815,12 +820,16 @@ impl eframe::App for MeridianApp {
             let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
             // A render's progress first, then the video proxies'.
             let (rendering, proxies) = (self.queue.status(), self.proxies.status());
+            let syncing = self.syncing.as_ref().map(|s| format!("Synchronizing audio: {:.0}%", s.job.progress() * 100.0));
             let progress = rendering.as_deref().map(|s| (s, "Stop the render")).or(proxies.as_deref().map(|s| (s, "Stop creating video proxies")));
+            let progress = progress.or(syncing.as_deref().map(|s| (s, "Stop synchronizing (nothing moves)")));
             if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), progress) {
                 if rendering.is_some() {
                     self.queue.cancel_running();
-                } else {
+                } else if proxies.is_some() {
                     self.proxies.cancel();
+                } else if let Some(s) = &self.syncing {
+                    s.job.cancel();
                 }
             }
             if !v16 {

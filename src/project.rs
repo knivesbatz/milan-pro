@@ -921,6 +921,14 @@ pub struct MediaItem {
     /// R6a: a Milan Pro project (`.mnle`) used as media, a nested timeline (`engine::nested`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested: bool,
+    /// R17a: the file's start timecode, in seconds since 00:00:00:00 (a `timecode` tag, a QuickTime `tmcd` track or a
+    /// BWF `time_reference`); None when it has none, or was imported before R17a.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timecode: Option<f64>,
+    /// R17a: the file's `creation_time` tag (recording start), Unix seconds; `engine::sync::recorded` falls back on
+    /// the file's modified time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1699,7 +1707,7 @@ pub fn parse_timecode(s: &str, fps: f64) -> Option<f64> {
     parse_smpte(s, exact_fps(fps), fps.round() as u64, is_drop(fps))
 }
 
-fn parse_smpte(s: &str, rate: f64, nominal: u64, drop: bool) -> Option<f64> {
+pub(crate) fn parse_smpte(s: &str, rate: f64, nominal: u64, drop: bool) -> Option<f64> {
     let s = s.trim();
     if !s.contains([':', ';']) {
         return s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0);
@@ -2020,6 +2028,10 @@ mod tests {
         assert!(serde_json::to_value(&p).unwrap()["media_pool"][0].get("subclip").is_none(), "nothing written for a whole file");
         // R6a: media is a file, not a nested timeline, and that is not written.
         assert!(!m.nested && serde_json::to_value(&p).unwrap()["media_pool"][0].get("nested").is_none());
+        // R17a: media imported before it has no timecode or creation time (Synchronize skips it, the date falls back on
+        // the file), and neither is written.
+        assert!(m.timecode.is_none() && m.created.is_none());
+        assert!(["timecode", "created"].iter().all(|k| serde_json::to_value(&p).unwrap()["media_pool"][0].get(*k).is_none()));
         // R7: no masks, no parent/child compositing, no Custom compositor, 2D Shadow and Glow off, motion blur on, no
         // Video Bus Track envelopes (white over black Fade Colors), Gaussian motion blur, 2D Track Motion; none written.
         assert!(c.masks.is_empty() && !t.child && t.parent_mode == Composite::SourceAlpha && t.parent_motion.is_empty() && t.compositor.is_none());
@@ -2174,6 +2186,8 @@ mod tests {
             subclip: Some(Subclip { parent: "m".into(), start: 1.25 }),
             audio_streams: 3,
             video_streams: 2,
+            timecode: Some(3600.5),
+            created: Some(1_714_566_896.25),
             ..Default::default()
         });
         assert_eq!(p.media_pool[0].file_time(0.5), 1.75);
@@ -2191,6 +2205,7 @@ mod tests {
         assert!(a.automation == AutoMode::Off && a.auto_controls && back.timeline.master.audio_fx[0].auto == p.timeline.master.audio_fx[0].auto);
         assert!(a.monitor == Monitor::Auto && back.timeline.audio.inputs.len() == 1);
         assert_eq!(back.settings, p.settings);
+        assert_eq!((back.media_pool[0].timecode, back.media_pool[0].created), (Some(3600.5), Some(1_714_566_896.25)));
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();
         assert_eq!((c.resample, c.channels), (None, ChannelMap::Both));
