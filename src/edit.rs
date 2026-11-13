@@ -1172,6 +1172,7 @@ pub fn insert_track(project: &mut Project, is_video: bool, before: Option<usize>
     let at = before.map_or(if is_video { 0 } else { tracks.len() }, |b| b.min(tracks.len()));
     let (name, kind) = if is_video { ("Video", TrackKind::Video) } else { ("Audio", TrackKind::Audio) };
     tracks.insert(at, Track::new(&format!("{name} {}", tracks.len() + 1), kind));
+    tidy_track_groups(&mut project.timeline); // inserted inside a track group, it joins it
     project.mark_modified();
     at
 }
@@ -1183,19 +1184,120 @@ pub fn delete_tracks(project: &mut Project, ids: &[String]) -> bool {
     tl.video_tracks.retain(|t| !ids.contains(&t.id));
     tl.audio_tracks.retain(|t| !ids.contains(&t.id));
     let done = tl.video_tracks.len() + tl.audio_tracks.len() != n;
+    tidy_track_groups(tl);
     changed(project, done)
 }
 
-/// Move tracks `ids` of one kind, keeping their order, into the gap before track `to` (past the end = last).
+/// Move tracks `ids` of one kind, keeping their order, into the gap before track `to` (past the end = last). Moved
+/// away from the rest of their track group they leave it; moved between two tracks of a group they join it.
 pub fn move_tracks(project: &mut Project, is_video: bool, ids: &[String], to: usize) -> bool {
     let tracks = project.timeline.tracks_mut(is_video);
     let old: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
     let at = tracks[..to.min(tracks.len())].iter().filter(|t| !ids.contains(&t.id)).count();
     let (moved, mut rest): (Vec<Track>, Vec<Track>) = std::mem::take(tracks).into_iter().partition(|t| ids.contains(&t.id));
+    let n = moved.len();
     rest.splice(at..at, moved);
     *tracks = rest;
     let done = tracks.iter().map(|t| &t.id).ne(old.iter());
+    let order: Vec<String> = tracks.iter().map(|t| t.id.clone()).collect();
+    for g in &mut project.timeline.track_groups {
+        // The block of moved tracks stays in its group while it touches the group's other tracks of its kind.
+        let others: Vec<usize> = order.iter().enumerate().filter(|(_, id)| g.tracks.contains(id) && !ids.contains(id)).map(|(k, _)| k).collect();
+        let (Some(&lo), Some(&hi)) = (others.first(), others.last()) else { continue };
+        if at > hi + 1 || at + n < lo {
+            g.tracks.retain(|t| !ids.contains(t));
+        }
+    }
+    tidy_track_groups(&mut project.timeline);
     changed(project, done)
+}
+
+/// Keep the track groups consistent after tracks are added, removed or moved: ids of deleted tracks and empty groups
+/// go, and an ungrouped track between two tracks of one group (of its kind) joins that group.
+pub fn tidy_track_groups(tl: &mut Timeline) {
+    let order: Vec<(bool, String)> = [true, false].into_iter().flat_map(|v| tl.tracks(v).iter().map(move |t| (v, t.id.clone()))).collect();
+    for g in &mut tl.track_groups {
+        g.tracks.retain(|id| order.iter().any(|(_, o)| o == id));
+    }
+    tl.track_groups.retain(|g| !g.tracks.is_empty());
+    for (k, (v, id)) in order.iter().enumerate() {
+        if tl.group_of(id).is_some() {
+            continue;
+        }
+        let kind = |r: &[(bool, String)], g: &TrackGroup| r.iter().any(|(w, o)| w == v && g.tracks.contains(o));
+        if let Some(g) = tl.track_groups.iter_mut().find(|g| kind(&order[..k], g) && kind(&order[k + 1..], g)) {
+            g.tracks.push(id.clone());
+        }
+    }
+}
+
+/// Track Group › Group Selected Tracks: tracks `ids` leave their groups and form a new group, gathered (per kind)
+/// under the first of them, or just after a group that first one would split.
+pub fn group_tracks(project: &mut Project, ids: &[String]) -> bool {
+    let tl = &mut project.timeline;
+    let ids: Vec<String> = [true, false].into_iter().flat_map(|v| tl.tracks(v).iter().map(|t| t.id.clone()).collect::<Vec<_>>()).filter(|t| ids.contains(t)).collect();
+    if ids.is_empty() {
+        return false;
+    }
+    for g in &mut tl.track_groups {
+        g.tracks.retain(|t| !ids.contains(t));
+    }
+    tl.track_groups.retain(|g| !g.tracks.is_empty());
+    let n = (1..).find(|n| !tl.track_groups.iter().any(|g| g.name == format!("Track Group {n}"))).unwrap_or(1);
+    let gid = uuid::Uuid::new_v4().to_string();
+    // In place before the gathering moves, so no other group takes these tracks in on the way.
+    tl.track_groups.push(TrackGroup { id: gid.clone(), name: format!("Track Group {n}"), tracks: ids.clone(), collapsed: false, muted: false, solo: false });
+    for v in [true, false] {
+        let list: Vec<&String> = project.timeline.tracks(v).iter().map(|t| &t.id).collect();
+        let Some(mut to) = list.iter().position(|t| ids.contains(t)) else { continue };
+        for g in project.timeline.track_groups.iter().filter(|g| g.id != gid) {
+            let at: Vec<usize> = list.iter().enumerate().filter(|(_, t)| g.tracks.contains(t)).map(|(k, _)| k).collect();
+            if let (Some(&lo), Some(&hi)) = (at.first(), at.last()) {
+                if lo < to && to < hi {
+                    to = hi + 1;
+                }
+            }
+        }
+        let mine: Vec<String> = list.iter().filter(|t| ids.contains(t)).map(|t| (*t).clone()).collect();
+        move_tracks(project, v, &mine, to);
+    }
+    changed(project, true)
+}
+
+/// Track Group › Ungroup Selected Tracks: tracks `ids` leave their groups; one that sat inside its group moves to just
+/// after it, so the group stays in one piece. An emptied group is dropped.
+pub fn ungroup_tracks(project: &mut Project, ids: &[String]) -> bool {
+    let groups: Vec<TrackGroup> = project.timeline.track_groups.clone();
+    if !groups.iter().any(|g| g.tracks.iter().any(|t| ids.contains(t))) {
+        return false;
+    }
+    for g in &mut project.timeline.track_groups {
+        g.tracks.retain(|t| !ids.contains(t));
+    }
+    for g in &groups {
+        for v in [true, false] {
+            let list: Vec<String> = project.timeline.tracks(v).iter().map(|t| t.id.clone()).collect();
+            let Some(hi) = list.iter().rposition(|t| g.tracks.contains(t) && !ids.contains(t)) else { continue };
+            let lo = list.iter().position(|t| g.tracks.contains(t) && !ids.contains(t)).unwrap_or(hi);
+            let inside: Vec<String> = list[lo..hi].iter().filter(|t| g.tracks.contains(t) && ids.contains(t)).cloned().collect();
+            if !inside.is_empty() {
+                move_tracks(project, v, &inside, hi + 1);
+            }
+        }
+    }
+    tidy_track_groups(&mut project.timeline);
+    changed(project, true)
+}
+
+/// Mute (or Solo) Track Group: toggles it on the groups of tracks `ids`, all set to the opposite of the focus (last)
+/// track's group. One undo step for all of their tracks.
+pub fn toggle_track_groups(project: &mut Project, ids: &[String], solo: bool) -> bool {
+    let tl = &mut project.timeline;
+    let Some(on) = ids.iter().rev().find_map(|id| tl.group_of(id)).map(|g| !if solo { g.solo } else { g.muted }) else { return false };
+    for g in tl.track_groups.iter_mut().filter(|g| g.tracks.iter().any(|t| ids.contains(t))) {
+        if solo { g.solo = on } else { g.muted = on }
+    }
+    changed(project, true)
 }
 
 /// Mute (or solo) tracks `ids`: all set to the opposite of the focus (last) track's state.
@@ -3128,6 +3230,89 @@ mod tests {
         assert!(p.timeline.video_tracks.iter().all(|t| t.clips.is_empty()));
         assert!(delete_tracks(&mut p, &all));
         assert!(p.timeline.video_tracks.is_empty() && p.timeline.audio_tracks.is_empty());
+    }
+
+    /// R5: grouping gathers the tracks, group Mute / Solo override the members' own, and the groups follow track
+    /// moves, inserts, ungrouping and deletes.
+    #[test]
+    fn track_groups() {
+        let mut p = Project::new("t");
+        for _ in 0..4 {
+            p.timeline.add_video_track(); // V0..V4
+        }
+        p.timeline.add_audio_track(); // A0, A1
+        let t: Vec<String> = p.timeline.video_tracks.iter().map(|t| t.id.clone()).collect();
+        let a: Vec<String> = p.timeline.audio_tracks.iter().map(|t| t.id.clone()).collect();
+        let order = |p: &Project| p.timeline.video_tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>();
+        let members = |p: &Project| {
+            let mut m = p.timeline.track_groups.first().map_or(Vec::new(), |g| g.tracks.clone());
+            m.sort();
+            m
+        };
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+
+        // V1, V3 and A1 group: V3 is gathered under V1; the audio track stays where it is.
+        assert!(group_tracks(&mut p, &[t[3].clone(), t[1].clone(), a[1].clone()]));
+        assert_eq!(order(&p), [&t[0], &t[1], &t[3], &t[2], &t[4]].map(Clone::clone));
+        assert_eq!(members(&p), sorted(vec![t[1].clone(), t[3].clone(), a[1].clone()]));
+        assert_eq!(p.timeline.track_groups[0].name, "Track Group 1");
+
+        // Group mute: one change silences all three, over their own Solo; group solo plays them over their own Mute.
+        let mut h = crate::history::History::default();
+        let before = p.clone();
+        p.timeline.video_tracks[1].solo = true;
+        assert!(toggle_track_groups(&mut p, &[t[3].clone()], false));
+        h.push(before);
+        let tl = &p.timeline;
+        let plays = |id: &str| [true, false].into_iter().find_map(|v| tl.tracks(v).iter().find(|x| x.id == id).map(|x| tl.plays(x, tl.any_solo(v)))).unwrap();
+        assert!(!plays(&t[1]) && !plays(&t[3]) && !plays(&a[1]) && plays(&t[0]) && plays(&a[0]));
+        assert!(!tl.any_solo(true), "a muted group's own soloed track solos nothing");
+        let mut undone = p.clone();
+        assert!(h.undo(&mut undone) && !h.can_undo());
+        assert!(!undone.timeline.track_groups[0].muted, "one undo step");
+        assert!(toggle_track_groups(&mut p, &[t[1].clone()], false), "toggles back");
+        p.timeline.video_tracks[2].muted = true; // V3 (gathered to index 2)
+        assert!(toggle_track_groups(&mut p, &[a[1].clone()], true));
+        let tl = &p.timeline;
+        let plays = |id: &str| [true, false].into_iter().find_map(|v| tl.tracks(v).iter().find(|x| x.id == id).map(|x| tl.plays(x, tl.any_solo(v)))).unwrap();
+        assert!(plays(&t[3]) && plays(&a[1]) && !plays(&t[0]) && !plays(&a[0]));
+        assert!(!toggle_track_groups(&mut p, &[t[0].clone()], true), "V0 is in no group");
+
+        // A track inserted inside the group joins it; one moved into it joins; one moved away leaves.
+        let i = insert_track(&mut p, true, Some(2)); // between V1 and V3
+        let new = p.timeline.video_tracks[i].id.clone();
+        assert!(p.timeline.group_of(&new).is_some());
+        assert!(move_tracks(&mut p, true, &[t[4].clone()], 2)); // V4 between V1 and the new track
+        assert!(p.timeline.group_of(&t[4]).is_some());
+        assert!(move_tracks(&mut p, true, &[t[4].clone()], 99)); // to the end: out
+        assert!(p.timeline.group_of(&t[4]).is_none());
+        assert!(move_tracks(&mut p, true, &[t[3].clone()], 1)); // just above the group: still in it
+        assert!(p.timeline.group_of(&t[3]).is_some());
+
+        // Ungroup the middle track: it moves below the group, which stays in one piece.
+        let mid = order(&p)[2].clone();
+        assert!(ungroup_tracks(&mut p, std::slice::from_ref(&mid)));
+        let o = order(&p);
+        let k = o.iter().position(|x| *x == mid).unwrap();
+        assert!(o[..k].iter().filter(|x| p.timeline.group_of(x).is_some()).count() == 2 && p.timeline.group_of(&mid).is_none());
+        assert!(o[k + 1..].iter().all(|x| p.timeline.group_of(x).is_none()));
+        assert!(!ungroup_tracks(&mut p, std::slice::from_ref(&mid)));
+
+        // Deleting tracks takes them out of their group; an emptied group is dropped.
+        let left = p.timeline.track_groups[0].tracks.clone();
+        assert!(delete_tracks(&mut p, &left[..1]));
+        assert_eq!(p.timeline.track_groups[0].tracks.len(), left.len() - 1);
+        assert!(delete_tracks(&mut p, &left[1..]));
+        assert!(p.timeline.track_groups.is_empty());
+
+        // A second group gets the next free name, and grouping takes tracks out of the group they were in.
+        let v: Vec<String> = order(&p);
+        assert!(group_tracks(&mut p, &v[..2]) && group_tracks(&mut p, &v[1..2]));
+        assert_eq!(p.timeline.track_groups.iter().map(|g| (g.name.as_str(), g.tracks.len())).collect::<Vec<_>>(), [("Track Group 1", 1), ("Track Group 2", 1)]);
+        assert!(!group_tracks(&mut p, &[]));
     }
 
     /// Pool: 0 video with audio (10 s), 1 still, 2 audio (4 s).

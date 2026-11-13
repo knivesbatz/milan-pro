@@ -30,9 +30,9 @@ fn ffmpeg() -> Command {
     cmd
 }
 
-/// L/R gain for a track, or None if it is muted or another track is soloed.
-pub fn track_gain(t: &Track, any_solo: bool) -> Option<[f32; 2]> {
-    if t.muted || (any_solo && !t.solo) {
+/// L/R gain for track `t` of `tl`, or None if it (or its group) is muted or another track is soloed.
+pub fn track_gain(tl: &crate::project::Timeline, t: &Track, any_solo: bool) -> Option<[f32; 2]> {
+    if !tl.plays(t, any_solo) {
         return None;
     }
     let p = t.pan.clamp(-1.0, 1.0);
@@ -549,17 +549,17 @@ mod tests {
 
     #[test]
     fn pan_and_volume_gain() {
-        let mut t = Track::new("a", crate::project::TrackKind::Audio);
+        let (tl, mut t) = (crate::project::Timeline::new(), Track::new("a", crate::project::TrackKind::Audio));
         t.volume = 0.8;
-        assert_eq!(track_gain(&t, false), Some([0.8, 0.8]));
+        assert_eq!(track_gain(&tl, &t, false), Some([0.8, 0.8]));
         t.pan = -1.0;
-        assert_eq!(track_gain(&t, false), Some([0.8, 0.0]));
+        assert_eq!(track_gain(&tl, &t, false), Some([0.8, 0.0]));
         t.pan = 0.5;
-        assert_eq!(track_gain(&t, false), Some([0.4, 0.8]));
-        assert_eq!(track_gain(&t, true), None); // another track is solo
+        assert_eq!(track_gain(&tl, &t, false), Some([0.4, 0.8]));
+        assert_eq!(track_gain(&tl, &t, true), None); // another track is solo
         t.solo = true;
         t.muted = true;
-        assert_eq!(track_gain(&t, true), None); // mute beats solo
+        assert_eq!(track_gain(&tl, &t, true), None); // mute beats solo
     }
 
     #[test]

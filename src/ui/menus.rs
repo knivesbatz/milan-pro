@@ -66,6 +66,8 @@ pub struct CmdState {
     /// Tracks exist / are selected; the track list had the last click.
     pub any_tracks: bool,
     pub tracks_sel: bool,
+    /// A selected track is in a track group.
+    pub track_group: bool,
     pub list_focus: bool,
     pub quantize: bool,
     /// An event is on the clipboard.
@@ -205,6 +207,7 @@ impl CmdState {
             | NudgeTrackDown => self.n_sel > 0,
             PasteRepeat => self.clipboard,
             MuteExclusive | SoloExclusive => self.tracks_sel,
+            GroupMute | GroupSolo => self.track_group,
             ToggleListFocus => self.any_tracks,
             EventSwitch(s) => if s.video() { self.video_clip } else { self.audio_clip },
             SetResample(_) => self.video_clip,
@@ -333,7 +336,6 @@ impl Why {
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
-        GroupMute | GroupSolo => Later("R5"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         VideoBusTrack => Later("R7"),
         DimMaster | BusTracks | MixingConsole => Later("R8b"),
@@ -1430,6 +1432,22 @@ mod tests {
         assert!(!rows.iter().any(|(_, w)| *w == Later("R2")), "{rows:?}");
     }
 
+    /// R5: Mute / Solo Track Group work once a selected track is in a group; nothing in the menus waits on R5 any more.
+    #[test]
+    fn track_group_commands_work() {
+        let mut st = CmdState { tracks_sel: true, ..Default::default() };
+        for c in [GroupMute, GroupSolo] {
+            assert!(unfinished(c).is_none() && !st.enabled(c), "{c:?}");
+        }
+        st.track_group = true;
+        assert!(st.enabled(GroupMute) && st.enabled(GroupSolo));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R5")), "{rows:?}");
+    }
+
     /// R3a: the Loop switch, empty events, subclips, attribute paste and the group commands work, each once there is
     /// something to act on; nothing in the menus waits on R3a any more.
     #[test]
@@ -1562,6 +1580,7 @@ mod tests {
             n_sel: 2,
             any_tracks: true,
             tracks_sel: true,
+            track_group: true,
             list_focus: true,
             clipboard: true,
             selection: true,

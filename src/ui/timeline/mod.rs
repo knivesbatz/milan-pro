@@ -76,9 +76,50 @@ struct Row {
     h: f32,
 }
 
+/// A track group's header row (§5.9.3: 22 px, ▾ name … M S), above each run of its tracks; `group` indexes
+/// `Timeline::track_groups`.
+#[derive(Clone, Copy)]
+struct Head {
+    group: usize,
+    top: f32,
+    /// Its run starts on a video track.
+    is_video: bool,
+}
+
+const GROUP_H: f32 = 22.0;
+
+/// Rows (tracks not hidden and not in a collapsed group) and group headers, top down from 0; and their total height.
+/// `num` counts every track, so numbers and colours stay with their tracks.
+fn layout_rows(tl: &Timeline, t: &Theme) -> (Vec<Row>, Vec<Head>, f32) {
+    let (mut rows, mut heads, mut y, mut num, mut prev) = (Vec::new(), Vec::new(), 0.0, 0, None);
+    for is_video in [true, false] {
+        for (idx, tr) in tl.tracks(is_video).iter().enumerate() {
+            let group = tl.track_groups.iter().position(|g| g.tracks.contains(&tr.id));
+            if tr.hidden && group.is_none() {
+                num += 1;
+                continue;
+            }
+            if let Some(k) = group.filter(|_| group != prev) {
+                heads.push(Head { group: k, top: y, is_video });
+                y += GROUP_H;
+            }
+            prev = group;
+            if !tr.hidden && !group.is_some_and(|k| tl.track_groups[k].collapsed) {
+                let h = track_h(tr, t);
+                rows.push(Row { is_video, idx, num, top: y, h });
+                y += h;
+            }
+            num += 1;
+        }
+    }
+    (rows, heads, y)
+}
+
 #[derive(Clone, PartialEq)]
 enum Rename {
     Track(bool, usize),
+    /// A track group, by id (double-click its header, or Track Group › Rename Track Group).
+    Group(String),
     Marker(usize),
     /// An event's active take (Take › Rename Active), by event id.
     Event(String),
@@ -236,26 +277,22 @@ pub fn draw_timeline(
             grid_snap: opts.snap_grid,
         }
     };
-    let rows_of = |project: &Project, g: &Geo, scroll_y: &mut f32| -> Vec<Row> {
-        let tl = &project.timeline;
-        let content: f32 = tl.video_tracks.iter().chain(&tl.audio_tracks).map(|tr| track_h(tr, &t)).sum();
+    let rows_of = |project: &Project, g: &Geo, scroll_y: &mut f32| -> (Vec<Row>, Vec<Head>, f32) {
+        let (mut rows, mut heads, content) = layout_rows(&project.timeline, &t);
         *scroll_y = scroll_y.clamp(0.0, (content - g.lanes.height()).max(0.0));
-        let mut rows = Vec::new();
-        let mut y = g.lanes.min.y - *scroll_y;
-        for is_video in [true, false] {
-            for (idx, tr) in tl.tracks(is_video).iter().enumerate() {
-                let h = track_h(tr, &t);
-                rows.push(Row { is_video, idx, num: rows.len(), top: y, h });
-                y += h;
-            }
-        }
-        rows
+        let y0 = g.lanes.min.y - *scroll_y;
+        rows.iter_mut().for_each(|r| r.top += y0);
+        heads.iter_mut().for_each(|h| h.top += y0);
+        (rows, heads, content)
     };
+    // A hidden track drops out of the selection, so Delete never takes a track the list does not show.
+    sel.tracks.retain(|id| project.find_track(id).is_none_or(|(v, i)| !project.timeline.tracks(v)[i].hidden));
     let mut g = make_geo(project);
-    let rows = rows_of(project, &g, scroll_y);
+    let (rows, heads, _) = rows_of(project, &g, scroll_y);
 
     // ---- Interaction ----
 
+    tracks::interact_heads(ui, &g, &heads, project, history, sel, &mut st);
     tracks::interact(ui, &g, &rows, project, history, sel, &mut st);
 
     // Wheel (§5.9.9): zooms around the mouse; Ctrl+wheel (or wheel over the track list) scrolls tracks;
@@ -287,9 +324,10 @@ pub fn draw_timeline(
     g = make_geo(project);
 
     ruler::interact(ui, &g, project, history, &mut st, snapping);
-    scroll::interact(ui, &g, &rows, project, &mut st, scroll_y);
+    let content = rows_of(project, &g, scroll_y).2;
+    scroll::interact(ui, &g, content, project, &mut st, scroll_y);
     g = make_geo(project);
-    let rows = rows_of(project, &g, scroll_y);
+    let (rows, heads, _) = rows_of(project, &g, scroll_y);
 
     let row_at = |py: f32| rows.iter().find(|r| py >= r.top.max(g.lanes.min.y) && py < r.top + r.h && py < g.lanes.max.y).copied();
     let hit_clip = |project: &Project, p: Pos2| -> Option<(ClipRef, DragMode)> {
@@ -922,13 +960,14 @@ pub fn draw_timeline(
     // 1–9, 0 jump to marker N through the keymap (§7).
 
     // Right-click menus for every part of the timeline (§6.8–6.10).
-    ctx::menu(ui, &response, &g, &rows, project, history, sel, &mut st, env_on.then_some(opts.hidden_envs), (opts.cut_overlap, opts.auto_crossfade), drop_menu, drops);
+    ctx::menu(ui, &response, &g, &rows, &heads, project, history, sel, &mut st, env_on.then_some(opts.hidden_envs), (opts.cut_overlap, opts.auto_crossfade), drop_menu, drops);
 
-    let mut rows = rows_of(project, &g, scroll_y);
+    let (mut rows, mut heads, content) = rows_of(project, &g, scroll_y);
     // A drop that adds video tracks: the audio rows move down to show where they will go.
     if let Some((_, _, plan)) = &ghost {
         let dy = added_tracks(&project.timeline, plan, true) as f32 * t.m.video_track_h;
         rows.iter_mut().filter(|r| !r.is_video).for_each(|r| r.top += dy);
+        heads.iter_mut().filter(|h| !h.is_video).for_each(|h| h.top += dy);
     }
 
     // ---- Painting ----
@@ -943,6 +982,11 @@ pub fn draw_timeline(
         pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(lane.max.y, lane.max.y + 1.0)), 0.0, t.track_separator);
         pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(lane.max.y + 1.0, lane.max.y + 2.0)), 0.0, t.track_separator_2);
     }
+    for h in &heads {
+        let y = h.top + GROUP_H - 2.0;
+        pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(y, y + 1.0)), 0.0, t.track_separator);
+        pl.rect_filled(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(y + 1.0, y + 2.0)), 0.0, t.track_separator_2);
+    }
     ruler::paint_grid(&pl, &g);
 
     let hover_ref = hovered_clip.map(|(cr, _)| cr).or_else(|| drag_state.as_ref().and_then(|d| project.find_clip(&d.id)));
@@ -952,6 +996,8 @@ pub fn draw_timeline(
             continue;
         }
         let track = &project.timeline.tracks(row.is_video)[row.idx];
+        // Muted by itself or its group; a video track out of the preview (Show in Preview off) looks muted too.
+        let track_dim = project.timeline.switches(track).0 || !track.visible;
         let lane = Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(row.top, row.top + row.h - 2.0)).intersect(g.lanes);
         let pe = pl.with_clip_rect(lane);
         for (j, clip) in track.clips.iter().enumerate() {
@@ -975,7 +1021,7 @@ pub fn draw_timeline(
                 hovered: hover_ref.as_ref().is_some_and(same),
                 ripple: opts.ripple.is_some(),
                 level: level_of(clip, row.is_video),
-                dim: track.muted || clip.muted,
+                dim: track_dim || clip.muted,
                 generated: media.is_some_and(|m| m.generator.is_some()),
                 pps: g.pps,
                 fps,
@@ -1028,7 +1074,7 @@ pub fn draw_timeline(
         pl.rect_filled(Rect::from_min_max(pos2(x - 1.0, g.lanes.min.y), pos2(x + 1.0, g.lanes.max.y)), 0.0, t.accent);
     }
 
-    tracks::paint(&painter, &g, &rows, project, sel);
+    tracks::paint(&painter, &g, &rows, &heads, project, sel);
     tracks::paint_reorder(&painter, &g, &rows, &st);
     let display = Rect::from_min_size(rect.min, vec2(header_w, t.m.time_display_h.min(t.m.band_h)));
     ruler::draw_time_display(&painter, display, project);
@@ -1053,9 +1099,9 @@ pub fn draw_timeline(
             }
         }
     }
-    scroll::paint(&painter, &g, &rows, project, *scroll_y);
+    scroll::paint(&painter, &g, content, project, *scroll_y);
 
-    rename_box(ui, &g, &rows, project, history, &mut st);
+    rename_box(ui, &g, &rows, &heads, project, history, &mut st);
     ui.data_mut(|d| d.insert_temp(sid, st));
     released_op
 }
@@ -1228,7 +1274,7 @@ fn paint_ghost(p: &Painter, g: &Geo, rows: &[Row], project: &Project, target: Op
 
 /// Inline rename box for a track name (double-click the header's top-left), a marker (double-click its tag) or an
 /// event's active take (over its label).
-fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history: &mut History, st: &mut TlState) {
+fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut Project, history: &mut History, st: &mut TlState) {
     if let Some(c) = ui.data_mut(|d| d.remove_temp::<String>(rename_id())).and_then(|id| project.clip(&id)) {
         (st.rename, st.rename_focused) = (Some((Rename::Event(c.id.clone()), c.name.clone())), false);
     }
@@ -1241,6 +1287,9 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history
         &Rename::Track(v, i) => rows.iter().find(|r| r.is_video == v && r.idx == i).map(|r| {
             let x = g.rect.min.x + t.m.color_strip_w + 4.0;
             Rect::from_min_size(pos2(x, r.top + 2.0), vec2((g.header_w - t.m.color_strip_w - 80.0).max(60.0), 18.0))
+        }),
+        Rename::Group(id) => heads.iter().find(|h| project.timeline.track_groups[h.group].id == *id).map(|h| {
+            Rect::from_min_size(pos2(g.rect.min.x + 20.0, h.top + 1.0), vec2((g.header_w - 80.0).max(60.0), 18.0))
         }),
         &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| {
             let (_, marker_r, _) = ruler::band_rows(&t, g.band);
@@ -1263,6 +1312,7 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history
         let clip = |id: &str| project.find_clip(id).map(|r| (r.is_video, r.track_idx, r.clip_idx));
         let old = match &target {
             &Rename::Track(v, i) => project.timeline.tracks(v).get(i).map(|t| &t.name),
+            Rename::Group(id) => project.timeline.track_groups.iter().find(|g| g.id == *id).map(|g| &g.name),
             &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| &m.name),
             Rename::Event(id) => project.clip(id).map(|c| &c.name),
         };
@@ -1272,6 +1322,11 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project, history
             history.push(project.clone());
             match target {
                 Rename::Track(v, i) => project.timeline.tracks_mut(v)[i].name = buf,
+                Rename::Group(id) => {
+                    if let Some(g) = project.timeline.track_groups.iter_mut().find(|g| g.id == id) {
+                        g.name = buf;
+                    }
+                }
                 Rename::Marker(i) => project.timeline.markers[i].name = buf,
                 Rename::Event(_) => {
                     if let Some((v, i, j)) = at {
@@ -1384,6 +1439,34 @@ mod tests {
             self.frame(vec![press(false)]);
             self.frame(vec![]);
         }
+    }
+
+    /// R5: a group header row sits above its tracks; its body selects them, ▾ collapses them (no undo step), M mutes
+    /// the group (one undo step) and a right-click opens the group menu. Hidden tracks have no row.
+    #[test]
+    fn group_header_row() {
+        let mut r = Rig::new();
+        r.project.timeline.add_video_track();
+        let ids: Vec<String> = r.project.timeline.video_tracks.iter().map(|t| t.id.clone()).collect();
+        assert!(edit::group_tracks(&mut r.project, &ids));
+        let t = theme::get();
+        let (rows, heads, h) = layout_rows(&r.project.timeline, &t);
+        assert_eq!((rows.len(), heads.len(), heads[0].top, rows[0].top), (3, 1, 0.0, GROUP_H));
+        // Header 48..70 above Video 1 (70..134) and Video 2.
+        r.click(pos2(120.0, 58.0), Modifiers::NONE);
+        assert_eq!(r.sel.tracks, ids);
+        r.click(pos2(12.0, 58.0), Modifiers::NONE);
+        assert!(r.project.timeline.track_groups[0].collapsed && r.history.lens().0 == 0);
+        let (rows, _, h2) = layout_rows(&r.project.timeline, &t);
+        assert_eq!((rows.len(), rows[0].num, rows[0].is_video), (1, 2, false), "the audio track keeps its number");
+        assert!(h2 < h);
+        r.click(pos2(213.0, 58.0), Modifiers::NONE);
+        assert!(r.project.timeline.track_groups[0].muted && r.history.lens().0 == 1);
+        r.right_click(pos2(120.0, 58.0));
+        assert!(r.ctx.is_context_menu_open(), "group header menu");
+        r.project.timeline.audio_tracks[0].hidden = true;
+        let (rows, heads, _) = layout_rows(&r.project.timeline, &t);
+        assert!(rows.is_empty() && heads.len() == 1);
     }
 
     /// Right-clicks open the matching context menu (§6.8–6.10), including on child widgets like headers.

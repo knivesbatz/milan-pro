@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 188 |
-| PARTIAL | 148 |
-| MISSING | 84 |
+| DONE | 190 |
+| PARTIAL | 147 |
+| MISSING | 83 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). The gaps are masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). The gaps are masks, nested timelines, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -150,13 +150,13 @@ What matters most:
 | 5.1 | Proper multitrack engine | DONE | `engine/plan.rs`, `edit.rs` (3402 lines), `history.rs` |
 | 5.2 | Unlimited practical video tracks | DONE | `Vec<Track>` |
 | 5.3 | Video track ordering | DONE | `edit::move_tracks` (`edit.rs:831`), header drag (`tracks.rs:146`) |
-| 5.4 | Video track visibility | PARTIAL | `Track.visible` is in the model (`project.rs:534`), but the track "Hide" item is greyed (`ctx.rs:633`). Mute works. → R5 |
+| 5.4 | Video track visibility | DONE | Switches › Show in Preview (`Track.visible`, `Timeline::shown_video_tracks`) takes a video track out of preview and render, and its events are drawn dimmed like a muted track's; the audio track header's Hide takes a row off the timeline (`Track.hidden`, it still plays; the track list's empty-area menu has Show Hidden Tracks) (R5) |
 | 5.5 | Track locking | DONE | `Track.locked` |
 | 5.6 | Track muting | DONE | |
 | 5.7 | Compositing and blending | PARTIAL | 9 modes (`project.rs:347`). VEGAS also has Hard Light, Soft Light, Dodge, Burn, Exclusion and others, which load as Source Alpha with a warning (`interchange.rs:285`). The Compositors window is greyed. Parent/child compositing is missing. → R7 |
 | 5.8 | Video track-level effects | DONE | Track FX (`FxTarget::Track`) |
 | 5.9 | Track opacity | DONE | Composite level and envelope |
-| 5.10 | Track grouping | MISSING | Track-group menu rows are greyed (`ctx.rs:709-717`). → R5 |
+| 5.10 | Track grouping | DONE | `Timeline.track_groups`, `edit::group_tracks` / `ungroup_tracks` / `toggle_track_groups` / `tidy_track_groups`; group header rows with ▾, name, M / S (`ui/timeline/tracks.rs`); Track Group ▸ menu (`ctx.rs::track_group`) (R5) |
 | 5.11 | Unlimited practical audio tracks | DONE | |
 | 5.12 | Track volume | DONE | |
 | 5.13 | Track panning | DONE | |
@@ -623,7 +623,7 @@ The inventory as found before R0:
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
 | Markers | InsertCommand, CdTrack, CdIndex | R18a |
-| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5, R8c |
+| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7, R18a, R13 |
@@ -984,6 +984,12 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R5: Track groups and track visibility (M)
+
+**Status: DONE.** Built as designed below, plus the item R0 assigned (the audio track header's Cut / Copy / Paste / Delete: the Edit commands, as in VEGAS, so Delete there deletes the selected tracks), except:
+- A group is a header row (22 px: ▾ / ▸, name, M and S) above each run of its tracks; it may hold video and audio tracks. A click on it selects the group's tracks, a double-click on the name renames it, ▾ collapses it. Group Selected Tracks gathers the tracks of each kind under the first of them (or just after a group that one would split) and names the group "Track Group n". A track inserted, duplicated or dragged between two tracks of a group joins it; one dragged away from the rest of its group leaves it; Ungroup moves a track from the middle of its group to just below it (`edit::tidy_track_groups`, `move_tracks`).
+- Group Mute and Solo are the group's own switches, as in VEGAS: a muted group silences its tracks over their own Solo, a soloed group plays them over their own Mute (`Timeline::switches`, used by the video plan, the audio plan and the dimmed events). Mute / Solo Track Group (Ctrl+Alt+Z / Ctrl+Alt+X) toggle the groups of the selected tracks, one undo step. Collapse, Expand and Hide are view changes (no undo step), like track heights.
+- Hide is on the audio track header, where VEGAS's menu has it; it hides the clicked (or every selected) track's row, which still plays. The way back, Show Hidden Tracks (n) in the track list's empty-area menu, is Milan Pro's own. A hidden track leaves the track selection.
+- Not built: dragging a group by its header, the 10 px indent of member headers (VP23) and events drawn on a collapsed group's row (VEGAS 15 shows none either).
 
 **Scope**
 - Group Selected Tracks, Ungroup, Rename Track Group, Collapse/Expand, Mute/Solo Track Group (GroupMute, GroupSolo).

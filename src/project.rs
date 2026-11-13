@@ -231,6 +231,24 @@ pub struct Timeline {
     /// (`edit::sync_velocity`). Off: the audio stays at normal speed, as in VEGAS.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub audio_follows_velocity: bool,
+    /// Track › Track Group: named sets of adjacent tracks under a header row (`edit::group_tracks`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub track_groups: Vec<TrackGroup>,
+}
+
+/// A track group: its header collapses the member rows and carries a group Mute and Solo.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrackGroup {
+    pub id: String,
+    pub name: String,
+    /// Member track ids (either kind).
+    pub tracks: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub solo: bool,
 }
 
 fn default_zoom() -> f64 {
@@ -269,6 +287,9 @@ pub struct Track {
     /// Video track Fade Colors: [top, bottom] (sRGB), what a Fade to Color envelope fades to (VEGAS: white, black).
     #[serde(default = "fade_colors")]
     pub fade_colors: [[u8; 3]; 2],
+    /// Track header › Hide: the row is left out of the timeline (it still plays).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     /// Armed for recording (audio): this session only.
     #[serde(skip)]
     pub armed: bool,
@@ -821,6 +842,7 @@ impl Timeline {
             master: MasterBus::default(),
             record_dir: None,
             audio_follows_velocity: false,
+            track_groups: Vec::new(),
         }
     }
 
@@ -839,8 +861,34 @@ impl Timeline {
 
     /// Video tracks that show in preview and render: visible, not muted, and soloed if any track is.
     pub fn shown_video_tracks(&self) -> impl DoubleEndedIterator<Item = &Track> {
-        let any_solo = self.video_tracks.iter().any(|t| t.solo);
-        self.video_tracks.iter().filter(move |t| t.visible && !t.muted && (!any_solo || t.solo))
+        let any_solo = self.any_solo(true);
+        self.video_tracks.iter().filter(move |t| t.visible && self.plays(t, any_solo))
+    }
+
+    /// The track group track `id` is in.
+    pub fn group_of(&self, id: &str) -> Option<&TrackGroup> {
+        self.track_groups.iter().find(|g| g.tracks.iter().any(|t| t == id))
+    }
+
+    /// Track `t`'s (Mute, Solo) as playback sees them: a muted group silences its tracks over their own Solo, and a
+    /// soloed group plays them over their own Mute (VEGAS).
+    pub fn switches(&self, t: &Track) -> (bool, bool) {
+        match self.group_of(&t.id) {
+            Some(g) if g.muted => (true, false),
+            Some(g) if g.solo => (false, true),
+            _ => (t.muted, t.solo),
+        }
+    }
+
+    /// Some track of that kind is soloed (its own Solo or its group's).
+    pub fn any_solo(&self, video: bool) -> bool {
+        self.tracks(video).iter().any(|t| self.switches(t).1)
+    }
+
+    /// Track `t` is heard (seen): not muted, and soloed when `any_solo` of its kind is.
+    pub fn plays(&self, t: &Track, any_solo: bool) -> bool {
+        let (muted, solo) = self.switches(t);
+        !muted && (!any_solo || solo)
     }
 
     pub fn tracks(&self, video: bool) -> &Vec<Track> {
@@ -906,6 +954,7 @@ impl Track {
             envelopes: Vec::new(),
             invert: false,
             fade_colors: fade_colors(),
+            hidden: false,
             armed: false,
         }
     }
@@ -1368,7 +1417,12 @@ mod tests {
         assert!(c.transition_out.is_none() && crate::engine::velocity::of(c).is_none());
         // R4b: no pitch change, and none written; audio does not follow video velocity (VEGAS), and that is not written.
         assert!(c.pitch_cents == 0.0 && !tl.audio_follows_velocity);
+        // R5: no track groups and no hidden tracks, and neither is written.
+        assert!(tl.track_groups.is_empty() && !t.hidden && !tl.audio_tracks[0].hidden);
         let v = serde_json::to_value(&p).unwrap();
+        assert!(v["timeline"].get("track_groups").is_none() && v["timeline"]["video_tracks"][0].get("hidden").is_none());
+        let g: TrackGroup = serde_json::from_str(r#"{"id":"g","name":"Drums","tracks":["t"]}"#).unwrap();
+        assert!(!g.collapsed && !g.muted && !g.solo);
         assert!(v["timeline"].get("audio_follows_velocity").is_none());
         assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("transition_out").is_none(), "nothing written without one");
         assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("pitch_cents").is_none());
@@ -1424,6 +1478,9 @@ mod tests {
         p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
         p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
         p.timeline.audio_follows_velocity = true;
+        p.timeline.audio_tracks[0].hidden = true;
+        let ids = vec![p.timeline.video_tracks[0].id.clone(), p.timeline.audio_tracks[0].id.clone()];
+        p.timeline.track_groups.push(TrackGroup { id: "g".into(), name: "Band".into(), tracks: ids, collapsed: true, muted: true, solo: true });
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
         p.media_pool.push(MediaItem {
             id: "g".into(),
@@ -1448,6 +1505,7 @@ mod tests {
         assert_eq!(back.timeline.video_tracks[0].envelopes[3].kind, EnvKind::FadeToColor);
         assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
         assert!(back.timeline.audio_follows_velocity);
+        assert!(back.timeline.audio_tracks[0].hidden && back.timeline.track_groups == p.timeline.track_groups);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();

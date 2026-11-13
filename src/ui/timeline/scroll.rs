@@ -5,7 +5,7 @@ use crate::project::*;
 use crate::render::content_end;
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{self, UiLook};
-use super::{BASE_PPS, Geo, MIN_TRACK_H, Row, TlState, set_zoom, track_h};
+use super::{BASE_PPS, Geo, MIN_TRACK_H, TlState, set_zoom, track_h};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum HDrag {
@@ -58,7 +58,8 @@ fn show_span(tl: &mut Timeline, g: &Geo, start: f64, view: f64) {
     tl.scroll_x = start.max(0.0);
 }
 
-pub(super) fn interact(ui: &Ui, g: &Geo, rows: &[Row], project: &mut Project, st: &mut TlState, scroll_y: &mut f32) {
+/// `content`: the height of the track rows and group headers.
+pub(super) fn interact(ui: &Ui, g: &Geo, content: f32, project: &mut Project, st: &mut TlState, scroll_y: &mut f32) {
     let h = h_parts(g, h_total(g, project));
     let end = content_end(project);
     let view = g.lanes.width() as f64 / g.pps;
@@ -123,7 +124,7 @@ pub(super) fn interact(ui: &Ui, g: &Geo, rows: &[Row], project: &mut Project, st
     }
 
     // Vertical: thumb drag scrolls, + / − step every track's height.
-    let v = v_parts(g, rows, *scroll_y);
+    let v = v_parts(g, content, *scroll_y);
     let vid = ui.id().with("vscroll");
     let vt = ui.interact(v.thumb, vid.with("thumb"), Sense::drag());
     if vt.drag_started() {
@@ -158,20 +159,20 @@ struct VParts {
     content: f32,
 }
 
-fn v_parts(g: &Geo, rows: &[Row], scroll_y: f32) -> VParts {
+fn v_parts(g: &Geo, content: f32, scroll_y: f32) -> VParts {
     let c = g.vscroll;
     let corner = Rect::from_min_size(c.min, vec2(c.width(), c.width()));
     let minus = Rect::from_min_size(pos2(c.min.x, g.lanes.max.y - 16.0), vec2(c.width(), 16.0));
     let plus = minus.translate(vec2(0.0, -16.0));
     let track = Rect::from_min_max(pos2(c.min.x + 2.0, g.lanes.min.y), pos2(c.max.x - 2.0, plus.min.y - 1.0));
-    let content = rows.iter().map(|r| r.h).sum::<f32>().max(g.lanes.height());
+    let content = content.max(g.lanes.height());
     let th = (g.lanes.height() / content * track.height()).max(10.0).min(track.height());
     let y0 = track.min.y + scroll_y / content * track.height();
     let thumb = Rect::from_min_size(pos2(track.min.x, y0.min(track.max.y - th)), vec2(track.width(), th));
     VParts { corner, track, thumb, plus, minus, content }
 }
 
-pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, scroll_y: f32) {
+pub(super) fn paint(p: &Painter, g: &Geo, content: f32, project: &Project, scroll_y: f32) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     let h = h_parts(g, h_total(g, project));
@@ -203,7 +204,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, scrol
     paint_icon(p, h.zoom.shrink(1.0), Icon::Search, t.look(), Some(ink));
 
     // Vertical bar.
-    let v = v_parts(g, rows, scroll_y);
+    let v = v_parts(g, content, scroll_y);
     p.rect_filled(g.vscroll, 0.0, t.band_bg);
     p.rect_filled(Rect::from_min_max(pos2(g.vscroll.min.x, g.lanes.min.y), pos2(g.vscroll.max.x, g.lanes.max.y)), 0.0, t.scroll_track);
     p.rect_filled(v.corner, 0.0, if v16 { t.scroll_thumb } else { t.toolbar_bg });

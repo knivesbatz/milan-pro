@@ -597,13 +597,13 @@ pub const QUICKFADE: f64 = 0.010;
 pub fn compile_audio(p: &Project) -> AudioPlan {
     let media: HashMap<&str, &MediaItem> = p.media_pool.iter().filter(|m| m.sample_rate.is_some() && m.generator.is_none()).map(|m| (m.id.as_str(), m)).collect();
     let env = |envs: &[Envelope], kind| envs.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
-    let any_solo = p.timeline.audio_tracks.iter().any(|t| t.solo);
+    let any_solo = p.timeline.any_solo(false);
     let tracks = p
         .timeline
         .audio_tracks
         .iter()
         .filter_map(|t| {
-            crate::audio::track_gain(t, any_solo)?; // muted or un-soloed: left out
+            crate::audio::track_gain(&p.timeline, t, any_solo)?; // muted or un-soloed: left out
             let events: Vec<AEvent> = t
                 .clips
                 .iter()
@@ -743,6 +743,21 @@ mod tests {
         p.timeline.video_tracks[1].solo = false;
         assert_eq!(drawn(&p, 32.0), [("i".to_string(), None, 1.0)]); // a still has no source frame
         assert!(ids(&p, 25.0).is_empty()); // gap: black
+    }
+
+    /// R5: a collapsed (or hidden) group still renders; group Mute and Solo reach the plan.
+    #[test]
+    fn track_groups_render_and_switch() {
+        let mut p = project();
+        let tracks: Vec<String> = p.timeline.video_tracks.iter().map(|t| t.id.clone()).collect();
+        assert!(crate::edit::group_tracks(&mut p, &tracks[..1]));
+        p.timeline.track_groups[0].collapsed = true;
+        p.timeline.video_tracks[0].hidden = true;
+        assert_eq!(ids(&p, 11.5), ["b", "a"]);
+        p.timeline.track_groups[0].muted = true;
+        assert_eq!(ids(&p, 11.5), ["b"]);
+        (p.timeline.track_groups[0].muted, p.timeline.track_groups[0].solo, p.timeline.video_tracks[0].muted) = (false, true, true);
+        assert_eq!(ids(&p, 11.5), ["a"], "a soloed group plays its muted track and solos the others out");
     }
 
     #[test]

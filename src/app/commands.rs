@@ -63,6 +63,7 @@ impl MeridianApp {
             n_sel: self.sel.clips.len(),
             any_tracks: !(tl.video_tracks.is_empty() && tl.audio_tracks.is_empty()),
             tracks_sel: !self.sel.tracks.is_empty(),
+            track_group: self.sel.tracks.iter().any(|id| tl.group_of(id).is_some()),
             list_focus: self.sel.list_focus,
             quantize: self.prefs.quantize,
             clipboard: !self.clipboard.is_empty(),
@@ -1089,6 +1090,10 @@ impl MeridianApp {
             MuteTrack | SoloTrack => {
                 let ids = self.sel.tracks.clone();
                 self.edit(|p| edit::toggle_tracks(p, &ids, c == SoloTrack));
+            }
+            GroupMute | GroupSolo => {
+                let ids = self.sel.tracks.clone();
+                self.edit(|p| edit::toggle_track_groups(p, &ids, c == GroupSolo));
             }
             FocusPrevTrack | FocusNextTrack => {
                 let tl = &self.project.timeline;

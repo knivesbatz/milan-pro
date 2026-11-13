@@ -12,11 +12,13 @@ use super::super::keymap::Command::*;
 use super::super::menus::{self, Fixed, Later, M, M::*, Mark, NotPlanned, cmd, entry, inert, off, sep, sub};
 use super::super::theme::{self, UiLook};
 use super::ruler::band_rows;
-use super::{FADE_PX, Geo, Rename, Row, TlState, envelopes};
+use super::{FADE_PX, GROUP_H, Geo, Head, Rename, Row, TlState, envelopes};
 
 #[derive(Clone, PartialEq, Debug)]
 enum Target {
     TrackHeader(bool, usize),
+    /// A track group's header row, by index in `Timeline::track_groups`.
+    GroupHeader(usize),
     ListEmpty,
     /// The overlap of two events on a track: (outgoing, incoming) ids.
     Crossfade(String, String),
@@ -60,7 +62,7 @@ const TAG: Vec2 = vec2(13.0, 14.0);
 const CUT_PX: f32 = 8.0;
 
 /// `env` is the View › Envelopes rows hidden (`EditOpts::hidden_envs`), None while envelopes are not shown.
-fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, env: Option<u16>) -> Option<Target> {
+fn target(g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Selection, p: Pos2, env: Option<u16>) -> Option<Target> {
     let t = theme::get();
     let tl = &project.timeline;
     if Rect::from_min_size(g.rect.min, vec2(g.header_w, t.m.band_h)).contains(p) {
@@ -85,6 +87,9 @@ fn target(g: &Geo, rows: &[Row], project: &Project, sel: &Selection, p: Pos2, en
     }
     let row = rows.iter().find(|r| p.y >= r.top && p.y < r.top + r.h);
     if g.list.contains(p) {
+        if let Some(h) = heads.iter().find(|h| p.y >= h.top && p.y < h.top + GROUP_H) {
+            return Some(Target::GroupHeader(h.group));
+        }
         return Some(row.map_or(Target::ListEmpty, |r| Target::TrackHeader(r.is_video, r.idx)));
     }
     if g.lanes.contains(p) {
@@ -153,6 +158,7 @@ pub(super) fn menu(
     response: &Response,
     g: &Geo,
     rows: &[Row],
+    heads: &[Head],
     project: &mut Project,
     history: &mut History,
     sel: &mut Selection,
@@ -167,7 +173,7 @@ pub(super) fn menu(
     let open_at = drop.map(|(p, r)| (p, Target::Drop(r))).or_else(|| {
         clicked
             .filter(|p| g.rect.contains(*p) && ui.ctx().layer_id_at(*p) == Some(ui.layer_id()))
-            .and_then(|p| target(g, rows, project, sel, p, env).map(|t| (p, t)))
+            .and_then(|p| target(g, rows, heads, project, sel, p, env).map(|t| (p, t)))
     });
     if let Some((_, tg)) = &open_at {
         ui.data_mut(|d| d.insert_temp(tid, tg.clone()));
@@ -176,12 +182,26 @@ pub(super) fn menu(
     let Some(tg) = ui.data(|d| d.get_temp::<Target>(tid)) else { return };
     menus::context_at(response, open_at.map(|o| o.0), |ui| match tg {
         Target::TrackHeader(v, i) => track_header(ui, project, history, &sel.tracks, st, v, i),
+        Target::GroupHeader(k) => {
+            let gid = project.timeline.track_groups.get(k).map(|g| g.id.clone());
+            track_group(ui, project, history, &sel.tracks, st, gid);
+        }
         Target::ListEmpty => {
             cmd(ui, "&Open...", Open);
             cmd(ui, "&Insert Audio Track", InsertAudioTrack);
             cmd(ui, "Insert &Video Track", InsertVideoTrack);
             sep(ui);
             cmd(ui, "&Preferences...", Preferences);
+            // Milan Pro's own: the way back from a track header's Hide.
+            let tl = &project.timeline;
+            let hidden = tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| t.hidden).count();
+            if hidden > 0 {
+                sep(ui);
+                if entry(ui, &format!("Show &Hidden Tracks ({hidden})"), "", true, Mark::None) {
+                    project.timeline.video_tracks.iter_mut().chain(project.timeline.audio_tracks.iter_mut()).for_each(|t| t.hidden = false);
+                    project.mark_modified(); // a view change: no undo step
+                }
+            }
         }
         Target::Crossfade(ref a, ref b) => {
             // Inside the overlap, so a transition lands on it.
@@ -566,6 +586,7 @@ fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usi
     }
     project.timeline.tracks_mut(v).insert(i + 1, tr);
     edit::dissolve_lone_groups(&mut project.timeline); // a copy whose mates were on other tracks is alone
+    edit::tidy_track_groups(&mut project.timeline); // a copy inside a track group joins it
     project.mark_modified();
 }
 
@@ -590,8 +611,51 @@ fn track_rows(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[
     }
 }
 
-fn track_group_and_color(ui: &mut Ui) {
-    sub(ui, "Track &Group", true, |ui| menus::show(ui, TRACK_GROUP));
+/// Track Group ▸ for the selected tracks; `gid` is the group of the track (or header) clicked.
+fn track_group(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, gid: Option<String>) {
+    let grp = gid.as_ref().and_then(|id| project.timeline.track_groups.iter().find(|g| g.id == *id)).cloned();
+    if entry(ui, "&Rename Track Group", "", grp.is_some(), Mark::None) {
+        if let Some(g) = &grp {
+            st.rename = Some((Rename::Group(g.id.clone()), g.name.clone()));
+        }
+    }
+    sep(ui);
+    let undoable = |project: &mut Project, history: &mut History, f: &dyn Fn(&mut Project) -> bool| {
+        let before = project.clone();
+        if f(project) {
+            history.push(before);
+        }
+    };
+    if entry(ui, "&Group Selected Tracks", "", !sel.is_empty(), Mark::None) {
+        undoable(project, history, &|p| edit::group_tracks(p, sel));
+    }
+    let any = sel.iter().any(|id| project.timeline.group_of(id).is_some());
+    if entry(ui, "&Ungroup Selected Tracks", "", any, Mark::None) {
+        undoable(project, history, &|p| edit::ungroup_tracks(p, sel));
+    }
+    for (label, collapse) in [("&Collapse", true), ("E&xpand", false)] {
+        if entry(ui, label, "", grp.as_ref().is_some_and(|g| g.collapsed != collapse), Mark::None) {
+            if let Some(g) = project.timeline.track_groups.iter_mut().find(|g| Some(&g.id) == gid.as_ref()) {
+                g.collapsed = collapse;
+                project.mark_modified(); // a view change: no undo step
+            }
+        }
+    }
+    sep(ui);
+    let look = menus::state(ui.ctx()).look;
+    let first = grp.as_ref().and_then(|g| g.tracks.first().cloned());
+    for (label, solo, c, on) in [("&Mute Track Group", false, GroupMute, grp.as_ref().is_some_and(|g| g.muted)), ("&Solo Track Group", true, GroupSolo, grp.as_ref().is_some_and(|g| g.solo))] {
+        if entry(ui, label, &super::super::keymap::shortcut_text(c, look), first.is_some(), Mark::Check(on)) {
+            if let Some(f) = &first {
+                undoable(project, history, &|p| edit::toggle_track_groups(p, std::slice::from_ref(f), solo));
+            }
+        }
+    }
+}
+
+fn track_group_and_color(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], st: &mut TlState, v: bool, i: usize) {
+    let gid = project.timeline.tracks(v).get(i).and_then(|t| project.timeline.group_of(&t.id)).map(|g| g.id.clone());
+    sub(ui, "Track &Group", true, |ui| track_group(ui, project, history, sel, st, gid));
     sub(ui, "Trac&k Display Color", true, |ui| {
         let t = theme::get();
         for (k, name) in ["Color A", "Color B", "Color C", "Color D", "Color E", "Color F", "Color G", "Color H"].into_iter().enumerate() {
@@ -630,12 +694,20 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         sep(ui);
         off(ui, "Set De&fault Track Properties...", Later("R18b"));
         sep(ui);
-        track_group_and_color(ui);
+        track_group_and_color(ui, project, history, sel, st, v, i);
         if v23 {
             cmd(ui, "Select All After Cursor", SelectAfterCursor);
         }
     } else {
-        off(ui, "Hide", Later("R5"));
+        if entry(ui, "Hide", "", true, Mark::None) {
+            // The clicked track, or every selected track when it is one of them; a view change (no undo step).
+            let id = project.timeline.audio_tracks[i].id.clone();
+            let ids = if sel.contains(&id) { sel.to_vec() } else { vec![id] };
+            for t in project.timeline.video_tracks.iter_mut().chain(project.timeline.audio_tracks.iter_mut()).filter(|t| ids.contains(&t.id)) {
+                t.hidden = true;
+            }
+            project.mark_modified();
+        }
         sep(ui);
         rename(ui, project, st);
         sep(ui);
@@ -650,7 +722,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         menus::show(ui, &[X("F&X Automation Envelopes...", Later("R8c")), S]);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
         menus::show(ui, AUDIO_HEADER_END);
-        track_group_and_color(ui);
+        track_group_and_color(ui, project, history, sel, st, v, i);
         menus::show(ui, AUDIO_HEADER_METERS);
     }
 }
@@ -736,23 +808,12 @@ fn marker_bar(ui: &mut Ui, project: &mut Project, history: &mut History) {
     menus::show(ui, MARKER_BAR_BOTTOM);
 }
 
-const TRACK_GROUP: &[M] = &[
-    X("Rename Track Group", Later("R5")),
-    S,
-    X("Group Selected Tracks", Later("R5")),
-    X("Ungroup Selected Tracks", Later("R5")),
-    X("Collapse", Later("R5")),
-    X("Expand", Later("R5")),
-    S,
-    X("Mute Track Group", Later("R5")),
-    X("Solo Track Group", Later("R5")),
-];
-
 const AUDIO_HEADER_MID: &[M] = &[
-    X("Cu&t", Later("R5")),
-    X("&Copy", Later("R5")),
-    X("&Paste", Later("R5")),
-    X("&Delete", Later("R5")),
+    // The Edit commands, as in VEGAS: on the selected events (Delete on the selected tracks from the track list).
+    C("Cu&t", Cut),
+    C("&Copy", Copy),
+    C("&Paste", Paste),
+    C("&Delete", Delete),
     S,
     C("&Arm for Record", Arm),
     Sub("I&nput", &[X("None", Later("R9"))]),
@@ -915,7 +976,6 @@ const TIME_DISPLAY: &[M] = &[
 
 /// The tables of the timeline's right-click menus, for the Unfinished Features list.
 pub(crate) const MENUS: &[(&str, &[M])] = &[
-    ("Track header", TRACK_GROUP),
     ("Track header", AUDIO_HEADER_MID),
     ("Track header", AUDIO_HEADER_METERS),
     ("Video event", VIDEO_EVENT),
@@ -945,23 +1005,23 @@ mod tests {
         let rows = [Row { is_video: true, idx: 0, num: 0, top: 0.0, h: 50.0 }, Row { is_video: false, idx: 0, num: 1, top: 50.0, h: 50.0 }];
         let sel = Selection::default();
         let on = Some(0);
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(30.0, 3.0), on), Some(Target::Fade(id.clone(), true)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(59.0, 3.0), on), Some(Target::Fade(id.clone(), false)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(2.0, 74.0), on), Some(Target::EnvPoint(a1.clone(), EnvKind::Pan, 0)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 75.0), on), Some(Target::EnvLine(a1.clone(), EnvKind::Pan, 50.0, 0)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 75.0), None), Some(Target::Lane(false, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(30.0, 3.0), on), Some(Target::Fade(id.clone(), true)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(59.0, 3.0), on), Some(Target::Fade(id.clone(), false)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(2.0, 74.0), on), Some(Target::EnvPoint(a1.clone(), EnvKind::Pan, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(500.0, 75.0), on), Some(Target::EnvLine(a1.clone(), EnvKind::Pan, 50.0, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(500.0, 75.0), None), Some(Target::Lane(false, 0)));
         // View › Audio Envelopes › Track Pan off: the line is not there to click.
         let no_pan = Some(crate::settings::EnvView::AudioPan.bit());
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 75.0), no_pan), Some(Target::Lane(false, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(500.0, 75.0), no_pan), Some(Target::Lane(false, 0)));
         // A Composite Level envelope at 100% runs along the top (y 2): the fade handles still win over its line.
         edit::toggle_envelope(&mut p.timeline.video_tracks[0], EnvKind::CompositeLevel);
         let v1 = p.timeline.video_tracks[0].id.clone();
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(30.0, 3.0), on), Some(Target::Fade(id.clone(), true)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(500.0, 3.0), on), Some(Target::EnvLine(v1, EnvKind::CompositeLevel, 50.0, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(30.0, 3.0), on), Some(Target::Fade(id.clone(), true)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(500.0, 3.0), on), Some(Target::EnvLine(v1, EnvKind::CompositeLevel, 50.0, 0)));
         // R4a: an event's Velocity envelope (100% sits mid-lane, y 24) is hit on the event, by the event's id.
         p.timeline.video_tracks[0].envelopes.clear();
         edit::toggle_velocity(&mut p, &[id.clone()]);
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(40.0, 24.0), on), Some(Target::EnvLine(id.clone(), EnvKind::Velocity, 4.0, 0)));
-        assert_eq!(target(&g, &rows, &p, &sel, pos2(20.5, 24.0), on), Some(Target::EnvPoint(id, EnvKind::Velocity, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(40.0, 24.0), on), Some(Target::EnvLine(id.clone(), EnvKind::Velocity, 4.0, 0)));
+        assert_eq!(target(&g, &rows, &[], &p, &sel, pos2(20.5, 24.0), on), Some(Target::EnvPoint(id, EnvKind::Velocity, 0)));
     }
 }

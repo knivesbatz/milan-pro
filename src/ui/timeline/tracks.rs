@@ -7,7 +7,7 @@ use crate::project::*;
 use crate::ui::Selection;
 use crate::ui::icons::{Icon, paint_icon};
 use crate::ui::theme::{self, Theme, UiLook};
-use super::{Geo, MIN_TRACK_H, Rename, Row, TlState};
+use super::{GROUP_H, Geo, Head, MIN_TRACK_H, Rename, Row, TlState};
 
 /// Audio fader law: −inf at the bottom, 0 dB at 70 % of travel, +12 dB at the top (cubic below 0 dB).
 pub fn fader_gain(pos: f32) -> f32 {
@@ -141,6 +141,90 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool) -> Layout {
         }
     }
     Layout { rect, strip, body, more, buttons, sliders, meter }
+}
+
+/// A track group header: the row, its ▾ / ▸ disclosure, and its Mute and Solo buttons (None when too narrow).
+struct HeadLayout {
+    rect: Rect,
+    arrow: Rect,
+    buttons: Option<(Rect, Rect)>,
+}
+
+fn head_layout(g: &Geo, h: &Head) -> HeadLayout {
+    let rect = Rect::from_min_size(pos2(g.rect.min.x, h.top), vec2(g.header_w, GROUP_H - 2.0));
+    let arrow = Rect::from_min_size(rect.min + vec2(4.0, 2.0), vec2(16.0, 16.0));
+    // Solo rightmost, Mute 24 px to its left, as on a track header.
+    let solo = Rect::from_min_size(pos2(rect.max.x - 22.0, rect.min.y + 2.0), vec2(16.0, 16.0));
+    let mute = solo.translate(vec2(-24.0, 0.0));
+    HeadLayout { rect, arrow, buttons: (mute.min.x > arrow.max.x + 40.0).then_some((mute, solo)) }
+}
+
+/// The member track ids of group `g`, in list order.
+fn members(project: &Project, g: &TrackGroup) -> Vec<String> {
+    let tl = &project.timeline;
+    tl.video_tracks.iter().chain(&tl.audio_tracks).filter(|t| g.tracks.contains(&t.id)).map(|t| t.id.clone()).collect()
+}
+
+/// Group headers: a click selects the group's tracks, the disclosure collapses / expands it (view state, no undo
+/// step), M / S toggle the group's Mute / Solo (one undo step), a double-click on the name renames it.
+pub(super) fn interact_heads(ui: &mut Ui, g: &Geo, heads: &[Head], project: &mut Project, history: &mut History, sel: &mut Selection, st: &mut TlState) {
+    let shown = |r: Rect| r.min.y >= g.list.min.y && r.max.y <= g.list.max.y;
+    for (k, h) in heads.iter().enumerate() {
+        let l = head_layout(g, h);
+        let Some(grp) = project.timeline.track_groups.get(h.group).filter(|_| l.rect.intersects(g.list)) else { continue };
+        let (gid, name, mates) = (grp.id.clone(), grp.name.clone(), members(project, grp));
+        let id = ui.id().with(("group_hdr", k));
+        let body = ui.interact(l.rect.intersect(g.list), id.with("body"), Sense::click());
+        if body.clicked() || body.secondary_clicked() {
+            (sel.tracks, sel.list_focus, sel.env) = (mates.clone(), true, None);
+        }
+        if body.double_clicked() && body.interact_pointer_pos().is_some_and(|p| p.x > l.arrow.max.x) {
+            st.rename = Some((Rename::Group(gid.clone()), name));
+        }
+        if shown(l.arrow) && ui.interact(l.arrow, id.with("arrow"), Sense::click()).on_hover_text("Collapse / Expand").clicked() {
+            let grp = &mut project.timeline.track_groups[h.group];
+            grp.collapsed = !grp.collapsed;
+            project.mark_modified(); // a view change: no undo step
+        }
+        let Some((mute, solo)) = l.buttons else { continue };
+        for (r, is_solo, tip) in [(mute, false, "Mute Track Group"), (solo, true, "Solo Track Group")] {
+            if shown(r) && ui.interact(r, id.with(tip), Sense::click()).on_hover_text(tip).clicked() {
+                let before = project.clone();
+                if edit::toggle_track_groups(project, &mates[..mates.len().min(1)], is_solo) {
+                    history.push(before);
+                }
+            }
+        }
+    }
+}
+
+/// Paint the group headers: ▾ (▸ when collapsed), the name, and the group's Mute and Solo.
+fn paint_heads(p: &Painter, t: &Theme, g: &Geo, heads: &[Head], project: &Project) {
+    for h in heads {
+        let (l, Some(grp)) = (head_layout(g, h), project.timeline.track_groups.get(h.group)) else { continue };
+        if !l.rect.intersects(g.list) {
+            continue;
+        }
+        p.rect_filled(l.rect, 0.0, t.track_header_bg);
+        let c = l.arrow.center();
+        let pts = if grp.collapsed {
+            vec![c + vec2(-2.0, -4.0), c + vec2(2.0, 0.0), c + vec2(-2.0, 4.0)]
+        } else {
+            vec![c + vec2(-4.0, -2.0), c + vec2(4.0, -2.0), c + vec2(0.0, 2.0)]
+        };
+        p.add(Shape::convex_polygon(pts, t.text_bright, Stroke::NONE));
+        let right = l.buttons.map_or(l.rect.max.x, |(m, _)| m.min.x) - 4.0;
+        let name = Rect::from_min_max(pos2(l.arrow.max.x + 4.0, l.rect.min.y), pos2(right, l.rect.max.y));
+        p.with_clip_rect(name.intersect(p.clip_rect())).text(name.left_center(), Align2::LEFT_CENTER, &grp.name, t.font(t.font.ui), t.text_bright);
+        if let Some((mute, solo)) = l.buttons {
+            paint_toggle(p, t, mute, Icon::Mute, grp.muted);
+            paint_toggle(p, t, solo, Icon::Solo, grp.solo);
+        }
+        let y = l.rect.max.y;
+        let x = Rangef::new(g.rect.min.x, g.rect.min.x + g.header_w);
+        p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, t.track_separator);
+        p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y + 1.0, y + 2.0)), 0.0, t.track_separator_2);
+    }
 }
 
 /// Header reorder drag: the dragged tracks (one kind) and the gap they would land in.
@@ -380,7 +464,9 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
     if let Some(d) = st.track_drag.as_mut() {
         let (ptr, down) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
         if let Some(p) = ptr {
-            d.to = ((p.y - d.origin_y).abs() > 4.0).then(|| rows.iter().filter(|r| r.is_video == d.is_video && r.top + r.h * 0.5 < p.y).count());
+            // The gap before the first row of the kind below the pointer (rows skip hidden and collapsed tracks).
+            let len = project.timeline.tracks(d.is_video).len();
+            d.to = ((p.y - d.origin_y).abs() > 4.0).then(|| rows.iter().find(|r| r.is_video == d.is_video && r.top + r.h * 0.5 >= p.y).map_or(len, |r| r.idx));
         }
         if !down {
             if let Some(to) = d.to {
@@ -398,14 +484,14 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
 pub(super) fn paint_reorder(p: &Painter, g: &Geo, rows: &[Row], st: &TlState) {
     let Some((v, to)) = st.track_drag.as_ref().and_then(|d| Some((d.is_video, d.to?))) else { return };
     let kind: Vec<&Row> = rows.iter().filter(|r| r.is_video == v).collect();
-    let Some(y) = kind.get(to).map(|r| r.top).or_else(|| kind.last().map(|r| r.top + r.h)) else { return };
+    let Some(y) = kind.iter().find(|r| r.idx == to).map(|r| r.top).or_else(|| kind.last().map(|r| r.top + r.h)) else { return };
     let x = Rangef::new(g.rect.min.x, g.lanes.max.x);
     let r = Rect::from_x_y_ranges(x, Rangef::new(y.round() - 1.0, y.round() + 1.0)).intersect(Rect::from_x_y_ranges(x, Rangef::new(g.list.min.y, g.list.max.y)));
     p.rect_filled(r, 0.0, theme::get().accent);
 }
 
 /// Paint every visible header, the empty area below them and the separators.
-pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: &Selection) {
+pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Selection) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     let p = p.with_clip_rect(g.list.intersect(p.clip_rect()));
@@ -488,8 +574,9 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], project: &Project, sel: 
             paint_meter(&p, &t, m, l.body.min.y + 2.0, input);
         }
     }
+    paint_heads(&p, &t, g, heads, project);
     // Separators (2 px under each track) and the empty area below the last track.
-    let last = rows.last().map_or(g.list.min.y, |r| r.top + r.h);
+    let last = rows.iter().map(|r| r.top + r.h).chain(heads.iter().map(|h| h.top + GROUP_H)).fold(g.list.min.y, f32::max);
     for row in rows {
         let y = row.top + row.h - 2.0;
         let r = Rect::from_x_y_ranges(Rangef::new(g.rect.min.x, g.rect.min.x + g.header_w), Rangef::new(y, y + 1.0));
@@ -518,7 +605,14 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
         if on {
             p.circle_filled(r.right_bottom() - vec2(3.0, 3.0), 2.0, t.accent);
         }
-    } else if v16 {
+    } else {
+        paint_toggle(p, t, r, icon, on);
+    }
+}
+
+/// A header toggle button (Mute, Solo...), lit when `on`.
+fn paint_toggle(p: &Painter, t: &Theme, r: Rect, icon: Icon, on: bool) {
+    if t.look() == UiLook::Vegas16 {
         paint_icon(p, r, icon, t.look(), None);
         if on {
             p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));
