@@ -733,13 +733,15 @@ pub fn set_crossfade_curve(project: &mut Project, a: &str, b: &str, out: Curve, 
 
 // ---- Ripple ----
 
-/// What a ripple moves besides the events on the affected tracks (Options › Ripple). Milan Pro has no bus tracks,
-/// so VEGAS's "Affected Tracks, Bus Tracks, Markers, and Regions" is `AffectedMarkers`.
+/// What a ripple moves besides the events on the affected tracks (Options › Ripple).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RippleMode {
     #[default]
     Affected,
+    /// Affected Tracks, Bus Tracks, Markers, and Regions.
     AffectedMarkers,
+    /// R8b: Affected Tracks, Markers, and Regions: the bus tracks' envelopes stay.
+    AffectedMarkersOnly,
     All,
 }
 
@@ -757,7 +759,8 @@ pub struct RippleOp {
 
 /// Ripple: unlocked events at or after `from` move by `delta` (clamped so none goes before 0), with their tracks'
 /// envelope keys at or after `keys_from` (keys in a gap being closed are deleted). Modes other than Affected also move
-/// markers, regions and the time selection (one that straddles `keys_from` stretches); All moves every track.
+/// markers, regions and the time selection (one that straddles `keys_from` stretches); All moves every track. All and
+/// AffectedMarkers also move the bus tracks' envelope keys (audio busses, assignable FX chains, the Video Bus Track).
 pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
     const EPS: f64 = 1e-9;
     let all = mode == RippleMode::All;
@@ -772,6 +775,18 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
     }
     let from = op.keys_from.unwrap_or(op.from);
     let at_or_after = |t: f64| t >= from - EPS;
+    let shift = |e: &mut Envelope| {
+        let keys = &mut e.points.keys;
+        if d < 0.0 {
+            keys.retain(|k| k.t < from + d - EPS || at_or_after(k.t));
+        }
+        let mut done = false;
+        for k in keys.iter_mut().filter(|k| at_or_after(k.t)) {
+            k.t = (k.t + d).max(0.0);
+            done = true;
+        }
+        done
+    };
     let mut done = false;
     for t in tracks_mut(tl).filter(|t| hit(t)) {
         for c in t.clips.iter_mut().filter(|c| moves(c)) {
@@ -780,14 +795,13 @@ pub fn ripple(project: &mut Project, op: &RippleOp, mode: RippleMode) -> bool {
         }
         t.clips.sort_by(|a, b| a.position.total_cmp(&b.position));
         for e in &mut t.envelopes {
-            let keys = &mut e.points.keys;
-            if d < 0.0 {
-                keys.retain(|k| k.t < from + d - EPS || at_or_after(k.t));
-            }
-            for k in keys.iter_mut().filter(|k| at_or_after(k.t)) {
-                k.t = (k.t + d).max(0.0);
-                done = true;
-            }
+            done |= shift(e);
+        }
+    }
+    if matches!(mode, RippleMode::AffectedMarkers | RippleMode::All) {
+        let a = &mut tl.audio;
+        for e in a.buses.iter_mut().chain(&mut a.fx).flat_map(|b| &mut b.envelopes).chain(&mut tl.master.video_envelopes) {
+            done |= shift(e);
         }
     }
     if mode != RippleMode::Affected {
@@ -2136,9 +2150,17 @@ pub fn is_parent(tl: &Timeline, i: usize) -> bool {
     !tl.video_tracks.get(i).is_none_or(|t| t.child) && tl.video_tracks.get(i + 1).is_some_and(|t| t.child)
 }
 
-/// Insert/Remove Envelope on the Video Bus Track: Fade to Color, Motion Blur Amount or Video Supersampling.
-pub fn toggle_bus_envelope(project: &mut Project, kind: EnvKind) -> bool {
-    let envs = &mut project.timeline.master.video_envelopes;
+/// Insert/Remove Envelope on a bus track: the Video Bus Track's (`bus` None: Fade to Color, Motion Blur Amount or Video
+/// Supersampling) or, R8b, an audio bus's or assignable FX chain's (Volume, Pan or Mute).
+pub fn toggle_bus_envelope(project: &mut Project, bus: Option<&str>, kind: EnvKind) -> bool {
+    let a = &mut project.timeline.audio;
+    let envs = match bus {
+        None => &mut project.timeline.master.video_envelopes,
+        Some(id) => match a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id) {
+            Some(b) => &mut b.envelopes,
+            None => return false,
+        },
+    };
     let n = envs.len();
     envs.retain(|e| e.kind != kind);
     if envs.len() == n {
@@ -2518,7 +2540,6 @@ pub fn set_track_out(project: &mut Project, ids: &[String], out: &Out) -> bool {
 
 /// A bus's or assignable FX chain's output: the master or a bus. Err (with the message) when that would make a loop,
 /// as in Bus A → Bus B → Bus A; Ok(false) when nothing changed.
-#[allow(dead_code)] // the bus strips' Output button (Mixing Console and bus tracks, R8b)
 pub fn set_bus_out(project: &mut Project, id: &str, out: &Out) -> Result<bool, String> {
     let a = &project.timeline.audio;
     let name = |id: &str| a.bus(id).map_or(String::new(), |b| b.name.clone());
@@ -3873,6 +3894,29 @@ mod tests {
         let tl = &p.timeline;
         assert_eq!((starts(&tl.video_tracks[1]), starts(&tl.audio_tracks[0])), (vec![6.0], vec![7.0]));
 
+        // R8b: bus tracks. A Bus A Volume envelope point and a Video Bus Track point at 4 s move with the bus-track
+        // modes; Affected Tracks, Markers, and Regions moves the markers but leaves them.
+        let bus_project = || {
+            let (mut p, tr) = ripple_project();
+            let op = RippleOp { from: 3.0, delta: 2.0, tracks: vec![tr[0].clone()], ..Default::default() };
+            set_bus_count(&mut p, 1);
+            let id = p.timeline.audio.buses[0].id.clone();
+            toggle_bus_envelope(&mut p, Some(&id), EnvKind::Volume);
+            toggle_bus_envelope(&mut p, None, EnvKind::FadeToColor);
+            let tl = &mut p.timeline;
+            for e in tl.audio.buses[0].envelopes.iter_mut().chain(&mut tl.master.video_envelopes) {
+                env_insert(e, 4.0, 0.0);
+            }
+            (p, op)
+        };
+        let bus_keys = |p: &Project| (p.timeline.audio.buses[0].envelopes[0].points.times(), p.timeline.master.video_envelopes[0].points.times());
+        for (mode, at) in [(RippleMode::AffectedMarkers, 6.0), (RippleMode::All, 6.0), (RippleMode::AffectedMarkersOnly, 4.0), (RippleMode::Affected, 4.0)] {
+            let (mut p, op) = bus_project();
+            assert!(ripple(&mut p, &op, mode), "{mode:?}");
+            assert_eq!(bus_keys(&p), (vec![0.0, at], vec![0.0, at]), "{mode:?}");
+            assert_eq!(p.timeline.markers[1].position, if mode == RippleMode::Affected { 4.0 } else { 6.0 }, "{mode:?}");
+        }
+
         // A negative delta stops where the first moved event reaches 0; excluded events stay.
         let (mut p, tr) = ripple_project();
         let id = p.timeline.video_tracks[0].clips[2].id.clone();
@@ -4606,8 +4650,9 @@ mod tests {
         let (mut list, free) = fx_list(&p, &target).unwrap();
         list[0].params.insert("height".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.9, curve: Curve::Linear }] });
         assert!(free && set_fx_list(&mut p, &target, list.clone()) && !set_fx_list(&mut p, &target, list));
-        assert!(toggle_bus_envelope(&mut p, EnvKind::MotionBlur) && p.timeline.master.video_envelopes[0].kind == EnvKind::MotionBlur);
-        toggle_bus_envelope(&mut p, EnvKind::MotionBlur);
+        assert!(toggle_bus_envelope(&mut p, None, EnvKind::MotionBlur) && p.timeline.master.video_envelopes[0].kind == EnvKind::MotionBlur);
+        toggle_bus_envelope(&mut p, None, EnvKind::MotionBlur);
+        assert!(!toggle_bus_envelope(&mut p, Some("no such bus"), EnvKind::Volume));
         assert!(p.timeline.master.video_envelopes.is_empty());
         // A mask keyed at 1 s and 3 s of an event split at 2 s: the right half's keys move 2 s earlier.
         let mut c = Clip::new("c", 0.0, 4.0);

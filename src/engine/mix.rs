@@ -402,7 +402,7 @@ impl Live {
 type Open = Box<dyn FnMut(&ASrc, i64) -> Result<Stream, String> + Send>;
 
 /// R8a: the RMS window of the level meters.
-const METER_WINDOW: usize = RATE as usize / 20;
+pub const METER_WINDOW: usize = RATE as usize / 20;
 
 /// R8a: a track's or bus's level meter, written by the mix thread and read by the UI: the peak |sample| since it was last
 /// taken, and the RMS over the last 50 ms, per channel (f32 bits). Post-fader: what the node sends on to its output.
@@ -414,12 +414,10 @@ pub struct Meter {
 
 impl Meter {
     /// The peaks since the last call (reading resets them).
-    #[allow(dead_code)] // read by the Mixing Console and the track meters (R8b)
     pub fn take_peaks(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
     }
 
-    #[allow(dead_code)] // read by the Mixing Console and the track meters (R8b)
     pub fn rms(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.rms[c].load(Relaxed)))
     }

@@ -50,7 +50,7 @@ pub enum Command {
     LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
     SaveLayoutAs,
     // Windows
-    FocusTimeline, Window(Panel), ShowWindow(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole,
+    FocusTimeline, Window(Panel), ShowWindow(Panel), EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner,
     DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
@@ -101,6 +101,12 @@ pub enum Command {
     AudioFollowsVelocity,
     /// R8a: Insert › Audio Bus and Audio Assignable FX...; Tools › Audio › Remove Assignable FX...
     InsertAudioBus, InsertAssignableFx, RemoveAssignableFx,
+    /// R8b: Project Properties › Audio (Master Bus Properties, the Mixing Console's Audio Properties...).
+    AudioProperties,
+    /// R8b: Edit › Post-Edit Ripple › Affected Tracks, Markers, and Regions (not the bus tracks).
+    RippleMarkers,
+    /// R8b: the audio track header's Show Output Meters, Use Vertical Meters and Channel Width (0-2).
+    OutputMeters, VerticalMeters, MeterWidth(u8),
 }
 
 use Command::*;
@@ -336,7 +342,7 @@ pub const TABLE: &[Row] = &[
     (PluginManager, "Plug-In Manager", &["Ctrl+Alt+1"], None),
     (VideoScopes, "Video Scopes", &["Ctrl+Alt+2"], None),
     (SurroundPanner, "Surround Panner", &["Ctrl+Alt+3"], None),
-    (MixingConsole, "Mixing Console", &["Ctrl+Alt+5"], Some(&["Ctrl+Alt+6"])),
+    (Window(Panel::MixingConsole), "Mixing Console", &["Ctrl+Alt+5"], Some(&["Ctrl+Alt+6"])),
     (DeviceExplorer, "Device Explorer", &["Ctrl+Alt+6"], Some(&["Ctrl+Alt+7"])),
     (LoudnessMeters, "Loudness Meters", &["Ctrl+Alt+7"], Some(&["Ctrl+Alt+8"])),
     (Dashboard, "Dashboard", &["Ctrl+Alt+8"], Some(&[])),

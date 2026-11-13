@@ -782,7 +782,8 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
     } else {
         off(ui, "FX Automation Envelopes", Later("R8c"));
         sep(ui);
-        menus::show(ui, &[K("Use Vertical Meters", false, Later("R8b")), K("Show Output Meters", true, Later("R8b"))]);
+        cmd(ui, "Use Vertical Meters", VerticalMeters);
+        cmd(ui, "Show Output Meters", OutputMeters);
     }
 }
 
@@ -899,10 +900,10 @@ const AUDIO_HEADER_END: &[M] = &[S, C("Set De&fault Track Properties...", Defaul
 
 const AUDIO_HEADER_METERS: &[M] = &[
     S,
-    K("Use &Vertical Meters", false, Later("R8b")),
-    K("Show Output &Meters", true, Later("R8b")),
+    C("Use &Vertical Meters", VerticalMeters),
+    C("Show Output &Meters", OutputMeters),
     S,
-    Sub("Channel Width", &[R("Narrow", false, Later("R8b")), R("Default", true, Later("R8b")), R("Wide", false, Later("R8b"))]),
+    Sub("Channel Width", &[C("Narrow", MeterWidth(0)), C("Default", MeterWidth(1)), C("Wide", MeterWidth(2))]),
 ];
 
 const EVENT_SHARED: &[M] = &[

@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 198 |
-| PARTIAL | 144 |
-| MISSING | 78 |
+| DONE | 202 |
+| PARTIAL | 141 |
+| MISSING | 77 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The gaps are nested timelines, the Mixing Console and bus lanes, and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -117,7 +117,7 @@ What matters most:
 | 4.3 | Preview monitor | DONE | `ui/preview.rs`, `decode.rs`, `engine/worker.rs` |
 | 4.4 | Multitrack timeline | DONE | `ui/timeline/` |
 | 4.5 | Track controls | DONE | `ui/timeline/tracks.rs` (mute, solo, lock, FX, level/vol/pan, arm) |
-| 4.6 | Audio mixer | PARTIAL | Only the Master Bus window (`ui/master_bus.rs`). Mixing Console is greyed (`menus.rs:630`), and per-track meters are not lit during playback (`tracks.rs:528`). → R8b |
+| 4.6 | Audio mixer | DONE | (R8b) Master Bus window (`ui/master_bus.rs`) with working Properties, Downmix, Dim and Mixing Console buttons; the Mixing Console window (`ui/mixer.rs`: strips for audio tracks, busses, assignable FX chains and the master, with Insert FX, Sends, I/O, VU Meters, Peak Meters and Faders regions); live meters in the track headers. |
 | 4.7 | Effects and transitions browser | DONE | `ui/choosers.rs` (search, categories, presets, animated transition thumbnails) |
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
@@ -403,10 +403,10 @@ What matters most:
 | 12.6 | Fade curves | DONE | Linear, fast, slow, smooth, sharp, hold |
 | 12.7 | Audio routing | DONE | See 5.18 (R8a) |
 | 12.8 | Master bus | DONE | `ui/master_bus.rs`, master FX |
-| 12.9 | Track buses | PARTIAL | (R8a) Insert › Audio Bus, Insert › Audio Assignable FX... (opens the chain's FX window), Tools › Audio › Remove Assignable FX...; bus FX, volume, pan, mute and Volume/Pan/Mute envelopes play (`ABus`). Missing: the controls for a bus's own fader, pan, mute, FX and output (Mixing Console) and bus lanes for its envelopes. → R8b |
-| 12.10 | Audio meters | PARTIAL | Master meters and armed-input meters only. Track meters stay unlit during playback; since R0 they say so on hover (`tracks.rs`). → R8b |
+| 12.9 | Track buses | DONE | (R8a) Insert › Audio Bus, Insert › Audio Assignable FX... (opens the chain's FX window), Tools › Audio › Remove Assignable FX...; bus FX, volume, pan, mute and Volume/Pan/Mute envelopes play (`ABus`). (R8b) A bus's fader, pan, mute, FX and output on its Mixing Console strip (`edit::set_bus_out` refuses loops), and View › Audio Bus Tracks (B): a lane per bus and chain with its Volume/Pan/Mute envelopes and Mute/Vol/Pan/FX/meter in its header (`ui/timeline/bus.rs`). No bus Solo and no Master bus track yet. |
+| 12.10 | Audio meters | DONE | (R8b) Track header meters show each track's post-fader level (L/R, 2 s peak hold, clip lamps, VP16 peak readout; Show Output Meters, Use Vertical Meters, Channel Width), as do the bus track headers, the console strips and the Master Bus window, all from one per-frame fold of the lock-free `mix::Meter`s (`mixer::feed_levels`). |
 | 12.11 | Peak meters | DONE | `master_bus.rs` (peak hold, clip lamps) |
-| 12.12 | VU-style meters | MISSING | → R8b |
+| 12.12 | VU-style meters | DONE | (R8b) The Mixing Console's VU Meters region (off by default, as VEGAS shows peak meters): 300 ms ballistics, 0 VU = -20 dBFS (`MeterView::vu_db`, test `vu_step_reaches_99_percent_in_300_ms`). |
 | 12.13 | Multichannel audio | MISSING | → R10a |
 | 12.14 | Sample-rate conversion | DONE | FFmpeg `-ar` in decode (`mix.rs:70`); render at project rate |
 | 12.15 | Audio effects chains | DONE | |
@@ -618,7 +618,7 @@ The inventory as found before R0:
 |---|---|---|
 | File | SaveVersion | R42 |
 | Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a, R6b, R12, R18a, R17b |
-| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b, R23, R23, R14 |
+| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
@@ -626,16 +626,16 @@ The inventory as found before R0:
 | Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5 (DONE), R8c |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
-| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7 (DONE), R18a, R13 |
+| View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a, R13 |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b, R59 |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a, R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
 **Toolbar buttons already labelled before R0** (R0 added the batch to each tooltip; they stay until their feature lands):
 - `explorer.rs:168-171`: Favorites, Start/Stop Preview, Auto Preview.
 - `media_panel.rs:161-183`: Capture, Import from Device, Get Media from the Web, Media FX, Auto Preview.
-- `master_bus.rs:69-72`: Master Bus Properties, Downmix, Dim, Mixing Console.
+- `master_bus.rs:69-72`: Master Bus Properties, Downmix, Dim, Mixing Console (R8b: DONE, they work).
 - `preview.rs:36-40`: External Monitor, Split-Screen.
 - `transport.rs:201-245`: Zoom Edit Tool, Smart Split, the three Nested Timeline buttons.
 - `toolbar.rs:207-208`: Tutorials, What's This.
@@ -1107,6 +1107,16 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Render equals preview (the same mixer).
 
 ### R8b: Mixing Console, track meters, master buttons (L)
+
+**Status: DONE.** Built as designed below, plus the items R0 assigned, except where VEGAS differs:
+- Meters: once a frame the app folds every `mix::Meter` and the master tap into a `MeterView` per id (`mixer::feed_levels`, in egui memory); track headers, bus track headers, console strips and the Master Bus window read it, so the mix thread still only writes atomics. Peak bars fall at 24 dB/s, peak holds stay 2 s, clip lamps and readouts latch until clicked. The master tap now also gives a 50 ms RMS for its VU. Track and bus meters lead the sound by the device queue (about 128 ms; shortcut noted in `feed_levels`).
+- VU: VEGAS has a separate VU Meters control region in the console (Properties and Layout › Show Control Regions), so the VU ballistics are that region, off by default; the peak meters stay the default everywhere.
+- Mixing Console (`ui/mixer.rs`, `Panel::MixingConsole`, View › Window › Mixing Console, Ctrl+Alt+5 / VP23 Ctrl+Alt+6): VEGAS's toolbar (Views › Channel List; Properties and Layout › Audio Properties..., Show Channels, Show Control Regions, Channel Width; Downmix Output; Dim Output; Insert Audio Track, Insert Assignable FX, Insert Bus; Insert Input Bus is R9), the Channel List (strip check boxes, for the session), and strips for audio tracks, busses, assignable FX chains and the master: Insert FX (click opens the chain), Sends (a fader per bus and chain, right-click Pre / Post Volume), I/O (output: Master or a bus; a bus loop is refused with `set_bus_out`'s message), VU Meters, Peak Meters, Faders (Arm, Mute, Solo, Invert Phase on tracks; Mute on busses; the master's Mute is Mute All Audio; Pan; the fader; a meter beside it when Peak Meters is hidden), and the label (click selects, double-click renames). Every control edit is one undo step. Layout is saved in the preferences (`Prefs.console`).
+- Master Bus window: Master Bus Properties opens Project Properties › Audio (`Command::AudioProperties`), Downmix Output plays (L+R)/2 on both sides, Dim Output (and `DimMaster`, Ctrl+Shift+F12) lowers the output 20 dB, both gliding, playback only (never rendered); Mixing Console opens the window. Its Mute is Mute All Audio; its Solo and automation badge say why they do nothing (R57 preview bus, R8c).
+- Audio Bus Tracks (View › Audio Bus Tracks, B; `Prefs.bus_tracks`): one 64 px row per bus and chain under the tracks (with the Video Bus Track), at most half the timeline (whole rows; shortcut: no scrolling of that area). Header: name, Mute, FX, Vol, Pan, meter; lane: Volume / Pan / Mute envelopes (right-click › Insert/Remove Envelope, point drags, double-click adds, point menu deletes). No Master bus track (it would need master envelopes in the engine).
+- Track header (R0 items): Show Output Meters, Use Vertical Meters (off draws L/R bars across the top row) and Channel Width (meter width) work and are saved in the preferences. Ripple: VEGAS's fourth mode, Affected Tracks, Markers, and Regions, is `RippleMode::AffectedMarkersOnly` (also Post-Edit Ripple); the bus-track modes (Affected Tracks, Bus Tracks, Markers, and Regions; All) also ripple the bus tracks' envelope keys.
+- View › Mixer Preview Fader is relabelled R57: the preview bus it shows plays the Explorer's previews, which Milan Pro does not have.
+- Not done: bus Solo, a Master bus track, the strips' recording input selector (R9), the console keys (F2, D/N/W, F/I/H/M/S: they clash with global keys while the pointer is over the console).
 
 **Scope**
 - Mixing Console window (strips: input/FX/sends/pan/fader/meter, mute, solo, arm).

@@ -259,8 +259,16 @@ pub fn draw_timeline(
     let frame = 1.0 / fps.max(1.0);
     // Quantize to Frames also puts a clicked cursor on a frame, as in VEGAS.
     let cursor_at = |t: f64| if quantize { edit::quantize(t.max(0.0), fps) } else { t.max(0.0) };
-    // The Video Bus Track docks under the tracks, above the scrollbar.
-    let bus_h = if opts.video_bus { bus::BUS_H.min((rect.height() - t.m.band_h - t.m.hscroll_h - 40.0).max(0.0)) } else { 0.0 };
+    // The bus tracks (Video Bus Track, R8b audio busses) dock under the tracks, above the scrollbar.
+    let bus_rows = bus::rows(project, opts.video_bus, opts.bus_tracks);
+    // At most half the rows area (the Video Bus Track alone always fits), so the tracks stay usable.
+    let avail = rect.height() - t.m.band_h - t.m.hscroll_h;
+    let cap = (avail * 0.5).max(bus::BUS_H).min((avail - 40.0).max(0.0));
+    // Whole rows only.
+    let bus_h = bus_rows.iter().map(bus::row_h).scan(0.0, |h, r| {
+        *h += r;
+        (*h <= cap).then_some(*h)
+    }).last().unwrap_or(0.0);
     let make_geo = |project: &Project| {
         let tl = &project.timeline;
         let clips_left = rect.min.x + header_w + gap;
@@ -1108,7 +1116,7 @@ pub fn draw_timeline(
     }
     scroll::paint(&painter, &g, content, project, *scroll_y);
     if bus_h > 0.0 {
-        bus::show(ui, &g, project, history, opts.hidden_envs);
+        bus::show(ui, &g, project, history, opts.hidden_envs, &bus_rows, bus_h);
     }
 
     rename_box(ui, &g, &rows, &heads, project, history, &mut st);

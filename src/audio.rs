@@ -23,6 +23,8 @@ const QUEUE: usize = 6;
 const STALL: Duration = Duration::from_millis(400);
 /// At most one device reopen this often.
 const REOPEN_EVERY: Duration = Duration::from_secs(2);
+/// R8b: Dim Output's -20 dB.
+const DIM: f32 = 0.1;
 
 fn ffmpeg() -> Command {
     let mut cmd = crate::proc::ffmpeg();
@@ -32,11 +34,17 @@ fn ffmpeg() -> Command {
 
 // ---- Output ----
 
-/// Master bus shared with the output thread: L/R fader gain in, peak levels out (f32 bits in atomics).
+/// Master bus shared with the output thread: L/R fader gain, Dim and Downmix in; peak and RMS levels out (f32 bits in
+/// atomics).
 #[derive(Default)]
 pub struct Master {
     gain: [AtomicU32; 2],
     peak: [AtomicU32; 2],
+    /// R8b: the RMS of the last 50 ms sent to the device, per channel.
+    rms: [AtomicU32; 2],
+    /// R8b: Dim Output (-20 dB) and Downmix Output (stereo to mono): playback monitoring only, never rendered.
+    pub dim: AtomicBool,
+    pub mono: AtomicBool,
 }
 
 impl Master {
@@ -59,6 +67,16 @@ impl Master {
     /// Highest |sample| per channel sent to the device since the last call (after the master gain).
     pub fn take_peaks(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
+    }
+
+    /// R8b: the RMS of the last 50 ms sent to the device (for the VU meters).
+    pub fn rms(&self) -> [f32; 2] {
+        [0, 1].map(|c| f32::from_bits(self.rms[c].load(Relaxed)))
+    }
+
+    /// The device stopped: the RMS falls to silence.
+    pub fn clear_rms(&self) {
+        self.rms.iter().for_each(|a| a.store(0, Relaxed));
     }
 
     fn tap(&self, ch: usize, v: f32) {
@@ -84,14 +102,19 @@ struct Feed {
     calls: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
     master: Arc<Master>,
-    /// The master gain applied, gliding to the fader's (about 2 ms), so a move never steps on one sample.
+    /// The master gain applied (with Dim), gliding to the fader's (about 2 ms), so a move never steps on one sample.
     gain: [f32; 2],
+    /// R8b: how far Downmix Output has blended L and R (0 stereo .. 1 mono), gliding the same way.
+    mono: f32,
+    /// R8b: sum of squares and frame count of the current 50 ms RMS window.
+    sq: [f32; 2],
+    frames: usize,
 }
 
 impl Feed {
     fn new(rx: Receiver<Block>, clock: Arc<AtomicI64>, calls: Arc<AtomicU64>, stop: Arc<AtomicBool>, master: Arc<Master>) -> Self {
         let gain = [master.gain(0), master.gain(1)];
-        Self { rx, buf: Vec::new(), pos: 0, f0: 0, rate: 1.0, odd: false, clock, calls, stop, master, gain }
+        Self { rx, buf: Vec::new(), pos: 0, f0: 0, rate: 1.0, odd: false, clock, calls, stop, master, gain, mono: 0.0, sq: [0.0; 2], frames: 0 }
     }
 }
 
@@ -111,13 +134,29 @@ impl Iterator for Feed {
         }
         if let Some(&s) = self.buf.get(self.pos) {
             let ch = self.pos % 2;
+            // The frame's other channel (blocks hold whole frames).
+            let other = self.buf.get(if ch == 0 { self.pos + 1 } else { self.pos - 1 }).copied().unwrap_or(s);
             self.pos += 1;
             self.clock.store(self.f0 * 2 + (self.pos as f64 * self.rate).round() as i64, Relaxed);
-            let g = &mut self.gain[ch];
-            let to = self.master.gain(ch);
-            *g = if (to - *g).abs() < 1e-6 { to } else { *g + (to - *g) / 96.0 };
-            let v = s * *g;
+            let glide = |g: &mut f32, to: f32| *g = if (to - *g).abs() < 1e-6 { to } else { *g + (to - *g) / 96.0 };
+            if ch == 0 {
+                glide(&mut self.mono, if self.master.mono.load(Relaxed) { 1.0 } else { 0.0 });
+            }
+            let dim = if self.master.dim.load(Relaxed) { DIM } else { 1.0 };
+            glide(&mut self.gain[ch], self.master.gain(ch) * dim);
+            let m = self.mono * 0.5;
+            let v = (s * (1.0 - m) + other * m) * self.gain[ch];
             self.master.tap(ch, v);
+            self.sq[ch] += v * v;
+            if ch == 1 {
+                self.frames += 1;
+                if self.frames == mix::METER_WINDOW {
+                    for c in 0..2 {
+                        self.master.rms[c].store((self.sq[c] / self.frames as f32).sqrt().to_bits(), Relaxed);
+                    }
+                    (self.sq, self.frames) = ([0.0; 2], 0);
+                }
+            }
             return Some(v);
         }
         // Underrun: play silence without advancing the clock, so the playhead waits for audio.
@@ -329,6 +368,7 @@ impl Player {
         if let Some(s) = self.session.take() {
             s.stop.store(true, Relaxed);
         }
+        self.master.clear_rms();
     }
 
     /// A session is running (it may be stalled).
@@ -581,6 +621,23 @@ mod tests {
         assert!(out[0] > 0.9, "stepped: {}", out[0]);
         assert!(out.windows(2).all(|w| w[1] <= w[0]));
         assert!(*out.last().unwrap() < 1e-3, "{}", out.last().unwrap());
+    }
+
+    /// R8b: Dim Output lowers the output 20 dB and Downmix Output plays (L + R) / 2 on both sides, each gliding in.
+    #[test]
+    fn dim_and_downmix_glide_in() {
+        let master = Arc::new(Master::new());
+        let (tx, mut feed) = feed(master.clone());
+        tx.send((0, 1.0, [0.8, 0.2].repeat(RATE as usize / 10))).unwrap();
+        (master.dim.store(true, Relaxed), master.mono.store(true, Relaxed));
+        let out: Vec<f32> = (0..2 * RATE as usize / 10).map(|_| feed.next().unwrap()).collect();
+        assert!(out[0] > 0.5, "stepped: {}", out[0]);
+        let end = &out[out.len() - 2..];
+        assert!(end.iter().all(|v| (v - 0.05).abs() < 1e-4), "{end:?}");
+        // RMS of each 50 ms sent: the last window is all 0.05.
+        assert!(master.rms().iter().all(|r| (r - 0.05).abs() < 1e-3), "{:?}", master.rms());
+        master.clear_rms();
+        assert_eq!(master.rms(), [0.0, 0.0]);
     }
 
     #[test]

@@ -128,6 +128,11 @@ impl MeridianApp {
             assignable_fx: !tl.audio.fx.is_empty(),
             video_bus: self.prefs.video_bus,
             extra_modes: self.prefs.extra_blend_modes,
+            bus_tracks: self.prefs.bus_tracks,
+            dim: self.audio.master.dim.load(std::sync::atomic::Ordering::Relaxed),
+            output_meters: self.prefs.output_meters,
+            vertical_meters: self.prefs.vertical_meters,
+            meter_width: self.prefs.meter_width,
         }
     }
 
@@ -330,6 +335,7 @@ impl MeridianApp {
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
+            bus_tracks: p.bus_tracks,
         }
     }
 
@@ -1205,6 +1211,24 @@ impl MeridianApp {
                 self.prefs.video_bus = !self.prefs.video_bus;
                 self.save_prefs();
             }
+            BusTracks => {
+                self.prefs.bus_tracks = !self.prefs.bus_tracks;
+                self.save_prefs();
+            }
+            DimMaster => {
+                self.audio.master.dim.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            AudioProperties => self.settings.open_tab(&self.project, 1),
+            OutputMeters | VerticalMeters | MeterWidth(_) => {
+                let p = &mut self.prefs;
+                match c {
+                    OutputMeters => p.output_meters = !p.output_meters,
+                    VerticalMeters => p.vertical_meters = !p.vertical_meters,
+                    MeterWidth(w) => p.meter_width = w.min(2),
+                    _ => {}
+                }
+                self.save_prefs();
+            }
             ShowEnvelopes | LockEnvelopes => {
                 let p = &mut self.prefs;
                 if c == ShowEnvelopes {
@@ -1270,10 +1294,11 @@ impl MeridianApp {
             }
             SelectGroup => (self.sel.clips, self.sel.env) = (edit::expand_groups(&self.project, &self.sel.clips), None),
             // Post-Edit Ripple: the last edit's ripple, once, in the item's mode.
-            RippleAffected | RippleBus | RippleAll => {
+            RippleAffected | RippleBus | RippleMarkers | RippleAll => {
                 let mode = match c {
                     RippleAffected => edit::RippleMode::Affected,
                     RippleBus => edit::RippleMode::AffectedMarkers,
+                    RippleMarkers => edit::RippleMode::AffectedMarkersOnly,
                     _ => edit::RippleMode::All,
                 };
                 let (ops, xfade) = (self.post_edit_ops().to_vec(), self.prefs.auto_crossfade);
@@ -1922,6 +1947,34 @@ impl MeridianApp {
                 }
                 if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
                     edit::set_send(t, &a, 0.5, true);
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "mixer" | "bus-tracks" => {
+                // R8b: two busses (Bus A with a Volume envelope ramp) and an assignable FX chain, the first track
+                // sending to Bus A; the Mixing Console open, or the Audio Bus Tracks shown.
+                self.exec(ctx, InsertAudioBus);
+                self.exec(ctx, InsertAudioBus);
+                edit::insert_assignable_fx(&mut self.project, Vec::new()); // not through the command: no FX window
+                let a = self.project.timeline.audio.buses[0].id.clone();
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    edit::set_send(t, &a, 0.5, true);
+                }
+                edit::toggle_bus_envelope(&mut self.project, Some(&a), crate::project::EnvKind::Volume);
+                if let Some(e) = self.project.timeline.audio.buses[0].envelopes.first_mut() {
+                    edit::env_insert(e, 6.0, -12.0);
+                }
+                // Lit meters (no sound is played): each track and bus a different level, the first track clipping.
+                let tl = &self.project.timeline;
+                let ids: Vec<String> = tl.audio_tracks.iter().map(|t| t.id.clone()).chain(tl.audio.buses.iter().chain(&tl.audio.fx).map(|b| b.id.clone())).chain([ui::MASTER_LEVEL.to_string()]).collect();
+                for (k, id) in ids.iter().enumerate() {
+                    let d = if k == 0 { 0.0 } else { -6.0 - 5.0 * k as f32 };
+                    ui::show_level(ctx, id, [d, d - 3.0]);
+                }
+                if what == "mixer" {
+                    self.dock.open(crate::ui::dock::Panel::MixingConsole);
+                } else {
+                    self.prefs.bus_tracks = true;
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }

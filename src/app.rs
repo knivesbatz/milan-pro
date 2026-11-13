@@ -96,6 +96,8 @@ pub struct MeridianApp {
     trimmer: ui::Trimmer,
     preview_view: ui::PreviewView,
     master_view: ui::MasterView,
+    /// R8b: Mixing Console state that is not saved.
+    console: ui::ConsoleView,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -275,6 +277,7 @@ impl MeridianApp {
             trimmer,
             preview_view: ui::PreviewView::default(),
             master_view: ui::MasterView::default(),
+            console: ui::ConsoleView::default(),
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -475,6 +478,9 @@ impl eframe::App for MeridianApp {
             self.preview.visible = false;
             self.preview.mute = self.mute_video;
             let edit_point = self.edit_point();
+            // R8b: this frame's levels for every meter (track headers, Master Bus, Mixing Console).
+            ui::feed_levels(ctx, &self.audio.meters, &self.audio.master, self.audio.running());
+            let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             self.dock.show(ui, a.dock, |panel, bar, body| match panel {
                 Panel::ProjectMedia => {
                     ui::draw_media_toolbar(
@@ -541,14 +547,21 @@ impl eframe::App for MeridianApp {
                     });
                 }
                 Panel::MasterBus => {
-                    ui::master_bus_toolbar(bar);
+                    ui::master_bus_toolbar(bar, &self.audio.master, console_open);
                     // The faders edit the project's master gain (saved with it, used by the render).
                     self.master_view.gain = self.project.timeline.master.gain;
-                    ui::master_bus(body, &mut self.master_view, &self.audio.master, !self.project.timeline.master.audio_fx.is_empty());
+                    ui::master_bus(body, &mut self.master_view, !self.project.timeline.master.audio_fx.is_empty());
                     let down = body.input(|i| i.pointer.any_down());
                     set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
                 }
+                Panel::MixingConsole => {
+                    console_prefs |= ui::mixer_toolbar(bar, &mut self.prefs.console, &self.audio.master);
+                    ui::mixing_console(body, &mut self.console, &self.prefs.console, &mut self.project, &mut self.history, &mut self.sel);
+                }
             });
+            if console_prefs {
+                self.save_prefs();
+            }
             if preview_msg.is_some() {
                 self.message = preview_msg;
             }

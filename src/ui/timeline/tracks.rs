@@ -124,20 +124,36 @@ struct Layout {
     /// (slider, row rect, groove x range)
     sliders: Vec<(Slider, Rect, Rangef)>,
     meter: Option<Rect>,
+    /// R8b: the meter runs across the top row (Use Vertical Meters off).
+    hmeter: bool,
+}
+
+/// R8b: the track meters' view (track header › Show Output Meters, Use Vertical Meters, Channel Width).
+#[derive(Clone, Copy)]
+struct MeterOpts {
+    show: bool,
+    vertical: bool,
+    width: u8,
+}
+
+fn meter_opts(ctx: &Context) -> MeterOpts {
+    let s = crate::ui::menus::state(ctx);
+    MeterOpts { show: s.output_meters, vertical: s.vertical_meters, width: s.meter_width }
 }
 
 /// `sends`: the project has a bus or an assignable FX chain (an audio track shows the multipurpose slider).
-fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool) -> Layout {
+fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool, mo: MeterOpts) -> Layout {
     let v16 = t.look() == UiLook::Vegas16;
     let rect = Rect::from_min_size(pos2(g.rect.min.x, row.top), vec2(g.header_w, (row.h - 2.0).max(1.0)));
     let strip = rect.with_max_x((rect.min.x + t.m.color_strip_w).min(rect.max.x));
     let body = rect.with_min_x(strip.max.x + 1.0);
     let more = Rect::from_min_size(rect.min + vec2(5.0, 4.0), vec2(14.0, 14.0));
-    let meter_w = match (row.is_video, v16) {
+    let meter_w: f32 = match (row.is_video || !mo.show || !mo.vertical, v16) {
         (true, _) => 0.0,
         (false, true) => 21.0,
         (false, false) => 18.0,
-    };
+    } * [0.6, 1.0, 1.5][mo.width.min(2) as usize];
+    let meter_w = meter_w.round();
     let right = body.max.x - meter_w;
     let meter = (meter_w > 0.0 && body.width() > 120.0)
         // VP16 keeps 16 px above the meter for the peak readout on tall tracks only (68 px: labels fill it).
@@ -174,7 +190,16 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool) -> Layout {
             sliders.push((*s, r, groove));
         }
     }
-    Layout { rect, strip, body, more, buttons, sliders, meter }
+    // Horizontal meters: two bars across the top row, left of the buttons.
+    let hmeter = mo.show && !mo.vertical && !row.is_video;
+    let meter = if hmeter {
+        let x1 = buttons.iter().map(|b| b.1.min.x).fold(right, f32::min) - 8.0;
+        let th = [2.0, 3.0, 5.0][mo.width.min(2) as usize];
+        Some(Rect::from_min_max(pos2(body.min.x + 6.0, rect.min.y + 11.0 - th), pos2(x1, rect.min.y + 12.0 + th))).filter(|m| m.width() > 24.0)
+    } else {
+        meter
+    };
+    Layout { rect, strip, body, more, buttons, sliders, meter, hmeter }
 }
 
 /// A track group header: the row, its ▾ / ▸ disclosure, and its Mute and Solo buttons (None when too narrow).
@@ -280,7 +305,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             continue;
         }
         let sends = project.timeline.audio != AudioSettings::default();
-        let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed, sends);
+        let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed, sends, meter_opts(ui.ctx()));
         let id = ui.id().with(("track_hdr", row.is_video, row.idx));
         let tid = track_id(project, row);
 
@@ -415,10 +440,13 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             }
         }
 
-        // The meter stays dark in playback: say so rather than look live (R0).
+        // The meter (and the VP16 peak readout above it): a click resets the peak readout and the clip lamps.
         if let Some(m) = l.meter.filter(|m| visible(*m)) {
-            let tip = crate::ui::menus::Later("R8b").tip("Playback level meter");
-            ui.interact(m, id.with("meter"), Sense::hover()).on_hover_text(format!("{tip}; an armed track's meter shows its recording input"));
+            let hit = if l.hmeter { m } else { m.with_min_y(l.body.min.y + 2.0) };
+            let tip = if project.timeline.tracks(row.is_video)[row.idx].armed { "Recording input level" } else { "Playback level: click to reset the peaks" };
+            if ui.interact(hit, id.with("meter"), Sense::click()).on_hover_text(tip).clicked() {
+                crate::ui::mixer::reset_level(ui.ctx(), &tid);
+            }
         }
 
         // Sliders: drag (Ctrl = fine), click jumps, double-click resets, wheel nudges.
@@ -588,7 +616,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             continue;
         }
         let tr = &project.timeline.tracks(row.is_video)[row.idx];
-        let l = layout(&t, g, row, tr.armed, project.timeline.audio != AudioSettings::default());
+        let l = layout(&t, g, row, tr.armed, project.timeline.audio != AudioSettings::default(), meter_opts(p.ctx()));
         let cx = send_cx(&project.timeline, tr);
         let color = t.track_color(row.num);
         let selected = sel.tracks.contains(&tr.id);
@@ -663,9 +691,14 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             }
         }
         if let Some(m) = l.meter {
-            // An armed track meters the recording input.
+            // An armed track meters the recording input; otherwise its playback level (post-fader).
             let input = crate::ui::menus::state(p.ctx()).input_level.filter(|_| tr.armed);
-            paint_meter(&p, &t, m, l.body.min.y + 2.0, input);
+            let lv = crate::ui::mixer::level(p.ctx(), &tr.id);
+            if l.hmeter {
+                paint_hmeter(&p, &t, m, input, &lv);
+            } else {
+                paint_meter(&p, &t, m, l.body.min.y + 2.0, input, &lv);
+            }
         }
     }
     paint_heads(&p, &t, g, heads, project);
@@ -719,18 +752,16 @@ fn paint_toggle(p: &Painter, t: &Theme, r: Rect, icon: Icon, on: bool) {
     }
 }
 
-/// Level meter with dB labels: empty (playback levels are not metered per track yet), or lit to `input` (a linear
-/// peak) on an armed track. VP16 shows the peak readout above it.
-fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>) {
+/// Level meter with dB labels: the track's playback level `lv` (L and R bars, peak holds, clip lamps), or lit to
+/// `input` (a linear peak) on an armed track. VP16 shows the peak readout above it.
+fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>, lv: &crate::ui::mixer::MeterView) {
     let v16 = t.look() == UiLook::Vegas16;
     let to_y = |d: f32| m.min.y + m.height() * (-d / 60.0).clamp(0.0, 1.0);
-    if t.meter_unlit > 0.0 {
-        crate::ui::master_bus::paint_bar(p, m, m.min.y, &to_y, false, t.meter_unlit);
-    } else {
-        p.rect_filled(m, 0.0, t.meter_bg);
-    }
-    if let Some(v) = input.filter(|v| *v > 1e-3) {
-        crate::ui::master_bus::paint_bar(p, m, to_y(20.0 * v.log10()), &to_y, v16, 1.0);
+    crate::ui::mixer::paint_well(p, m);
+    match input {
+        Some(v) if v > 1e-3 => crate::ui::master_bus::paint_bar(p, m, to_y(20.0 * v.log10()), &to_y, v16, 1.0),
+        Some(_) => {}
+        None => crate::ui::mixer::paint_levels(p, m, lv, v16),
     }
     let font = t.font(t.font.meter);
     let labels: &[i32] = if v16 { &[12, 24, 36, 48] } else { &[9, 18, 27, 36, 45, 54] };
@@ -743,7 +774,37 @@ fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>) {
         }
     }
     if v16 && m.min.y - top >= 10.0 {
-        p.text(pos2(m.max.x, top), Align2::RIGHT_TOP, "-Inf.", font, t.text_secondary);
+        let peak = if input.is_some() { "-Inf.".to_string() } else { lv.peak_text() };
+        p.text(pos2(m.max.x, top), Align2::RIGHT_TOP, peak, font, if lv.clip.iter().any(|c| *c) && input.is_none() { t.meter_red } else { t.text_secondary });
+    }
+}
+
+/// R8b: the horizontal meter (Use Vertical Meters off): L over R, -60 dB at the left, yellow above -6 dB, a red clip
+/// lamp at the right end.
+fn paint_hmeter(p: &Painter, t: &Theme, m: Rect, input: Option<f32>, lv: &crate::ui::mixer::MeterView) {
+    let th = ((m.height() - 1.0) * 0.5).floor().max(1.0);
+    let to_x = |d: f32| m.min.x + m.width() * (1.0 + d / 60.0).clamp(0.0, 1.0);
+    let x6 = to_x(-6.0);
+    for c in 0..2 {
+        let y0 = m.min.y + c as f32 * (th + 1.0);
+        let y = Rangef::new(y0, y0 + th);
+        p.rect_filled(Rect::from_x_y_ranges(m.x_range(), y), 0.0, t.meter_bg);
+        let d = input.map_or(lv.level[c], crate::ui::mixer::db);
+        if d > -60.0 {
+            let x = to_x(d.min(0.0));
+            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(m.min.x, x.min(x6)), y), 0.0, t.meter_green);
+            if x > x6 {
+                p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x6, x), y), 0.0, t.meter_yellow);
+            }
+        }
+        let h = lv.hold[c].0;
+        if input.is_none() && h > -60.0 {
+            let x = to_x(h.min(0.0)).round();
+            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x - 1.0, x), y), 0.0, if h >= -6.0 { t.meter_yellow } else { t.meter_green });
+        }
+        if input.is_none() && lv.clip[c] {
+            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(m.max.x - 4.0, m.max.x), y), 0.0, t.meter_red);
+        }
     }
 }
 

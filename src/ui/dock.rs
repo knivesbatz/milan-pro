@@ -19,10 +19,12 @@ pub enum Panel {
     MasterBus,
     /// View › Window › Compositors (not in a default layout, as in VEGAS).
     Compositors,
+    /// R8b: View › Window › Mixing Console (not in a default layout).
+    MixingConsole,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 11] = [
+    pub const ALL: [Panel; 12] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -34,6 +36,7 @@ impl Panel {
         Panel::Trimmer,
         Panel::MasterBus,
         Panel::Compositors,
+        Panel::MixingConsole,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -50,6 +53,7 @@ impl Panel {
             Panel::Trimmer => "Trimmer",
             Panel::MasterBus => "Master Bus",
             Panel::Compositors => "Compositors",
+            Panel::MixingConsole => "Mixing Console",
         }
     }
 

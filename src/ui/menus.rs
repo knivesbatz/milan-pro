@@ -145,6 +145,13 @@ pub struct CmdState {
     pub extra_modes: bool,
     /// The project has an assignable FX chain (Remove Assignable FX).
     pub assignable_fx: bool,
+    /// R8b: View › Audio Bus Tracks; Dim Output is on; the track header's Show Output Meters, Use Vertical Meters and
+    /// Channel Width (0 narrow, 1 default, 2 wide).
+    pub bus_tracks: bool,
+    pub dim: bool,
+    pub output_meters: bool,
+    pub vertical_meters: bool,
+    pub meter_width: u8,
 }
 
 impl CmdState {
@@ -192,7 +199,7 @@ impl CmdState {
             NextTool | PrevTool | AutoRipple | RippleMode(_) | IgnoreGrouping | Tool(_) => true,
             Group => self.n_sel >= 2,
             RemoveFromGroup | ClearGroup | SelectGroup => self.in_group,
-            RippleAffected | RippleBus | RippleAll => self.last_edit,
+            RippleAffected | RippleBus | RippleMarkers | RippleAll => self.last_edit,
             MuteTrack | SoloTrack => self.tracks_sel,
             FocusPrevTrack | FocusNextTrack => self.any_tracks,
             InsertRegion | ZoomSelection => self.selection,
@@ -221,6 +228,7 @@ impl CmdState {
             SetStream(n) => self.clip && n < self.streams,
             Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx => true,
             RemoveAssignableFx => self.assignable_fx,
+            BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -260,6 +268,11 @@ impl CmdState {
             Quickfade => self.quickfade,
             AudioFollowsVelocity => self.audio_follows_velocity,
             VideoBusTrack => self.video_bus,
+            BusTracks => self.bus_tracks,
+            DimMaster => self.dim,
+            OutputMeters => self.output_meters,
+            VerticalMeters => self.vertical_meters,
+            MeterWidth(w) => self.meter_width == w,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             ToggleVideoEnvelope(k) => self.focus_venvs.contains(&k),
@@ -271,7 +284,7 @@ impl CmdState {
             // Always-on behaviour Milan Pro has no switch for.
             SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
             EventHeaders => self.look == UiLook::Vegas16,
-            BusTracks | MediaMarkers | Multicam | ExternalMonitor => false,
+            MediaMarkers | Multicam | ExternalMonitor => false,
             _ => return None,
         })
     }
@@ -344,7 +357,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
-        DimMaster | BusTracks | MixingConsole => Later("R8b"),
         NextFxEnvelope | PrevFxEnvelope => Later("R8c"),
         SurroundPanner => Later("R10b"),
         RenderToNewTrack => Later("R12"),
@@ -459,7 +471,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
     let radio = matches!(
         c,
-        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
     );
     let mark = match st.checked(c) {
         Some(on) if radio => Mark::Radio(on),
@@ -643,12 +655,9 @@ const NAVIGATE: &[M] = &[
 const RIPPLE: &[M] = &[
     C("Affected &Tracks", RippleAffected),
     C("Affected Tracks, &Bus Tracks, Markers, and Regions", RippleBus),
-    X("Affected Tracks, &Markers, and Regions", NO_BUS),
+    C("Affected Tracks, &Markers, and Regions", RippleMarkers),
     C("&All Tracks, Markers, and Regions", RippleAll),
 ];
-
-/// Without bus tracks this ripple mode is the one above it.
-const NO_BUS: Why = Later("R8b");
 
 const SELECT: &[M] = &[
     C("Select &All", SelectAll),
@@ -817,7 +826,7 @@ const WINDOWS: &[M] = &[
     C("&Plug-In Manager", PluginManager),
     C("Video &Scopes", VideoScopes),
     C("S&urround Panner", SurroundPanner),
-    C("Mixing Console", MixingConsole),
+    C("Mixing Console", Window(Panel::MixingConsole)),
     C("Device Exp&lorer", DeviceExplorer),
     C("Loudness Meters", LoudnessMeters),
     V23(&C("Dashboard", Dashboard)),
@@ -855,7 +864,8 @@ pub const VIEW: &[M] = &[
     C("&Focus to Timeline", FocusTimeline),
     Sub("Window", WINDOWS),
     S,
-    K("Mixer Previe&w Fader", false, Later("R8b")),
+    // The preview bus it shows plays the Explorer's previews (R57); Milan Pro has none yet.
+    K("Mixer Previe&w Fader", false, NotPlanned("R57")),
     S,
     C("Audio Bus Tra&cks", BusTracks),
     C("Vide&o Bus Track", VideoBusTrack),
@@ -1062,7 +1072,7 @@ pub const OPTIONS: &[M] = &[
         S,
         C("Affected &Tracks", RippleMode(RippleMode::Affected)),
         C("Affected Tracks, &Bus Tracks, Markers, and Regions", RippleMode(RippleMode::AffectedMarkers)),
-        R("Affected Tracks, &Markers, and Regions", false, NO_BUS),
+        C("Affected Tracks, &Markers, and Regions", RippleMode(RippleMode::AffectedMarkersOnly)),
         C("&All Tracks, Markers, and Regions", RippleMode(RippleMode::All)),
     ]),
     C("Lock En&velopes to Events", LockEnvelopes),
@@ -1471,6 +1481,28 @@ mod tests {
         }
         assert!(!rows.iter().any(|(_, w)| *w == Later("R8a")), "{rows:?}");
         assert!(rows.iter().any(|(l, w)| l == "Audio Input Bus" && *w == Later("R9")), "{rows:?}");
+    }
+
+    /// R8b: the Mixing Console, Audio Bus Tracks, Dim master, Audio Properties (Master Bus Properties) and the fourth
+    /// ripple mode work; nothing in the menus waits on R8b any more.
+    #[test]
+    fn mixer_bus_track_and_dim_commands_work() {
+        let mut st = CmdState { look: UiLook::Vegas16, ..Default::default() };
+        for c in [Window(Panel::MixingConsole), BusTracks, DimMaster, AudioProperties, RippleMode(RippleMode::AffectedMarkersOnly), OutputMeters, VerticalMeters, MeterWidth(2)] {
+            assert!(unfinished(c).is_none() && st.enabled(c), "{c:?}");
+        }
+        assert!(unfinished(RippleMarkers).is_none() && !st.enabled(RippleMarkers));
+        st.last_edit = true;
+        assert!(st.enabled(RippleMarkers));
+        assert_eq!((st.checked(BusTracks), st.checked(DimMaster), st.checked(Window(Panel::MixingConsole))), (Some(false), Some(false), Some(false)));
+        assert_eq!((st.checked(OutputMeters), st.checked(MeterWidth(0)), st.checked(MeterWidth(1))), (Some(false), Some(true), Some(false)));
+        (st.bus_tracks, st.dim, st.open_panels) = (true, true, vec![Panel::MixingConsole]);
+        assert_eq!((st.checked(BusTracks), st.checked(DimMaster), st.checked(Window(Panel::MixingConsole))), (Some(true), Some(true), Some(true)));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R8b")), "{rows:?}");
     }
 
     /// R3a: the Loop switch, empty events, subclips, attribute paste and the group commands work, each once there is

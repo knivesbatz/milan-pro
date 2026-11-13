@@ -3,84 +3,49 @@
 use eframe::egui::*;
 use crate::audio::Master;
 use super::icons::{Icon, paint_icon};
-use super::menus::Later;
+use super::keymap::Command;
+use super::menus::send;
+use super::mixer::{self, MASTER, RANGE_DB};
 use super::theme::{self, UiLook};
 use super::timeline::{fader_gain, fader_pos};
-use super::toolbar::inert_button;
+use super::toolbar::tool_button;
 
-/// Meter range: 0 dB at the top of the wells, −60 dB at the bottom.
-const RANGE_DB: f32 = 60.0;
-/// Fall-back speed of the bars and of a released peak hold.
-const FALL_DB_PER_S: f32 = 24.0;
-const HOLD_S: f64 = 2.0;
-
+/// The master faders: L/R gains (linear); linked moves both. The meters are `mixer::level(MASTER)`.
 pub struct MasterView {
-    /// L/R fader gains (linear); linked moves both.
     pub gain: [f32; 2],
     pub linked: bool,
-    /// Displayed bar level and peak hold per channel, in dB.
-    level: [f32; 2],
-    hold: [(f32, f64); 2],
-    /// Highest level since the last reset (the readouts at the top), and the latched clip lamps.
-    max: [f32; 2],
-    clip: [bool; 2],
 }
 
 impl Default for MasterView {
     fn default() -> Self {
-        Self { gain: [1.0; 2], linked: true, level: [-f32::INFINITY; 2], hold: [(-f32::INFINITY, 0.0); 2], max: [-f32::INFINITY; 2], clip: [false; 2] }
+        Self { gain: [1.0; 2], linked: true }
     }
 }
 
-fn db(v: f32) -> f32 {
-    if v <= 1e-6 { -f32::INFINITY } else { 20.0 * v.log10() }
-}
-
-impl MasterView {
-    /// Fold in the peaks played since the last frame (`dt` seconds ago).
-    fn feed(&mut self, peaks: [f32; 2], now: f64, dt: f32) {
-        for c in 0..2 {
-            let d = db(peaks[c]);
-            self.level[c] = d.max(self.level[c] - FALL_DB_PER_S * dt);
-            let (h, at) = self.hold[c];
-            self.hold[c] = if d >= h {
-                (d, now)
-            } else if now - at > HOLD_S {
-                ((h - FALL_DB_PER_S * dt).max(d), at)
-            } else {
-                (h, at)
-            };
-            self.max[c] = self.max[c].max(d);
-            self.clip[c] |= peaks[c] >= 1.0;
-        }
+/// Master Bus toolbar: Master Bus Properties (Project Properties › Audio), Downmix Output (stereo / mono), Dim Output
+/// (-20 dB) and the Mixing Console.
+pub fn master_bus_toolbar(ui: &mut Ui, master: &Master, console: bool) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if tool_button(ui, Icon::Properties, "Master Bus Properties", true, false).clicked() {
+        send(ui.ctx(), Command::AudioProperties);
     }
-
-    fn reset(&mut self) {
-        self.max = [-f32::INFINITY; 2];
-        self.clip = [false; 2];
+    let (mono, dim) = (master.mono.load(Relaxed), master.dim.load(Relaxed));
+    if tool_button(ui, Icon::Downmix, if mono { "Downmix Output: Mono" } else { "Downmix Output: Stereo" }, true, mono).clicked() {
+        master.mono.store(!mono, Relaxed);
     }
-
-    fn active(&self) -> bool {
-        self.level.iter().chain(self.hold.iter().map(|h| &h.0)).any(|&l| l > -RANGE_DB)
+    if tool_button(ui, Icon::Dim, "Dim Output (-20 dB)", true, dim).clicked() {
+        send(ui.ctx(), Command::DimMaster);
     }
-}
-
-/// Master Bus toolbar: properties, downmix, dim, mixing console (not built yet: disabled).
-pub fn master_bus_toolbar(ui: &mut Ui) {
-    for (icon, label) in [(Icon::Properties, "Master Bus Properties"), (Icon::Downmix, "Downmix Output"), (Icon::Dim, "Dim Output"), (Icon::MixingConsole, "Mixing Console")] {
-        inert_button(ui, icon, &Later("R8b").tip(label), false);
+    if tool_button(ui, Icon::MixingConsole, "Mixing Console", true, console).clicked() {
+        send(ui.ctx(), Command::Window(super::dock::Panel::MixingConsole));
     }
 }
 
 /// `fx`: the Audio Master FX chain has plug-ins (its fx button is lit; a click opens it).
-pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool) {
+pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
-    let (now, dt) = ui.input(|i| (i.time, i.stable_dt.min(0.1)));
-    view.feed(master.take_peaks(), now, dt);
-    if view.active() {
-        ui.ctx().request_repaint();
-    }
+    let lv = mixer::level(ui.ctx(), MASTER);
 
     let r = ui.max_rect();
     let p = ui.painter().clone();
@@ -102,8 +67,21 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool)
                     super::open_tool(ui.ctx(), super::ToolWin::Fx(crate::edit::FxTarget::AudioMaster));
                 }
             }
-            Some(icon) => paint_icon(&p, c, *icon, t.look(), None),
-            None => automation_badge(&p, c),
+            // Mute silences playback (Options › Mute All Audio); the render keeps the sound, as a monitoring control.
+            Some(Icon::Mute) => {
+                let on = super::menus::state(ui.ctx()).mute_audio;
+                if super::mixer::toggle(ui, &p, c, ui.id().with("master_mute"), Some(Icon::Mute), "", on, "Mute (playback)") {
+                    send(ui.ctx(), Command::MuteAllAudio);
+                }
+            }
+            Some(icon) => {
+                paint_icon(&p, c, *icon, t.look(), None);
+                ui.interact(c, ui.id().with("master_solo"), Sense::hover()).on_hover_text(super::menus::NotPlanned("R57").tip("Solo: the master solos against the preview bus"));
+            }
+            None => {
+                automation_badge(&p, c);
+                ui.interact(c, ui.id().with("master_auto"), Sense::hover()).on_hover_text(super::menus::Later("R8c").tip("Automation Settings"));
+            }
         }
     }
 
@@ -113,12 +91,11 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool)
     // Peak readouts; a click resets them and the clip lamps.
     let ready = r.min.y + 44.0;
     for c in 0..2 {
-        let text = if view.max[c] > -RANGE_DB { format!("{:.1}", view.max[c]) } else { "-Inf.".into() };
-        p.text(pos2(wells[c] + 5.0, ready), Align2::CENTER_CENTER, text, font.clone(), t.text);
+        p.text(pos2(wells[c] + 5.0, ready), Align2::CENTER_CENTER, lv.readout(c), font.clone(), t.text);
     }
     let read_hit = Rect::from_x_y_ranges(Rangef::new(wells[0] - 14.0, wells[1] + 24.0), Rangef::new(ready - 7.0, ready + 7.0));
     if ui.interact(read_hit, ui.id().with("master_peaks"), Sense::click()).on_hover_text("Click to reset the peaks").clicked() {
-        view.reset();
+        mixer::reset_level(ui.ctx(), MASTER);
     }
 
     let top = r.min.y + 54.0;
@@ -139,20 +116,20 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool)
         } else {
             p.rect_filled(well, 0.0, t.meter_bg);
         }
-        let lvl = view.level[c];
+        let lvl = lv.level[c];
         if lvl > -RANGE_DB {
             paint_bar(&p, well, to_y(lvl.min(0.0)), &to_y, v16, 1.0);
         }
-        let (h, _) = view.hold[c];
+        let (h, _) = lv.hold[c];
         if h > -RANGE_DB {
             let y = to_y(h.min(0.0)).round();
             p.rect_filled(Rect::from_min_max(pos2(x, y), pos2(x + 10.0, y + 1.0)), 0.0, if h >= -6.0 { t.meter_yellow } else { t.meter_green });
         }
-        if view.clip[c] {
+        if lv.clip[c] {
             p.rect_filled(Rect::from_min_size(well.min, vec2(10.0, 4.0)), 0.0, t.meter_red);
         }
         if ui.interact(well, ui.id().with(("master_well", c)), Sense::click()).clicked() {
-            view.reset();
+            mixer::reset_level(ui.ctx(), MASTER);
         }
     }
     let step = (bottom - top) / 20.0;
@@ -171,7 +148,6 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, master: &Master, fx: bool)
         let text = if view.gain[c] <= 1e-5 { "-Inf.".to_owned() } else { format!("{g:.1}") };
         p.text(pos2(wells[c] + 5.0, bottom + 6.0), Align2::CENTER_TOP, text, font.clone(), if v16 { t.meter_label } else { t.text });
     }
-    master.set_gain(view.gain);
 }
 
 /// Solid green with yellow above −6 dB (VP16), or a green → yellow → red gradient by height (VP23), from `y` down.
@@ -299,27 +275,5 @@ fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, we
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn meter_ballistics_hold_and_clip() {
-        let mut m = MasterView::default();
-        m.feed([0.5, 1.0], 0.0, 0.016);
-        assert!((m.level[0] + 6.02).abs() < 0.01 && m.level[1] == 0.0);
-        assert!(m.clip[1] && !m.clip[0]);
-        // Silence: the bar falls at FALL_DB_PER_S, the hold stays for HOLD_S.
-        m.feed([0.0, 0.0], 1.0, 0.5);
-        assert!((m.level[0] - (-6.02 - 12.0)).abs() < 0.01);
-        assert!((m.hold[0].0 + 6.02).abs() < 0.01);
-        m.feed([0.0, 0.0], 3.0, 0.5);
-        assert!(m.hold[0].0 < -6.03);
-        assert!((m.max[0] + 6.02).abs() < 0.01);
-        m.reset();
-        assert!(!m.clip[1] && m.max[1] == -f32::INFINITY);
     }
 }

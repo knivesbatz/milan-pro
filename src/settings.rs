@@ -59,6 +59,13 @@ pub struct Prefs {
     pub extra_blend_modes: bool,
     /// View › Video Bus Track.
     pub video_bus: bool,
+    /// R8b: View › Audio Bus Tracks, and the Mixing Console's layout.
+    pub bus_tracks: bool,
+    pub console: crate::ui::ConsolePrefs,
+    /// R8b: the audio track header's Show Output Meters, Use Vertical Meters and Channel Width (0-2) for its meter.
+    pub output_meters: bool,
+    pub vertical_meters: bool,
+    pub meter_width: u8,
     /// VP23 plug-in chooser favourites (plug-in ids).
     pub fx_favorites: Vec<String>,
     /// Preferences › Editing: "Cut-to-overlap conversion" length (seconds) a transition dropped on a cut makes.
@@ -172,6 +179,11 @@ impl Default for Prefs {
             auto_proxy: false,
             extra_blend_modes: false,
             video_bus: false,
+            bus_tracks: false,
+            console: Default::default(),
+            output_meters: true,
+            vertical_meters: true,
+            meter_width: 1,
             fx_favorites: Vec::new(),
             cut_overlap: 1.0,
             cursor_preview: 3.0,
@@ -593,6 +605,10 @@ mod tests {
     fn a_bad_field_falls_back_alone() {
         let p = Prefs::parse(Ok(r#"{"quantize":false,"ripple_mode":"FromTheFuture","still_len":null,"recent":["a"]}"#.into())).unwrap();
         assert_eq!((p.quantize, p.ripple_mode, p.still_len, p.recent), (false, crate::edit::RippleMode::Affected, 5.0, vec!["a".to_string()]));
+        // R8b: a file from before the Mixing Console gets its defaults (VU meters off); the new ripple mode reads back.
+        assert_eq!((p.bus_tracks, p.console.regions, p.console.width), (false, [true, true, true, false, true, true], 1));
+        let q = Prefs::parse(Ok(r#"{"ripple_mode":"AffectedMarkersOnly","console":{"regions":[true,true,true,true,true,true]}}"#.into())).unwrap();
+        assert_eq!((q.ripple_mode, q.console.regions[3], q.console.channel_list), (crate::edit::RippleMode::AffectedMarkersOnly, true, true));
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

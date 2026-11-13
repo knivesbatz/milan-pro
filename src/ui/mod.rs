@@ -14,6 +14,7 @@ pub mod keymap;
 mod master_bus;
 mod media_panel;
 pub mod menus;
+mod mixer;
 mod pancrop;
 mod preview;
 mod properties;
@@ -36,6 +37,7 @@ pub use color_grading::{ColorGrading, color_grading_toolbar, draw_color_grading}
 pub use fx_window::FxWindow;
 pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};
 pub use master_bus::{MasterView, master_bus, master_bus_toolbar};
+pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_console, show_level, MASTER as MASTER_LEVEL};
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
 pub use pancrop::PanCropWin;
@@ -253,8 +255,9 @@ pub struct EditOpts {
     pub cut_overlap: f64,
     /// Waveform vertical zoom (Shift+Up / Shift+Down), 1 = full scale.
     pub wave_zoom: f32,
-    /// View › Video Bus Track.
+    /// View › Video Bus Track; R8b: View › Audio Bus Tracks.
     pub video_bus: bool,
+    pub bus_tracks: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
