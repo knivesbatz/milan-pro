@@ -97,6 +97,8 @@ pub enum Command {
     SetChannels(crate::project::ChannelMap),
     SetStream(u32),
     Quickfade,
+    /// Options › Audio Follows Video Velocity (per project, off as in VEGAS).
+    AudioFollowsVelocity,
 }
 
 use Command::*;

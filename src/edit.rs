@@ -1800,15 +1800,28 @@ fn velocity_followers(project: &Project, id: &str) -> Vec<String> {
     project.timeline.audio_tracks.iter().filter(|t| !t.locked).flat_map(|t| &t.clips).filter(|a| same(a)).map(|a| a.id.clone()).collect()
 }
 
-/// R4b: the audio of video event `id` follows its speed: its followers get a copy of its Velocity envelope (or lose
-/// theirs with it). VEGAS leaves the audio at normal speed; Milan Pro keeps an A/V pair in step.
+/// R4b: with Options › Audio Follows Video Velocity on, the audio of video event `id` follows its speed: its followers
+/// get a copy of its Velocity envelope (or lose theirs with it). Off (VEGAS: the audio stays at normal speed), they lose
+/// any copy.
 fn sync_velocity(project: &mut Project, id: &str) {
     let ids = velocity_followers(project, id);
-    let env = project.clip(id).and_then(|c| c.envelopes.iter().find(|e| e.kind == EnvKind::Velocity)).cloned();
+    let follow = project.timeline.audio_follows_velocity;
+    let env = project.clip(id).filter(|_| follow).and_then(|c| c.envelopes.iter().find(|e| e.kind == EnvKind::Velocity)).cloned();
     for a in project.timeline.audio_tracks.iter_mut().flat_map(|t| &mut t.clips).filter(|a| ids.contains(&a.id)) {
         a.envelopes.retain(|e| e.kind != EnvKind::Velocity);
         a.envelopes.extend(env.clone());
     }
+}
+
+/// Options › Audio Follows Video Velocity: set it `on` and copy (or remove) every video Velocity envelope's audio copy.
+pub fn set_audio_follows_velocity(project: &mut Project, on: bool) -> bool {
+    let done = project.timeline.audio_follows_velocity != on;
+    project.timeline.audio_follows_velocity = on;
+    let ids: Vec<String> = project.timeline.video_tracks.iter().flat_map(|t| &t.clips).filter(|c| c.envelopes.iter().any(|e| e.kind == EnvKind::Velocity)).map(|c| c.id.clone()).collect();
+    for id in &ids {
+        sync_velocity(project, id);
+    }
+    changed(project, done)
 }
 
 /// Insert/Remove Envelope › Velocity on video events `ids`: all take the opposite of the focus (last) event's state.
@@ -2928,11 +2941,14 @@ mod tests {
         assert!(toggle_velocity(&mut p, &[id.clone()]) && p.clip(&id).unwrap().envelopes[0].points.keys[0].v == 1.0);
     }
 
-    /// R4b: the audio of an A/V pair (grouped, same place and length) follows its video event's Velocity: inserted,
-    /// frozen, edited and removed with it. Audio elsewhere, or moved off, keeps its own speed.
+    /// R4b: with Options › Audio Follows Video Velocity on, the audio of an A/V pair (grouped, same place and length)
+    /// follows its video event's Velocity: inserted, frozen, edited and removed with it. Audio elsewhere, or moved off,
+    /// keeps its own speed. Off (the default, VEGAS) it never gets one, and turning it off removes the copies.
     #[test]
     fn audio_follows_its_video_velocity() {
         let mut p = Project::new("t");
+        assert!(!p.timeline.audio_follows_velocity, "VEGAS: audio keeps normal speed");
+        assert!(set_audio_follows_velocity(&mut p, true) && !set_audio_follows_velocity(&mut p, true));
         let (mut v, mut a, mut other) = (clip(10.0, 6.0, 1.0), clip(10.0, 6.0, 1.0), clip(10.0, 5.0, 1.0));
         for c in [&mut v, &mut a, &mut other] {
             (c.envelopes, c.group) = (Vec::new(), Some("g".into()));
@@ -2950,7 +2966,13 @@ mod tests {
         }));
         assert_eq!(vel(&p, &aid), vel(&p, &vid));
         assert_eq!(src_time(p.clip(&aid).unwrap(), 11.0), src_time(p.clip(&vid).unwrap(), 11.0));
+        // Off: the copy goes, later edits leave the audio alone; back on, it copies again.
+        assert!(set_audio_follows_velocity(&mut p, false) && vel(&p, &aid).is_none() && vel(&p, &vid).is_some());
+        assert!(freeze_frame(&mut p, &[vid.clone()], 14.0) && vel(&p, &aid).is_none());
+        assert!(set_audio_follows_velocity(&mut p, true) && vel(&p, &aid) == vel(&p, &vid));
         assert!(toggle_velocity(&mut p, &[vid.clone()]) && vel(&p, &aid).is_none());
+        p.timeline.audio_follows_velocity = false;
+        assert!(toggle_velocity(&mut p, &[vid.clone()]) && vel(&p, &vid).is_some() && vel(&p, &aid).is_none());
     }
 
     /// R4b: Pitch Up / Down move the selected audio events' pitch by semitones, cents and octaves, within two octaves;

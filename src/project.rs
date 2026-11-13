@@ -227,6 +227,10 @@ pub struct Timeline {
     /// Folder new recordings go to; None = the project file's folder.
     #[serde(default)]
     pub record_dir: Option<PathBuf>,
+    /// Options › Audio Follows Video Velocity: an A/V pair's audio plays its video event's Velocity envelope
+    /// (`edit::sync_velocity`). Off: the audio stays at normal speed, as in VEGAS.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_follows_velocity: bool,
 }
 
 fn default_zoom() -> f64 {
@@ -816,6 +820,7 @@ impl Timeline {
             scroll_x: 0.0,
             master: MasterBus::default(),
             record_dir: None,
+            audio_follows_velocity: false,
         }
     }
 
@@ -1361,9 +1366,10 @@ mod tests {
         // R4a: Fade Colors white over black (VEGAS's), no transition out, no velocity.
         assert_eq!(t.fade_colors, [[255, 255, 255], [0, 0, 0]]);
         assert!(c.transition_out.is_none() && crate::engine::velocity::of(c).is_none());
-        // R4b: no pitch change, and none written.
-        assert_eq!(c.pitch_cents, 0.0);
+        // R4b: no pitch change, and none written; audio does not follow video velocity (VEGAS), and that is not written.
+        assert!(c.pitch_cents == 0.0 && !tl.audio_follows_velocity);
         let v = serde_json::to_value(&p).unwrap();
+        assert!(v["timeline"].get("audio_follows_velocity").is_none());
         assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("transition_out").is_none(), "nothing written without one");
         assert!(v["timeline"]["video_tracks"][0]["clips"][0].get("pitch_cents").is_none());
         let tr: Transition = serde_json::from_str(r#"{"plugin":"milan.tr.dissolve"}"#).unwrap();
@@ -1417,6 +1423,7 @@ mod tests {
         p.settings.resample = Resample::Force;
         p.timeline.master = MasterBus { gain: [0.5, 0.75], audio_fx: vec![fx("milan.afx.eq")], video_fx: vec![fx("milan.fx.lut")] };
         p.timeline.record_dir = Some(PathBuf::from(r"D:\Takes"));
+        p.timeline.audio_follows_velocity = true;
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
         p.media_pool.push(MediaItem {
             id: "g".into(),
@@ -1440,6 +1447,7 @@ mod tests {
         assert_eq!(back.timeline.video_tracks[0].fade_colors, [[10, 20, 30], [200, 100, 50]]);
         assert_eq!(back.timeline.video_tracks[0].envelopes[3].kind, EnvKind::FadeToColor);
         assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
+        assert!(back.timeline.audio_follows_velocity);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();

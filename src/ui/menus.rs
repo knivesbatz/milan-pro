@@ -136,6 +136,8 @@ pub struct CmdState {
     pub streams: u32,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
+    /// Options › Audio Follows Video Velocity (the project's).
+    pub audio_follows_velocity: bool,
 }
 
 impl CmdState {
@@ -209,7 +211,7 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
-            Quickfade => true,
+            Quickfade | AudioFollowsVelocity => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -247,6 +249,7 @@ impl CmdState {
             SetChannels(ch) => self.channels == ch,
             SetStream(n) => self.stream == n,
             Quickfade => self.quickfade,
+            AudioFollowsVelocity => self.audio_follows_velocity,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             ToggleVideoEnvelope(k) => self.focus_venvs.contains(&k),
@@ -1044,6 +1047,7 @@ pub const OPTIONS: &[M] = &[
     S,
     C("&Automatic Crossfades", AutoCrossfade),
     C("Q&uickfade Audio Edits", Quickfade),
+    C("Audio Follows Video Velocit&y", AudioFollowsVelocity),
     C("Auto &Ripple", AutoRipple),
     Sub("&Ripple", &[
         C("Auto &Ripple", AutoRipple),
@@ -1478,6 +1482,10 @@ mod tests {
         assert_eq!((st.checked(EventSwitch(Switch::KeepAspect)), st.checked(EventSwitch(Switch::Invert))), (Some(true), Some(false)));
         assert_eq!((st.checked(SetResample(None)), st.checked(SetResample(Some(Resample::Force)))), (Some(false), Some(true)));
         assert_eq!((st.checked(SetChannels(ChannelMap::LeftOnly)), st.checked(SetStream(1)), st.checked(Quickfade)), (Some(true), Some(true), Some(true)));
+        // R4b: Audio Follows Video Velocity is an option, off until the project turns it on.
+        assert!(st.enabled(AudioFollowsVelocity) && st.checked(AudioFollowsVelocity) == Some(false));
+        st.audio_follows_velocity = true;
+        assert_eq!(st.checked(AudioFollowsVelocity), Some(true));
         let mut rows = Vec::new();
         for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
             greyed(items, &mut rows);

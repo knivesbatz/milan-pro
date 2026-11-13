@@ -122,6 +122,7 @@ impl MeridianApp {
             stream: clip.map_or(0, |c| c.stream),
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
             quickfade: self.prefs.quickfade,
+            audio_follows_velocity: tl.audio_follows_velocity,
         }
     }
 
@@ -1161,6 +1162,10 @@ impl MeridianApp {
                 } else if done {
                     self.reveal_envelopes();
                 }
+            }
+            AudioFollowsVelocity => {
+                let on = !self.project.timeline.audio_follows_velocity;
+                self.edit(|p| edit::set_audio_follows_velocity(p, on));
             }
             ShowEnvelopes | LockEnvelopes => {
                 let p = &mut self.prefs;
