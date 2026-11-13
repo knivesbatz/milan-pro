@@ -245,6 +245,25 @@ impl Worker {
         }
     }
 
+    /// R20: a layer of frame `s` whose next frame is an earlier one of the same picture (a reversed event, here or
+    /// starting soon) starts reading backwards now, so its first frames are not held while the chunks decode.
+    fn warm_back(&mut self, s: i64, w: u32, h: u32, q: Quality) {
+        let (a, b) = (plan::frame_plan(&self.plan, s), plan::frame_plan(&self.plan, s + 1));
+        let next = composite::requests(&b, w as usize, h as usize);
+        let reach = self.plan.fps.ceil() as i64;
+        for (src, dw, dh) in composite::requests(&a, w as usize, h as usize) {
+            let (Some(sf), None) = (src.sf, &src.generator) else { continue };
+            if self.failed.get(&src.m.id).is_some_and(|(_, at)| at.elapsed() < RETRY) {
+                continue;
+            }
+            let back = next.iter().find(|n| n.0.m.id == src.m.id && (n.1, n.2) == (dw, dh) && n.0.sf.is_some_and(|b| b < sf && sf - b <= reach));
+            // Already decoded (a loop's second pass): nothing to read.
+            if let Some((b, ..)) = back.filter(|n| self.sources.touch(&src_key(&self.pool, n.0, dw, q)).is_none()) {
+                self.pool.prewarm_back(&b.m, b.sf.unwrap_or_default(), dw, dh, q);
+            }
+        }
+    }
+
     /// Frame `n` at `w` x `h`, from the composite cache or composed now. Also returns the first decode error.
     pub fn frame(&mut self, n: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> (Arc<ColorImage>, Option<String>) {
         self.take_stills();
@@ -346,9 +365,13 @@ impl Worker {
             }
             if warmed.is_none_or(|t| t.elapsed() > Duration::from_millis(500)) {
                 warmed = Some(Instant::now());
-                for s in plan::warm_frames(&self.plan, n, (1.5 * fps) as i64, lpn) {
+                let starts = plan::warm_frames(&self.plan, n, (1.5 * fps) as i64, lpn);
+                for &s in &starts {
                     let fp = plan::frame_plan(&self.plan, s);
                     self.warm(&fp, w, h, q, true);
+                }
+                for s in std::iter::once(n).chain(starts) {
+                    self.warm_back(s, w, h, q);
                 }
                 let secs = since.elapsed().as_secs_f64().max(1e-3);
                 stats.fps_x100.store((frames as f64 / secs * 100.0) as u32, Relaxed);
@@ -408,7 +431,9 @@ pub fn run(rx: Receiver<VCmd>, latest: Arc<Mutex<Option<Shown>>>, clock: Arc<Ato
         }
         match pending {
             Some(VCmd::Show { seq, n, w, h, q }) => {
+                wk.pool.seeking = true;
                 let (img, err) = wk.frame(n, w, h, q, None);
+                wk.pool.seeking = false;
                 *latest.lock().unwrap() = Some((seq, img, err));
                 ctx.request_repaint();
             }
@@ -612,11 +637,187 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Where the bench media are cached: `MILAN_BENCH_DIR`, else `%TEMP%\milan-bench`.
+    fn bench_dir() -> std::path::PathBuf {
+        let dir = std::env::var_os("MILAN_BENCH_DIR").map_or_else(|| std::env::temp_dir().join("milan-bench"), std::path::PathBuf::from);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// R20: a 20 s 1080p 30 fps H.264 clip with one keyframe every 250 frames (no scene cuts), `testsrc2` with its frame
+    /// number burnt into the top left as 10 black or white 64x64 blocks (bit i at x = 64 i); cached in `bench_dir`.
+    /// With `proxy`, also its video proxy (`proxy::args`), made ready so Draft and Preview read it.
+    fn numbered_project(reverse: bool, proxy: bool) -> Project {
+        let path = bench_dir().join("numbered-20.mp4");
+        if !path.exists() {
+            let mut vf = String::from("drawbox=x=0:y=0:w=640:h=64:color=black:t=fill");
+            for i in 0..10 {
+                vf += &format!(",drawbox=x={}:y=0:w=64:h=64:color=white:t=fill:enable='mod(floor(n/{}),2)'", 64 * i, 1 << i);
+            }
+            let ok = crate::proc::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=20", "-vf", &vf])
+                .args(["-c:v", "libx264", "-preset", "veryfast", "-g", "250", "-sc_threshold", "0", "-pix_fmt", "yuv420p"])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+        let m = crate::media::probe_media(&path).unwrap();
+        use_proxy(&m, proxy);
+        let mut p = Project::new("numbered");
+        p.settings.frame_rate = 30.0;
+        let mut c = Clip::from_media(&m, 0.0);
+        c.reverse = reverse;
+        p.timeline.video_tracks[0].clips.push(c);
+        p.media_pool.push(m);
+        p
+    }
+
+    /// R20: read `m`'s video proxy at Draft and Preview (made beside it with `proxy::args` the first time), or not.
+    fn use_proxy(m: &crate::project::MediaItem, on: bool) {
+        if !on {
+            crate::proxy::forget(&m.path);
+            return;
+        }
+        let out = crate::proxy::proxy_path(&m.path);
+        if !out.exists() {
+            let partial = out.with_extension("partial.mp4");
+            let a = crate::proxy::args(m, &partial);
+            // Without the progress pipe, which nobody reads here.
+            let a: Vec<&String> = a.iter().filter(|x| !matches!(x.as_str(), "-progress" | "pipe:1")).collect();
+            assert!(crate::proc::ffmpeg().args(a).status().unwrap().success());
+            std::fs::rename(&partial, &out).unwrap();
+        }
+        crate::proxy::set_ready(m.path.clone(), out);
+    }
+
+    /// The frame number burnt into a picture of `numbered_project` (any 16:9 size).
+    fn frame_number(img: &ColorImage) -> i64 {
+        let s = img.size[0] as f64 / 1920.0;
+        let y = (32.0 * s) as usize;
+        (0..10).map(|i| (((64 * i + 32) as f64 * s) as usize, i)).map(|(x, i)| ((img.pixels[y * img.size[0] + x].g() > 128) as i64) << i).sum()
+    }
+
+    /// Needs ffmpeg. R20: 200 random seeks on long-GOP media (and on its proxy) each show exactly the frame asked for;
+    /// prints their latency. `cargo test --release -- --ignored --nocapture seeks_are_frame_exact_on_long_gop`
+    #[test]
+    #[ignore]
+    fn seeks_are_frame_exact_on_long_gop() {
+        for (proxy, q) in [(false, Quality::Good), (true, Quality::Preview)] {
+            let mut wk = Worker::new();
+            wk.set_plan(Arc::new(plan::compile(&numbered_project(false, proxy))));
+            wk.pool.seeking = true; // as the Video Preview's Shows are
+            let (mut x, mut times) = (12345u64, Vec::new());
+            for _ in 0..200 {
+                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let n = (x >> 33) as i64 % 600;
+                let t = Instant::now();
+                let (img, err) = wk.frame(n, 960, 540, q, None);
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+                assert!(err.is_none(), "{err:?}");
+                assert_eq!(frame_number(&img), n, "proxy {proxy}: seek to {n}");
+            }
+            let [p50, p95, max] = percentiles(&mut times);
+            println!("random seeks, proxy {proxy}: p50 {p50:.1} ms, p95 {p95:.1} ms, max {max:.1} ms");
+            println!("BENCH seek proxy={proxy} p50_ms={p50:.1} p95_ms={p95:.1} max_ms={max:.1}");
+        }
+    }
+
+    /// Needs ffmpeg. R20: a reversed 1080p event with one keyframe every 250 frames, played at 1x through the worker
+    /// against a 30 fps clock (as `play_project`): the share of frames due that went on screen showing exactly their
+    /// source frame. `cargo test --release -- --ignored --nocapture reverse_playback_shows_every_frame`
+    #[test]
+    #[ignore]
+    fn reverse_playback_shows_every_frame() {
+        let p = numbered_project(true, false);
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let (tx, frames) = mpsc::sync_channel(4);
+        let (_cmd_tx, cmd_rx) = mpsc::channel();
+        let (clock, stats) = (Arc::new(AtomicI64::new(0)), Arc::new(Stats::default()));
+        let (c2, s2) = (clock.clone(), stats.clone());
+        let player = std::thread::spawn(move || wk.play(0, 960, 540, Quality::Preview, None, &tx, &cmd_rx, &c2, &s2));
+        let first = frames.recv().unwrap();
+        assert_eq!(frame_number(&first.1), 599);
+        // 10 s of the 20 s event; frame u of the timeline is source frame 599 - u.
+        let (start, total) = (Instant::now(), 300i64);
+        let (mut exact, mut ahead, mut on_screen) = (1, None::<crate::engine::Played>, 0i64);
+        while on_screen < total {
+            let now = (start.elapsed().as_secs_f64() * 30.0) as i64;
+            clock.store(now, Relaxed);
+            // Like the Video Preview: of the frames due, the newest shows.
+            let mut due = None;
+            loop {
+                ahead = ahead.or_else(|| frames.try_recv().ok());
+                match &ahead {
+                    Some(f) if f.0 <= now => due = ahead.take(),
+                    _ => break,
+                }
+            }
+            if let Some((u, img, _)) = due {
+                exact += (frame_number(&img) == 599 - u) as i64;
+                on_screen = u;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(frames);
+        let _ = player.join();
+        let pct = 100.0 * exact as f64 / (total + 1) as f64;
+        println!("reverse_playback_shows_every_frame: {exact} of {} frames exact ({pct:.1} %)", total + 1);
+        println!("BENCH reverse frames={} exact={exact} pct={pct:.1}", total + 1);
+        assert!(pct >= 95.0, "{pct:.1} %");
+        // A render waits for every frame: each is exact.
+        let mut wk = Worker::for_render();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        for u in 0..90 {
+            assert_eq!(frame_number(&wk.frame(u, 960, 540, Quality::Good, None).0), 599 - u, "rendered frame {u}");
+        }
+    }
+
+    /// Needs ffmpeg. R20: dragging the cursor at 2x over the Video Preview (the app's path: `VideoEngine` at 60 Hz,
+    /// Shows coalesced by the worker), backwards and forwards, on the source and on its proxy: how far the picture on
+    /// screen trails the cursor (the scrub "jump"), p95 and max in seconds of timeline.
+    /// `cargo test --release -- --ignored --nocapture scrub_drag_follows_the_cursor`
+    #[test]
+    #[ignore]
+    fn scrub_drag_follows_the_cursor() {
+        for proxy in [false, true] {
+            let mut p = numbered_project(false, proxy);
+            for (name, from, to) in [("back", 12.0, 6.0), ("forward", 6.0, 12.0)] {
+                let mut e = crate::engine::VideoEngine::new(&egui::Context::default());
+                p.timeline.cursor_position = from;
+                let until = Instant::now() + Duration::from_secs(10);
+                while e.update(&p, 960, 540, Quality::Preview, true).is_none() {
+                    assert!(Instant::now() < until, "timed out");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                let (start, secs) = (Instant::now(), f64::abs(to - from) / 2.0);
+                let (mut lag, mut shown) = (Vec::new(), (from * 30.0) as i64);
+                loop {
+                    let t = start.elapsed().as_secs_f64().min(secs);
+                    p.timeline.cursor_position = from + (to - from) * t / secs;
+                    if let Some((img, err)) = e.update(&p, 960, 540, Quality::Preview, true) {
+                        assert!(err.is_none(), "{err:?}");
+                        shown = frame_number(&img);
+                    }
+                    lag.push((p.timeline.cursor_position * 30.0 - shown as f64).abs() / 30.0);
+                    if t >= secs {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+                let [_, p95, max] = percentiles(&mut lag);
+                println!("scrub drag {name} at 2x, proxy {proxy}: picture behind the cursor p95 {p95:.2} s, max {max:.2} s");
+                println!("BENCH drag dir={name} proxy={proxy} lag_p95_s={p95:.2} lag_max_s={max:.2}");
+            }
+        }
+    }
+
     /// `n` 1080p H.264 clips of `secs` seconds (cached between runs in `MILAN_BENCH_DIR`, else `%TEMP%\milan-bench`), on
     /// `n` tracks at Level 0.5 so every layer blends. `tools/bench.ps1` runs the benches below and writes PERFORMANCE.md.
     pub(crate) fn bench_project(n: usize, secs: u32) -> Project {
-        let dir = std::env::var_os("MILAN_BENCH_DIR").map_or_else(|| std::env::temp_dir().join("milan-bench"), std::path::PathBuf::from);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = bench_dir();
         let mut p = Project::new("bench");
         p.timeline.video_tracks.clear();
         for i in 0..n {
@@ -864,19 +1065,28 @@ pub(crate) mod tests {
     #[ignore]
     fn bench_scrub() {
         let p = bench_project(1, 12);
-        let mut wk = Worker::new();
-        wk.set_plan(Arc::new(plan::compile(&p)));
-        let mut times = Vec::new();
-        // Forward steps, then jumps: a mix of live-stream reads, respawns and cache hits.
+        // Forward steps, then jumps: a mix of live-stream reads, respawns and cache hits. R20: then 60 steps back from
+        // frame 300 (dragging left, J at -1x; the first, a seek, is not counted), on the source and on its proxy.
         let seq: Vec<i64> = (0..30).chain([300, 100, 250, 20, 301, 302, 303, 0, 1, 2]).collect();
-        for n in seq {
-            let t = Instant::now();
-            let (_, err) = wk.frame(n, 960, 540, Quality::Preview, None);
-            assert!(err.is_none(), "{err:?}");
-            times.push(t.elapsed().as_secs_f64() * 1000.0);
+        let back: Vec<i64> = (240..=300).rev().collect();
+        for proxy in [false, true] {
+            use_proxy(&p.media_pool[0], proxy);
+            for (name, seq, skip) in [("scrub", &seq, 0), ("scrub_back", &back, 1)] {
+                let mut wk = Worker::new();
+                wk.set_plan(Arc::new(plan::compile(&p)));
+                wk.pool.seeking = true; // as the Video Preview's Shows are
+                let mut times = Vec::new();
+                for &n in seq {
+                    let t = Instant::now();
+                    let (_, err) = wk.frame(n, 960, 540, Quality::Preview, None);
+                    assert!(err.is_none(), "{err:?}");
+                    times.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
+                let [p50, p95, max] = percentiles(&mut times[skip..]);
+                println!("bench_scrub {name}, proxy {proxy}: p50 {p50:.1} ms, p95 {p95:.1} ms, max {max:.1} ms");
+                println!("BENCH {name}{} p50_ms={p50:.1} p95_ms={p95:.1} max_ms={max:.1}", if proxy { "_proxy" } else { "" });
+            }
         }
-        let [p50, p95, max] = percentiles(&mut times);
-        println!("bench_scrub: p50 {p50:.1} ms, p95 {p95:.1} ms, max {max:.1} ms");
-        println!("BENCH scrub p50_ms={p50:.1} p95_ms={p95:.1} max_ms={max:.1}");
+        use_proxy(&p.media_pool[0], false);
     }
 }

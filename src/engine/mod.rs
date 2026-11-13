@@ -245,8 +245,10 @@ impl VideoEngine {
                 let _ = self.tx.send(VCmd::Show { seq: self.seq, n, w, h, q });
                 self.want = Some(key);
             }
-            let seq = self.seq;
-            let (g, img, err) = self.latest.lock().unwrap().take_if(|s| s.0 == seq)?;
+            // R20: any answer newer than the picture on screen shows, so a drag's picture follows the cursor as fast as
+            // the decoders go (waiting for the newest Show showed nothing until the cursor stopped).
+            let shown = self.shown_seq;
+            let (g, img, err) = self.latest.lock().unwrap().take_if(|s| s.0 > shown)?;
             self.shown_seq = g;
             return Some((img, err));
         };

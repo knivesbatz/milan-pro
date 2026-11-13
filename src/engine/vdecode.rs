@@ -1,5 +1,7 @@
 //! Persistent ffmpeg video decoders: raw RGBA frames streamed over a pipe and read forward.
 //! A request near a stream's position reads on (dropping frames); anything else spawns a new stream.
+//! R20: a picture read backwards (reversed events, J shuttle, dragging left) comes from chunks decoded forward that
+//! end at the frame asked for, kept while they are read, with the chunks before them decoding ahead.
 use eframe::egui::{Color32, ColorImage};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -18,6 +20,24 @@ const MAX_STREAMS: usize = 8;
 const IDLE: Duration = Duration::from_secs(5);
 /// Playback pre-warm reuses a stream only this many frames short of the target: reading farther misses the deadline.
 const JUMP: i64 = 4;
+/// R20: the chunks read backwards hold at most this many bytes of frames together (a chunk is at most 1 s, and
+/// shorter for big pictures: 30 frames at 960x540, 10 at 1920x1080; only pictures over 85 MB, 8K, pass it with
+/// one frame per chunk), and at most `MAX_STREAMS` chunks are open.
+// shortcut: one budget for every picture read backwards; two reversed layers at once share it and may evict each
+// other's read-ahead (a stutter, never a wrong frame). Give each its own share if that shows.
+const BACK_BYTES: usize = 256 << 20;
+/// Chunks decoding ahead of the one being read backwards.
+const BACK_AHEAD: usize = 2;
+/// Frames in the chunk of a single paused step back.
+const STEP_BACK: i64 = 8;
+
+/// Decoder threads for a source stream the UI waits on (a paused seek, a chunk read backwards): seeking long-GOP
+/// media decodes from the keyframe before the target, about 1.5x as fast with 4 threads as with 2. Playback and
+/// render streams (several at once, reading on) and proxies (a keyframe every 15 frames, where more threads only
+/// cost their start-up) keep 2.
+fn seek_threads() -> u32 {
+    std::thread::available_parallelism().map_or(2, |n| (n.get() as u32 / 4).clamp(2, 4))
+}
 
 pub struct DecSpec<'a> {
     pub path: &'a Path,
@@ -37,6 +57,10 @@ pub struct DecSpec<'a> {
     pub stream: u32,
     /// Optical Flow: motion-interpolated frames (minterpolate) instead of the latest source frame.
     pub flow: bool,
+    /// Decoder threads.
+    pub threads: u32,
+    /// Stop after this many frames (`lead` included); None streams to the end.
+    pub frames: Option<i64>,
 }
 
 /// ffmpeg arguments (after `-nostdin`) streaming frames `sf - lead`, ... on the project-fps grid.
@@ -46,7 +70,7 @@ pub struct DecSpec<'a> {
 // shortcut: minterpolate runs on the CPU at a few 1080p frames a second (VEGAS's Optical Flow is slow too); move it to
 // the GPU path (R21) if real-time Optical Flow previews are wanted.
 pub fn args(s: &DecSpec) -> Vec<String> {
-    let mut a: Vec<String> = ["-v", "error", "-threads", "2"].map(String::from).to_vec();
+    let mut a: Vec<String> = vec!["-v".into(), "error".into(), "-threads".into(), s.threads.to_string()];
     if s.hw {
         a.extend(["-hwaccel", "auto"].map(String::from));
     }
@@ -62,6 +86,9 @@ pub fn args(s: &DecSpec) -> Vec<String> {
         s.scaler,
         s.matrix.unwrap_or("auto"),
     ));
+    if let Some(n) = s.frames {
+        a.extend(["-frames:v".into(), n.to_string()]);
+    }
     a.extend(["-f", "rawvideo", "-"].map(String::from));
     a
 }
@@ -84,8 +111,17 @@ struct VideoStream {
     err: Option<JoinHandle<String>>,
     used: Instant,
     last: Option<Arc<ColorImage>>,
-    /// Opened by a late playback request (not a pre-warm): while it has no frame, it is waited on instead of respawned.
-    chase: bool,
+}
+
+/// R20: frames `from..=to` of one picture, decoded forward and kept to be read backwards; `s.next_sf` is the next one
+/// to arrive and `frames` holds `from..s.next_sf`.
+struct Chunk {
+    s: VideoStream,
+    from: i64,
+    to: i64,
+    frames: Vec<Arc<ColorImage>>,
+    /// The last frame read from it (None before the first).
+    at: Option<i64>,
 }
 
 impl Drop for VideoStream {
@@ -100,7 +136,8 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
     cmd.args(args(spec)).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = crate::proc::spawn(&mut cmd)?;
     let (mut out, err) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
-    let (tx, rx) = mpsc::sync_channel(4);
+    // A chunk (`frames` set) is read whole while nobody waits on it: room for all of it.
+    let (tx, rx) = mpsc::sync_channel(spec.frames.map_or(4, |n| (n - spec.lead).max(1) as usize));
     let (n, mut lead) = (spec.w as usize * spec.h as usize, spec.lead);
     std::thread::spawn(move || {
         loop {
@@ -121,7 +158,7 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
         }
     });
     let err = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
-    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, grid, hw: spec.hw, next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None, chase: false })
+    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, grid, hw: spec.hw, next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None })
 }
 
 pub enum Pull {
@@ -134,6 +171,8 @@ pub enum Pull {
 #[derive(Default)]
 pub struct DecoderPool {
     streams: Vec<VideoStream>,
+    /// R20: chunks for reading backwards.
+    chunks: Vec<Chunk>,
     hw_failed: HashSet<Arc<str>>,
     /// Last decodable frame of a media (and whether read from its proxy, which may end sooner, and its grid) whose video
     /// ends before its container duration (which counts the audio).
@@ -142,6 +181,9 @@ pub struct DecoderPool {
     fps_str: String,
     /// Frames read past and late layers, for the stats.
     pub dropped: u64,
+    /// R20: the frames asked for are paused seeks the UI waits on (the Video Preview's Show): new source streams
+    /// decode with `seek_threads`.
+    pub seeking: bool,
 }
 
 fn end_key(m: &MediaRef, q: Quality) -> (Arc<str>, bool, u64) {
@@ -157,6 +199,7 @@ impl DecoderPool {
     pub fn set_rate(&mut self, fps: f64, fps_str: &str) {
         if fps != self.fps || fps_str != self.fps_str {
             self.streams.clear();
+            self.chunks.clear();
             self.ends.clear();
             (self.fps, self.fps_str) = (fps, fps_str.to_string());
         }
@@ -172,17 +215,19 @@ impl DecoderPool {
     }
 
     pub fn live(&self) -> usize {
-        self.streams.len()
+        self.streams.len() + self.chunks.len()
     }
 
-    /// Close streams idle for 5 s.
+    /// Close streams and chunks idle for 5 s.
     pub fn prune(&mut self) {
         self.streams.retain(|s| s.used.elapsed() < IDLE);
+        self.chunks.retain(|c| c.s.used.elapsed() < IDLE);
     }
 
     /// Close the streams of media `id` and forget its end (the file changed on disk).
     pub fn forget(&mut self, id: &str) {
         self.streams.retain(|s| &*s.media != id);
+        self.chunks.retain(|c| &*c.s.media != id);
         self.ends.retain(|k, _| &*k.0 != id);
     }
 
@@ -207,18 +252,26 @@ impl DecoderPool {
         !self.hw_failed.contains(&m.id) && (m.w >= 2560 || matches!(m.codec.as_deref(), Some("hevc" | "av1")))
     }
 
-    fn open(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, hw: bool) -> Result<usize, String> {
+    /// A stream of `m` from `sf` (`frames` of them, if set: a chunk). `play` streams may decode on the GPU; chunks and
+    /// paused seeks (`seeking`) of a source decode with `seek_threads`, the rest with 2.
+    fn start(&self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, play: bool, frames: Option<i64>) -> Result<VideoStream, String> {
         let (fps, fps_str) = self.grid(m);
         // Enough grid frames back to start inside the previous source frame (2 for 25p in 29.97).
         let per = if m.fps > 0.0 { (fps / m.fps - 1e-9).ceil() as i64 } else { 2 };
         let lead = per.clamp(1, 30).min(sf);
         // A proxy keeps the source's frame times and colour matrix; it is light H.264, so never hardware decoded.
         let proxy = m.proxy_for(q);
-        let (path, hw) = (proxy.unwrap_or(&m.path), hw && proxy.is_none());
+        let (path, hw) = (proxy.unwrap_or(&m.path), play && self.wants_hw(m) && proxy.is_none());
         // The proxy was deinterlaced when it was made.
         let deint = if proxy.is_none() { m.deint } else { "" };
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, deint, stream: m.stream, flow: m.flow };
-        let s = spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
+        let threads = if proxy.is_none() && (frames.is_some() || (self.seeking && !play)) { seek_threads() } else { 2 };
+        let frames = frames.map(|n| n + lead);
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames };
+        spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))
+    }
+
+    fn open(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, play: bool) -> Result<usize, String> {
+        let s = self.start(m, sf, w, h, q, play, None)?;
         if self.streams.len() >= MAX_STREAMS {
             if let Some(i) = (0..self.streams.len()).min_by_key(|&i| self.streams[i].used) {
                 self.streams.remove(i);
@@ -228,50 +281,142 @@ impl DecoderPool {
         Ok(self.streams.len() - 1)
     }
 
+    /// R20: frames per chunk at `w` x `h`: 1 s, or less so that a chunk and those decoding ahead fit `BACK_BYTES`.
+    fn chunk_len(&self, m: &MediaRef, w: u32, h: u32) -> i64 {
+        let fit = BACK_BYTES / (BACK_AHEAD + 1) / (w as usize * h as usize * 4).max(1);
+        (fit as i64).clamp(1, self.grid(m).0.ceil().max(1.0) as i64)
+    }
+
+    /// R20: the chunk holding `sf`, or a new one ending at `sf` when the picture is being read backwards (the frame read
+    /// last, by a stream or from a chunk, is less than 2 s after `sf`). Chunks read past close; while `playing`, or
+    /// when the frame read last came from a chunk or is a few frames on, the `BACK_AHEAD` before this one decode
+    /// ahead (a single paused jump back reads one short chunk only).
+    fn chunk(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, playing: bool) -> Option<usize> {
+        let same = |s: &VideoStream| Self::same(s, m, w, h, q);
+        // The frame read last, and whether it came from a chunk (then reading backwards goes on).
+        let streams = self.streams.iter().filter(|s| same(s)).map(|s| (s.used, s.next_sf - 1, false));
+        let chunks = self.chunks.iter().filter(|c| same(&c.s)).filter_map(|c| Some((c.s.used, c.at?, true)));
+        let last = streams.chain(chunks).max_by_key(|r| r.0);
+        let reach = self.reach();
+        // A chunk read just before `sf` goes on forward: another layer of the file (a dissolve inside one recording)
+        // may have read last, ahead of this one.
+        let on = self.chunks.iter().any(|c| same(&c.s) && c.at.is_some_and(|at| (1..=reach).contains(&(sf - at))));
+        // The chunk's end, and whether it is now read forward (played on from where a drag left off).
+        let (to, forward) = match self.chunks.iter().find(|c| same(&c.s) && (c.from..=c.to).contains(&sf)) {
+            Some(c) => (c.to, c.at.is_some_and(|at| at < sf)),
+            None if !on && last.is_some_and(|r| (1..=reach).contains(&(r.1 - sf))) => (sf, false),
+            None => return None,
+        };
+        if forward {
+            // The stream after the chunk starts now, so playback goes on past it without a held frame.
+            let next = self.clamp(m, to + 1, q);
+            let ready = next <= to || self.chunks.iter().any(|c| same(&c.s) && (c.from..=c.to).contains(&next));
+            if playing && !ready && self.find(m, next, w, h, q, JUMP).is_none() {
+                let _ = self.open(m, next, w, h, q, true);
+            }
+        } else {
+            self.chunks.retain(|c| !same(&c.s) || c.from <= to);
+            // A click a second back on the ruler is one seek; a drag, J or Left arrow takes small steps and keeps going.
+            let going = last.is_some_and(|r| r.2 || (1..=STEP_BACK).contains(&(r.1 - sf)));
+            self.read_back(m, to, w, h, q, if playing || going { BACK_AHEAD } else { 0 });
+        }
+        self.chunks.iter().position(|c| same(&c.s) && (c.from..=c.to).contains(&sf))
+    }
+
+    /// R20: start reading a reversed event ahead of time: chunks ending at `sf` and before it.
+    pub fn prewarm_back(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality) {
+        let sf = self.clamp(m, sf, q);
+        self.read_back(m, sf, w, h, q, BACK_AHEAD);
+    }
+
+    /// R20: decode the chunk ending at `to` (unless one holds it) and the `ahead` chunks before it.
+    fn read_back(&mut self, m: &MediaRef, to: i64, w: u32, h: u32, q: Quality, ahead: usize) {
+        let same = |s: &VideoStream| Self::same(s, m, w, h, q);
+        let mut end = to;
+        for _ in 0..=ahead {
+            if end < 0 {
+                break;
+            }
+            let from = match self.chunks.iter().find(|c| same(&c.s) && (c.from..=c.to).contains(&end)) {
+                Some(c) => c.from,
+                None => {
+                    // A single paused step back reads a few frames, not a second.
+                    let len = if ahead == 0 { self.chunk_len(m, w, h).min(STEP_BACK) } else { self.chunk_len(m, w, h) };
+                    let from = (end - len + 1).max(0);
+                    let Ok(s) = self.start(m, from, w, h, q, false, Some(end - from + 1)) else { break };
+                    // Over budget: the least recently read chunks go, but not those from here to `to` (they always fit).
+                    self.chunks.push(Chunk { s, from, to: end, frames: Vec::new(), at: None });
+                    let bytes = |c: &Chunk| (c.to - c.from + 1) as usize * c.s.w as usize * c.s.h as usize * 4;
+                    let keep = |c: &Chunk| same(&c.s) && c.from >= from && c.to <= to;
+                    while self.chunks.iter().map(bytes).sum::<usize>() > BACK_BYTES || self.chunks.len() > MAX_STREAMS {
+                        let Some(i) = (0..self.chunks.len()).filter(|&i| !keep(&self.chunks[i])).min_by_key(|&i| self.chunks[i].s.used) else { break };
+                        self.chunks.remove(i);
+                    }
+                    from
+                }
+            };
+            end = from - 1;
+        }
+    }
+
+    /// R20: frame `sf` from chunk `i`, waiting for it until `deadline` (then the layer holds); None if the chunk ended
+    /// before it (the video is shorter, or ffmpeg failed): it closes, and `sf` is read as a seek.
+    fn from_chunk(&mut self, i: usize, sf: i64, deadline: Option<Instant>) -> Option<Pull> {
+        let c = &mut self.chunks[i];
+        c.s.used = Instant::now();
+        while c.s.next_sf <= sf {
+            let got = match deadline {
+                Some(d) => c.s.rx.recv_timeout(d.saturating_duration_since(Instant::now())),
+                None => c.s.rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match got {
+                Ok(px) => {
+                    c.frames.push(image(px, c.s.w, c.s.h));
+                    c.s.next_sf += 1;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.dropped += 1;
+                    return Some(Pull::Held(None));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    self.chunks.remove(i);
+                    return None;
+                }
+            }
+        }
+        c.at = Some(sf);
+        Some(Pull::Exact(c.frames[(sf - c.from) as usize].clone()))
+    }
+
     /// Start a stream at `sf` ahead of time unless one can reach it in time: playing (`play`, hardware decoding allowed),
-    /// within a few frames, so a jump cut inside one file gets its own stream; paused, within 2 s.
+    /// within a few frames, so a jump cut inside one file gets its own stream; paused, within 2 s (or, R20, its chunks
+    /// when the picture is read backwards).
     pub fn prewarm(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, play: bool) {
         let sf = self.clamp(m, sf, q);
         let reach = if play { JUMP } else { self.reach() };
-        if self.find(m, sf, w, h, q, reach).is_none() {
-            let _ = self.open(m, sf, w, h, q, play && self.wants_hw(m));
+        // Playing, the frames warmed are event starts, not the next frame of a picture read backwards.
+        if self.find(m, sf, w, h, q, reach).is_none() && (play || self.chunk(m, sf, w, h, q, false).is_none()) {
+            let _ = self.open(m, sf, w, h, q, play);
         }
     }
 
     /// Frame `sf` of `m` at `w` x `h`. With a deadline (playback) a late stream gives its last frame instead.
     pub fn frame(&mut self, m: &MediaRef, sf: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> Pull {
         let sf = self.clamp(m, sf, q);
-        let i = match self.find(m, sf, w, h, q, self.reach()) {
-            Some(i) => i,
-            None => {
-                // Playing, a stream still starting for this picture (a reversed event asks for an earlier frame each time)
-                // is waited on rather than respawned every frame; its frame shows as held, about 5 updates a second.
-                let starting = self.streams.iter().position(|s| s.chase && s.last.is_none() && Self::same(s, m, w, h, q));
-                if let (Some(d), Some(j)) = (deadline, starting) {
-                    self.streams[j].used = Instant::now();
-                    return match self.streams[j].rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
-                        Ok(px) => {
-                            self.streams.remove(j);
-                            Pull::Held(Some(image(px, w, h)))
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            self.dropped += 1;
-                            Pull::Held(None)
-                        }
-                        Err(RecvTimeoutError::Disconnected) => {
-                            self.streams.remove(j);
-                            Pull::Held(None)
-                        }
-                    };
-                }
-                match self.open(m, sf, w, h, q, deadline.is_some() && self.wants_hw(m)) {
-                    Ok(i) => {
-                        self.streams[i].chase = deadline.is_some();
-                        i
-                    }
-                    Err(e) => return Pull::Err(e),
-                }
+        // R20: a frame already in a chunk, or one behind what was read last, comes from the chunks.
+        let found = self.chunks.iter().any(|c| Self::same(&c.s, m, w, h, q) && (c.from..=c.to).contains(&sf));
+        let reuse = if found { None } else { self.find(m, sf, w, h, q, self.reach()) };
+        if reuse.is_none() {
+            if let Some(p) = self.chunk(m, sf, w, h, q, deadline.is_some()).and_then(|c| self.from_chunk(c, sf, deadline)) {
+                return p;
             }
+        }
+        let i = match reuse.or_else(|| self.find(m, sf, w, h, q, self.reach())) {
+            Some(i) => i,
+            None => match self.open(m, sf, w, h, q, deadline.is_some()) {
+                Ok(i) => i,
+                Err(e) => return Pull::Err(e),
+            },
         };
         let s = &mut self.streams[i];
         s.used = Instant::now();
@@ -367,7 +512,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), deint: "", stream: 0, flow: false }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None }
     }
 
     #[test]
@@ -383,6 +528,26 @@ mod tests {
         // R3b: Stream 2 and Optical Flow.
         let a = args(&DecSpec { stream: 1, flow: true, ..spec(p) }).join(" ");
         assert!(a.contains("-map 0:v:1 ") && a.contains("-vf minterpolate=fps=30000/1001:mi_mode=mci,scale="), "{a}");
+        // R20: a chunk read backwards: more decoder threads, and it stops after its frames (lead included).
+        let a = args(&DecSpec { threads: 8, frames: Some(31), ..spec(p) }).join(" ");
+        assert!(a.starts_with("-v error -threads 8 -ss ") && a.ends_with(",format=rgba -frames:v 31 -f rawvideo -"), "{a}");
+    }
+
+    /// R20: a chunk is 1 s of frames, or fewer when the chunk and those decoding ahead would pass `BACK_BYTES`.
+    #[test]
+    fn chunks_are_a_second_within_the_budget() {
+        let mut pool = DecoderPool::default();
+        pool.set_rate(30000.0 / 1001.0, "30000/1001");
+        let m = ramp_ref();
+        assert_eq!(pool.chunk_len(&m, 960, 540), 30);
+        assert_eq!(pool.chunk_len(&m, 1920, 1080), 10);
+        assert_eq!(pool.chunk_len(&m, 7680, 4320), 1);
+        for (w, h) in [(960, 540), (1920, 1080), (3840, 2160)] {
+            assert!(pool.chunk_len(&m, w, h) as usize * w as usize * h as usize * 4 * (BACK_AHEAD + 1) <= BACK_BYTES);
+        }
+        // A 60 fps grid (slow motion from a 60p source) reads a second of its own frames.
+        assert_eq!(pool.chunk_len(&MediaRef { grid: 60.0, ..ramp_ref() }, 320, 180), 60);
+        assert!(2 <= seek_threads() && seek_threads() <= 4);
     }
 
     #[test]
@@ -572,26 +737,61 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// Needs ffmpeg. Reversed playback at 30 fps: one stream starts at a time and the picture keeps updating.
+    /// Needs ffmpeg. R20: reversed playback at 30 fps reads every frame from chunks, with a bounded number of decoders;
+    /// then a paused step forward past the chunks reads as a seek again.
     #[test]
     #[ignore]
-    fn reverse_playback_starts_one_stream_at_a_time() {
+    fn reverse_playback_reads_every_frame_from_chunks() {
         let dir = std::env::temp_dir().join(format!("milan-vrev-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let m = ramp(&dir, 10, 10.0);
         let mut pool = DecoderPool::default();
         pool.set_rate(30.0, "30");
-        let (mut shown, start) = (0, Instant::now());
+        let (mut exact, start) = (0, Instant::now());
         for (k, sf) in (100..250).rev().enumerate() {
             let due = start + Duration::from_secs_f64(k as f64 / 30.0);
             std::thread::sleep(due.saturating_duration_since(Instant::now()));
             let d = (k > 0).then(|| Instant::now() + Duration::from_millis(25));
-            shown += gray(pool.frame(&m, sf, 64, 64, Quality::Best, d)).is_some() as u32;
-            // The first (paused-style) stream plus at most one starting.
-            assert!(pool.live() <= 2, "frame {k}: {} streams", pool.live());
+            let p = pool.frame(&m, sf, 64, 64, Quality::Best, d);
+            exact += matches!(&p, Pull::Exact(_)) as u32;
+            if let Pull::Exact(img) = p {
+                assert!((img.pixels[64 * 32 + 32].r() as f64 - level(sf)).abs() <= 1.5, "frame {sf}");
+            }
+            // The first stream, the chunk being read and those decoding ahead.
+            assert!(pool.live() <= 2 + BACK_AHEAD, "frame {k}: {} decoders", pool.live());
         }
-        println!("reverse: {shown} of 150 frames had a picture");
-        assert!(shown >= 10, "{shown}");
+        println!("reverse: {exact} of 150 frames exact");
+        assert!(exact >= 143, "{exact}");
+        // Read past, chunks close; forward again is a seek, not a chunk.
+        assert!(pool.chunks.iter().all(|c| c.from <= 100));
+        // Played forward from there: the chunk serves, and the stream after it starts at once.
+        let to = pool.chunks.iter().find(|c| (c.from..=c.to).contains(&101)).unwrap().to;
+        assert!(matches!(pool.frame(&m, 101, 64, 64, Quality::Best, Some(Instant::now() + Duration::from_millis(25))), Pull::Exact(_)));
+        assert!(pool.streams.iter().any(|s| s.next_sf == to + 1), "a stream at {}", to + 1);
+        let g = gray(pool.frame(&m, 260, 64, 64, Quality::Best, None)).unwrap();
+        assert!((g as f64 - level(260)).abs() <= 1.5);
+        assert!(pool.streams.iter().any(|s| s.next_sf == 261));
+        // Paused steps back all over the file (dragging left here and there): exact, and the chunks stay bounded.
+        for k in 0..40i64 {
+            let sf = 280 - (k * 37) % 250 - 3;
+            for sf in [sf + 3, sf] {
+                let g = gray(pool.frame(&m, sf, 64, 64, Quality::Best, None)).unwrap();
+                assert!((g as f64 - level(sf)).abs() <= 1.5, "step back to {sf}");
+            }
+            assert!(pool.chunks.len() <= MAX_STREAMS && pool.streams.len() <= MAX_STREAMS);
+        }
+        // Two layers of the file 1 s apart (a dissolve inside one recording), stepped forward paused: each reads on
+        // from its own stream after the first step, rather than a chunk per step.
+        drop(pool);
+        let mut pool = DecoderPool::default();
+        pool.set_rate(30.0, "30");
+        for k in 0..12 {
+            for sf in [150 + k, 180 + k] {
+                let g = gray(pool.frame(&m, sf, 64, 64, Quality::Best, None)).unwrap();
+                assert!((g as f64 - level(sf)).abs() <= 1.5, "dissolve frame {sf}");
+            }
+        }
+        assert!(pool.live() <= 3, "{} decoders", pool.live());
         drop(pool);
         std::fs::remove_dir_all(&dir).unwrap();
     }

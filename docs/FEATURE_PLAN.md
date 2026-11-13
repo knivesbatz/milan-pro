@@ -239,7 +239,7 @@ Other plan functions:
 - If a hwaccel stream produces no frame, it is retried without hwaccel and the media goes into `hw_failed`.
 - Stills use the one-frame command and are pinned in the cache.
 - Reversed events: sf decreases, so the pool respawns per frame, about 5 fps.
-  - Shortcut: no backwards read-ahead; add a 1 s chunk read-back into SourceCache if reverse playback stutters (deferred, section 3).
+  - Built in R20: a picture read backwards (reversed events, J shuttle, dragging left) comes from 1 s chunks decoded forward (`-frames:v`) that end at the frame asked for, with two chunks before it decoding ahead; all chunks stay under 256 MB. Paused seeks and chunks of source media decode with up to 4 threads. See `REMAINING.md` R20.
 
 **`src/engine/cache.rs`**
 - `ByteLru<K, V>`, about 40 lines, no crate.
@@ -1800,7 +1800,7 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
 | Item | Reason |
 |---|---|
 | Velocity envelope (variable speed, freeze frame) | Needs a varispeed resampler in the mixer, backwards decoding, and per-frame integral caching. `EnvKind::Velocity` is reserved in batch 1 so files written later still load. Do it after batch 8. |
-| Reverse-video read-back (decode 1 s chunks backwards into SourceCache) | Reverse plays correctly at about 5 fps through per-frame respawn. Build it only if users play reversed events often. |
+| Reverse-video read-back (decode 1 s chunks backwards into SourceCache) | Built in R20 (`engine/vdecode.rs` chunks). |
 | cpal output with latency timestamps | rodio is kept to avoid a large rewrite. The cost is a playhead about 10-20 ms ahead of the sound. Revisit if users notice. |
 | Waveform peak files on disk; yuv420p pipe transfer | Performance work with no measured need yet. yuv420p only if Full/Best stutters. |
 | Pan/Crop Bezier masks, Track Motion 2D Shadow/Glow, 3D, parenting | Each needs extra rasteriser or blur stages. They can reuse the batch-14 blur. Not requested in this pass. |
