@@ -179,6 +179,8 @@ pub struct Preview {
     engine: Option<VideoEngine>,
     /// The Video Preview window is on screen this frame (set by the app); frames are only made while it is.
     pub visible: bool,
+    /// Options › Mute All Video: the Video Preview shows no frame.
+    pub mute: bool,
 }
 
 impl Preview {
@@ -215,6 +217,7 @@ impl Preview {
             error: None,
             engine: None,
             visible: false,
+            mute: false,
         }
     }
 

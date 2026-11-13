@@ -138,11 +138,12 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     preview.display_w = frame.width().max(2.0) as u32;
     let pv = p.with_clip_rect(video.intersect(p.clip_rect()));
     pv.rect_filled(frame, 0.0, t.preview_frame);
-    if let Some(tex) = &preview.texture {
+    // Options › Mute All Video: the frame stays empty.
+    if let Some(tex) = preview.texture.as_ref().filter(|_| !preview.mute) {
         let [w, h] = tex.size();
         let r = fit_rect_to_aspect(frame, w as f32 / h.max(1) as f32);
         pv.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    } else if let Some(err) = &preview.error {
+    } else if let Some(err) = preview.error.as_ref().filter(|_| !preview.mute) {
         pv.text(frame.center(), Align2::CENTER_CENTER, err, t.font(12.0), t.warning_text);
     }
     paint_overlays(&pv, frame, view);

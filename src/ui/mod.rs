@@ -42,11 +42,11 @@ pub use pancrop::PanCropWin;
 pub use preview::{PreviewView, draw_preview, draw_preview_toolbar};
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, grid_line, rename_event};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event};
 pub use toolbar::draw_main_toolbar;
 pub use trackmotion::TrackMotionWin;
 pub use transport::{Cmd, Playback, TransportAction, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
-pub use trimmer::{Trimmer, draw_trimmer, draw_trimmer_toolbar};
+pub use trimmer::{EditSide, Trimmer, draw_trimmer, draw_trimmer_toolbar};
 
 /// Requests from dock windows that the app carries out after the dock has been drawn.
 pub enum WinAction {
@@ -166,6 +166,17 @@ pub struct Selection {
     pub list_focus: bool,
     /// Selected envelope points; Delete removes them before any event.
     pub env: Option<EnvSel>,
+    /// Edge-trimming mode: the event edge the nudge keys trim, marked with a red bracket.
+    pub edge: Option<EdgeSel>,
+}
+
+/// An event edge selected with [ or ] (edge-trimming mode); `expanded` is Expanded Edit Mode, where the Trimmer shows
+/// the edit point's outgoing and incoming frames.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeSel {
+    pub clip: String,
+    pub end: bool,
+    pub expanded: bool,
 }
 
 /// Selected points of one track envelope: the track's id, the envelope kind and the point indices.
@@ -236,6 +247,8 @@ pub struct EditOpts {
     pub lock_envelopes: bool,
     /// Preferences › Editing: the crossfade a transition dropped on a cut makes (seconds).
     pub cut_overlap: f64,
+    /// Waveform vertical zoom (Shift+Up / Shift+Down), 1 = full scale.
+    pub wave_zoom: f32,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

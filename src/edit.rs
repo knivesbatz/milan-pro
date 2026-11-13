@@ -845,6 +845,135 @@ pub fn paste_clips(project: &mut Project, clips: &[(bool, usize, Clip)], at: f64
     ids
 }
 
+/// Paste Repeat (Ctrl+B): `clips` pasted `n` times from `at`, end to end (`every` None: each copy starts where the
+/// last ends) or with a copy starting every `every` seconds. Returns all the new ids; empty if a locked track refuses.
+pub fn paste_repeat(project: &mut Project, clips: &[(bool, usize, Clip)], at: f64, focus: Option<(bool, usize)>, n: usize, every: Option<f64>) -> Vec<String> {
+    let len = clips.iter().map(|(_, _, c)| c.position + c.duration).fold(0.0, f64::max);
+    let step = every.filter(|e| *e > 0.0).unwrap_or(len);
+    let mut ids = Vec::new();
+    for k in 0..n {
+        let new = paste_clips(project, clips, at + k as f64 * step, focus);
+        if new.is_empty() {
+            break;
+        }
+        ids.extend(new);
+    }
+    ids
+}
+
+/// Select All After Cursor (VP23): every event that starts at or after `t`.
+pub fn select_after(project: &Project, t: f64) -> Vec<String> {
+    all_clips(&project.timeline).filter(|c| c.position >= t - 1e-9).map(|c| c.id.clone()).collect()
+}
+
+/// Select Events to End: event `id` and the events after it on its track (they start at or after it).
+pub fn events_to_end(project: &Project, id: &str) -> Vec<String> {
+    let (Some(r), Some(c)) = (project.find_clip(id), project.clip(id)) else { return Vec::new() };
+    let start = c.position;
+    project.timeline.tracks(r.is_video)[r.track_idx].clips.iter().filter(|k| k.position >= start - 1e-9).map(|k| k.id.clone()).collect()
+}
+
+/// Set Selection to Previous / Next Selected Event (Ctrl+Shift+[ / ]): the span of the selected event that starts
+/// last before `cursor` (or first after it).
+pub fn selected_event_span(project: &Project, ids: &[String], cursor: f64, next: bool) -> Option<(f64, f64)> {
+    let spans = ids.iter().filter_map(|id| project.clip(id)).map(|c| (c.position, c.position + c.duration));
+    if next {
+        spans.filter(|s| s.0 > cursor + 1e-9).min_by(|a, b| a.0.total_cmp(&b.0))
+    } else {
+        spans.filter(|s| s.0 < cursor - 1e-9).max_by(|a, b| a.0.total_cmp(&b.0))
+    }
+}
+
+/// Time Select Right by Marker/Region: the time selection grown from the cursor to `to`. A cursor at one end of the
+/// selection `sel` keeps the other end as the anchor (repeating the command extends it further).
+pub fn extend_selection(sel: Option<(f64, f64)>, cursor: f64, to: f64) -> (f64, f64) {
+    let anchor = match sel {
+        Some((a, b)) if (cursor - b).abs() < 1e-9 => a,
+        Some((a, b)) if (cursor - a).abs() < 1e-9 => b,
+        _ => cursor,
+    };
+    (anchor.min(to), anchor.max(to))
+}
+
+/// Edge-trimming mode: the event edge before (or after) the edge `end` of event `id`, on its track, in time order
+/// (where two events meet, the outgoing end comes before the incoming start). Returns (event, end, time).
+pub fn next_edge(project: &Project, id: &str, end: bool, forward: bool) -> Option<(String, bool, f64)> {
+    let r = project.find_clip(id)?;
+    let mut edges: Vec<(f64, bool, &str)> =
+        project.timeline.tracks(r.is_video)[r.track_idx].clips.iter().flat_map(|c| [(c.position, false, c.id.as_str()), (c.position + c.duration, true, c.id.as_str())]).collect();
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+    let k = edges.iter().position(|e| e.2 == id && e.1 == end)?;
+    let e = if forward { edges.get(k + 1) } else { k.checked_sub(1).and_then(|k| edges.get(k)) }?;
+    Some((e.2.to_string(), e.1, e.0))
+}
+
+/// Edge-trimming mode: move edge `end` of event `id` by `d` seconds (a plain trim, within its media and at least a
+/// frame long). False when locked or nothing moved.
+pub fn trim_edge(project: &mut Project, id: &str, end: bool, d: f64) -> bool {
+    let frame = 1.0 / exact_fps(project.settings.frame_rate.max(1.0));
+    let (Some(r), Some(orig)) = (project.find_clip(id), project.clip(id).cloned()) else { return false };
+    let limit = media_limit(project, &orig);
+    let Some(track) = unlocked_track(project, &r) else { return false };
+    let c = &mut track.clips[r.clip_idx];
+    if end {
+        trim_right(c, &orig, orig.position + orig.duration + d, frame, limit);
+    } else {
+        trim_left(c, &orig, orig.position + d, frame, limit);
+    }
+    let done = (c.position, c.duration) != (orig.position, orig.duration);
+    track.clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    changed(project, done)
+}
+
+/// Exclusive mute / solo (Shift+Z / Shift+X): tracks `ids` are muted (soloed) and every other track is not; done
+/// again on that state, it clears them.
+pub fn exclusive_tracks(project: &mut Project, ids: &[String], solo: bool) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    let flag = |t: &Track| if solo { t.solo } else { t.muted };
+    let only = tracks_mut(&mut project.timeline).all(|t| flag(t) == ids.contains(&t.id));
+    for t in tracks_mut(&mut project.timeline) {
+        let on = !only && ids.contains(&t.id);
+        if solo { t.solo = on } else { t.muted = on }
+    }
+    changed(project, true)
+}
+
+/// Restore Previous Time Selection (Backspace) keeps the last five time selections, as VEGAS does; `loop_region` is
+/// the last time selection made, which Select Loop Region (Shift+Q) brings back after it was cleared.
+#[derive(Clone, Debug, Default)]
+pub struct SelHistory {
+    current: Option<(f64, f64)>,
+    prev: Vec<(f64, f64)>,
+    pub loop_region: Option<(f64, f64)>,
+}
+
+impl SelHistory {
+    /// Note the time selection `sel` (call it once a selection drag has ended).
+    pub fn observe(&mut self, sel: Option<(f64, f64)>) {
+        let sel = sel.filter(|(a, b)| b > a);
+        if sel == self.current {
+            return;
+        }
+        if let Some(c) = self.current.take() {
+            self.prev.push(c);
+            if self.prev.len() > 5 {
+                self.prev.remove(0);
+            }
+        }
+        self.current = sel;
+        self.loop_region = sel.or(self.loop_region);
+    }
+
+    /// The selection before the current one, which becomes current (Backspace again goes further back).
+    pub fn restore(&mut self) -> Option<(f64, f64)> {
+        let p = self.prev.pop()?;
+        (self.current, self.loop_region) = (Some(p), Some(p));
+        Some(p)
+    }
+}
+
 /// Add an empty track of that kind above track `before`, as VEGAS's header menu does; without one, a video track
 /// goes first and an audio track last (VEGAS's Ctrl+Shift+Q / Ctrl+Q). Returns its index.
 pub fn insert_track(project: &mut Project, is_video: bool, before: Option<usize>) -> usize {
@@ -3470,5 +3599,110 @@ mod tests {
         let (mut list, free) = fx_list(&p, &m).unwrap();
         list[0].text.insert("x".into(), "y".into());
         assert!(free && set_fx_list(&mut p, &m, list.clone()) && !set_fx_list(&mut p, &m, list));
+    }
+
+    /// R2: Paste Repeat ×3 every 2 s, and end to end.
+    #[test]
+    fn paste_repeat_every_and_end_to_end() {
+        let (mut p, ids) = three_events();
+        let clips = copy_clips(&p, &ids[..1]); // a 2 s event
+        let new = paste_repeat(&mut p, &clips, 10.0, Some((true, 0)), 3, Some(2.5));
+        let pos: Vec<f64> = new.iter().map(|id| p.clip(id).unwrap().position).collect();
+        assert_eq!(pos, [10.0, 12.5, 15.0]);
+        let new = paste_repeat(&mut p, &clips, 20.0, Some((true, 0)), 3, None);
+        let pos: Vec<f64> = new.iter().map(|id| p.clip(id).unwrap().position).collect();
+        assert_eq!(pos, [20.0, 22.0, 24.0]);
+        p.timeline.video_tracks[0].locked = true;
+        assert!(paste_repeat(&mut p, &clips, 30.0, Some((true, 0)), 3, None).is_empty());
+    }
+
+    /// R2: Backspace restores the selections before the current one, newest first, five at most.
+    #[test]
+    fn restore_selection_after_three_changes() {
+        let mut h = SelHistory::default();
+        for s in [Some((1.0, 2.0)), Some((3.0, 4.0)), None, Some((5.0, 6.0))] {
+            h.observe(s);
+            h.observe(s); // seen again on the next frame: no change
+        }
+        assert_eq!(h.restore(), Some((3.0, 4.0)), "the cleared selection is skipped");
+        assert_eq!(h.restore(), Some((1.0, 2.0)));
+        assert_eq!(h.restore(), None);
+        h.observe(None);
+        assert_eq!(h.loop_region, Some((1.0, 2.0)), "Select Loop Region brings back the last selection");
+        for k in 0..8 {
+            h.observe(Some((k as f64, k as f64 + 1.0)));
+        }
+        let mut n = 0;
+        while h.restore().is_some() {
+            n += 1;
+        }
+        assert_eq!(n, 5);
+    }
+
+    /// R2: Select All After Cursor takes events starting at or after the cursor; Select Events to End stays on the
+    /// event's track.
+    #[test]
+    fn select_after_and_events_to_end() {
+        let (mut p, ids) = three_events(); // V1 at 1, V2 at 4, A1 at 2
+        assert_eq!(select_after(&p, 2.0), [ids[1].clone(), ids[2].clone()]);
+        assert_eq!(select_after(&p, 0.0).len(), 3);
+        p.timeline.video_tracks[0].clips.push(clip(5.0, 1.0, 0.0));
+        let late = p.timeline.video_tracks[0].clips[1].id.clone();
+        assert_eq!(events_to_end(&p, &ids[0]), [ids[0].clone(), late.clone()]);
+        assert_eq!(events_to_end(&p, &late), [late]);
+    }
+
+    /// R2: time selections from selected events, and Ctrl+Shift+Right growing the selection.
+    #[test]
+    fn selection_from_events_and_markers() {
+        let (p, ids) = three_events();
+        assert_eq!(selected_event_span(&p, &ids, 0.0, true), Some((1.0, 3.0)));
+        assert_eq!(selected_event_span(&p, &ids, 1.0, true), Some((2.0, 4.0)));
+        assert_eq!(selected_event_span(&p, &ids, 3.0, false), Some((2.0, 4.0)));
+        assert_eq!(selected_event_span(&p, &ids, 1.0, false), None);
+        assert_eq!(extend_selection(None, 2.0, 5.0), (2.0, 5.0));
+        assert_eq!(extend_selection(Some((2.0, 5.0)), 5.0, 8.0), (2.0, 8.0));
+        assert_eq!(extend_selection(Some((2.0, 5.0)), 3.0, 8.0), (3.0, 8.0));
+    }
+
+    /// R2: [ and ] walk the edges of a track in time order; the nudge keys trim the selected edge.
+    #[test]
+    fn edge_walk_and_trim() {
+        let mut p = Project::new("t");
+        p.timeline.video_tracks[0].clips = vec![clip(0.0, 2.0, 1.0), clip(2.0, 2.0, 0.0)];
+        let (a, b) = (p.timeline.video_tracks[0].clips[0].id.clone(), p.timeline.video_tracks[0].clips[1].id.clone());
+        assert_eq!(next_edge(&p, &a, true, true), Some((b.clone(), false, 2.0)), "at a cut the incoming start is next");
+        assert_eq!(next_edge(&p, &b, false, false), Some((a.clone(), true, 2.0)));
+        assert_eq!(next_edge(&p, &a, false, false), None);
+        assert_eq!(next_edge(&p, &b, true, true), None);
+        let f = 1.0 / 30.0;
+        p.settings.frame_rate = 30.0;
+        assert!(trim_edge(&mut p, &a, false, f));
+        let c = p.clip(&a).unwrap();
+        assert!((c.position - f).abs() < 1e-9 && (c.in_point - 1.0 - f).abs() < 1e-9 && (c.duration - 2.0 + f).abs() < 1e-9);
+        assert!(trim_edge(&mut p, &a, false, -2.0 * f), "not before 0");
+        assert_eq!(p.clip(&a).unwrap().position, 0.0);
+        assert!(!trim_edge(&mut p, &a, false, -f));
+        assert!(trim_edge(&mut p, &b, true, f));
+        assert!((p.clip(&b).unwrap().duration - (2.0 + f)).abs() < 1e-9);
+        p.timeline.video_tracks[0].clips[1].locked = true;
+        assert!(!trim_edge(&mut p, &b, true, f));
+    }
+
+    /// R2: exclusive mute leaves only the selected tracks muted; again, it clears them.
+    #[test]
+    fn exclusive_mute_and_solo() {
+        let (mut p, _) = three_events();
+        let tl = &mut p.timeline;
+        (tl.video_tracks[1].muted, tl.audio_tracks[0].solo) = (true, true);
+        let v1 = vec![p.timeline.video_tracks[0].id.clone()];
+        assert!(exclusive_tracks(&mut p, &v1, false));
+        let muted = |p: &Project| p.timeline.video_tracks.iter().chain(&p.timeline.audio_tracks).map(|t| t.muted).collect::<Vec<_>>();
+        assert_eq!(muted(&p), [true, false, false]);
+        assert!(p.timeline.audio_tracks[0].solo, "mute leaves solo alone");
+        assert!(exclusive_tracks(&mut p, &v1, false));
+        assert_eq!(muted(&p), [false, false, false]);
+        assert!(exclusive_tracks(&mut p, &v1, true));
+        assert!(p.timeline.video_tracks[0].solo && !p.timeline.audio_tracks[0].solo);
     }
 }

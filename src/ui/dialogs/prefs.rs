@@ -180,8 +180,12 @@ fn editing(ui: &mut Ui, d: &mut Prefs) {
         ui.label("Cut-to-overlap conversion (seconds):").on_hover_text("The crossfade a transition dropped on a cut makes, centred on the cut");
         ui.add(DragValue::new(&mut d.cut_overlap).range(0.0..=60.0).speed(0.05).fixed_decimals(3));
     });
+    ui.horizontal(|ui| {
+        ui.label("Cursor preview duration (seconds):").on_hover_text("What Preview at Cursor (Num 0, Ctrl+Shift+Space) plays, centred on the cursor");
+        ui.add(DragValue::new(&mut d.cursor_preview).range(0.1..=60.0).speed(0.1).fixed_decimals(3));
+    });
     if default_all(ui) {
-        (d.still_len, d.cut_overlap) = (5.0, 1.0);
+        (d.still_len, d.cut_overlap, d.cursor_preview) = (5.0, 1.0, 3.0);
     }
 }
 

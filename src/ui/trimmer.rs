@@ -24,11 +24,13 @@ pub struct Trimmer {
     mark_out: Option<f64>,
     playing: bool,
     preview: Preview,
+    /// Expanded Edit Mode's second monitor (the incoming event).
+    preview_b: Preview,
 }
 
 impl Trimmer {
     pub fn new(ctx: &Context) -> Self {
-        Self { history: Vec::new(), current: None, cursor: 0.0, mark_in: None, mark_out: None, playing: false, preview: Preview::new(ctx) }
+        Self { history: Vec::new(), current: None, cursor: 0.0, mark_in: None, mark_out: None, playing: false, preview: Preview::new(ctx), preview_b: Preview::new(ctx) }
     }
 
     /// Show `path` (most recent first in the history).
@@ -47,7 +49,7 @@ impl Trimmer {
     }
 
     pub fn busy(&self) -> bool {
-        self.preview.busy()
+        self.preview.busy() || self.preview_b.busy()
     }
 
     /// The selected range, or the whole media without marks.
@@ -108,11 +110,49 @@ pub fn draw_trimmer_toolbar(ui: &mut Ui, tr: &mut Trimmer) {
     }
 }
 
-pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, waves: &mut Waveforms, thumbs: &mut Thumbs, still_len: f64, xfade: bool) {
+/// One side of an edit point in Expanded Edit Mode: the event's media and the source time of its frame there.
+pub type EditSide = Option<(MediaItem, f64)>;
+
+/// `edit_point` (Expanded Edit Mode): the Trimmer shows the outgoing event's last frame and the incoming event's first
+/// frame at the selected edit point, side by side, instead of its media.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, waves: &mut Waveforms, thumbs: &mut Thumbs, still_len: f64, xfade: bool, edit_point: Option<[EditSide; 2]>) {
     let t = theme::get();
     let rect = ui.max_rect();
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.preview_bg);
+    if let Some(sides) = edit_point {
+        let fps = project.settings.frame_rate;
+        let half = rect.width() * 0.5;
+        let previews = [&mut tr.preview, &mut tr.preview_b];
+        for (k, (side, pv)) in sides.iter().zip(previews).enumerate() {
+            let cell = Rect::from_min_size(pos2(rect.min.x + half * k as f32, rect.min.y), vec2(half, rect.height())).shrink(4.0);
+            let label = Rect::from_min_size(pos2(cell.min.x, cell.max.y - 18.0), vec2(cell.width(), 18.0));
+            let monitor = cell.with_max_y(label.min.y - 2.0);
+            let name = if k == 0 { "Outgoing (last frame)" } else { "Incoming (first frame)" };
+            let Some((m, src)) = side else {
+                p.text(monitor.center(), Align2::CENTER_CENTER, "No event", t.font(t.font.ui), t.text_dim);
+                p.text(label.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text_dim);
+                continue;
+            };
+            pv.display_w = monitor.width().max(2.0) as u32;
+            let video = m.media_type != MediaType::Audio;
+            pv.show(ui.ctx(), video.then_some((m, if m.media_type == MediaType::Image { 0.0 } else { *src })), fps, m.width.unwrap_or(1920));
+            let aspect = m.width.zip(m.height).map_or(16.0 / 9.0, |(w, h)| w as f32 / h.max(1) as f32);
+            let (w, h) = if monitor.width() / monitor.height().max(1.0) > aspect { (monitor.height() * aspect, monitor.height()) } else { (monitor.width(), monitor.width() / aspect) };
+            let frame = super::widgets::px(Rect::from_center_size(monitor.center(), vec2(w, h).max(Vec2::ZERO)));
+            p.rect_filled(frame, 0.0, t.preview_frame);
+            match &pv.texture {
+                Some(tex) if video => {
+                    p.image(tex.id(), frame, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                _ => super::widgets::paint_audio_page(&p, Rect::from_center_size(frame.center(), vec2(80.0, 60.0))),
+            }
+            let mfps = m.frame_rate.filter(|f| *f > 0.0).unwrap_or(fps);
+            p.text(label.center(), Align2::CENTER_CENTER, format!("{name}  {}", format_timecode(*src, mfps)), t.font(t.font.ui), t.text);
+        }
+        return;
+    }
     let Some(path) = tr.current.clone() else {
         p.text(rect.center(), Align2::CENTER_CENTER, "Double-click media in Project Media or Explorer to trim it.", t.font(t.font.ui), t.text_dim);
         return;

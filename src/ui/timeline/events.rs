@@ -28,6 +28,8 @@ pub(super) struct Ev<'a> {
     pub generated: bool,
     pub pps: f64,
     pub fps: f64,
+    /// Waveform vertical zoom (1 = full scale).
+    pub wave_zoom: f32,
 }
 
 fn mul(c: Color32, k: f32) -> Color32 {
@@ -109,6 +111,12 @@ pub(super) fn paint_event(
     }
 }
 
+/// Width of one filmstrip frame in an event `h` px tall (`paint_filmstrip`'s cell).
+pub(super) fn thumb_w(t: &Theme, h: f32, aspect: f32) -> f32 {
+    let area_h = if t.look() == UiLook::Vegas16 { h - header_h(t, h) } else { h };
+    ((area_h - 1.0) * aspect).round().max(4.0)
+}
+
 /// Filmstrip: as many unstretched frames as fit, abutting from the start; the leftover at the end shows the track
 /// colour. Stills show one image at the start.
 fn paint_filmstrip(p: &Painter, ev: &Ev, v16: bool, area: Rect, thumb: &mut dyn FnMut(f64) -> Option<TextureId>) {
@@ -159,7 +167,7 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
     let (mid, half) = (area.center().y, area.height() * 0.5);
     let spp = 1.0 / ev.pps;
     // Scaled by the event gain.
-    let gain = crate::engine::keyframes::db_to_gain(ev.clip.gain_db);
+    let gain = crate::engine::keyframes::db_to_gain(ev.clip.gain_db) * ev.wave_zoom.max(1.0);
     let src = |x: f32| edit::src_time(ev.clip, ev.clip.position + (x - area.min.x) as f64 * spp);
     let mut x = vis.min.x.floor();
     while x < vis.max.x {

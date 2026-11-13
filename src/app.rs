@@ -152,6 +152,17 @@ pub struct MeridianApp {
     install_on_exit: Option<(std::path::PathBuf, String)>,
     /// The preferences as last read or written, to tell this window's changes from another window's.
     prefs_seen: Prefs,
+    /// Restore Previous Time Selection and Select Loop Region.
+    sel_history: crate::edit::SelHistory,
+    /// Waveform vertical zoom (Shift+Up / Shift+Down).
+    wave_zoom: f32,
+    /// Options › Mute All Audio / Mute All Video: playback only, for this session.
+    mute_audio: bool,
+    mute_video: bool,
+    /// Preview at Cursor playing: the cursor and time selection to put back, and the span it plays.
+    cursor_preview: Option<(f64, Option<(f64, f64)>, (f64, f64))>,
+    /// Edit › Paste Repeat..., open.
+    paste_repeat: Option<crate::ui::dialogs::PasteRepeat>,
 }
 
 impl MeridianApp {
@@ -286,6 +297,12 @@ impl MeridianApp {
             install_on_exit: None,
             prefs_seen: prefs.clone(),
             prefs,
+            sel_history: Default::default(),
+            wave_zoom: 1.0,
+            mute_audio: false,
+            mute_video: false,
+            cursor_preview: None,
+            paste_repeat: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
@@ -312,6 +329,10 @@ impl MeridianApp {
             self.sel.env = keep.filter(|s| !s.keys.is_empty());
         }
         self.selected_clip = self.sel.clips.last().and_then(|id| p.find_clip(id));
+        // Edge-trimming mode ends when its event is no longer selected (a click elsewhere, a delete, an undo).
+        if self.sel.edge.as_ref().is_some_and(|e| !self.sel.clips.contains(&e.clip)) {
+            self.sel.edge = None;
+        }
     }
 
     /// An event or envelope drag holds its own undo step.
@@ -391,6 +412,7 @@ impl eframe::App for MeridianApp {
         } else {
             self.last_frame_time = 0.0;
         }
+        self.tick_cursor_preview();
         self.clock_pos = self.project.timeline.cursor_position;
 
         // Keyboard shortcuts, through the keymap (§7); menus and context menus queue theirs for after the UI.
@@ -434,6 +456,8 @@ impl eframe::App for MeridianApp {
             let (mut plugin_apply, mut favorites_changed) = (None, false);
             // The engine makes frames only while the Video Preview window is on screen.
             self.preview.visible = false;
+            self.preview.mute = self.mute_video;
+            let edit_point = self.edit_point();
             self.dock.show(ui, a.dock, |panel, bar, body| match panel {
                 Panel::ProjectMedia => {
                     ui::draw_media_toolbar(
@@ -490,7 +514,8 @@ impl eframe::App for MeridianApp {
                 }
                 Panel::Trimmer => {
                     ui::draw_trimmer_toolbar(bar, &mut self.trimmer);
-                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs, self.prefs.still_len, self.prefs.auto_crossfade);
+                    let (still, xfade) = (self.prefs.still_len, self.prefs.auto_crossfade);
+                    ui::draw_trimmer(body, &mut self.trimmer, &mut self.project, &mut self.history, &mut self.waves, &mut self.thumbs, still, xfade, edit_point.clone());
                 }
                 Panel::Properties => {
                     egui::Frame::NONE.inner_margin(6).show(body, |ui| {
@@ -609,6 +634,10 @@ impl eframe::App for MeridianApp {
             self.exec(ctx, Command::from(a));
         }
         self.run_bus(ctx);
+        // A time selection is noted for Backspace once settled (not while the loop bar or a rubber band is dragged).
+        if self.cursor_preview.is_none() && !ctx.input(|i| i.pointer.any_down()) {
+            self.sel_history.observe(self.project.timeline.loop_region);
+        }
         match ui::take_tool(ctx) {
             Some(ui::ToolWin::PanCrop(id)) => self.pan_crop = ui::PanCropWin::open(&self.project, &id),
             Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
@@ -724,7 +753,7 @@ impl eframe::App for MeridianApp {
             }
         }
         // Playback follows the project's master gain also while the Master Bus window is closed (an opened project, Undo).
-        self.audio.master.set_gain(self.project.timeline.master.gain);
+        self.audio.master.set_gain(if self.mute_audio { [0.0; 2] } else { self.project.timeline.master.gain });
         // Thumbnail and waveform decodes wait while playing.
         self.thumbs.set_paused(self.playing);
         self.waves.set_paused(self.playing);

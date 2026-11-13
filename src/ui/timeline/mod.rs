@@ -129,6 +129,23 @@ fn track_h(tr: &Track, t: &Theme) -> f32 {
     }
 }
 
+/// The zoom at which one filmstrip frame of video track `tr` (frames of `aspect`) is one frame long (Alt+Up).
+pub fn frame_per_thumb_zoom(tr: &Track, aspect: f32, fps: f64) -> f64 {
+    let t = theme::get();
+    events::thumb_w(&t, track_h(tr, &t) - 3.0, aspect) as f64 * exact_fps(fps.max(1.0)) / BASE_PPS
+}
+
+/// Edge-trimming mode: a red bracket on the selected edge, its serifs pointing into the event.
+fn paint_edge_bracket(p: &Painter, g: &Geo, rows: &[Row], project: &Project, edge: Option<&super::EdgeSel>) {
+    let Some(e) = edge else { return };
+    let (Some(r), Some(c)) = (project.find_clip(&e.clip), project.clip(&e.clip)) else { return };
+    let Some(row) = rows.iter().find(|w| w.is_video == r.is_video && w.idx == r.track_idx) else { return };
+    let x = g.to_x(if e.end { c.position + c.duration } else { c.position }).round() + if e.end { -1.0 } else { 1.0 };
+    let (y0, y1, dx) = (row.top + 2.0, row.top + row.h - 3.0, if e.end { -6.0 } else { 6.0 });
+    let s = Stroke::new(2.0_f32, Color32::from_rgb(0xFF, 0x20, 0x20));
+    p.with_clip_rect(g.lanes).line(vec![pos2(x + dx, y0), pos2(x, y0), pos2(x, y1), pos2(x + dx, y1)], s);
+}
+
 fn set_zoom(tl: &mut Timeline, zoom: f64) {
     tl.zoom = zoom.clamp(0.0005, 400.0);
 }
@@ -957,6 +974,7 @@ pub fn draw_timeline(
                 generated: media.is_some_and(|m| m.generator.is_some()),
                 pps: g.pps,
                 fps,
+                wave_zoom: opts.wave_zoom,
             };
             let mut thumb = |src: f64| pic.and_then(|m| thumbs.get(m, src)).map(|tex| tex.id());
             paint_event(&pe, &t, &ev, t.lane_bg, wave, &mut thumb);
@@ -965,6 +983,7 @@ pub fn draw_timeline(
             paint_transitions(&pe, &t, &g, row, &track.clips);
         }
     }
+    paint_edge_bracket(&pl, &g, &rows, project, sel.edge.as_ref());
     if opts.show_envelopes {
         envelopes::paint(&pl, &t, &g, &rows, project, sel.env.as_ref(), hovered_env);
         // The value of the point being dragged (or hovered).

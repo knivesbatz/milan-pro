@@ -627,7 +627,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         sep(ui);
         track_group_and_color(ui);
         if v23 {
-            off(ui, "Select All After Cursor", Later("R2"));
+            cmd(ui, "Select All After Cursor", SelectAfterCursor);
         }
     } else {
         off(ui, "Hide", Later("R5"));
@@ -812,7 +812,7 @@ const VIDEO_EVENT: &[M] = &[
     X("Create Su&bclip", Later("R3a")),
     C("Rever&se", EventReverse),
     S,
-    X("Select Events to E&nd", Later("R2")),
+    C("Select Events to E&nd", SelectEventsToEnd),
     Sub("Insert/Remove &Envelope", &[
         X("Velocity", Later("R4a")),
         X("Freeze Frame at Cursor", Later("R4a")),
@@ -835,7 +835,7 @@ const AUDIO_EVENT: &[M] = &[
     X("Create Su&bclip", Later("R3a")),
     C("&Reverse", EventReverse),
     S,
-    X("Select Events to E&nd", Later("R2")),
+    C("Select Events to E&nd", SelectEventsToEnd),
     Sub("Insert/Remove &Envelope", &[X("Volume", Later("R8c")), X("Pan", Later("R8c")), X("Mute", Later("R8c"))]),
     Sub("Channe&ls", menus::CHANNELS),
     Inline(EVENT_TAIL),

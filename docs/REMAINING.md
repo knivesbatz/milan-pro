@@ -42,7 +42,7 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1). The gaps are event looping, velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 85 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). The gaps are event looping, velocity/freeze frame, masks, nested timelines, track groups, audio buses/routing and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -160,7 +160,7 @@ What matters most:
 | 5.11 | Unlimited practical audio tracks | DONE | |
 | 5.12 | Track volume | DONE | |
 | 5.13 | Track panning | DONE | |
-| 5.14 | Track mute and solo | DONE | Mute/Solo exclusive (`MuteExclusive`, `SoloExclusive`) are disabled → R2 |
+| 5.14 | Track mute and solo | DONE | Mute, Solo, and (R2) exclusive mute/solo Shift+Z / Shift+X (`edit::exclusive_tracks`); Options › Mute All Audio / Mute All Video (playback only) |
 | 5.15 | Track automation | PARTIAL | Volume/pan/mute envelopes work. Missing: FX parameter automation ("FX Automation Envelopes" greyed, `ctx.rs:645`) and Touch/Latch write (`ctx.rs:729` greyed). → R8c |
 | 5.16 | Waveform rendering | DONE | `audio.rs` Waveforms |
 | 5.17 | Audio track-level effects | DONE | Batch 16 |
@@ -617,15 +617,15 @@ The inventory as found before R0:
 | Group | Commands | Batch |
 |---|---|---|
 | File | SaveVersion | R42 |
-| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2, R18a, R6b, R12, R18a, R17b |
-| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2, R8b, R23, R23, R14 |
-| Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 |
-| Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 |
-| Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2, R4b |
+| Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a, R6b, R12, R18a, R17b |
+| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b, R23, R23, R14 |
+| Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
+| Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
+| Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b |
 | Markers | InsertCommand, CdTrack, CdIndex | R18a |
-| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2, R5, R8c |
+| Tracks | InsertAdjustmentTrack, MuteExclusive, SoloExclusive, GroupMute, GroupSolo, ToggleListFocus, NextFxEnvelope, PrevFxEnvelope | R18b, R2 (DONE), R5, R8c |
 | Snapping | SnapGrid, SnapAllEvents | R1 (DONE) |
-| Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 |
+| Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b, R7, R18a, R13 |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 |
 | Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13, R16a-c, R31, R10b, R8b, R59 |
@@ -829,6 +829,17 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R2: Navigation, selection, nudge and zoom commands (M)
+
+**Status: DONE.** Built as designed below, except:
+- Edge-trimming mode follows VEGAS: [ / ] (Num 7 / Num 9) select the focus event's start / end edge (red bracket), then walk to the previous / next edge on its track; the frame and pixel nudge keys and F3 / F9 then trim that edge (one undo step each, rippled with Auto Ripple, crossfaded with Automatic Crossfades). Esc, Exit Edit Mode or selecting another event leaves it. Enter Expanded Edit Mode (Num 5) turns the Trimmer into a two-up view of the outgoing event's last frame and the incoming event's first frame at the edge (`trimmer.rs`, second `Preview`). Not built: entering it by double-clicking an edge, the expanded A/B view of the track itself, and the Ctrl/Alt/Shift numpad trim variants (stretch, slip, L/J, slide), which need numpad keys egui cannot read.
+- Non-numpad keys: Alt+, / Alt+. frame nudge, Alt+Shift+, / Alt+Shift+. pixel nudge, Alt+PageUp / Alt+PageDown track nudge, Ctrl+Shift+Space Preview at Cursor (Milan's own). Help › Keyboard Shortcuts says why.
+- Preview at Cursor plays Preferences › Editing "Cursor preview duration" (default 3 s, new `Prefs.cursor_preview`) centred on the cursor as a temporary time selection, looping with Loop Playback, then puts the cursor and selection back.
+- Restore Previous Time Selection keeps five (`edit::SelHistory`), as VEGAS does. Milan has no loop region apart from the time selection, so Select Loop Region brings back the last time selection after it was cleared.
+- Move Cursor to Playhead keeps the cursor where playback is when it stops (Milan's cursor is the playhead while playing). Jog (F3 / F9) steps one frame while stopped.
+- Mute All Audio / Mute All Video are playback-only session switches (silent master, empty Video Preview), like Bypass All Audio FX; renders are not affected.
+- One frame per thumbnail (Alt+Up) uses the focus (else first) video track's height and the project aspect. Waveform zoom (Shift+Up / Down) is 1x to 64x, for this session.
+- Also built: Select All After Cursor (VP23 Edit › Select and video track header), Select Events to End (event menu: the event and later ones on its track, plus groups), Exclusive mute / solo, Tab track list focus, Ctrl+Shift+Right time select to the next marker, Ctrl+Shift+[ / ] time select the previous / next selected event. Nudges are one undo step each and repeat while held.
+- Paste Repeat does not ripple (paste with Paste Insert for that).
 
 **Scope:** enable CursorToPlayhead, JogLeft/Right, SelectToNextMarker, SelectLoopRegion, RestoreSelection (a selection history), SelPrevEvent/SelNextEvent, SelectEventStart/End, ExpandedEdit (trim-mode view of the edit point, as in VEGAS: a two-up Trimmer of outgoing and incoming events), PasteRepeat (dialog: count and spacing), MuteExclusive, SoloExclusive, ToggleListFocus, ZoomFramePerThumb, WaveZoomIn/Out, PreviewAtCursor, the Nudge commands, and "Select All After Cursor" and "Select Events to End".
 

@@ -42,6 +42,7 @@ impl MeridianApp {
             || self.layout_as.is_some()
             || self.vegas_report.is_some()
             || self.recorded.is_some()
+            || self.paste_repeat.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -98,6 +99,9 @@ impl MeridianApp {
             any_armed: tl.audio_tracks.iter().any(|t| t.armed),
             recording: self.rec_start.is_some(),
             input_level: self.input.as_ref().map(|_| self.input_level),
+            edge_mode: self.sel.edge.is_some(),
+            mute_audio: self.mute_audio,
+            mute_video: self.mute_video,
         }
     }
 
@@ -283,6 +287,85 @@ impl MeridianApp {
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
             cut_overlap: p.cut_overlap,
+            wave_zoom: self.wave_zoom,
+        }
+    }
+
+    /// Expanded Edit Mode: the media and source time of the outgoing event's last frame and the incoming event's first
+    /// frame at the selected edge (either may be missing: an edge with no event beside it).
+    pub(super) fn edit_point(&self) -> Option<[ui::EditSide; 2]> {
+        let e = self.sel.edge.as_ref().filter(|e| e.expanded)?;
+        let p = &self.project;
+        let c = p.clip(&e.clip)?;
+        let frame = 1.0 / crate::project::exact_fps(p.settings.frame_rate.max(1.0));
+        let at = if e.end { c.position + c.duration } else { c.position };
+        let other = edit::adjacent(p, &e.clip, e.end, frame * 0.5);
+        let (out, inc) = if e.end { (Some(e.clip.clone()), other) } else { (other, Some(e.clip.clone())) };
+        let side = |id: Option<String>, last: bool| -> ui::EditSide {
+            let c = p.clip(id.as_deref()?)?;
+            let m = p.media_pool.iter().find(|m| Some(&m.id) == c.media_id.as_ref())?.clone();
+            Some((m, edit::src_time(c, if last { at - frame } else { at }).max(0.0)))
+        };
+        Some([side(out, true), side(inc, false)])
+    }
+
+    /// Edge-trimming mode: trim the selected edge by `d` seconds (one undo step, rippled with Auto Ripple like a trim
+    /// drag); the cursor follows the edge.
+    fn trim_edge(&mut self, e: &ui::EdgeSel, d: f64) {
+        let (id, end, xfade) = (e.clip.clone(), e.end, self.prefs.auto_crossfade);
+        self.ripple_edit(false, |p, mode| {
+            let before = p.clone();
+            let r = before.find_clip(&id)?;
+            if !edit::trim_edge(p, &id, end, d) {
+                return None;
+            }
+            let (o, n) = (before.clip(&id)?, p.clip(&id)?.clone());
+            let ids = vec![id.clone()];
+            let ops = edit::trim_ripple(&before, o, &n, &ids, &[before.timeline.tracks(r.is_video)[r.track_idx].id.clone()]);
+            if let Some(m) = mode {
+                edit::ripple_all(p, &ops, m);
+            }
+            if xfade {
+                edit::auto_crossfade(p, &before, &ids);
+            }
+            Some(ops)
+        });
+        if let Some(c) = self.project.clip(&e.clip) {
+            self.project.timeline.cursor_position = if e.end { c.position + c.duration } else { c.position };
+        }
+    }
+
+    /// Preview at Cursor ended (playback stopped or the span played): the cursor and time selection come back.
+    pub(super) fn tick_cursor_preview(&mut self) {
+        let Some((cursor, saved, span)) = self.cursor_preview else { return };
+        let tl = &mut self.project.timeline;
+        if self.playing && !self.looping && tl.cursor_position >= span.1 {
+            self.playing = false;
+        }
+        if !self.playing {
+            if tl.loop_region == Some(span) {
+                tl.loop_region = saved;
+            }
+            tl.cursor_position = cursor;
+            self.cursor_preview = None;
+        }
+    }
+
+    /// Paste Repeat OK: `n` copies of the clipboard from the cursor (one undo step); they become the selection.
+    fn paste_repeat(&mut self, n: usize, every: Option<f64>) {
+        let at = self.quantized(self.project.timeline.cursor_position);
+        let (clips, focus, xfade) = (self.clipboard.clone(), self.focus_track(), self.prefs.auto_crossfade);
+        let mut ids = Vec::new();
+        self.edit(|p| {
+            let before = p.clone();
+            ids = edit::paste_repeat(p, &clips, at, focus, n, every);
+            if xfade && !ids.is_empty() {
+                edit::auto_crossfade(p, &before, &ids);
+            }
+            !ids.is_empty()
+        });
+        if !ids.is_empty() {
+            (self.sel.clips, self.sel.env) = (ids, None);
         }
     }
 
@@ -504,6 +587,7 @@ impl MeridianApp {
         }
         let v16 = st.look == UiLook::Vegas16;
         let frame = 1.0 / self.project.settings.frame_rate.max(1.0);
+        let exact_frame = 1.0 / crate::project::exact_fps(self.project.settings.frame_rate.max(1.0));
         match c {
             // File
             New => {
@@ -791,7 +875,8 @@ impl MeridianApp {
                     _ => ui::Cmd::NextFrame,
                 };
                 if c == Stop {
-                    self.shuttle = 0.0;
+                    // Esc also leaves edge-trimming mode.
+                    (self.shuttle, self.sel.edge) = (0.0, None);
                 }
                 let mut pb = Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start };
                 ui::run_cmd(cmd, &mut self.project, &mut pb);
@@ -1059,6 +1144,163 @@ impl MeridianApp {
             },
             Window(p) => self.dock.toggle(p),
             ShowWindow(p) => self.dock.open(p),
+            // Navigation and selection (R2)
+            CursorToPlayhead => {
+                // The cursor is the playhead while playing; this keeps it there when playback stops.
+                if self.playing {
+                    self.play_start = self.project.timeline.cursor_position;
+                }
+            }
+            JogLeft | JogRight => {
+                let d = if c == JogRight { exact_frame } else { -exact_frame };
+                match self.sel.edge.clone() {
+                    Some(e) => self.trim_edge(&e, d),
+                    None if !self.playing => {
+                        let tl = &mut self.project.timeline;
+                        tl.cursor_position = (tl.cursor_position + d).max(0.0);
+                    }
+                    None => {}
+                }
+            }
+            SelectToNextMarker => {
+                let tl = &mut self.project.timeline;
+                let cur = tl.cursor_position;
+                let next = tl.markers.iter().map(|m| m.position).chain(tl.regions.iter().flat_map(|r| [r.start, r.end])).filter(|&p| p > cur + 1e-9).reduce(f64::min);
+                if let Some(to) = next {
+                    (tl.loop_region, tl.cursor_position) = (Some(edit::extend_selection(tl.loop_region, cur, to)), to);
+                }
+            }
+            SelectLoopRegion | RestoreSelection => {
+                let r = if c == SelectLoopRegion { self.sel_history.loop_region } else { self.sel_history.restore() };
+                if r.is_some() {
+                    self.project.timeline.loop_region = r;
+                }
+            }
+            SelPrevEvent | SelNextEvent => {
+                let cur = self.project.timeline.cursor_position;
+                if let Some((a, b)) = edit::selected_event_span(&self.project, &self.sel.clips, cur, c == SelNextEvent) {
+                    let tl = &mut self.project.timeline;
+                    (tl.loop_region, tl.cursor_position) = (Some((a, b)), a);
+                }
+            }
+            SelectAfterCursor => {
+                (self.sel.clips, self.sel.env) = (edit::select_after(&self.project, self.project.timeline.cursor_position), None);
+            }
+            SelectEventsToEnd => {
+                let Some(id) = self.sel.clips.last() else { return };
+                let ids = edit::events_to_end(&self.project, id);
+                self.sel.clips = if self.prefs.ignore_grouping { ids } else { edit::expand_groups(&self.project, &ids) };
+                self.sel.env = None;
+            }
+            // Edge-trimming mode: [ selects the focus event's start, then walks to earlier edges on its track; ] the end
+            // and later edges.
+            SelectEventStart | SelectEventEnd => {
+                let fwd = c == SelectEventEnd;
+                let next = match &self.sel.edge {
+                    Some(e) => edit::next_edge(&self.project, &e.clip, e.end, fwd),
+                    None => self.sel.clips.last().and_then(|id| {
+                        let k = self.project.clip(id)?;
+                        Some((id.clone(), fwd, if fwd { k.position + k.duration } else { k.position }))
+                    }),
+                };
+                if let Some((id, end, t)) = next {
+                    let expanded = self.sel.edge.as_ref().is_some_and(|e| e.expanded);
+                    self.sel.edge = Some(ui::EdgeSel { clip: id.clone(), end, expanded });
+                    (self.sel.clips, self.sel.env) = (vec![id], None);
+                    self.project.timeline.cursor_position = t;
+                }
+            }
+            // Enter: the selected edge (else the focus event's edge nearest the cursor) in Expanded Edit Mode, with
+            // the Trimmer showing the edit point. In Expanded Edit Mode it exits.
+            ExpandedEdit => match self.sel.edge.as_ref().map(|e| e.expanded) {
+                Some(true) => self.sel.edge = None,
+                Some(false) => {
+                    if let Some(e) = &mut self.sel.edge {
+                        e.expanded = true;
+                    }
+                    self.dock.open(Panel::Trimmer);
+                }
+                None => {
+                    let Some(id) = self.sel.clips.last().cloned() else { return };
+                    let Some(k) = self.project.clip(&id) else { return };
+                    let (a, b, cur) = (k.position, k.position + k.duration, self.project.timeline.cursor_position);
+                    let end = (cur - b).abs() < (cur - a).abs();
+                    self.project.timeline.cursor_position = if end { b } else { a };
+                    (self.sel.clips, self.sel.env) = (vec![id.clone()], None);
+                    self.sel.edge = Some(ui::EdgeSel { clip: id, end, expanded: true });
+                    self.dock.open(Panel::Trimmer);
+                }
+            },
+            ExitEditMode => self.sel.edge = None,
+            // Nudge: in edge-trimming mode the frame and pixel keys trim the edge; otherwise they move the selected events
+            // (and their groups) by a frame, a pixel or a track, one undo step each.
+            NudgeFrameLeft | NudgeFrameRight | NudgePixelLeft | NudgePixelRight | NudgeTrackUp | NudgeTrackDown => {
+                let sign = if matches!(c, NudgeFrameLeft | NudgePixelLeft) { -1.0 } else { 1.0 };
+                let mut d = if matches!(c, NudgeFrameLeft | NudgeFrameRight) { exact_frame } else { 1.0 / self.pps() };
+                if self.prefs.quantize {
+                    d = (d / exact_frame).round().max(1.0) * exact_frame; // a pixel nudge stays on the frame grid
+                }
+                let dtrack = match c {
+                    NudgeTrackUp => -1,
+                    NudgeTrackDown => 1,
+                    _ => 0,
+                };
+                let d = if dtrack == 0 { sign * d } else { 0.0 };
+                match self.sel.edge.clone() {
+                    Some(e) if dtrack == 0 => self.trim_edge(&e, d),
+                    _ => {
+                        let ids = if self.prefs.ignore_grouping { self.sel.clips.clone() } else { edit::expand_groups(&self.project, &self.sel.clips) };
+                        let (lock, xfade) = (self.prefs.lock_envelopes, self.prefs.auto_crossfade);
+                        self.edit(|p| {
+                            let before = p.clone();
+                            let done = edit::move_clips(p, &ids, d, dtrack, lock);
+                            if done && xfade {
+                                edit::auto_crossfade(p, &before, &ids); // as a drag does
+                            }
+                            done
+                        });
+                    }
+                }
+            }
+            PasteRepeat => {
+                let len = self.clipboard.iter().map(|(_, _, c)| c.position + c.duration).fold(0.0, f64::max);
+                let s = &self.project.settings;
+                self.paste_repeat = Some(dialogs::PasteRepeat::new(crate::project::format_time(len, s.ruler.format, s)));
+            }
+            MuteExclusive | SoloExclusive => {
+                let ids = self.sel.tracks.clone();
+                self.edit(|p| edit::exclusive_tracks(p, &ids, c == SoloExclusive));
+            }
+            ToggleListFocus => {
+                self.sel.list_focus = !self.sel.list_focus;
+                if self.sel.list_focus && self.sel.tracks.is_empty() {
+                    let tl = &self.project.timeline;
+                    self.sel.tracks = tl.video_tracks.iter().chain(&tl.audio_tracks).next().map(|t| t.id.clone()).into_iter().collect();
+                }
+            }
+            ZoomFramePerThumb => {
+                let (tl, s) = (&self.project.timeline, &self.project.settings);
+                let tr = self.focus_of(true).or((!tl.video_tracks.is_empty()).then_some(0)).map(|i| &tl.video_tracks[i]);
+                if let Some(tr) = tr {
+                    let f = ui::frame_per_thumb_zoom(tr, s.width as f32 / s.height.max(1) as f32, s.frame_rate) / tl.zoom;
+                    self.zoom_by(f);
+                }
+            }
+            WaveZoomIn | WaveZoomOut => self.wave_zoom = (self.wave_zoom * if c == WaveZoomIn { 1.25 } else { 0.8 }).clamp(1.0, 64.0),
+            // Preview at Cursor: plays the Cursor Preview Duration centred on the cursor as a temporary time selection
+            // (looping with Loop Playback), then puts the cursor and selection back (`tick_cursor_preview`).
+            PreviewAtCursor => {
+                if self.cursor_preview.is_none() && self.rec_start.is_none() {
+                    let tl = &mut self.project.timeline;
+                    let (cur, half) = (tl.cursor_position, self.prefs.cursor_preview.max(0.1) / 2.0);
+                    let span = ((cur - half).max(0.0), cur + half);
+                    self.cursor_preview = Some((cur, tl.loop_region, span));
+                    (tl.loop_region, tl.cursor_position) = (Some(span), span.0);
+                    (self.playing, self.shuttle) = (true, 0.0);
+                }
+            }
+            MuteAllAudio => self.mute_audio = !self.mute_audio,
+            MuteAllVideo => self.mute_video = !self.mute_video,
             _ => {}
         }
     }
@@ -1140,6 +1382,7 @@ impl MeridianApp {
         self.default_track = None;
         self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
+        (self.paste_repeat, self.cursor_preview, self.sel_history) = (None, None, Default::default());
         self.playing = false;
         self.message = None;
         if action == MenuAction::Open {
@@ -1255,6 +1498,15 @@ impl MeridianApp {
             self.vegas_report = None;
         }
         self.show_time_entry(ctx);
+        if let Some(d) = &mut self.paste_repeat {
+            let s = self.project.settings.clone();
+            let every = |x: &str| crate::project::parse_time(x, s.ruler.format, &s).filter(|v| *v > 0.0);
+            if let Some(ok) = d.show(ctx, |x| every(x).is_some()) {
+                if let Some(d) = self.paste_repeat.take().filter(|_| ok) {
+                    self.paste_repeat(d.count.max(1) as usize, if d.even { every(&d.every) } else { None });
+                }
+            }
+        }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_layout_as(ctx);
@@ -1447,6 +1699,17 @@ impl MeridianApp {
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "goto" => self.exec(ctx, GoTo),
+            "expanded-edit" => {
+                // At the focus event's end, so the bracket and the outgoing frame show.
+                if let Some(c) = self.sel.clips.last().and_then(|id| self.project.clip(id)) {
+                    self.project.timeline.cursor_position = c.position + c.duration;
+                }
+                self.exec(ctx, ExpandedEdit);
+            }
+            "paste-repeat" => {
+                self.exec(ctx, Copy);
+                self.exec(ctx, PasteRepeat);
+            }
             "render" => self.render.open = true,
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),

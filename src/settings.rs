@@ -55,6 +55,8 @@ pub struct Prefs {
     pub fx_favorites: Vec<String>,
     /// Preferences › Editing: "Cut-to-overlap conversion" length (seconds) a transition dropped on a cut makes.
     pub cut_overlap: f64,
+    /// Preferences › Editing: "Cursor preview duration (seconds)", what Preview at Cursor plays around the cursor.
+    pub cursor_preview: f64,
     /// The FX chain new audio tracks start with (Set Default Track Properties); None = gate, EQ and compressor.
     pub default_track_fx: Option<Vec<crate::project::Fx>>,
     /// Preferences › Audio Device: the recording input (device name; None = the Windows default) and the recording
@@ -112,6 +114,7 @@ impl Default for Prefs {
             auto_proxy: false,
             fx_favorites: Vec::new(),
             cut_overlap: 1.0,
+            cursor_preview: 3.0,
             default_track_fx: None,
             record_input: None,
             record_offset_ms: 0.0,
@@ -420,7 +423,7 @@ mod tests {
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping), (true, false, crate::edit::RippleMode::Affected, false));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
-        assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none());
+        assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
         assert!(!d.snap_grid && !d.snap_all && d.grid == crate::project::GridSpacing::RulerMarks);
         let g = Prefs { snap_grid: true, snap_all: true, grid: crate::project::GridSpacing::Note(16, true), ..Default::default() };

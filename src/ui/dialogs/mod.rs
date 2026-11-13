@@ -3,6 +3,7 @@
 mod default_track;
 mod event_props;
 mod goto;
+mod paste_repeat;
 mod prefs;
 mod recorded;
 mod render;
@@ -15,6 +16,7 @@ mod welcome;
 pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
 pub use goto::TimeEntry;
+pub use paste_repeat::PasteRepeat;
 pub use prefs::PrefsDialog;
 pub use recorded::{Recorded, RecordedFiles};
 pub use render::{RenderDialog, open_folder};

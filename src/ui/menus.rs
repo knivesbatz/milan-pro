@@ -112,6 +112,11 @@ pub struct CmdState {
     pub layouts: [Option<String>; 10],
     /// The user layout last loaded or saved (Save Layout saves over it); None = the default layout.
     pub layout_slot: Option<usize>,
+    /// Edge-trimming mode is on (an event edge is selected with [ or ]).
+    pub edge_mode: bool,
+    /// Options › Mute All Audio / Mute All Video.
+    pub mute_audio: bool,
+    pub mute_video: bool,
 }
 
 impl CmdState {
@@ -164,6 +169,15 @@ impl CmdState {
             | InsertVideoTrack | Snapping | AutoCrossfade | ZoomIn | ZoomOut | ZoomOutLarge | TracksTaller
             | TracksShorter | DefaultTrackHeights | PreviewQuality(_) => true,
             GoTo | GridLeft | GridRight | SnapGrid | SnapAllEvents | SetGrid(_) | SetRuler(_) | SetTimeAtCursor | ProjectTempo => true,
+            CursorToPlayhead | JogLeft | JogRight | SelectToNextMarker | SelectLoopRegion | RestoreSelection | SelectAfterCursor
+            | ZoomFramePerThumb | WaveZoomIn | WaveZoomOut | PreviewAtCursor | MuteAllAudio | MuteAllVideo => true,
+            SelectEventStart | SelectEventEnd | ExpandedEdit | SelectEventsToEnd => self.clip,
+            ExitEditMode => self.edge_mode,
+            SelPrevEvent | SelNextEvent | NudgeFrameLeft | NudgeFrameRight | NudgePixelLeft | NudgePixelRight | NudgeTrackUp
+            | NudgeTrackDown => self.n_sel > 0,
+            PasteRepeat => self.clipboard,
+            MuteExclusive | SoloExclusive => self.tracks_sel,
+            ToggleListFocus => self.any_tracks,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -193,6 +207,8 @@ impl CmdState {
             ShowEnvelopes => self.show_env,
             LockEnvelopes => self.lock_env,
             BypassAudioFx => self.bypass_audio_fx,
+            MuteAllAudio => self.mute_audio,
+            MuteAllVideo => self.mute_video,
             Arm => self.armed,
             ToggleEnvelope(k) => self.focus_envs.contains(&k),
             LayoutUser(n) => self.layout_slot == Some(n),
@@ -272,10 +288,6 @@ impl Why {
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
-        PasteRepeat | PreviewAtCursor | CursorToPlayhead | JogLeft | JogRight | SelectToNextMarker | SelectLoopRegion
-        | RestoreSelection | SelPrevEvent | SelNextEvent | SelectEventStart | SelectEventEnd | ExpandedEdit | NudgeFrameLeft
-        | NudgeFrameRight | NudgePixelLeft | NudgePixelRight | NudgeTrackUp | NudgeTrackDown | MuteExclusive | SoloExclusive
-        | ToggleListFocus | ZoomFramePerThumb | WaveZoomIn | WaveZoomOut => Later("R2"),
         PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => Later("R4b"),
         GroupMute | GroupSolo => Later("R5"),
         NestedCreate | NestedOpen | NestedParent => Later("R6b"),
@@ -578,12 +590,12 @@ const NO_BUS: Why = Later("R8b");
 
 const SELECT: &[M] = &[
     C("Select &All", SelectAll),
-    V23(&X("Select All After Cursor", Later("R2"))),
+    V23(&C("Select All After Cursor", SelectAfterCursor)),
     C("Select Event Sta&rt", SelectEventStart),
     C("Select Event &End", SelectEventEnd),
     C("Enter Expanded Edit &Mode", ExpandedEdit),
-    V16(&X("Exit E&dit Mode", Later("R2"))),
-    V23(&X("Exit Expanded E&dit Mode", Later("R2"))),
+    V16(&C("Exit E&dit Mode", ExitEditMode)),
+    V23(&C("Exit Expanded E&dit Mode", ExitEditMode)),
     S,
     C("&Loop Playback", Loop),
     S,
@@ -1017,8 +1029,8 @@ pub const OPTIONS: &[M] = &[
     S,
     C("&Bypass All Audio FX", BypassAudioFx),
     S,
-    K("&Mute All Audio", false, Later("R2")),
-    K("Mute All Vi&deo", false, Later("R2")),
+    C("&Mute All Audio", MuteAllAudio),
+    C("Mute All Vi&deo", MuteAllVideo),
     S,
     Sub("Time&code", &[
         C("&Generate MIDI Timecode", MidiTimecode),
@@ -1322,6 +1334,35 @@ mod tests {
         assert_eq!(cmds.len(), 14 + 15);
     }
 
+    /// R2: the navigation, selection, nudge and zoom commands work; the ones that act on events, tracks or the clipboard
+    /// wait for them, and Exit Edit Mode for edge-trimming mode.
+    #[test]
+    fn navigation_selection_nudge_and_zoom_commands_work() {
+        let r2 = [
+            CursorToPlayhead, JogLeft, JogRight, SelectToNextMarker, SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent,
+            SelectEventStart, SelectEventEnd, ExpandedEdit, ExitEditMode, PasteRepeat, MuteExclusive, SoloExclusive, ToggleListFocus,
+            ZoomFramePerThumb, WaveZoomIn, WaveZoomOut, PreviewAtCursor, NudgeFrameLeft, NudgeFrameRight, NudgePixelLeft,
+            NudgePixelRight, NudgeTrackUp, NudgeTrackDown, SelectAfterCursor, SelectEventsToEnd, MuteAllAudio, MuteAllVideo,
+        ];
+        let mut st = CmdState { any_tracks: true, ..Default::default() };
+        for c in r2 {
+            assert!(unfinished(c).is_none(), "{c:?}");
+        }
+        for c in [NudgeFrameLeft, SelNextEvent, SelectEventStart, ExpandedEdit, SelectEventsToEnd, PasteRepeat, MuteExclusive, ExitEditMode] {
+            assert!(!st.enabled(c), "{c:?} needs a selection");
+        }
+        (st.n_sel, st.clip, st.clipboard, st.tracks_sel, st.edge_mode) = (1, true, true, true, true);
+        assert!(r2.iter().all(|c| st.enabled(*c)));
+        assert_eq!((st.checked(MuteAllAudio), st.checked(MuteAllVideo)), (Some(false), Some(false)));
+        st.mute_video = true;
+        assert_eq!(st.checked(MuteAllVideo), Some(true));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R2")), "{rows:?}");
+    }
+
     #[test]
     fn record_and_arm_follow_the_armed_tracks() {
         let mut st = CmdState::default();
@@ -1372,6 +1413,7 @@ mod tests {
             audio_track_focus: true,
             video_track_focus: true,
             any_armed: true,
+            edge_mode: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

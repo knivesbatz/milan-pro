@@ -58,6 +58,10 @@ pub enum Command {
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
+    /// Edit › Select › Exit (Expanded) Edit Mode; Select All After Cursor (VP23); the event menu's Select Events to End.
+    ExitEditMode, SelectAfterCursor, SelectEventsToEnd,
+    /// Options › Mute All Audio / Mute All Video (playback only).
+    MuteAllAudio, MuteAllVideo,
     /// Video Event Pan/Crop on the focus event; Track Motion on the focus video track.
     EventPanCrop, TrackMotion,
     /// The FX window on the focus video event, the focus video track or the Video Output.
@@ -146,7 +150,7 @@ pub const TABLE: &[Row] = &[
     (ShuttleReverse, "Shuttle reverse (repeat = faster)", &["J"], None),
     (ShuttlePause, "Shuttle pause", &["K"], None),
     (ShuttleForward, "Shuttle forward (repeat = faster)", &["L"], None),
-    (PreviewAtCursor, "Preview at cursor", &["Num 0"], None),
+    (PreviewAtCursor, "Preview at cursor", &["Num 0", "Ctrl+Shift+Space"], None),
     (DimMaster, "Dim master", &["Ctrl+Shift+F12"], None),
     (Prerender, "Selectively Prerender Video", &["Shift+M"], None),
     (RamPreview, "Build Dynamic RAM Preview", &["Shift+B"], None),
@@ -182,8 +186,8 @@ pub const TABLE: &[Row] = &[
     (Marker(10), "Go to marker 10", &["0"], None),
     (CenterView, "Center View around Cursor", &["\\"], None),
     (CursorToPlayhead, "Move Cursor to Playhead", &["Alt+Down"], None),
-    (JogLeft, "Jog left", &["F3"], None),
-    (JogRight, "Jog right", &["F9"], None),
+    (JogLeft, "Jog left (edge mode: trim left)", &["F3"], None),
+    (JogRight, "Jog right (edge mode: trim right)", &["F9"], None),
     // Selection
     (SetSelStart, "Set Selection Start", &["I"], None),
     (SetSelEnd, "Set Selection End", &["O"], None),
@@ -191,16 +195,16 @@ pub const TABLE: &[Row] = &[
     (RestoreSelection, "Restore Previous Time Selection", &["Backspace"], None),
     (SelPrevEvent, "Set Selection to Previous Selected Event", &["Ctrl+Shift+["], None),
     (SelNextEvent, "Set Selection to Next Selected Event", &["Ctrl+Shift+]"], None),
-    (SelectEventStart, "Select Event Start", &["["], None),
-    (SelectEventEnd, "Select Event End", &["]"], None),
+    (SelectEventStart, "Select Event Start / previous event edge (edge-trimming mode)", &["[", "Num 7"], None),
+    (SelectEventEnd, "Select Event End / next event edge (edge-trimming mode)", &["]", "Num 9"], None),
     (ExpandedEdit, "Enter/Exit Expanded Edit Mode", &["Num 5"], None),
     // Event nudge
-    (NudgeFrameLeft, "Move selected events left 1 frame", &["Num 1"], None),
-    (NudgeFrameRight, "Move selected events right 1 frame", &["Num 3"], None),
-    (NudgePixelLeft, "Move selected events left 1 pixel", &["Num 4"], None),
-    (NudgePixelRight, "Move selected events right 1 pixel", &["Num 6"], None),
-    (NudgeTrackUp, "Move selected events up a track", &["Num 8"], None),
-    (NudgeTrackDown, "Move selected events down a track", &["Num 2"], None),
+    (NudgeFrameLeft, "Move selected events left 1 frame (edge mode: trim)", &["Num 1", "Alt+,"], None),
+    (NudgeFrameRight, "Move selected events right 1 frame (edge mode: trim)", &["Num 3", "Alt+."], None),
+    (NudgePixelLeft, "Move selected events left 1 pixel (edge mode: trim)", &["Num 4", "Alt+Shift+,"], None),
+    (NudgePixelRight, "Move selected events right 1 pixel (edge mode: trim)", &["Num 6", "Alt+Shift+."], None),
+    (NudgeTrackUp, "Move selected events up a track", &["Num 8", "Alt+PageUp"], None),
+    (NudgeTrackDown, "Move selected events down a track", &["Num 2", "Alt+PageDown"], None),
     (PitchUp, "Pitch up a semitone", &["="], None),
     (PitchDown, "Pitch down a semitone", &["-"], None),
     (PitchCentUp, "Pitch up a cent", &["Ctrl+="], None),
@@ -394,7 +398,8 @@ fn repeats(cmd: Command) -> bool {
         cmd,
         PrevFrame | NextFrame | PixelLeft | PixelRight | PrevMarker | NextMarker | PrevEditPoint | NextEditPoint
             | ZoomIn | ZoomOut | ZoomSelection | ZoomOutLarge | TracksTaller | TracksShorter | Undo | Redo
-            | ShuttleForward | ShuttleReverse
+            | ShuttleForward | ShuttleReverse | JogLeft | JogRight | NudgeFrameLeft | NudgeFrameRight | NudgePixelLeft
+            | NudgePixelRight | WaveZoomIn | WaveZoomOut
     )
 }
 
@@ -579,6 +584,10 @@ mod tests {
             assert_eq!(run(key(Key::D, Modifiers::CTRL | Modifiers::ALT), look), vec![]);
             assert_eq!(run(key(Key::Num5, Modifiers::NONE), look), vec![SaveLayoutUser(5)]);
         }
+        // R2: the numeric keypad nudges have keys egui can tell apart.
+        assert_eq!(run(key(Key::Comma, Modifiers::ALT), UiLook::Vegas23), vec![NudgeFrameLeft]);
+        assert_eq!(run(key(Key::Period, Modifiers::ALT | Modifiers::SHIFT), UiLook::Vegas16), vec![NudgePixelRight]);
+        assert_eq!(run(key(Key::OpenBracket, Modifiers::NONE), UiLook::Vegas23), vec![SelectEventStart]);
         // Over the dock a plain digit is the window's, unless it ends a chord.
         let mut over = |events: Vec<Event>| {
             let mut out = Vec::new();
