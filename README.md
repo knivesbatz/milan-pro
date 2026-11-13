@@ -2,7 +2,7 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.4). Editing, preview, effects, transitions, titles, audio FX, recording and rendering work; plug-in hosting is next.
+> Early development (v0.5). Editing, preview, effects, transitions, titles, audio FX, recording and rendering work; plug-in hosting is next.
 
 ## Features
 
