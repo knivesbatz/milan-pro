@@ -1,10 +1,10 @@
 //! Audio mixer: the audio plan mixed block by block from persistent ffmpeg PCM streams (stereo f32 at RATE).
 //! `run` is the "milan-mix" thread body for playback; it loops inside the mixer, so a loop wrap is seamless.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -401,6 +401,48 @@ impl Live {
 
 type Open = Box<dyn FnMut(&ASrc, i64) -> Result<Stream, String> + Send>;
 
+/// R8a: the RMS window of the level meters.
+const METER_WINDOW: usize = RATE as usize / 20;
+
+/// R8a: a track's or bus's level meter, written by the mix thread and read by the UI: the peak |sample| since it was last
+/// taken, and the RMS over the last 50 ms, per channel (f32 bits). Post-fader: what the node sends on to its output.
+#[derive(Debug, Default)]
+pub struct Meter {
+    peak: [AtomicU32; 2],
+    rms: [AtomicU32; 2],
+}
+
+impl Meter {
+    /// The peaks since the last call (reading resets them).
+    #[allow(dead_code)] // read by the Mixing Console and the track meters (R8b)
+    pub fn take_peaks(&self) -> [f32; 2] {
+        [0, 1].map(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
+    }
+
+    #[allow(dead_code)] // read by the Mixing Console and the track meters (R8b)
+    pub fn rms(&self) -> [f32; 2] {
+        [0, 1].map(|c| f32::from_bits(self.rms[c].load(Relaxed)))
+    }
+}
+
+/// Meters by track and bus id. The UI thread builds a new map with each plan (keeping the meters of ids it had), so the
+/// mix thread only reads it: no lock.
+pub type Meters = HashMap<String, Arc<Meter>>;
+
+/// One block's peak and sum of squares per channel, of what a node sends on.
+#[derive(Default, Clone, Copy)]
+struct Level {
+    peak: [f32; 2],
+    sq: [f32; 2],
+}
+
+impl Level {
+    fn add(&mut self, l: f32, r: f32) {
+        (self.peak[0], self.peak[1]) = (self.peak[0].max(l.abs()), self.peak[1].max(r.abs()));
+        (self.sq[0], self.sq[1]) = (self.sq[0] + l * l, self.sq[1] + r * r);
+    }
+}
+
 pub struct Mixer {
     open: Open,
     streams: Vec<Live>,
@@ -423,9 +465,15 @@ pub struct Mixer {
     master_fx: Chain,
     /// The last block had Bypass All Audio FX on: turning it off starts the chains fresh.
     bypassed: bool,
-    /// Volume and Pan by track id, and gain by clip id, in the last block: a change ramps across the next block.
+    /// Volume and Pan by track and bus id, and gain by clip id, in the last block: a change ramps across the next block.
     tr_last: HashMap<String, (f32, f32)>,
     ev_last: HashMap<String, f32>,
+    /// R8a: FX state by bus id; one input buffer per bus of the plan; send levels by (track id, bus id) in the last block.
+    bus_fx: HashMap<String, Chain>,
+    bus_buf: Vec<Vec<f32>>,
+    send_last: HashMap<(String, String), f32>,
+    /// R8a: each metered node's last 50 ms (frames, sum of squares per channel) and the block that last fed it.
+    rms: HashMap<String, (u64, VecDeque<(usize, [f32; 2])>)>,
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -460,6 +508,30 @@ impl Mixer {
             bypassed: false,
             tr_last: HashMap::new(),
             ev_last: HashMap::new(),
+            bus_fx: HashMap::new(),
+            bus_buf: Vec::new(),
+            send_last: HashMap::new(),
+            rms: HashMap::new(),
+        }
+    }
+
+    /// R8a: feed node `id`'s meter (if the plan has one) with a block of `frames` frames.
+    fn meter(&mut self, plan: &AudioPlan, id: &str, frames: usize, lv: Level) {
+        let Some(m) = plan.meters.as_ref().and_then(|m| m.get(id)) else { return };
+        if !self.rms.contains_key(id) {
+            self.rms.insert(id.to_string(), (0, VecDeque::new()));
+        }
+        let (fed, w) = self.rms.get_mut(id).expect("just added");
+        *fed = self.round;
+        w.push_back((frames, lv.sq));
+        let mut n: usize = w.iter().map(|e| e.0).sum();
+        while w.len() > 1 && n - w[0].0 >= METER_WINDOW {
+            n -= w.pop_front().map_or(0, |e| e.0);
+        }
+        let sq = w.iter().fold([0.0f32; 2], |a, e| [a[0] + e.1[0], a[1] + e.1[1]]);
+        for c in 0..2 {
+            m.peak[c].fetch_max(lv.peak[c].to_bits(), Relaxed);
+            m.rms[c].store((sq[c] / n.max(1) as f32).sqrt().to_bits(), Relaxed);
         }
     }
 
@@ -563,7 +635,9 @@ impl Mixer {
 
     /// Mix `out.len() / 2` stereo frames from timeline frame `f0`: per event PCM, event FX, then x gain x fades x volume
     /// envelope; per track the track FX, then the volume, mute and pan envelopes (ramped across the block) x Volume and
-    /// Pan; then the master FX. Event FX stop at the event's end; track FX run on past it, so their tails are heard.
+    /// Pan (its Pan Type) into its output, and its sends (pre-volume: after the track FX); then each bus (R8a), in
+    /// order, its FX, envelopes, Volume and Pan into its output; then the master FX. Event FX stop at the event's end;
+    /// track and bus FX run on past it, so their tails are heard.
     pub fn block(&mut self, plan: &AudioPlan, f0: i64, out: &mut [f32]) {
         // Streams nothing used in the last block, or warmed for this one, are closed.
         let round = self.round;
@@ -579,10 +653,19 @@ impl Mixer {
         let fx_on = !plan.bypass_fx;
         if self.bypassed != plan.bypass_fx {
             (self.ev_fx, self.tr_fx, self.master_fx, self.bypassed) = (HashMap::new(), HashMap::new(), Chain::default(), plan.bypass_fx);
+            self.bus_fx = HashMap::new();
         }
-        // Chains of events and tracks no longer playing are dropped with these.
-        let (mut ev_old, mut tr_old) = (std::mem::take(&mut self.ev_fx), std::mem::take(&mut self.tr_fx));
+        // Chains of events, tracks and busses no longer playing are dropped with these.
+        let (mut ev_old, mut tr_old, mut bus_old) = (std::mem::take(&mut self.ev_fx), std::mem::take(&mut self.tr_fx), std::mem::take(&mut self.bus_fx));
         let (mut tr_last, mut ev_last) = (std::mem::take(&mut self.tr_last), std::mem::take(&mut self.ev_last));
+        let mut send_last = std::mem::take(&mut self.send_last);
+        let mut bus_buf = std::mem::take(&mut self.bus_buf);
+        bus_buf.resize_with(plan.buses.len(), Vec::new);
+        for b in &mut bus_buf {
+            b.clear();
+            b.resize(out.len(), 0.0);
+        }
+        let mut bus_heard = vec![false; plan.buses.len()];
         for tr in &plan.tracks {
             track.clear();
             track.resize(out.len(), 0.0);
@@ -659,16 +742,105 @@ impl Mixer {
             let (v0, v1) = env_gain(&tr.vol_env, t0, t1);
             let (m0, m1) = tr.mute_env.as_ref().map_or((1.0, 1.0), |e| ramp(e, t0, t1));
             let (p0, p1) = tr.pan_env.as_ref().map_or((0.0, 0.0), |e| ramp(e, t0, t1));
-            for (i, (o, x)) in out.chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
+            let inv = if tr.invert { -1.0 } else { 1.0 };
+            // The fader: Volume x volume and mute envelopes, at frame i.
+            let fader = |i: usize| {
                 let s = i as f32 / n as f32;
                 let lerp = |a: f32, b: f32| a + (b - a) * s;
-                let g = lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0) * if tr.invert { -1.0 } else { 1.0 };
-                // Pan trims the pan envelope (VEGAS); one balance law, the same as audio::track_gain.
-                let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
-                o[0] += x[0] * g * (1.0 - p).min(1.0);
-                o[1] += x[1] * g * (1.0 + p).min(1.0);
+                lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0)
+            };
+            let mut lv = Level::default();
+            if !tr.muted {
+                let dest: &mut [f32] = match tr.out {
+                    Some(b) => {
+                        bus_heard[b] = true;
+                        &mut bus_buf[b]
+                    }
+                    None => &mut *out,
+                };
+                for (i, (o, x)) in dest.chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
+                    let s = i as f32 / n as f32;
+                    let lerp = |a: f32, b: f32| a + (b - a) * s;
+                    let g = fader(i) * inv;
+                    // Pan trims the pan envelope (VEGAS), by the track's Pan Type.
+                    let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
+                    let m = tr.pan_type.matrix(p);
+                    let (l, r) = (x[0] * g, x[1] * g);
+                    let (a, b) = (l * m[0][0] + r * m[0][1], l * m[1][0] + r * m[1][1]);
+                    o[0] += a;
+                    o[1] += b;
+                    lv.add(a, b);
+                }
+            }
+            self.meter(plan, &tr.id, n, lv);
+            // Sends: centre-panned by the track's Pan Type (VEGAS without Link to Main Track Pan); pre-volume sends are
+            // pre-mute too, post-volume ones follow the fader and the mute.
+            let centre = tr.pan_type.matrix(0.0);
+            for snd in tr.sends.iter().filter(|s| s.pre || !tr.muted) {
+                let key = (tr.id.clone(), snd.id.clone());
+                let l0 = send_last.remove(&key).unwrap_or(snd.level);
+                self.send_last.insert(key, snd.level);
+                bus_heard[snd.to] = true;
+                for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
+                    let s = i as f32 / n as f32;
+                    let g = (l0 + (snd.level - l0) * s) * inv * if snd.pre { 1.0 } else { fader(i) };
+                    let (l, r) = (x[0] * g, x[1] * g);
+                    o[0] += l * centre[0][0] + r * centre[0][1];
+                    o[1] += l * centre[1][0] + r * centre[1][1];
+                }
             }
         }
+        // R8a: the busses, each after every bus that feeds it (`AudioPlan::buses` order), into a later bus or the master.
+        let (t0, t1) = (f0 as f64 / r, f1 as f64 / r);
+        for (k, b) in plan.buses.iter().enumerate() {
+            let (head, tail) = bus_buf.split_at_mut(k + 1);
+            let input = &mut head[k];
+            if fx_on && !b.fx.is_empty() {
+                let mut ch = bus_old.remove(&b.id).unwrap_or_default();
+                ch.run(&b.fx, t0, input);
+                self.bus_fx.insert(b.id.clone(), ch);
+            } else if !bus_heard[k] {
+                continue;
+            }
+            let (vol0, pan0) = tr_last.remove(&b.id).unwrap_or((b.volume, b.pan));
+            self.tr_last.insert(b.id.clone(), (b.volume, b.pan));
+            let (v0, v1) = env_gain(&b.vol_env, t0, t1);
+            let (m0, m1) = b.mute_env.as_ref().map_or((1.0, 1.0), |e| ramp(e, t0, t1));
+            let (p0, p1) = b.pan_env.as_ref().map_or((0.0, 0.0), |e| ramp(e, t0, t1));
+            let dest: &mut [f32] = match b.out {
+                Some(o) => {
+                    bus_heard[o] = true;
+                    &mut tail[o - k - 1]
+                }
+                None => &mut *out,
+            };
+            let mut lv = Level::default();
+            for (i, (o, x)) in dest.chunks_exact_mut(2).zip(input.chunks_exact(2)).enumerate() {
+                let s = i as f32 / n as f32;
+                let lerp = |a: f32, b: f32| a + (b - a) * s;
+                let g = lerp(vol0, b.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
+                let p = (lerp(pan0, b.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
+                let (l, r) = (x[0] * g * (1.0 - p).min(1.0), x[1] * g * (1.0 + p).min(1.0));
+                o[0] += l;
+                o[1] += r;
+                lv.add(l, r);
+            }
+            self.meter(plan, &b.id, n, lv);
+        }
+        // A meter nothing fed this block falls to silence.
+        let round = self.round;
+        if let Some(m) = &plan.meters {
+            self.rms.retain(|id, (fed, _)| {
+                let keep = *fed == round;
+                if !keep {
+                    if let Some(m) = m.get(id) {
+                        m.rms.iter().for_each(|a| a.store(0, Relaxed));
+                    }
+                }
+                keep
+            });
+        }
+        self.bus_buf = bus_buf;
         if fx_on {
             self.master_fx.run(&plan.master_fx, f0 as f64 / r, out);
         }
@@ -1294,6 +1466,212 @@ mod tests {
         let out = mix(&p, &mut ones(), 0, 4 * BLOCK);
         assert!(out.iter().all(|v| v.abs() <= ceil), "{:?}", out.iter().fold(0.0f32, |m, v| m.max(v.abs())));
         assert!(out[2 * BLOCK..].iter().any(|v| v.abs() > 0.9 * ceil));
+    }
+
+    /// `solo_track()` with `n` busses.
+    fn with_buses(n: usize) -> Project {
+        let mut p = solo_track();
+        crate::edit::set_bus_count(&mut p, n);
+        p
+    }
+
+    /// R8a acceptance: Track → Bus A at -6 dB → Master halves the amplitude; the bus's pan and mute work as a track's,
+    /// and its volume envelope multiplies its fader.
+    #[test]
+    fn a_track_through_a_bus_at_minus_6_db_is_halved() {
+        let mut p = with_buses(1);
+        let a = p.timeline.audio.buses[0].id.clone();
+        let tid = p.timeline.audio_tracks[0].id.clone();
+        assert!(crate::edit::set_track_out(&mut p, &[tid], &crate::project::Out::Bus(a.clone())));
+        assert_eq!(mix(&p, &mut ones(), 0, 4), [1.0; 8], "a bus at 0 dB changes nothing");
+        p.timeline.audio.buses[0].volume = crate::engine::keyframes::db_to_gain(-6.0206);
+        let out = mix(&p, &mut ones(), 0, 4);
+        assert!(out.iter().all(|v| (v - 0.5).abs() < 1e-4), "{out:?}");
+        p.timeline.audio.buses[0].pan = 1.0;
+        assert!((mix(&p, &mut ones(), 0, 1)[0]).abs() < 1e-6, "panned hard right");
+        p.timeline.audio.buses[0].pan = 0.0;
+        let env = crate::project::Envelope { kind: EnvKind::Volume, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: -6.0206, curve: Curve::Linear }] } };
+        p.timeline.audio.buses[0].envelopes.push(env);
+        assert!(mix(&p, &mut ones(), 0, 2).iter().all(|v| (v - 0.25).abs() < 1e-4));
+        p.timeline.audio.buses[0].muted = true;
+        assert_eq!(mix(&p, &mut ones(), 0, 4), [0.0; 8], "a muted bus is silent");
+        // An assignable FX chain is not an output: a track routed to one (a hand-edited project) goes to the master.
+        let mut q = solo_track();
+        let fx = crate::edit::insert_assignable_fx(&mut q, Vec::new()).unwrap();
+        let tid = q.timeline.audio_tracks[0].id.clone();
+        assert!(!crate::edit::set_track_out(&mut q, &[tid], &crate::project::Out::Bus(fx.clone())));
+        q.timeline.audio_tracks[0].out = crate::project::Out::Bus(fx);
+        assert_eq!(compile_audio(&q).tracks[0].out, None);
+    }
+
+    /// R8a acceptance: a send at 0 dB pre-volume feeds its bus with the track fader at -inf, and with the track muted
+    /// (pre-volume sends are pre-mute); a post-volume send follows the fader. Sends are centre-panned.
+    #[test]
+    fn a_pre_volume_send_feeds_the_bus_with_the_fader_down() {
+        let mut p = with_buses(1);
+        let a = p.timeline.audio.buses[0].id.clone();
+        p.timeline.audio.buses[0].pan = -1.0; // the bus hard left tells its signal from the track's
+        let t = &mut p.timeline.audio_tracks[0];
+        (t.volume, t.pan) = (0.0, 1.0);
+        crate::edit::set_send(t, &a, 1.0, true);
+        assert_eq!(mix(&p, &mut ones(), 0, 2), [1.0, 0.0, 1.0, 0.0]);
+        p.timeline.audio_tracks[0].muted = true;
+        assert_eq!(compile_audio(&p).tracks.len(), 1, "kept for its pre-volume send");
+        assert_eq!(mix(&p, &mut ones(), 0, 2), [1.0, 0.0, 1.0, 0.0]);
+        // Post-volume: silent with the fader down or the track muted; at half the fader, half.
+        assert!(crate::edit::set_send_pre(&mut p.timeline.audio_tracks[0], &a, false));
+        assert!(compile_audio(&p).tracks.is_empty(), "a muted track with only post sends is left out");
+        p.timeline.audio_tracks[0].muted = false;
+        assert_eq!(mix(&p, &mut ones(), 0, 2), [0.0; 4]);
+        p.timeline.audio_tracks[0].volume = 0.5;
+        assert_eq!(mix(&p, &mut ones(), 0, 1), [0.5, 0.5], "the track (hard right) and the post send (the bus is hard left)");
+        // A send at -inf is no send.
+        crate::edit::set_send(&mut p.timeline.audio_tracks[0], &a, 0.0, true);
+        assert!(compile_audio(&p).tracks[0].sends.is_empty());
+    }
+
+    /// R8a: busses mix in order: Track → Bus B → Bus A → Master, and a track's FX send through an assignable FX chain
+    /// routed to Bus A; every gain multiplies once.
+    #[test]
+    fn busses_mix_after_everything_that_feeds_them() {
+        use crate::project::Out;
+        let mut p = with_buses(2);
+        let (a, b) = (p.timeline.audio.buses[0].id.clone(), p.timeline.audio.buses[1].id.clone());
+        let fx = crate::edit::insert_assignable_fx(&mut p, Vec::new()).unwrap();
+        assert_eq!(crate::edit::set_bus_out(&mut p, &b, &Out::Bus(a.clone())), Ok(true));
+        assert_eq!(crate::edit::set_bus_out(&mut p, &fx, &Out::Bus(a.clone())), Ok(true));
+        let tid = p.timeline.audio_tracks[0].id.clone();
+        crate::edit::set_track_out(&mut p, &[tid], &Out::Bus(b.clone()));
+        crate::edit::set_send(&mut p.timeline.audio_tracks[0], &fx, 0.25, false);
+        let au = &mut p.timeline.audio;
+        (au.buses[0].volume, au.buses[1].volume, au.fx[0].volume) = (0.5, 0.5, 0.5);
+        let plan = compile_audio(&p);
+        let at = |id: &str| plan.buses.iter().position(|x| x.id == id).unwrap();
+        assert!(at(&b) < at(&a) && at(&fx) < at(&a) && plan.buses[at(&b)].out == Some(at(&a)) && plan.buses[at(&a)].out.is_none());
+        // Track 1.0 → B 0.5 → A 0.25; send 0.25 → FX 0.125 → A 0.0625.
+        let out = mix(&p, &mut ones(), 0, 2);
+        assert!(out.iter().all(|v| (v - 0.3125).abs() < 1e-6), "{out:?}");
+    }
+
+    /// R8a acceptance: a loop Bus A → Bus B → Bus A is refused with a message; one in a hand-edited project is cut at
+    /// compile, so it still plays.
+    #[test]
+    fn a_bus_loop_is_rejected() {
+        use crate::project::Out;
+        let mut p = with_buses(2);
+        let (a, b) = (p.timeline.audio.buses[0].id.clone(), p.timeline.audio.buses[1].id.clone());
+        assert_eq!(crate::edit::set_bus_out(&mut p, &a, &Out::Bus(b.clone())), Ok(true));
+        let err = crate::edit::set_bus_out(&mut p, &b, &Out::Bus(a.clone())).unwrap_err();
+        assert_eq!(err, "Bus B cannot be routed to Bus A: that would make a loop");
+        assert!(crate::edit::set_bus_out(&mut p, &a, &Out::Bus(a.clone())).is_err(), "nor to itself");
+        assert_eq!(p.timeline.audio.buses[1].out, Out::Master);
+        p.timeline.audio.buses[1].out = Out::Bus(a.clone());
+        let plan = compile_audio(&p);
+        assert_eq!(plan.buses.iter().filter(|x| x.out.is_none()).count(), 1, "{:?}", plan.buses.iter().map(|x| x.out).collect::<Vec<_>>());
+        assert!(plan.buses.iter().enumerate().all(|(k, x)| x.out.is_none_or(|o| o > k)));
+        let tid = p.timeline.audio_tracks[0].id.clone();
+        crate::edit::set_track_out(&mut p, &[tid], &Out::Bus(a));
+        assert_eq!(mix(&p, &mut ones(), 0, 2), [1.0; 4]);
+    }
+
+    /// R8a: Pan Type in the mixer: Add Channels hard right puts the left channel on the right.
+    #[test]
+    fn pan_type_shapes_the_track_pan() {
+        let mut p = solo_track();
+        p.timeline.audio_tracks[0].pan = 1.0;
+        assert_eq!(mix(&p, &mut stereo(), 0, 1), [0.0, 0.75]);
+        p.timeline.audio_tracks[0].pan_type = crate::project::PanType::AddChannels;
+        assert_eq!(mix(&p, &mut stereo(), 0, 1), [0.0, 1.0]);
+        p.timeline.audio_tracks[0].pan = 0.0;
+        p.timeline.audio_tracks[0].pan_type = crate::project::PanType::Balance6;
+        let out = mix(&p, &mut stereo(), 0, 1);
+        assert!((out[0] - 0.125).abs() < 1e-3 && (out[1] - 0.375).abs() < 1e-3, "{out:?}");
+    }
+
+    /// R8a: busses with FX, sends and envelopes mix the same in one block or two, and a playback session (the device's
+    /// blocks) gives what a render (`block` over the range, as `render::mix_range`) does: the same mixer.
+    #[test]
+    fn busses_play_and_render_the_same() {
+        let mut p = with_fx();
+        crate::edit::set_bus_count(&mut p, 1);
+        let a = p.timeline.audio.buses[0].id.clone();
+        p.timeline.audio.buses[0].fx = vec![afx("milan.afx.reverb", &[("room", 0.6)])];
+        p.timeline.audio.buses[0].pan = 0.4;
+        let fx = crate::edit::insert_assignable_fx(&mut p, vec![afx("milan.afx.delay", &[("delay", 2.0)])]).unwrap();
+        let ids: Vec<String> = p.timeline.audio_tracks.iter().map(|t| t.id.clone()).collect();
+        crate::edit::set_track_out(&mut p, &ids[..1], &crate::project::Out::Bus(a.clone()));
+        crate::edit::set_send(&mut p.timeline.audio_tracks[1], &fx, 0.5, false);
+        crate::edit::set_send(&mut p.timeline.audio_tracks[1], &a, 0.3, true);
+        let ramp = |k: i64| (k as f32 * 0.37).sin();
+        let mut one = vec![0.0; 2 * 2048];
+        fake(ramp).block(&compile_audio(&p), 100, &mut one);
+        let mut m = fake(ramp);
+        assert_eq!([mix(&p, &mut m, 100, 1024), mix(&p, &mut m, 1124, 1024)].concat(), one);
+        // The session from frame 0, against block() from 0 on the same decoder.
+        let slot = Mutex::new(Arc::new(compile_audio(&p)));
+        let (tx, rx) = mpsc::sync_channel(4);
+        let quit = AtomicBool::new(false);
+        let played: Vec<f32> = std::thread::scope(|s| {
+            let (slot, quit) = (&slot, &quit);
+            s.spawn(move || run(slot, fake(ramp), 0, None, &AtomicU64::new(1f64.to_bits()), &tx, quit, |e| panic!("{e}")));
+            let got: Vec<f32> = rx.iter().take(3).flat_map(|b| b.2).collect();
+            quit.store(true, Relaxed);
+            got
+        });
+        let mut rendered = vec![0.0; 2 * 3 * BLOCK];
+        let mut m = fake(ramp);
+        for (i, b) in rendered.chunks_mut(2 * BLOCK).enumerate() {
+            m.block(&compile_audio(&p), (i * BLOCK) as i64, b);
+        }
+        assert_eq!(played, rendered);
+        assert!(played.iter().any(|v| v.abs() > 1e-3));
+    }
+
+    /// R8a: meters hold each node's peak since it was read, and the RMS of its last 50 ms; a node that stops is zeroed.
+    #[test]
+    fn meters_take_peak_and_rms() {
+        let mut p = with_buses(1);
+        let a = p.timeline.audio.buses[0].id.clone();
+        let tid = p.timeline.audio_tracks[0].id.clone();
+        crate::edit::set_track_out(&mut p, std::slice::from_ref(&tid), &crate::project::Out::Bus(a.clone()));
+        p.timeline.audio.buses[0].volume = 0.5;
+        let meters: Arc<Meters> = Arc::new([(tid.clone(), Arc::default()), (a.clone(), Arc::default())].into_iter().collect());
+        let mut plan = compile_audio(&p);
+        plan.meters = Some(meters.clone());
+        let mut m = fake(|k| if k % 2 == 0 { 0.8 } else { -0.8 });
+        let mut out = vec![0.0; 2 * BLOCK];
+        for f in 0..4 {
+            m.block(&plan, f * BLOCK as i64, &mut out);
+        }
+        let near = |a: [f32; 2], b: f32| a.iter().all(|v| (v - b).abs() < 1e-4);
+        assert!(near(meters[&tid].take_peaks(), 0.8) && near(meters[&tid].rms(), 0.8));
+        assert!(near(meters[&a].take_peaks(), 0.4) && near(meters[&a].rms(), 0.4));
+        assert!(near(meters[&tid].take_peaks(), 0.0), "reading resets the peak");
+        // Past the event's end (10 s) the RMS falls to silence within 50 ms.
+        for f in 0..3 {
+            m.block(&plan, frame(11.0) + f * BLOCK as i64, &mut out);
+        }
+        assert!(near(meters[&tid].rms(), 0.0) && near(meters[&a].rms(), 0.0));
+        // A meter nothing feeds any more (its track is muted: left out of the plan) is zeroed at once.
+        meters[&a].rms[0].store(1f32.to_bits(), Relaxed);
+        p.timeline.audio_tracks[0].muted = true;
+        m.block(&AudioPlan { meters: Some(meters.clone()), ..compile_audio(&p) }, 0, &mut out);
+        assert!(near(meters[&tid].rms(), 0.0) && near(meters[&a].rms(), 0.0));
+        // The RMS window is 50 ms: a step from silence reads full only once the window has passed.
+        let mut q = solo_track();
+        q.timeline.audio_tracks[0].clips[0].position = BLOCK as f64 / RATE as f64;
+        q.timeline.audio_tracks[0].id = tid.clone();
+        let mt: Arc<Meters> = Arc::new([(tid.clone(), Arc::default())].into_iter().collect());
+        let plan = AudioPlan { meters: Some(mt.clone()), ..compile_audio(&q) };
+        let mut m = ones();
+        m.block(&plan, 0, &mut out);
+        m.block(&plan, BLOCK as i64, &mut out);
+        let half = mt[&tid].rms()[0];
+        assert!(half > 0.5 && half < 1.0, "{half}");
+        for f in 2..5 {
+            m.block(&plan, f * BLOCK as i64, &mut out);
+        }
+        assert!(near(mt[&tid].rms(), 1.0));
     }
 
     /// Runs a session on a fake decoder and returns its first `blocks` blocks.

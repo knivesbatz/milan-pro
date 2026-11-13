@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering::R
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use crate::engine::mix::{self, Block, Mixer, frame};
+use crate::engine::mix::{self, Block, Meters, Mixer, frame};
 use crate::engine::plan::{AudioPlan, QUICKFADE, compile_audio};
 use crate::edit;
-use crate::project::{MediaItem, NormSpan, Normalized, Project, Track};
+use crate::project::{MediaItem, NormSpan, Normalized, Project};
 
 pub const RATE: u32 = 48_000;
 pub const PEAKS_PER_SEC: f64 = 100.0;
@@ -28,15 +28,6 @@ fn ffmpeg() -> Command {
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(["-v", "error"]);
     cmd
-}
-
-/// L/R gain for track `t` of `tl`, or None if it (or its group) is muted or another track is soloed.
-pub fn track_gain(tl: &crate::project::Timeline, t: &Track, any_solo: bool) -> Option<[f32; 2]> {
-    if !tl.plays(t, any_solo) {
-        return None;
-    }
-    let p = t.pan.clamp(-1.0, 1.0);
-    Some([t.volume * (1.0 - p).min(1.0), t.volume * (1.0 + p).min(1.0)])
 }
 
 // ---- Output ----
@@ -191,6 +182,8 @@ pub struct Player {
     pub bypass_fx: bool,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
+    /// R8a: the level meters of the tracks and busses in the last plan, by id.
+    pub meters: Arc<Meters>,
 }
 
 impl Drop for Player {
@@ -212,6 +205,7 @@ impl Player {
             master: Arc::new(Master::new()),
             bypass_fx: false,
             quickfade: true,
+            meters: Arc::default(),
         };
         p.open();
         p
@@ -309,8 +303,13 @@ impl Player {
         ok
     }
 
-    fn plan(&self, project: &Project) -> AudioPlan {
-        AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, ..compile_audio(project) }
+    /// The plan, with a meter for each of its tracks and busses (the ones they had kept, so a reader holds on).
+    fn plan(&mut self, project: &Project) -> AudioPlan {
+        let mut plan = AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, ..compile_audio(project) };
+        let ids = plan.tracks.iter().map(|t| &t.id).chain(plan.buses.iter().map(|b| &b.id));
+        self.meters = Arc::new(ids.map(|id| (id.clone(), self.meters.get(id).cloned().unwrap_or_default())).collect());
+        plan.meters = Some(self.meters.clone());
+        plan
     }
 
     /// While playing: give the mixer the project's new plan after an edit (or a Bypass All Audio FX toggle). It is
@@ -548,18 +547,14 @@ mod tests {
     }
 
     #[test]
-    fn pan_and_volume_gain() {
-        let (tl, mut t) = (crate::project::Timeline::new(), Track::new("a", crate::project::TrackKind::Audio));
-        t.volume = 0.8;
-        assert_eq!(track_gain(&tl, &t, false), Some([0.8, 0.8]));
-        t.pan = -1.0;
-        assert_eq!(track_gain(&tl, &t, false), Some([0.8, 0.0]));
-        t.pan = 0.5;
-        assert_eq!(track_gain(&tl, &t, false), Some([0.4, 0.8]));
-        assert_eq!(track_gain(&tl, &t, true), None); // another track is solo
+    fn mute_and_solo_decide_what_plays() {
+        let (tl, mut t) = (crate::project::Timeline::new(), crate::project::Track::new("a", crate::project::TrackKind::Audio));
+        assert!(tl.plays(&t, false));
+        assert!(!tl.plays(&t, true)); // another track is solo
         t.solo = true;
+        assert!(tl.plays(&t, true));
         t.muted = true;
-        assert_eq!(track_gain(&tl, &t, true), None); // mute beats solo
+        assert!(!tl.plays(&t, true)); // mute beats solo
     }
 
     #[test]

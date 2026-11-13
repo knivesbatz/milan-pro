@@ -44,6 +44,7 @@ impl MeridianApp {
             || self.recorded.is_some()
             || self.paste_repeat.is_some()
             || self.paste_attrs.is_some()
+            || self.remove_fx.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -124,6 +125,7 @@ impl MeridianApp {
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
             quickfade: self.prefs.quickfade,
             audio_follows_velocity: tl.audio_follows_velocity,
+            assignable_fx: !tl.audio.fx.is_empty(),
             video_bus: self.prefs.video_bus,
             extra_modes: self.prefs.extra_blend_modes,
         }
@@ -952,6 +954,25 @@ impl MeridianApp {
                     self.start_recording();
                 }
             }
+            // R8a: busses and assignable FX chains.
+            InsertAudioBus => {
+                if !self.edit(edit::insert_bus) {
+                    ui::hint(ctx, "A project has at most 26 busses.");
+                }
+            }
+            InsertAssignableFx => {
+                // The chain opens in the FX window, where its plug-ins are chosen (VEGAS opens the Plug-In Chooser first).
+                let mut id = None;
+                self.edit(|p| {
+                    id = edit::insert_assignable_fx(p, Vec::new());
+                    id.is_some()
+                });
+                match id {
+                    Some(id) => self.open_fx(edit::FxTarget::Bus(id)),
+                    None => ui::hint(ctx, "A project has at most 32 assignable FX chains."),
+                }
+            }
+            RemoveAssignableFx => self.remove_fx = Some(dialogs::RemoveAssignableFx::new(&self.project)),
             DefaultTrackFx => {
                 self.default_track = self.focus_of(false).map(|i| dialogs::DefaultTrackProps::new(self.project.timeline.audio_tracks[i].id.clone()));
             }
@@ -1539,6 +1560,7 @@ impl MeridianApp {
         self.event_props = None;
         self.take_chooser = None;
         self.default_track = None;
+        self.remove_fx = None;
         self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
@@ -1705,6 +1727,11 @@ impl MeridianApp {
         if let Some(ok) = self.default_track.as_mut().and_then(|d| d.show(ctx)) {
             if let Some(d) = self.default_track.take().filter(|_| ok) {
                 self.set_default_track(&d);
+            }
+        }
+        if let Some(ok) = self.remove_fx.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.remove_fx.take().filter(|_| ok) {
+                self.edit(|p| edit::remove_assignable_fx(p, &d.ids()));
             }
         }
         if let Some(w) = &mut self.welcome {
@@ -1882,6 +1909,22 @@ impl MeridianApp {
             }
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
+            "props-audio" => self.settings.open_tab(&self.project, 1),
+            "buses" => {
+                // R8a: two busses and an assignable FX chain (its FX window open); audio tracks tall enough for the
+                // multipurpose slider, the first one sending to Bus A.
+                self.exec(ctx, InsertAudioBus);
+                self.exec(ctx, InsertAudioBus);
+                self.exec(ctx, InsertAssignableFx);
+                let a = self.project.timeline.audio.buses[0].id.clone();
+                for t in &mut self.project.timeline.audio_tracks {
+                    t.height = 96.0;
+                }
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    edit::set_send(t, &a, 0.5, true);
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
             "goto" => self.exec(ctx, GoTo),
             "expanded-edit" => {
                 // At the focus event's end, so the bracket and the outgoing frame show.

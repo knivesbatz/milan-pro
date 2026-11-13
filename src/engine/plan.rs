@@ -11,7 +11,7 @@ use crate::engine::composite::Affine;
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
 use crate::engine::raster::MaskPlan;
-use crate::project::{BlurType, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, PanCrop, Project, Resample};
+use crate::project::{AudioSettings, BlurType, Bus, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, Out, PanCrop, PanType, Project, Resample};
 
 /// A picture source as the decoders need it.
 #[derive(Debug, Clone)]
@@ -725,18 +725,50 @@ pub struct ATrack {
     /// Static Volume (linear) and Pan (-1 left .. 1 right). With a pan envelope, Pan is added to it as a trim, as in VEGAS.
     pub volume: f32,
     pub pan: f32,
+    pub pan_type: PanType,
     pub vol_env: Option<Envelope>,
     pub pan_env: Option<Envelope>,
     pub mute_env: Option<Envelope>,
     /// Track Switches › Invert Phase.
     pub invert: bool,
+    /// R8a: muted (or not soloed) but kept for its pre-volume sends, which are pre-mute (VEGAS): nothing else is heard.
+    pub muted: bool,
+    /// Its output: a bus (index in `AudioPlan::buses`) or the master (None).
+    pub out: Option<usize>,
+    pub sends: Vec<ASend>,
     pub events: Vec<AEvent>,
+}
+
+/// R8a: a send to bus `to` (index in `AudioPlan::buses`; `id` keys its glide) at `level`, pre- or post-volume.
+#[derive(Debug)]
+pub struct ASend {
+    pub to: usize,
+    pub id: String,
+    pub level: f32,
+    pub pre: bool,
+}
+
+/// R8a: a bus or assignable FX chain: its FX, then Volume, Pan (Balance 0 dB) and its envelopes, into `out`.
+#[derive(Debug)]
+pub struct ABus {
+    pub id: String,
+    pub fx: Vec<Fx>,
+    /// Linear; 0 when muted (it glides there, as a fader does).
+    pub volume: f32,
+    pub pan: f32,
+    pub vol_env: Option<Envelope>,
+    pub pan_env: Option<Envelope>,
+    pub mute_env: Option<Envelope>,
+    /// A later bus (always a higher index: busses are in the order they mix) or the master (None).
+    pub out: Option<usize>,
 }
 
 #[derive(Debug)]
 pub struct AudioPlan {
-    /// Audible tracks only (muted and un-soloed tracks are left out).
+    /// Audible tracks only (muted and un-soloed tracks are left out, unless they feed a pre-volume send).
     pub tracks: Vec<ATrack>,
+    /// R8a: busses and assignable FX chains, each after every bus that feeds it.
+    pub buses: Vec<ABus>,
     /// Audio Master FX, run before the master gain.
     pub master_fx: Vec<Fx>,
     /// Options › Bypass All Audio FX (playback only; a render never sets it).
@@ -744,6 +776,46 @@ pub struct AudioPlan {
     /// Options › Quickfade Audio Edits: seconds of linear fade at each event edge that has no fade of its own (0 = off).
     /// Playback and render both set it from the option.
     pub quickfade: f64,
+    /// R8a: playback's level meters by track and bus id (None in a render).
+    pub meters: Option<Arc<crate::engine::mix::Meters>>,
+}
+
+/// R8a: the busses and assignable FX chains in mixing order (each before the bus it goes to), each one's output as an
+/// index into that order, and the order index by id. A loop (only a hand-edited project has one: `edit::set_bus_out`
+/// refuses them) is cut by sending the bus where it closes to the master.
+fn bus_order(a: &AudioSettings) -> (Vec<&Bus>, Vec<Option<usize>>, HashMap<&str, usize>) {
+    let all: Vec<&Bus> = a.buses.iter().chain(&a.fx).collect();
+    let at: HashMap<&str, usize> = all.iter().enumerate().map(|(i, b)| (b.id.as_str(), i)).collect();
+    // Only busses are outputs (an assignable FX chain is sent to); a missing one is the master.
+    let mut out: Vec<Option<usize>> = all
+        .iter()
+        .map(|b| match &b.out {
+            Out::Bus(id) => at.get(id.as_str()).copied().filter(|&j| j < a.buses.len()),
+            Out::Master => None,
+        })
+        .collect();
+    let mut depth = vec![0usize; all.len()];
+    for i in 0..all.len() {
+        let (mut j, mut seen) = (i, vec![i]);
+        while let Some(k) = out[j] {
+            if seen.contains(&k) {
+                out[j] = None;
+                break;
+            }
+            seen.push(k);
+            j = k;
+        }
+        depth[i] = seen.len();
+    }
+    // Longest path to the master first: a bus mixes after everything that feeds it.
+    let mut order: Vec<usize> = (0..all.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(depth[i]));
+    let mut pos = vec![0; all.len()];
+    for (k, &i) in order.iter().enumerate() {
+        pos[i] = k;
+    }
+    let index = all.iter().enumerate().map(|(i, b)| (b.id.as_str(), pos[i])).collect();
+    (order.iter().map(|&i| all[i]).collect(), order.iter().map(|&i| out[i].map(|o| pos[o])).collect(), index)
 }
 
 /// The quickfade length (VEGAS's Preferences › Editing default, 10 ms).
@@ -753,12 +825,22 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
     let media: HashMap<&str, &MediaItem> = p.media_pool.iter().filter(|m| m.sample_rate.is_some() && m.generator.is_none()).map(|m| (m.id.as_str(), m)).collect();
     let env = |envs: &[Envelope], kind| envs.iter().find(|e| e.kind == kind && !e.points.keys.is_empty()).cloned();
     let any_solo = p.timeline.any_solo(false);
+    let (order, outs, index) = bus_order(&p.timeline.audio);
     let tracks = p
         .timeline
         .audio_tracks
         .iter()
         .filter_map(|t| {
-            crate::audio::track_gain(&p.timeline, t, any_solo)?; // muted or un-soloed: left out
+            let sends: Vec<ASend> = t
+                .sends
+                .iter()
+                .filter(|s| s.level > 0.0)
+                .filter_map(|s| Some(ASend { to: *index.get(s.to.as_str())?, id: s.to.clone(), level: s.level, pre: s.pre }))
+                .collect();
+            let muted = !p.timeline.plays(t, any_solo);
+            if muted && !sends.iter().any(|s| s.pre) {
+                return None; // muted or un-soloed: left out
+            }
             let events: Vec<AEvent> = t
                 .clips
                 .iter()
@@ -798,15 +880,37 @@ pub fn compile_audio(p: &Project) -> AudioPlan {
                 fx: t.fx.clone(),
                 volume: t.volume,
                 pan: t.pan.clamp(-1.0, 1.0),
+                pan_type: t.pan_type,
                 vol_env: env(e, EnvKind::Volume),
                 pan_env: env(e, EnvKind::Pan),
                 mute_env: env(e, EnvKind::Mute),
                 invert: t.invert,
+                muted,
+                // A track goes to a bus, never to an assignable FX chain (it sends to those).
+                out: match &t.out {
+                    Out::Bus(id) => p.timeline.audio.buses.iter().any(|b| b.id == *id).then(|| index.get(id.as_str()).copied()).flatten(),
+                    Out::Master => None,
+                },
+                sends,
                 events,
             })
         })
         .collect();
-    AudioPlan { tracks, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0 }
+    let buses = order
+        .iter()
+        .zip(outs)
+        .map(|(b, out)| ABus {
+            id: b.id.clone(),
+            fx: b.fx.clone(),
+            volume: if b.muted { 0.0 } else { b.volume },
+            pan: b.pan.clamp(-1.0, 1.0),
+            vol_env: env(&b.envelopes, EnvKind::Volume),
+            pan_env: env(&b.envelopes, EnvKind::Pan),
+            mute_env: env(&b.envelopes, EnvKind::Mute),
+            out,
+        })
+        .collect();
+    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None }
 }
 
 /// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it

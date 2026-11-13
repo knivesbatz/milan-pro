@@ -258,6 +258,131 @@ pub struct Timeline {
     /// Track › Track Group: named sets of adjacent tracks under a header row (`edit::group_tracks`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub track_groups: Vec<TrackGroup>,
+    /// R8a: the busses and assignable FX chains (Project Properties › Audio, Insert › Audio Bus / Audio Assignable FX).
+    #[serde(default, skip_serializing_if = "AudioSettings::is_empty")]
+    pub audio: AudioSettings,
+}
+
+/// R8a: the audio busses (the master bus is `Timeline::master`). Master bus mode stays stereo until R10a.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioSettings {
+    /// Bus A, Bus B... (Project Properties › Number of stereo busses, 0-26).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<Bus>,
+    /// Assignable FX chains ("FX 1"...): busses that tracks only send to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fx: Vec<Bus>,
+}
+
+impl AudioSettings {
+    /// VEGAS allows 26 busses (A-Z).
+    pub const MAX_BUSES: usize = 26;
+
+    fn is_empty(&self) -> bool {
+        self.buses.is_empty() && self.fx.is_empty()
+    }
+
+    /// The bus or assignable FX chain `id`.
+    pub fn bus(&self, id: &str) -> Option<&Bus> {
+        self.buses.iter().chain(&self.fx).find(|b| b.id == id)
+    }
+}
+
+/// An audio bus or an assignable FX chain: FX, then Volume (linear) and Pan, then its output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bus {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "one32")]
+    pub volume: f32,
+    #[serde(default)]
+    pub pan: f32,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub fx: Vec<Fx>,
+    /// Volume, Pan and Mute envelopes (timeline time).
+    #[serde(default)]
+    pub envelopes: Vec<Envelope>,
+    #[serde(default, skip_serializing_if = "Out::is_master")]
+    pub out: Out,
+}
+
+impl Bus {
+    pub fn new(name: String, fx: Vec<Fx>) -> Self {
+        Self { id: uuid::Uuid::new_v4().to_string(), name, volume: 1.0, pan: 0.0, muted: false, fx, envelopes: Vec::new(), out: Out::Master }
+    }
+}
+
+/// Where a track, bus or assignable FX chain goes: the master bus or a bus (by id).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Out {
+    #[default]
+    Master,
+    Bus(String),
+}
+
+impl Out {
+    pub fn is_master(&self) -> bool {
+        *self == Out::Master
+    }
+}
+
+/// A track's send to a bus or an assignable FX chain: level (linear) taken before or after the track's volume and mute.
+/// VEGAS: bus sends are pre-volume, FX sends post-volume, by default; a send not listed is at -inf.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioSend {
+    pub to: String,
+    pub level: f32,
+    #[serde(default)]
+    pub pre: bool,
+}
+
+/// Audio track Pan Type (VEGAS's six). In stereo, Film is Constant Power.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PanType {
+    /// Panning moves the far channel into the near one.
+    AddChannels,
+    /// The far channel falls from the centre level to -inf; the near one rises from it to 0 dB.
+    #[default]
+    Balance0,
+    Balance3,
+    Balance6,
+    ConstantPower,
+    Film,
+}
+
+impl PanType {
+    pub const ALL: [PanType; 6] = [PanType::AddChannels, PanType::Balance0, PanType::Balance3, PanType::Balance6, PanType::ConstantPower, PanType::Film];
+
+    pub fn name(self) -> &'static str {
+        ["Add Channels (0 dB Center)", "Balance (0 dB Center)", "Balance (-3 dB Center)", "Balance (-6 dB Center)", "Constant Power", "Film"][self as usize]
+    }
+
+    fn is_default(&self) -> bool {
+        *self == PanType::Balance0
+    }
+
+    /// The stereo matrix of pan `p` (-1 left .. 1 right): [[L from L, L from R], [R from L, R from R]].
+    pub fn matrix(self, p: f32) -> [[f32; 2]; 2] {
+        let p = p.clamp(-1.0, 1.0);
+        let balance = |c: f32| {
+            let (away, near) = (c * (1.0 - p.abs()), c + (1.0 - c) * p.abs());
+            if p >= 0.0 { [[away, 0.0], [0.0, near]] } else { [[near, 0.0], [0.0, away]] }
+        };
+        match self {
+            // Exactly the law every track had before R8a.
+            PanType::Balance0 => [[(1.0 - p).min(1.0), 0.0], [0.0, (1.0 + p).min(1.0)]],
+            PanType::Balance3 => balance(10f32.powf(-3.0 / 20.0)),
+            PanType::Balance6 => balance(10f32.powf(-6.0 / 20.0)),
+            PanType::AddChannels => [[1.0 - p.max(0.0), (-p).max(0.0)], [p.max(0.0), 1.0 - (-p).max(0.0)]],
+            PanType::ConstantPower | PanType::Film => {
+                let a = (p + 1.0) * std::f32::consts::FRAC_PI_4;
+                [[a.cos(), 0.0], [0.0, a.sin()]]
+            }
+        }
+    }
 }
 
 /// A track group: its header collapses the member rows and carries a group Mute and Solo.
@@ -334,9 +459,26 @@ pub struct Track {
     /// Bypass Motion Blur: the Video Bus Track's motion blur and supersampling leave this track alone.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub bypass_blur: bool,
+    /// R8a (audio): the track's output (track header › Output), its sends, and its Pan Type.
+    #[serde(default, skip_serializing_if = "Out::is_master")]
+    pub out: Out,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sends: Vec<AudioSend>,
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "PanType::is_default")]
+    pub pan_type: PanType,
+    /// The bus or FX chain the header's multipurpose slider shows (a view choice: not saved).
+    #[serde(skip)]
+    pub send_view: Option<String>,
     /// Armed for recording (audio): this session only.
     #[serde(skip)]
     pub armed: bool,
+}
+
+impl Track {
+    /// The send to bus `to`, if its level is above -inf.
+    pub fn send(&self, to: &str) -> Option<&AudioSend> {
+        self.sends.iter().find(|s| s.to == to)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1004,6 +1146,7 @@ impl Timeline {
             record_dir: None,
             audio_follows_velocity: false,
             track_groups: Vec::new(),
+            audio: AudioSettings::default(),
         }
     }
 
@@ -1123,6 +1266,10 @@ impl Track {
             shadow: Halo2D::default(),
             glow: Halo2D::default(),
             bypass_blur: false,
+            out: Out::Master,
+            sends: Vec::new(),
+            pan_type: PanType::Balance0,
+            send_view: None,
             armed: false,
         }
     }
@@ -1619,6 +1766,15 @@ mod tests {
         assert!(serde_json::to_value(Motion::default()).unwrap().get("z").is_none());
         let mk: Mask = serde_json::from_str(r#"{"path":{"keys":[]}}"#).unwrap();
         assert_eq!((mk.mode, mk.opacity, mk.feather), (MaskMode::Positive, 1.0, 0.0));
+        // R8a: no busses or assignable FX; every track to the master with no sends, Balance (0 dB Center); none written.
+        let a = &tl.audio_tracks[0];
+        assert!(tl.audio == AudioSettings::default() && a.out == Out::Master && a.sends.is_empty() && a.pan_type == PanType::Balance0);
+        assert!(v["timeline"].get("audio").is_none());
+        for k in ["out", "sends", "pan_type"] {
+            assert!(v["timeline"]["audio_tracks"][0].get(k).is_none(), "{k} written");
+        }
+        let b: Bus = serde_json::from_str(r#"{"id":"b","name":"Bus A"}"#).unwrap();
+        assert!(b.volume == 1.0 && b.pan == 0.0 && !b.muted && b.fx.is_empty() && b.envelopes.is_empty() && b.out == Out::Master);
     }
 
     #[test]
@@ -1683,6 +1839,14 @@ mod tests {
         p.timeline.audio_tracks[0].hidden = true;
         let ids = vec![p.timeline.video_tracks[0].id.clone(), p.timeline.audio_tracks[0].id.clone()];
         p.timeline.track_groups.push(TrackGroup { id: "g".into(), name: "Band".into(), tracks: ids, collapsed: true, muted: true, solo: true });
+        let mut bus = Bus::new("Bus A".into(), vec![fx("milan.afx.reverb")]);
+        (bus.volume, bus.pan, bus.muted, bus.envelopes) = (0.5, -0.25, true, vec![env(EnvKind::Volume)]);
+        let mut fxb = Bus::new("FX 1".into(), Vec::new());
+        fxb.out = Out::Bus(bus.id.clone());
+        let a = &mut p.timeline.audio_tracks[0];
+        (a.out, a.pan_type) = (Out::Bus(bus.id.clone()), PanType::ConstantPower);
+        a.sends = vec![AudioSend { to: fxb.id.clone(), level: 0.25, pre: true }];
+        p.timeline.audio = AudioSettings { buses: vec![bus], fx: vec![fxb] };
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
         p.media_pool.push(MediaItem {
             id: "g".into(),
@@ -1708,6 +1872,8 @@ mod tests {
         assert_eq!(back.timeline.record_dir, p.timeline.record_dir);
         assert!(back.timeline.audio_follows_velocity);
         assert!(back.timeline.audio_tracks[0].hidden && back.timeline.track_groups == p.timeline.track_groups);
+        let (a, b) = (&back.timeline.audio_tracks[0], &p.timeline.audio_tracks[0]);
+        assert!(back.timeline.audio == p.timeline.audio && a.out == b.out && a.sends == b.sends && a.pan_type == b.pan_type);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();
@@ -1723,6 +1889,29 @@ mod tests {
         assert!(v["timeline"]["audio_tracks"][0].get("armed").is_none());
         let back: Project = serde_json::from_value(v).unwrap();
         assert!(!back.timeline.audio_tracks[0].armed);
+    }
+
+    /// R8a: the pan types at centre and hard right, as VEGAS describes them.
+    #[test]
+    fn pan_type_laws() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let m = |t: PanType, p| t.matrix(p);
+        assert_eq!(m(PanType::Balance0, 0.0), [[1.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(m(PanType::Balance0, 0.5), [[0.5, 0.0], [0.0, 1.0]]);
+        let c3 = m(PanType::Balance3, 0.0);
+        assert!(near(c3[0][0], 0.708) && near(c3[1][1], 0.708));
+        assert_eq!(m(PanType::Balance6, 1.0), [[0.0, 0.0], [0.0, 1.0]]);
+        assert!(near(m(PanType::Balance6, 0.0)[0][0], 0.501) && near(m(PanType::Balance6, -0.5)[0][0], 0.75));
+        // Add Channels: the left channel moves into the right as the pan goes right.
+        assert_eq!(m(PanType::AddChannels, 0.0), [[1.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(m(PanType::AddChannels, 1.0), [[0.0, 0.0], [1.0, 1.0]]);
+        assert_eq!(m(PanType::AddChannels, -0.5), [[1.0, 0.5], [0.0, 0.5]]);
+        // Constant power: -3 dB each at centre, the power the same everywhere; Film is the same in stereo.
+        for p in [-1.0, -0.3, 0.0, 0.6, 1.0] {
+            let k = m(PanType::ConstantPower, p);
+            assert!(near(k[0][0].powi(2) + k[1][1].powi(2), 1.0) && k == m(PanType::Film, p));
+        }
+        assert!(near(m(PanType::ConstantPower, 0.0)[0][0], 0.7071));
     }
 
     #[test]

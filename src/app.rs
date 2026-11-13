@@ -172,6 +172,8 @@ pub struct MeridianApp {
     paste_repeat: Option<crate::ui::dialogs::PasteRepeat>,
     /// Edit › Selectively Paste Event Attributes..., open.
     paste_attrs: Option<crate::ui::dialogs::PasteAttrs>,
+    /// Tools › Audio › Remove Assignable FX..., open.
+    remove_fx: Option<crate::ui::dialogs::RemoveAssignableFx>,
 }
 
 impl MeridianApp {
@@ -317,6 +319,7 @@ impl MeridianApp {
             cursor_preview: None,
             paste_repeat: None,
             paste_attrs: None,
+            remove_fx: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);

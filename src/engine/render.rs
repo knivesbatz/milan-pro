@@ -446,6 +446,34 @@ mod tests {
         let half = pcm(&run(&p, &PRESETS[3], "half.wav", (0.0, 3.0)));
         let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
         assert!(peak(&full) > 0.05 &&(peak(&half) / peak(&full) - 0.5).abs() < 0.01, "{} vs {}", peak(&half), peak(&full));
+        // R8a: the audio track through Bus A at -6 dB (plus a pre-volume send to a reverb chain) renders as playback mixes
+        // it: the playback mixer over the same range gives the rendered samples (within 16-bit WAV rounding).
+        let mut bused = p.clone();
+        bused.timeline.master.gain = [1.0, 1.0];
+        crate::edit::set_bus_count(&mut bused, 1);
+        let bus = bused.timeline.audio.buses[0].id.clone();
+        let tid = bused.timeline.audio_tracks[0].id.clone();
+        crate::edit::set_track_out(&mut bused, &[tid], &crate::project::Out::Bus(bus.clone()));
+        bused.timeline.audio.buses[0].volume = crate::engine::keyframes::db_to_gain(-6.0206);
+        let fx = crate::edit::insert_assignable_fx(&mut bused, vec![crate::engine::afx::test_fx("milan.afx.reverb", &[])]).unwrap();
+        crate::edit::set_send(&mut bused.timeline.audio_tracks[0], &fx, 0.25, true);
+        let rendered = pcm(&run(&bused, &PRESETS[3], "bus.wav", (0.0, 3.0)));
+        let plan = plan::AudioPlan { quickfade: plan::QUICKFADE, ..plan::compile_audio(&bused) };
+        let mut mixer = crate::engine::mix::Mixer::ffmpeg();
+        mixer.render = Some(Arc::new(std::sync::atomic::AtomicBool::new(false))); // every decoder waited for
+        let mut played = vec![0.0f32; 2 * 3 * 48_000];
+        for (i, b) in played.chunks_mut(2 * crate::engine::mix::BLOCK).enumerate() {
+            mixer.block(&plan, (i * crate::engine::mix::BLOCK) as i64, b);
+        }
+        drop(mixer);
+        let n = rendered.len().min(played.len());
+        assert!(n > 2 * 47_000, "{n}");
+        let worst = rendered[..n].iter().zip(&played[..n]).fold(0.0f32, |m, (a, b)| m.max((a - b.clamp(-1.0, 1.0)).abs()));
+        assert!(worst < 2.0 / 32768.0, "render and playback differ by {worst}");
+        bused.timeline.audio.fx.clear(); // the send goes with its chain: then the bus halves the track
+        bused.timeline.audio_tracks[0].sends.clear();
+        let via_bus = pcm(&run(&bused, &PRESETS[3], "bus_half.wav", (0.0, 3.0)));
+        assert!((peak(&via_bus) / peak(&full) - 0.5).abs() < 0.01, "{} vs {}", peak(&via_bus), peak(&full));
         // A master limiter at -1 dB, driven 24 dB into it, never lets the render past -1 dBFS.
         let mut loud = p.clone();
         loud.timeline.master.gain = [1.0, 1.0];

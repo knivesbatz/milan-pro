@@ -99,6 +99,8 @@ pub enum Command {
     Quickfade,
     /// Options › Audio Follows Video Velocity (per project, off as in VEGAS).
     AudioFollowsVelocity,
+    /// R8a: Insert › Audio Bus and Audio Assignable FX...; Tools › Audio › Remove Assignable FX...
+    InsertAudioBus, InsertAssignableFx, RemoveAssignableFx,
 }
 
 use Command::*;

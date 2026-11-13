@@ -67,7 +67,7 @@ pub fn key_time(p: &Project, target: &FxTarget) -> Option<(f64, f64, f64)> {
     let cur = p.timeline.cursor_position;
     match target {
         FxTarget::Event(id) => p.clip(id).map(|c| ((cur - c.position).clamp(0.0, c.duration), c.duration, c.position)),
-        FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster | FxTarget::Compositor(_) => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
+        FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster | FxTarget::Compositor(_) | FxTarget::Bus(_) => Some((cur.max(0.0), crate::render::content_end(p).max(cur).max(1.0), 0.0)),
         FxTarget::Media(_) | FxTarget::Transition(_) => None,
     }
 }
@@ -199,6 +199,10 @@ impl FxWindow {
             FxTarget::Media(id) => format!("Video Media Generators: {}", p.media_pool.iter().find(|m| m.id == *id).map_or("", |m| m.name.as_str())),
             FxTarget::Transition(id) => format!("Transition: {}", clip(edit::split_owner(id).0)),
             FxTarget::Compositor(id) => format!("Compositor: Track {}", p.find_track(id).map_or(0, |t| t.1 + 1)),
+            FxTarget::Bus(id) => {
+                let fx = p.timeline.audio.fx.iter().any(|b| b.id == *id);
+                format!("{}: {}", if fx { "Audio Assignable FX" } else { "Audio Bus FX" }, p.timeline.audio.bus(id).map_or("", |b| b.name.as_str()))
+            }
         }
     }
 
@@ -215,7 +219,7 @@ impl FxWindow {
     /// Draw the window and apply its edits. False once it is closed (× or the target is gone); a status message.
     pub fn show(&mut self, ctx: &Context, project: &mut Project, history: &mut History, users: &mut Vec<UserPreset>) -> (bool, Option<String>) {
         let Some((orig, editable)) = edit::fx_list(project, &self.target) else { return (false, None) };
-        let chain = matches!(self.target, FxTarget::Event(_) | FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster);
+        let chain = matches!(self.target, FxTarget::Event(_) | FxTarget::Track(_) | FxTarget::VideoOutput | FxTarget::AudioMaster | FxTarget::Bus(_));
         let audio = edit::fx_is_audio(project, &self.target);
         let kind = if audio { PluginKind::AudioFx } else { PluginKind::VideoFx };
         let fps = project.settings.frame_rate;

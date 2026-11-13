@@ -300,8 +300,8 @@ const TEMPLATES: [(&str, u32, u32, f64); 9] = [
 
 #[derive(Default)]
 pub struct SettingsDialog {
-    /// Some while the window is open: the edited copy.
-    draft: Option<ProjectSettings>,
+    /// Some while the window is open: the edited copy, and the number of busses (R8a: kept on the timeline).
+    draft: Option<(ProjectSettings, usize)>,
     tab: usize,
 }
 
@@ -312,7 +312,7 @@ impl SettingsDialog {
 
     /// Open on page `tab` (2: Ruler, for Set Project Tempo).
     pub fn open_tab(&mut self, project: &Project, tab: usize) {
-        self.draft = Some(project.settings.clone());
+        self.draft = Some((project.settings.clone(), project.timeline.audio.buses.len()));
         self.tab = tab;
     }
 
@@ -321,16 +321,16 @@ impl SettingsDialog {
     }
 
     pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History) {
-        let Some(d) = &mut self.draft else { return };
+        let Some((d, buses)) = &mut self.draft else { return };
         let v23 = theme::get().look() == UiLook::Vegas23;
         let tab = &mut self.tab;
-        let changed = *d != project.settings;
+        let changed = *d != project.settings || *buses != project.timeline.audio.buses.len();
         let (hit, close) = dialogs::modal(ctx, "project_properties", "Project Properties", egui::vec2(427.0, 696.0), |ui| {
             let row: &[&str] = if v23 { &["Video", "Audio", "Ruler", "Summary", "Audio CD", "Advanced"] } else { &["Video", "Audio", "Ruler", "Summary", "Audio CD"] };
             dialogs::tabs(ui, &[row], tab);
             dialogs::page(ui, 590.0, |ui| match *tab {
                 0 => video_tab(ui, d, project, v23),
-                1 => audio_tab(ui, d),
+                1 => audio_tab(ui, d, buses),
                 2 => ruler_tab(ui, d),
                 3 => dialogs::empty_page(ui, Later("R16a")),
                 4 => dialogs::empty_page(ui, NotPlanned("R59")),
@@ -343,8 +343,10 @@ impl SettingsDialog {
             // H.264/HEVC 4:2:0 output needs even dimensions.
             d.width &= !1;
             d.height &= !1;
-            if *d != project.settings {
-                history.push(project.clone());
+            let before = project.clone();
+            let bus_change = crate::edit::set_bus_count(project, *buses);
+            if *d != project.settings || bus_change {
+                history.push(before);
                 project.settings = d.clone();
                 project.mark_modified();
             }
@@ -488,9 +490,12 @@ fn ruler_tab(ui: &mut Ui, d: &mut ProjectSettings) {
     });
 }
 
-fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings) {
-    dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R8a")));
-    dialogs::row(ui, "Number of stereo busses:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_n", "0", 200.0, Later("R8a")));
+/// `buses`: Number of stereo busses (R8a). Fewer removes the last ones: what went to them goes to the master.
+fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
+    dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R10a")));
+    dialogs::row(ui, "Number of stereo busses:", 150.0, true, |ui| {
+        ui.add(egui::DragValue::new(buses).range(0..=crate::project::AudioSettings::MAX_BUSES))
+    });
     dialogs::row(ui, "Sample rate (Hz):", 150.0, true, |ui| {
         egui::ComboBox::from_id_salt("pa_sr").width(200.0).selected_text(d.sample_rate.to_string()).show_ui(ui, |ui| {
             for r in SAMPLE_RATES {

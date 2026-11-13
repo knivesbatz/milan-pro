@@ -143,6 +143,8 @@ pub struct CmdState {
     /// View › Video Bus Track; Preferences › Video › extra blend modes.
     pub video_bus: bool,
     pub extra_modes: bool,
+    /// The project has an assignable FX chain (Remove Assignable FX).
+    pub assignable_fx: bool,
 }
 
 impl CmdState {
@@ -217,7 +219,8 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
-            Quickfade | AudioFollowsVelocity | VideoBusTrack => true,
+            Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx => true,
+            RemoveAssignableFx => self.assignable_fx,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -898,9 +901,9 @@ pub const INSERT: &[M] = &[
     C("&Video Track", InsertVideoTrack),
     V23(&C("Adjustment Track", InsertAdjustmentTrack)),
     S,
-    X("Audio &Bus", Later("R8a")),
-    X("Audio In&put Bus", Later("R8a")),
-    X("Audio Assignable &FX...", Later("R8a")),
+    C("Audio &Bus", InsertAudioBus),
+    X("Audio In&put Bus", Later("R9")),
+    C("Audio Assignable &FX...", InsertAssignableFx),
     S,
     C("&Empty Event", InsertEmptyEvent),
     V23(&X("Adjustment Event", Later("R18b"))),
@@ -936,7 +939,7 @@ pub const TOOLS: &[M] = &[
         S,
         C("&Track FX...", AudioTrackFx),
         S,
-        X("&Remove Assignable FX...", Later("R8a")),
+        C("&Remove Assignable FX...", RemoveAssignableFx),
     ]),
     Sub("&Video", &[
         X("&Media FX...", NotPlanned("R57")),
@@ -1451,6 +1454,25 @@ mod tests {
         assert!(!rows.iter().any(|(_, w)| *w == Later("R5")), "{rows:?}");
     }
 
+    /// R8a: Insert › Audio Bus and Audio Assignable FX work; Remove Assignable FX once there is a chain; nothing in the
+    /// menus waits on R8a any more (Audio Input Bus is input monitoring: R9).
+    #[test]
+    fn bus_commands_work() {
+        let mut st = CmdState::default();
+        for c in [InsertAudioBus, InsertAssignableFx, RemoveAssignableFx] {
+            assert!(unfinished(c).is_none(), "{c:?}");
+        }
+        assert!(st.enabled(InsertAudioBus) && st.enabled(InsertAssignableFx) && !st.enabled(RemoveAssignableFx));
+        st.assignable_fx = true;
+        assert!(st.enabled(RemoveAssignableFx));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R8a")), "{rows:?}");
+        assert!(rows.iter().any(|(l, w)| l == "Audio Input Bus" && *w == Later("R9")), "{rows:?}");
+    }
+
     /// R3a: the Loop switch, empty events, subclips, attribute paste and the group commands work, each once there is
     /// something to act on; nothing in the menus waits on R3a any more.
     #[test]
@@ -1595,6 +1617,7 @@ mod tests {
             any_armed: true,
             edge_mode: true,
             transition: true,
+            assignable_fx: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

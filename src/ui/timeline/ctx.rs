@@ -748,6 +748,8 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         }
         sep(ui);
         menus::show(ui, AUDIO_HEADER_MID);
+        routing(ui, project, history, sel, i);
+        sep(ui);
         sub(ui, "Insert/Remove &Envelope", true, |ui| env_toggles(ui, project, history, v, i));
         menus::show(ui, &[X("F&X Automation Envelopes...", Later("R8c")), S]);
         sub(ui, "&Switches", true, |ui| switches(ui, project, history, v, i));
@@ -847,25 +849,51 @@ const AUDIO_HEADER_MID: &[M] = &[
     S,
     C("&Arm for Record", Arm),
     Sub("I&nput", &[X("None", Later("R9"))]),
-    Sub("&Output", &[R("Master", true, Later("R8a"))]),
-    Sub("Au&tomation", &[
-        X("Show Automation Controls", Later("R8c")),
-        S,
-        R("Off", true, Later("R8c")),
-        R("Read", false, Later("R8c")),
-        R("Write (Touch)", false, Later("R8c")),
-        R("Write (Latch)", false, Later("R8c")),
-    ]),
-    Sub("&Pan Type", &[
-        R("Add Channels (0 dB Center)", false, Later("R8a")),
-        R("Balance (0 dB Center)", true, Later("R8a")),
-        R("Balance (-3 dB Center)", false, Later("R8a")),
-        R("Balance (-6 dB Center)", false, Later("R8a")),
-        R("Constant Power", false, Later("R8a")),
-        R("Film", false, Later("R8a")),
-    ]),
-    S,
 ];
+
+const AUDIO_HEADER_AUTOMATION: &[M] = &[Sub("Au&tomation", &[
+    X("Show Automation Controls", Later("R8c")),
+    S,
+    R("Off", true, Later("R8c")),
+    R("Read", false, Later("R8c")),
+    R("Write (Touch)", false, Later("R8c")),
+    R("Write (Latch)", false, Later("R8c")),
+])];
+
+/// R8a: Output ▸ (Master and the busses) and Pan Type ▸ for audio track `i`, or every selected track when it is one of
+/// them. One undo step each.
+fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], i: usize) {
+    let tr = &project.timeline.audio_tracks[i];
+    let ids = if sel.contains(&tr.id) { sel.to_vec() } else { vec![tr.id.clone()] };
+    let (cur, pt) = (tr.out.clone(), tr.pan_type);
+    let outs: Vec<(String, Out)> = std::iter::once(("Master".to_string(), Out::Master))
+        .chain(project.timeline.audio.buses.iter().map(|b| (b.name.replace('&', "&&"), Out::Bus(b.id.clone()))))
+        .collect();
+    let mut to = None;
+    sub(ui, "&Output", true, |ui| {
+        for (name, out) in outs {
+            if entry(ui, &name, "", true, Mark::Radio(cur == out)) {
+                to = Some(out);
+            }
+        }
+    });
+    menus::show(ui, AUDIO_HEADER_AUTOMATION);
+    let mut ptype = None;
+    sub(ui, "&Pan Type", true, |ui| {
+        for t in PanType::ALL {
+            if entry(ui, t.name(), "", true, Mark::Radio(pt == t)) {
+                ptype = Some(t);
+            }
+        }
+    });
+    if to.is_none() && ptype.is_none() {
+        return;
+    }
+    let before = project.clone();
+    if to.is_some_and(|o| edit::set_track_out(project, &ids, &o)) || ptype.is_some_and(|t| edit::set_pan_type(project, &ids, t)) {
+        history.push(before);
+    }
+}
 
 const AUDIO_HEADER_END: &[M] = &[S, C("Set De&fault Track Properties...", DefaultTrackFx), S];
 
@@ -1007,6 +1035,7 @@ const TIME_DISPLAY: &[M] = &[
 /// The tables of the timeline's right-click menus, for the Unfinished Features list.
 pub(crate) const MENUS: &[(&str, &[M])] = &[
     ("Track header", AUDIO_HEADER_MID),
+    ("Track header", AUDIO_HEADER_AUTOMATION),
     ("Track header", AUDIO_HEADER_METERS),
     ("Video event", VIDEO_EVENT),
     ("Audio event", AUDIO_EVENT),

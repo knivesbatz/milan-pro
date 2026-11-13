@@ -44,42 +44,71 @@ enum Slider {
     Level,
     Vol,
     Pan,
+    /// R8a: the multipurpose slider: the send to a bus or assignable FX chain (shown when the project has one).
+    Send,
+}
+
+/// R8a: what the multipurpose slider of a track shows: the bus or chain id and name, and whether a new send to it is
+/// pre-volume.
+struct SendCx {
+    to: Option<String>,
+    name: String,
+    pre: bool,
+}
+
+/// The bus or chain `tr`'s multipurpose slider shows: the one picked, else the first.
+fn send_cx(tl: &Timeline, tr: &Track) -> SendCx {
+    let a = &tl.audio;
+    let b = tr.send_view.as_deref().and_then(|id| a.bus(id)).or_else(|| a.buses.first().or(a.fx.first()));
+    SendCx { to: b.map(|b| b.id.clone()), name: b.map_or(String::new(), |b| b.name.clone()), pre: b.is_some_and(|b| edit::send_pre_default(tl, &b.id)) }
 }
 
 impl Slider {
-    fn pos(self, tr: &Track) -> f32 {
+    fn send_level(tr: &Track, cx: &SendCx) -> f32 {
+        cx.to.as_deref().and_then(|to| tr.send(to)).map_or(0.0, |s| s.level)
+    }
+    fn pos(self, tr: &Track, cx: &SendCx) -> f32 {
         match self {
             Slider::Level => tr.volume.clamp(0.0, 1.0),
             Slider::Vol => fader_pos(tr.volume),
             Slider::Pan => (tr.pan.clamp(-1.0, 1.0) + 1.0) * 0.5,
+            Slider::Send => fader_pos(Self::send_level(tr, cx)),
         }
     }
-    fn set(self, tr: &mut Track, pos: f32) {
+    fn set(self, tr: &mut Track, pos: f32, cx: &SendCx) {
         let pos = pos.clamp(0.0, 1.0);
         match self {
             Slider::Level => tr.volume = pos,
             Slider::Vol => tr.volume = fader_gain(pos),
             Slider::Pan => tr.pan = pos * 2.0 - 1.0,
+            Slider::Send => {
+                if let Some(to) = &cx.to {
+                    edit::set_send(tr, to, fader_gain(pos), cx.pre);
+                }
+            }
         }
     }
-    fn reset(self, tr: &mut Track) {
+    fn reset(self, tr: &mut Track, cx: &SendCx) {
         match self {
             Slider::Level | Slider::Vol => tr.volume = 1.0,
             Slider::Pan => tr.pan = 0.0,
+            Slider::Send => self.set(tr, fader_pos(1.0), cx),
         }
     }
-    fn label(self) -> &'static str {
+    fn label(self, cx: &SendCx) -> String {
         match self {
-            Slider::Level => "Level:",
-            Slider::Vol => "Vol:",
-            Slider::Pan => "Pan:",
+            Slider::Level => "Level:".into(),
+            Slider::Vol => "Vol:".into(),
+            Slider::Pan => "Pan:".into(),
+            Slider::Send => format!("{}:", cx.name),
         }
     }
-    fn value(self, tr: &Track) -> String {
+    fn value(self, tr: &Track, cx: &SendCx) -> String {
         match self {
             Slider::Level => format!("{:.1} %", tr.volume * 100.0),
             Slider::Vol => db_text(tr.volume),
             Slider::Pan => pan_text(tr.pan),
+            Slider::Send => db_text(Self::send_level(tr, cx)),
         }
     }
 }
@@ -97,7 +126,8 @@ struct Layout {
     meter: Option<Rect>,
 }
 
-fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool) -> Layout {
+/// `sends`: the project has a bus or an assignable FX chain (an audio track shows the multipurpose slider).
+fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool) -> Layout {
     let v16 = t.look() == UiLook::Vegas16;
     let rect = Rect::from_min_size(pos2(g.rect.min.x, row.top), vec2(g.header_w, (row.h - 2.0).max(1.0)));
     let strip = rect.with_max_x((rect.min.x + t.m.color_strip_w).min(rect.max.x));
@@ -130,7 +160,11 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool) -> Layout {
     }
     let groove = Rangef::new(body.min.x + 100.0, right - 8.0);
     let mut sliders = Vec::new();
-    let rows: &[Slider] = if row.is_video { &[Slider::Level] } else { &[Slider::Vol, Slider::Pan] };
+    let rows: &[Slider] = match (row.is_video, sends) {
+        (true, _) => &[Slider::Level],
+        (false, false) => &[Slider::Vol, Slider::Pan],
+        (false, true) => &[Slider::Vol, Slider::Pan, Slider::Send],
+    };
     // VP23 squeezes the rows to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (c_ui_tl).
     let (y0, pitch) = if !v16 && rect.height() < 64.0 { (19.0, 16.0) } else { (27.0, 22.0) };
     for (k, s) in rows.iter().enumerate() {
@@ -245,7 +279,8 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
             continue;
         }
-        let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed);
+        let sends = project.timeline.audio != AudioSettings::default();
+        let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed, sends);
         let id = ui.id().with(("track_hdr", row.is_video, row.idx));
         let tid = track_id(project, row);
 
@@ -392,13 +427,18 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 continue;
             }
             let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 9.0, groove.max + 9.0), r.y_range());
-            let resp = ui.interact(hit, id.with(s.label()), Sense::click_and_drag());
+            let resp = ui.interact(hit, id.with(("slider", *s as u8)), Sense::click_and_drag());
             let tr = &project.timeline.tracks(row.is_video)[row.idx];
-            let pos = s.pos(tr);
-            let value = s.value(tr);
+            let cx = send_cx(&project.timeline, tr);
+            if *s == Slider::Send {
+                send_menu(ui, id, Rect::from_x_y_ranges(Rangef::new(l.body.min.x, groove.min - 10.0), r.y_range()), project, history, row, &cx);
+            }
+            let tr = &project.timeline.tracks(row.is_video)[row.idx];
+            let pos = s.pos(tr, &cx);
+            let value = s.value(tr, &cx);
             if resp.double_clicked() {
                 history.push(project.clone());
-                s.reset(&mut project.timeline.tracks_mut(row.is_video)[row.idx]);
+                s.reset(&mut project.timeline.tracks_mut(row.is_video)[row.idx], &cx);
                 project.mark_modified();
             } else if resp.drag_started() || resp.clicked() {
                 history.push(project.clone());
@@ -407,19 +447,19 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 if let Some(p) = resp.interact_pointer_pos() {
                     let thumb_x = groove.min + pos * groove.span();
                     if (p.x - thumb_x).abs() > 8.0 {
-                        s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], (p.x - groove.min) / groove.span());
+                        s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], (p.x - groove.min) / groove.span(), &cx);
                     }
                 }
             } else if resp.dragged() {
                 let fine = if ui.input(|i| i.modifiers.command) { 0.1 } else { 1.0 };
                 let np = pos + resp.drag_delta().x / groove.span() * fine;
-                s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], np);
+                s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], np, &cx);
             }
             if resp.hovered() {
                 let d = ui.input(|i| i.raw_scroll_delta.y);
                 if d != 0.0 {
                     history.push(project.clone());
-                    s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], pos + d.signum() * 0.01);
+                    s.set(&mut project.timeline.tracks_mut(row.is_video)[row.idx], pos + d.signum() * 0.01, &cx);
                     project.mark_modified();
                     ui.input_mut(|i| {
                         i.raw_scroll_delta = Vec2::ZERO;
@@ -485,6 +525,49 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
     }
 }
 
+/// R8a: a click on the multipurpose slider's label picks the bus or assignable FX chain it shows, and whether that send
+/// is taken before or after the track's volume (VEGAS: right-click the send fader for Pre / Post Volume).
+// shortcut: Pre / Post Volume sit in the label's list rather than on a right-click of the fader, which opens the track
+// menu here; move them when the header gets per-control context menus.
+fn send_menu(ui: &mut Ui, id: Id, label: Rect, project: &mut Project, history: &mut History, row: &Row, cx: &SendCx) {
+    let resp = ui.interact(label, id.with("send_label"), Sense::click()).on_hover_text("Choose the bus or assignable FX chain this slider sends to");
+    let pid = id.with("send_popup");
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(pid));
+    }
+    let t = theme::get();
+    let (a, tr) = (&project.timeline.audio, &project.timeline.audio_tracks[row.idx]);
+    let pre = cx.to.as_deref().map_or(cx.pre, |to| tr.send(to).map_or(cx.pre, |s| s.pre));
+    let (mut view, mut set_pre) = (None, None);
+    super::super::chrome::with_menu_style(&ui.ctx().clone(), &t, || {
+        #[allow(deprecated)]
+        popup::popup_below_widget(ui, pid, &resp, PopupCloseBehavior::CloseOnClick, |ui| {
+            ui.set_min_width(160.0);
+            for b in a.buses.iter().chain(&a.fx) {
+                if crate::ui::menus::entry(ui, &b.name.replace('&', "&&"), "", true, crate::ui::menus::Mark::Radio(cx.to.as_ref() == Some(&b.id))) {
+                    view = Some(b.id.clone());
+                }
+            }
+            crate::ui::menus::sep(ui);
+            for (label, on) in [("Pre Volume", true), ("Post Volume", false)] {
+                if crate::ui::menus::entry(ui, label, "", cx.to.is_some(), crate::ui::menus::Mark::Radio(pre == on)) {
+                    set_pre = Some(on);
+                }
+            }
+        });
+    });
+    if let Some(v) = view {
+        project.timeline.audio_tracks[row.idx].send_view = Some(v); // a view choice: no undo step
+    }
+    if let (Some(on), Some(to)) = (set_pre, &cx.to) {
+        let before = project.clone();
+        if edit::set_send_pre(&mut project.timeline.audio_tracks[row.idx], to, on) {
+            history.push(before);
+            project.mark_modified();
+        }
+    }
+}
+
 /// The 2 px accent insertion line of a reorder drag, across the headers and lanes.
 pub(super) fn paint_reorder(p: &Painter, g: &Geo, rows: &[Row], st: &TlState) {
     let Some((v, to)) = st.track_drag.as_ref().and_then(|d| Some((d.is_video, d.to?))) else { return };
@@ -505,7 +588,8 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             continue;
         }
         let tr = &project.timeline.tracks(row.is_video)[row.idx];
-        let l = layout(&t, g, row, tr.armed);
+        let l = layout(&t, g, row, tr.armed, project.timeline.audio != AudioSettings::default());
+        let cx = send_cx(&project.timeline, tr);
         let color = t.track_color(row.num);
         let selected = sel.tracks.contains(&tr.id);
 
@@ -551,10 +635,10 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
         }
         for (s, r, groove) in &l.sliders {
             let cy = r.center().y.round();
-            let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(), font.clone(), t.text_label);
+            let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(&cx), font.clone(), t.text_label);
             // VP16 puts values in a column at x=48; VP23 sets them right after the label.
             let vx = if v16 { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
-            p.text(pos2(vx, cy), Align2::LEFT_CENTER, s.value(tr), font.clone(), t.text_value);
+            p.text(pos2(vx, cy), Align2::LEFT_CENTER, s.value(tr, &cx), font.clone(), t.text_value);
             if groove.span() < 20.0 {
                 continue;
             }
@@ -568,7 +652,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
                 p.rect_filled(bar, 0.0, t.fader_track);
                 p.rect_stroke(bar.expand(1.0), 0.0, Stroke::new(1.0_f32, t.frame), StrokeKind::Inside);
             }
-            let x = (groove.min + s.pos(tr) * groove.span()).round();
+            let x = (groove.min + s.pos(tr, &cx) * groove.span()).round();
             if *s == Slider::Pan {
                 let (w, h) = if v16 { (20.0, 12.0) } else { (10.0, 8.0) };
                 p.rect_filled(Rect::from_min_size(pos2(groove.center().round(), cy - 3.0), vec2(1.0, 7.0)), 0.0, t.fader_track);

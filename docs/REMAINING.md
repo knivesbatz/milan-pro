@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 196 |
-| PARTIAL | 143 |
-| MISSING | 81 |
+| DONE | 198 |
+| PARTIAL | 144 |
+| MISSING | 78 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). The gaps are nested timelines, audio buses/routing and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The gaps are nested timelines, the Mixing Console and bus lanes, and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -104,7 +104,7 @@ What matters most:
 | 3.5 | Vulkan / Direct3D or another graphics API evaluated | PARTIAL | The UI renders through glow (OpenGL). wgpu 24.0.5 and egui-wgpu 0.31.1 are in `Cargo.lock` but inactive (eframe feature `wgpu` is off). → R21a, R53 |
 | 3.6 | Hardware video decoding and encoding | PARTIAL | Decode: `-hwaccel auto` only for HEVC/AV1 or width ≥ 2560 (`vdecode.rs:40-44`). Encode: none. → R22 |
 | 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
-| 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer on rodio (`engine/mix.rs`). Missing: buses, multichannel, output device choice, latency compensation. → R8a, R9, R10a |
+| 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer on rodio (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`). Missing: multichannel, output device choice, latency compensation. → R9, R10a |
 | 3.9 | OpenFX and VST hosting where compatible | MISSING | → R31-R35 |
 | 3.10 | Frameworks evaluated for performance, extensibility, maintainability | PARTIAL | `FEATURE_PLAN.md` section 0/1 records decisions but no comparison → R53 |
 
@@ -122,7 +122,7 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable. 16 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R8a, R11, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). 15 combos (field order, pixel aspect ratio, pixel format, bus mode, bit depth...) are greyed; since R0 each names its batch on hover. → R10a, R11, R40b |
 | 4.12 | Render / export controls | PARTIAL | `ui/dialogs/render.rs`: 5 presets. "Customize Template..." and the render options are greyed. → R11 |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
 | 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work. No floating windows. Customize Toolbar is greyed. → R14, R49 |
@@ -164,7 +164,7 @@ What matters most:
 | 5.15 | Track automation | PARTIAL | Volume/pan/mute envelopes work. Missing: FX parameter automation ("FX Automation Envelopes" greyed, `ctx.rs:645`) and Touch/Latch write (`ctx.rs:729` greyed). → R8c |
 | 5.16 | Waveform rendering | DONE | `audio.rs` Waveforms |
 | 5.17 | Audio track-level effects | DONE | Batch 16 |
-| 5.18 | Audio routing | MISSING | Every track goes to the master. No buses or sends. → R8a |
+| 5.18 | Audio routing | DONE | (R8a) Track header › Output (Master or a bus, `ctx.rs::routing`, `edit::set_track_out`); sends to busses (pre-volume and pre-mute) and assignable FX chains (post-volume) on the multipurpose slider (`tracks.rs`, Pre/Post Volume in its label list); busses route to the master or another bus with loops refused (`edit::set_bus_out`); `engine/mix.rs` tests `a_track_through_a_bus_at_minus_6_db_is_halved`, `a_pre_volume_send_feeds_the_bus_with_the_fader_down`, `a_bus_loop_is_rejected`, `busses_play_and_render_the_same` |
 | 5.19 | Drag-and-drop media placement | DONE | `app/drop.rs`, batch 5b |
 | 5.20 | Move clips | DONE | |
 | 5.21 | Trim clips | DONE | |
@@ -311,7 +311,7 @@ What matters most:
 | 8.16 | Markers | DONE | |
 | 8.17 | Regions | DONE | |
 | 8.18 | Project settings | PARTIAL | Width, height, fps and sample rate only. Field order, pixel aspect ratio, pixel format and bus mode are missing. → R25 |
-| 8.19 | Audio configuration | PARTIAL | Sample rate only. No buses or channel layout. → R8a, R25 |
+| 8.19 | Audio configuration | PARTIAL | Sample rate and (R8a) the number of busses. No channel layout (master bus mode stays Stereo). → R10a, R25 |
 
 ### 2.9 Section 8b: export and interchange
 
@@ -401,9 +401,9 @@ What matters most:
 | 12.4 | Pan envelopes | DONE | |
 | 12.5 | Automation | PARTIAL | See 5.15 → R8c |
 | 12.6 | Fade curves | DONE | Linear, fast, slow, smooth, sharp, hold |
-| 12.7 | Audio routing | MISSING | → R8a |
+| 12.7 | Audio routing | DONE | See 5.18 (R8a) |
 | 12.8 | Master bus | DONE | `ui/master_bus.rs`, master FX |
-| 12.9 | Track buses | MISSING | Insert Audio Bus is greyed (`menus.rs:710`). → R8a |
+| 12.9 | Track buses | PARTIAL | (R8a) Insert › Audio Bus, Insert › Audio Assignable FX... (opens the chain's FX window), Tools › Audio › Remove Assignable FX...; bus FX, volume, pan, mute and Volume/Pan/Mute envelopes play (`ABus`). Missing: the controls for a bus's own fader, pan, mute, FX and output (Mixing Console) and bus lanes for its envelopes. → R8b |
 | 12.10 | Audio meters | PARTIAL | Master meters and armed-input meters only. Track meters stay unlit during playback; since R0 they say so on hover (`tracks.rs`). → R8b |
 | 12.11 | Peak meters | DONE | `master_bus.rs` (peak hold, clip lamps) |
 | 12.12 | VU-style meters | MISSING | → R8b |
@@ -480,7 +480,7 @@ What matters most:
 | 15.11 | Error logging | MISSING | 7 `eprintln!` calls, and the release exe has `windows_subsystem = "windows"` (`main.rs:1`), so they go nowhere. No log file. → R44 |
 | 15.12 | Diagnostic reports | MISSING | → R44 |
 | 15.13 | Proper project format | DONE | `.mnle` JSON (`project.rs`) |
-| 15.14 | Stores structure, media, tracks, FX, transitions, keyframes, audio settings, workspace | PARTIAL | All editing data is stored. The workspace layout lives in prefs, not the project (acceptable). Bus and channel settings do not exist yet. → R8a |
+| 15.14 | Stores structure, media, tracks, FX, transitions, keyframes, audio settings, workspace | PARTIAL | All editing data is stored, (R8a) busses, assignable FX chains, routing, sends and Pan Type included (`Timeline.audio`, `Track.out/sends/pan_type`). The workspace layout lives in prefs, not the project (acceptable). Channel layout settings do not exist yet. → R10a |
 | 15.15 | Versioned schema with safe migration | MISSING | No `format_version`; only `#[serde(default)]` and `#[serde(other)]` tolerance (`project.rs:206-280`). A newer file can be silently down-saved. → R42 |
 | 15.16 | Never change a project destructively without preserving the original | PARTIAL | Saves are atomic (`project.rs:674`), but the previous file is replaced with no `.bak`. VEGAS import opens as a new unsaved project (good). → R42 |
 
@@ -1078,6 +1078,14 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R8a: Audio buses and routing, engine (L)
 
+**Status: DONE.** Built as designed below, plus the items R0 assigned (track header › Output and Pan Type), except where VEGAS differs:
+- Busses and assignable FX chains are one type (`project::Bus`) in `Timeline.audio: AudioSettings { buses, fx }` (both skipped when empty, so old projects are written as before). `Track.out: Out { Master | Bus(id) }`, `Track.sends: Vec<AudioSend { to, level, pre }>` (no entry = -inf) and `Track.pan_type`. A track goes to the master or a bus, never to an FX chain (tracks send to those, as in VEGAS); a bus or chain goes to the master or a bus.
+- Sends follow VEGAS: a new bus send is pre-volume and pre-mute, a new FX send post-volume; sends are centre-panned by the track's Pan Type (VEGAS without Link to Main Track Pan). A muted or un-soloed track stays in the plan only for its pre-volume sends.
+- The plan's busses are ordered by their longest path to the master, so each mixes after everything that feeds it (`plan::bus_order`); a loop in a hand-edited project is cut there. `edit::set_bus_out` refuses a loop with a message ("Bus B cannot be routed to Bus A: that would make a loop").
+- Meters: `mix::Meter` per track and bus (post-fader peak since read, RMS over 50 ms), in an id map the UI thread rebuilds with each plan (`Player::meters`), so the mix thread takes no lock; a render has none. R8b reads them.
+- Pan Types (Add Channels, Balance 0/-3/-6 dB, Constant Power, Film = Constant Power in stereo) are `PanType::matrix`; Balance (0 dB Center) is the old law, bit for bit.
+- UI in this batch: Project Properties › Audio › Number of stereo busses (0-26; fewer removes the last ones, and what went to them goes to the master), Insert › Audio Bus / Audio Assignable FX... (the new chain opens in the FX window, where plug-ins are added: VEGAS opens the Plug-In Chooser first), Tools › Audio › Remove Assignable FX... (a tick list), track header › Output / Pan Type, and the multipurpose slider (third header row when the project has a bus or chain; its label picks the target and Pre / Post Volume). A bus's own fader, pan, mute, FX button and Output (with `set_bus_out`) and its envelope lanes are R8b's Mixing Console and Audio Bus Tracks. Master bus mode stays Stereo (R10a); Audio Input Bus moved to R9.
+
 **Scope**
 - Project audio settings: master bus mode (stereo now; 5.1 in R10a) and the number of busses (0-26).
 - Bus tracks; a track output assignment (Master or Bus X); bus FX, volume, pan and mute envelopes.
@@ -1141,6 +1149,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 **Scope**
 - Output device choice (Preferences > Audio Device), buffer size, WASAPI shared/exclusive.
+- Insert › Audio Input Bus (assigned by R8a: a hardware input routed through the mixer is input monitoring).
 - The playhead compensated by the reported output latency (removes the 10-20 ms lead).
 - Low-latency input monitoring through track FX for armed tracks, with a per-track monitor toggle.
 - ASIO stays a documented limitation: the cpal `asio` feature needs the Steinberg ASIO SDK, whose licence cannot be redistributed. Record this in FORMAT_SUPPORT/COMPATIBILITY.

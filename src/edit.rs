@@ -2432,6 +2432,152 @@ fn carry_spans(tl: &mut Timeline, mut spans: Vec<(bool, usize, usize, f64, f64)>
     }
 }
 
+// ---- Busses and routing (R8a) ----
+
+/// VEGAS's limit on assignable FX chains.
+pub const MAX_FX_CHAINS: usize = 32;
+
+/// Project Properties › Number of stereo busses: busses are added (Bus A, Bus B...) or the last ones removed, up to 26.
+/// What went to a removed bus goes to the master, and sends to it go. False when the count is already `n`.
+pub fn set_bus_count(project: &mut Project, n: usize) -> bool {
+    let a = &mut project.timeline.audio;
+    let n = n.min(AudioSettings::MAX_BUSES);
+    if a.buses.len() == n {
+        return false;
+    }
+    while a.buses.len() < n {
+        let name = format!("Bus {}", (b'A' + a.buses.len() as u8) as char);
+        a.buses.push(Bus::new(name, Vec::new()));
+    }
+    let gone: Vec<String> = a.buses.drain(n..).map(|b| b.id).collect();
+    unroute(&mut project.timeline, &gone);
+    changed(project, true)
+}
+
+/// Insert › Audio Bus: one more bus (false at 26).
+pub fn insert_bus(project: &mut Project) -> bool {
+    let n = project.timeline.audio.buses.len();
+    n < AudioSettings::MAX_BUSES && set_bus_count(project, n + 1)
+}
+
+/// Insert › Audio Assignable FX: a new chain ("FX 1", the first free number) holding `fx`, routed to the master. Its id,
+/// or None at VEGAS's 32 chains.
+pub fn insert_assignable_fx(project: &mut Project, fx: Vec<Fx>) -> Option<String> {
+    let a = &mut project.timeline.audio;
+    if a.fx.len() >= MAX_FX_CHAINS {
+        return None;
+    }
+    let n = (1..).find(|n| !a.fx.iter().any(|b| b.name == format!("FX {n}"))).unwrap_or(1);
+    let b = Bus::new(format!("FX {n}"), fx);
+    let id = b.id.clone();
+    a.fx.push(b);
+    project.mark_modified();
+    Some(id)
+}
+
+/// Tools › Audio › Remove Assignable FX: the chains `ids` go, and every send to them.
+pub fn remove_assignable_fx(project: &mut Project, ids: &[String]) -> bool {
+    let a = &mut project.timeline.audio;
+    let n = a.fx.len();
+    a.fx.retain(|b| !ids.contains(&b.id));
+    let done = a.fx.len() != n;
+    unroute(&mut project.timeline, ids);
+    changed(project, done)
+}
+
+/// Busses `gone` were removed: what went to them goes to the master, and sends to them go.
+fn unroute(tl: &mut Timeline, gone: &[String]) {
+    let lost = |o: &Out| matches!(o, Out::Bus(id) if gone.contains(id));
+    for t in &mut tl.audio_tracks {
+        if lost(&t.out) {
+            t.out = Out::Master;
+        }
+        t.sends.retain(|s| !gone.contains(&s.to));
+        if t.send_view.as_ref().is_some_and(|v| gone.contains(v)) {
+            t.send_view = None;
+        }
+    }
+    for b in tl.audio.buses.iter_mut().chain(&mut tl.audio.fx).filter(|b| lost(&b.out)) {
+        b.out = Out::Master;
+    }
+}
+
+/// Track header › Output: the audio tracks `ids` go to `out` (the master or a bus; never an assignable FX chain, which
+/// tracks only send to). False when nothing changed or `out` names no bus.
+pub fn set_track_out(project: &mut Project, ids: &[String], out: &Out) -> bool {
+    if matches!(out, Out::Bus(b) if !project.timeline.audio.buses.iter().any(|x| x.id == *b)) {
+        return false;
+    }
+    let mut done = false;
+    for t in project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && t.out != *out) {
+        t.out = out.clone();
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// A bus's or assignable FX chain's output: the master or a bus. Err (with the message) when that would make a loop,
+/// as in Bus A → Bus B → Bus A; Ok(false) when nothing changed.
+#[allow(dead_code)] // the bus strips' Output button (Mixing Console and bus tracks, R8b)
+pub fn set_bus_out(project: &mut Project, id: &str, out: &Out) -> Result<bool, String> {
+    let a = &project.timeline.audio;
+    let name = |id: &str| a.bus(id).map_or(String::new(), |b| b.name.clone());
+    if let Out::Bus(to) = out {
+        if !a.buses.iter().any(|b| b.id == *to) {
+            return Ok(false);
+        }
+        // Follow the outputs on from `to`: reaching `id` is a loop.
+        let mut at = Some(to.clone());
+        for _ in 0..=a.buses.len() {
+            match at {
+                Some(b) if b == id => return Err(format!("{} cannot be routed to {}: that would make a loop", name(id), name(to))),
+                Some(b) => at = a.bus(&b).and_then(|b| if let Out::Bus(n) = &b.out { Some(n.clone()) } else { None }),
+                None => break,
+            }
+        }
+    }
+    let a = &mut project.timeline.audio;
+    let Some(b) = a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id).filter(|b| b.out != *out) else { return Ok(false) };
+    b.out = out.clone();
+    Ok(changed(project, true))
+}
+
+/// A new send to `to` is pre-volume to a bus and post-volume to an assignable FX chain, as in VEGAS.
+pub fn send_pre_default(tl: &Timeline, to: &str) -> bool {
+    tl.audio.buses.iter().any(|b| b.id == to)
+}
+
+/// The multipurpose slider: track `t`'s send to bus or chain `to` at `level` (linear); a new one is pre-volume when
+/// `pre` (`send_pre_default`).
+pub fn set_send(t: &mut Track, to: &str, level: f32, pre: bool) {
+    let level = level.max(0.0);
+    match t.sends.iter_mut().find(|s| s.to == to) {
+        Some(s) => s.level = level,
+        None => t.sends.push(AudioSend { to: to.to_string(), level, pre }),
+    }
+}
+
+/// Pre Volume / Post Volume for track `t`'s send to `to` (a send at -inf is made first). False when it already was.
+pub fn set_send_pre(t: &mut Track, to: &str, pre: bool) -> bool {
+    if t.send(to).is_none() {
+        set_send(t, to, 0.0, !pre);
+    }
+    let s = t.sends.iter_mut().find(|s| s.to == to).expect("just made");
+    let done = s.pre != pre;
+    s.pre = pre;
+    done
+}
+
+/// Track header › Pan Type on the audio tracks `ids`.
+pub fn set_pan_type(project: &mut Project, ids: &[String], pt: PanType) -> bool {
+    let mut done = false;
+    for t in project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && t.pan_type != pt) {
+        t.pan_type = pt;
+        done = true;
+    }
+    changed(project, done)
+}
+
 // ---- Plug-ins ----
 
 /// What an FX window, a plug-in drop or the Color Grading panel edits (decision 0.5). Ids, so it survives edits.
@@ -2448,6 +2594,8 @@ pub enum FxTarget {
     Transition(String),
     /// A video track's Custom compositing mode: its compositor.
     Compositor(String),
+    /// R8a: an audio bus's or assignable FX chain's FX.
+    Bus(String),
 }
 
 /// The FX chain `target` names; None when it is gone, locked, or not a chain (Media, Transition).
@@ -2467,6 +2615,7 @@ pub fn fx_chain_mut<'a>(p: &'a mut Project, target: &FxTarget) -> Option<&'a mut
         }
         FxTarget::VideoOutput => Some(&mut p.timeline.master.video_fx),
         FxTarget::AudioMaster => Some(&mut p.timeline.master.audio_fx),
+        FxTarget::Bus(id) => p.timeline.audio.buses.iter_mut().chain(&mut p.timeline.audio.fx).find(|b| b.id == *id).map(|b| &mut b.fx),
         FxTarget::Media(_) | FxTarget::Transition(_) | FxTarget::Compositor(_) => None,
     }
 }
@@ -2476,7 +2625,7 @@ pub fn fx_is_audio(p: &Project, target: &FxTarget) -> bool {
     match target {
         FxTarget::Event(id) => p.find_clip(id).is_some_and(|r| !r.is_video),
         FxTarget::Track(id) => p.find_track(id).is_some_and(|(v, _)| !v),
-        FxTarget::AudioMaster => true,
+        FxTarget::AudioMaster | FxTarget::Bus(_) => true,
         _ => false,
     }
 }
@@ -2495,6 +2644,7 @@ pub fn fx_list(p: &Project, target: &FxTarget) -> Option<(Vec<Fx>, bool)> {
         FxTarget::Track(id) => p.find_track(id).map(|(v, i)| (p.timeline.tracks(v)[i].fx.clone(), !p.timeline.tracks(v)[i].locked)),
         FxTarget::VideoOutput => Some((p.timeline.master.video_fx.clone(), true)),
         FxTarget::AudioMaster => Some((p.timeline.master.audio_fx.clone(), true)),
+        FxTarget::Bus(id) => p.timeline.audio.bus(id).map(|b| (b.fx.clone(), true)),
         FxTarget::Media(id) => p.media_pool.iter().find(|m| m.id == *id)?.generator.clone().map(|g| (vec![g], true)),
         FxTarget::Compositor(id) => p.find_track(id).and_then(|(_, i)| {
             let t = p.timeline.video_tracks.get(i)?;
@@ -4835,5 +4985,56 @@ mod tests {
         assert!(!set_stream(&mut p, &ids, false, 2) && set_stream(&mut p, &ids, false, 1));
         assert_eq!(p.timeline.audio_tracks[0].clips[0].stream, 1);
         assert!(!set_stream(&mut p, &ids, true, 1), "the video events have no media with a second stream");
+    }
+
+    /// R8a: the bus count adds Bus A, B... and removes the last ones, rerouting what went to them to the master; chains
+    /// are named FX 1, FX 2... and removed with their sends; Output and Pan Type apply to the given tracks.
+    #[test]
+    fn busses_chains_and_routing() {
+        let mut p = Project::new("t");
+        p.timeline.add_audio_track();
+        assert!(set_bus_count(&mut p, 3) && !set_bus_count(&mut p, 3));
+        let names: Vec<&str> = p.timeline.audio.buses.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["Bus A", "Bus B", "Bus C"]);
+        assert!(insert_bus(&mut p) && p.timeline.audio.buses[3].name == "Bus D");
+        set_bus_count(&mut p, 40);
+        assert_eq!(p.timeline.audio.buses.len(), 26);
+        assert_eq!(p.timeline.audio.buses[25].name, "Bus Z");
+        assert!(!insert_bus(&mut p), "26 at most");
+        let (c, ids) = (p.timeline.audio.buses[2].id.clone(), vec![p.timeline.audio_tracks[0].id.clone()]);
+        assert!(set_track_out(&mut p, &ids, &Out::Bus(c.clone())) && !set_track_out(&mut p, &ids, &Out::Bus(c.clone())));
+        assert!(!set_track_out(&mut p, &ids, &Out::Bus("gone".into())));
+        let d = p.timeline.audio.buses[3].id.clone();
+        assert_eq!(set_bus_out(&mut p, &d, &Out::Bus(c.clone())), Ok(true));
+        let t = &mut p.timeline.audio_tracks[0];
+        set_send(t, &c, 0.5, true);
+        t.send_view = Some(c.clone());
+        // Two busses: C and D go; the track and D's output go to the master, the send to C goes.
+        assert!(set_bus_count(&mut p, 2));
+        let t = &p.timeline.audio_tracks[0];
+        assert!(t.out == Out::Master && t.sends.is_empty() && t.send_view.is_none());
+        // Assignable FX: FX 1, FX 2; FX 1 removed with its sends; the free name is used again.
+        let f1 = insert_assignable_fx(&mut p, Vec::new()).unwrap();
+        let f2 = insert_assignable_fx(&mut p, Vec::new()).unwrap();
+        assert_eq!(p.timeline.audio.bus(&f2).unwrap().name, "FX 2");
+        let pre = send_pre_default(&p.timeline, &f1);
+        set_send(&mut p.timeline.audio_tracks[1], &f1, 1.0, pre);
+        assert!(!p.timeline.audio_tracks[1].sends[0].pre, "an FX send is post-volume, as in VEGAS");
+        assert!(send_pre_default(&p.timeline, &p.timeline.audio.buses[0].id.clone()), "a bus send is pre-volume");
+        assert!(remove_assignable_fx(&mut p, std::slice::from_ref(&f1)) && p.timeline.audio_tracks[1].sends.is_empty());
+        let f3 = insert_assignable_fx(&mut p, Vec::new()).unwrap();
+        assert_eq!(p.timeline.audio.bus(&f3).unwrap().name, "FX 1");
+        for _ in 0..40 {
+            insert_assignable_fx(&mut p, Vec::new());
+        }
+        assert_eq!(p.timeline.audio.fx.len(), MAX_FX_CHAINS);
+        // Bus FX are edited as a chain.
+        let t = FxTarget::Bus(f2.clone());
+        assert!(fx_is_audio(&p, &t) && add_fx(&mut p, &t, Fx { id: "x".into(), plugin: "milan.afx.eq".into(), enabled: true, params: Default::default(), text: Default::default() }));
+        assert_eq!(fx_list(&p, &t).unwrap().0.len(), 1);
+        // Pan Type on the tracks given.
+        let all: Vec<String> = p.timeline.audio_tracks.iter().map(|t| t.id.clone()).collect();
+        assert!(set_pan_type(&mut p, &all, PanType::Film) && !set_pan_type(&mut p, &all, PanType::Film));
+        assert!(p.timeline.audio_tracks.iter().all(|t| t.pan_type == PanType::Film));
     }
 }
