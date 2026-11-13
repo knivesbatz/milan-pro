@@ -32,10 +32,12 @@ pub enum Panel {
     VideoScopes,
     /// R16c: View › Window › Loudness Meters (not in a default layout).
     LoudnessMeters,
+    /// Milan Pro's own overlay pack library (src/ui/overlays.rs), beside Media Generators.
+    Overlays,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 16] = [
+    pub const ALL: [Panel; 17] = [
         Panel::Explorer,
         Panel::ProjectMedia,
         Panel::MediaGenerators,
@@ -52,6 +54,7 @@ impl Panel {
         Panel::ProjectNotes,
         Panel::VideoScopes,
         Panel::LoudnessMeters,
+        Panel::Overlays,
     ];
 
     pub fn title(self, look: UiLook) -> &'static str {
@@ -73,6 +76,7 @@ impl Panel {
             Panel::ProjectNotes => "Project Notes",
             Panel::VideoScopes => "Video Scopes",
             Panel::LoudnessMeters => "Loudness Meters",
+            Panel::Overlays => "Overlays",
         }
     }
 
@@ -262,9 +266,10 @@ impl Dock {
     pub fn new(t: &Theme) -> Self {
         use Panel::*;
         let (left, active, mid_w) = match t.look() {
-            UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators], 0, 835.0),
+            // Overlays (Milan Pro's own) right after Media Generators.
+            UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays], 0, 835.0),
             // Hub tabs dropped (no online service); Project Media active on first launch [I].
-            UiLook::Vegas23 => (vec![Explorer, ProjectMedia, MediaGenerators, Transitions, VideoFx, ColorGrading], 1, 750.0),
+            UiLook::Vegas23 => (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0),
         };
         Self {
             groups: vec![
@@ -1285,15 +1290,15 @@ mod tests {
         d.toggle(Panel::MasterBus);
         assert!(!d.is_open(Panel::MasterBus) && d.groups.len() == 2);
         d.toggle(Panel::MasterBus);
-        assert_eq!(d.find(Panel::MasterBus), Some((0, 5)));
+        assert_eq!(d.find(Panel::MasterBus), Some((0, 6)));
         // Moving keeps every panel exactly once and activates it in the target group.
         d.move_to(Panel::Trimmer, Some(0));
-        assert_eq!(d.find(Panel::Trimmer), Some((0, 6)));
-        assert_eq!(d.groups[0].active, 6);
+        assert_eq!(d.find(Panel::Trimmer), Some((0, 7)));
+        assert_eq!(d.groups[0].active, 7);
         d.move_to(Panel::Explorer, None);
         assert_eq!(d.groups[1].tabs, vec![Panel::Explorer]);
         let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum();
-        assert_eq!(n, 8); // Color Grading is VP23-only; Properties opens on demand
+        assert_eq!(n, 9); // Color Grading is VP23-only; Properties opens on demand
     }
 
     #[test]
@@ -1485,8 +1490,8 @@ mod tests {
         use Panel::*;
         let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
         let cols = |d: &Dock| d.groups.iter().map(|g| (g.tabs.clone(), g.tabs[g.active], g.area)).collect::<Vec<_>>();
-        let left16 = vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators];
-        let left23 = vec![Explorer, ProjectMedia, MediaGenerators, Transitions, VideoFx, ColorGrading];
+        let left16 = vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays];
+        let left23 = vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading];
         use Area::{Bottom, Top};
         let table: Vec<(Builtin, &Theme, Vec<(Vec<Panel>, Panel, Area)>, Option<f32>)> = vec![
             (Builtin::Classic, &t16, vec![(left16.clone(), ProjectMedia, Bottom), (vec![Trimmer], Trimmer, Bottom), (vec![VideoPreview], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], Some(449.0)),

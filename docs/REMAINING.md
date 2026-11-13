@@ -2192,3 +2192,12 @@ Do not tag a release until all of the following hold:
 6. A manual pass by the user in VEGAS 15 for R25/R26/R33c/R55 is recorded.
 
 Effort: 71 sessions for R0-R56 (R24 and R36 are unused; R3, R4, R6, R8, R10, R16, R17, R18, R21, R33, R34, R40 and R45 are split), plus R57-R60 if the user chooses to build the VEGAS long tail (about 10 more).
+
+---
+
+## 8. Extras requested by the user
+
+Features VEGAS does not have, built because the user asked for them. They follow the same looks and rules as the rest.
+
+- **Overlays window (overlay packs): DONE.** View › Window › Overlays, docked after Media Generators in the built-in layouts (saved last layouts get it once; user layout slots are left alone). Library folder (Preferences › General, default `Documents\Milan Pro\Overlay Packs`) with one subfolder per pack, index in `%APPDATA%\MilanPro\overlays.json`. Import Pack from Folder / from .zip (Windows `tar.exe`; entries that would leave the pack folder refuse the whole zip), Add Existing Folder as Pack (linked), Rename, Remove (linked: forgotten; copied: Recycle Bin after a confirm that counts the project's media in it), Open Pack Folder, Refresh, Locate... for a missing folder, Create Sample Pack (FFmpeg-made film grain, light leak and frame border). Tree (All Overlays, Favorites, Recent, packs), thumbnails with hover scrubbing, Details view, search over names and tags, sort, favourites, tags. Drag to the timeline, double-click (new video track above the current one at the cursor) or Add to Project Media; a new track gets the overlay's blend (Normal, Screen, Add, Multiply, Overlay, or the Chroma Keyer's green/blue preset) in the same undo step. Code: `src/overlays.rs`, `src/ui/overlays.rs`.
+  - Left: image sequences are listed as single stills (Milan Pro has no sequence reader on import); favourites, tags and item blends stay on the old paths after Locate...; the Recycle Bin move is not exercised by tests (they never touch the real Recycle Bin).

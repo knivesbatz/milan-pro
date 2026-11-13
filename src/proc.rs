@@ -17,7 +17,14 @@ pub fn ffprobe() -> Command {
     tool("ffprobe")
 }
 
-fn tool(name: &str) -> Command {
+/// Windows' own bsdtar (`%SystemRoot%\System32\tar.exe`, never a tar on PATH: Git's GNU tar reads no zip), with null
+/// stdin and no console window. Overlay packs extract zips with it.
+pub fn tar() -> Command {
+    let root = std::env::var_os("SystemRoot").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from);
+    tool(root.join("System32").join("tar.exe"))
+}
+
+fn tool(name: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(name);
     cmd.stdin(Stdio::null());
     #[cfg(windows)]

@@ -10,6 +10,7 @@ mod engine;
 mod history;
 mod interchange;
 mod media;
+mod overlays;
 mod proc;
 mod project;
 mod proxy;

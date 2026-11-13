@@ -5,6 +5,7 @@
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
+//! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;

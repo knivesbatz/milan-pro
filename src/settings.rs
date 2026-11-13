@@ -139,6 +139,10 @@ pub struct Prefs {
     pub media_markers: bool,
     pub marker_labels: bool,
     pub event_length: bool,
+    /// Overlay packs: Preferences › General › the library folder (None = Documents\Milan Pro\Overlay Packs), and the
+    /// Overlays window was put once beside Media Generators in the saved last layouts.
+    pub overlay_library: Option<PathBuf>,
+    pub overlays_placed: bool,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -291,6 +295,8 @@ impl Default for Prefs {
             media_markers: false,
             marker_labels: false,
             event_length: false,
+            overlay_library: None,
+            overlays_placed: false,
         }
     }
 }
