@@ -45,11 +45,14 @@ impl std::fmt::Display for Fail {
     }
 }
 
-/// `milan-plugin-host.exe` beside Milan (in a test run: beside the test binary's `deps` folder).
+/// `milan-plugin-host.exe` beside Milan (in a test run, whose binary is in `target\release\deps`: in `target\release`).
 pub fn host_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    [dir.to_path_buf(), dir.parent()?.to_path_buf()].into_iter().map(|d| d.join("milan-plugin-host.exe")).find(|p| p.is_file())
+    let mut dir = exe.parent()?;
+    if dir.file_name().is_some_and(|n| n == "deps") {
+        dir = dir.parent()?;
+    }
+    Some(dir.join("milan-plugin-host.exe")).filter(|p| p.is_file())
 }
 
 /// The watchdog's view of one host: a deadline while a request waits, and the process to kill when it passes.
@@ -190,9 +193,6 @@ pub struct Shm {
     handle: usize,
     ptr: usize,
 }
-
-// SAFETY: an owned mapping; access is serialized by the connection's mutex.
-unsafe impl Send for Shm {}
 
 impl Shm {
     #[cfg(windows)]

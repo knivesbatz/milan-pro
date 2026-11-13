@@ -824,6 +824,13 @@ mod tests {
         assert_eq!(p.loudness, crate::ui::LoudPrefs::default());
         let l = Prefs::parse(Ok(r#"{"loudness":{"mode":"Atsc","range":7,"open_editor":false}}"#.into())).unwrap().loudness;
         assert!(l.mode == crate::engine::loudness::Mode::Atsc && l.range == 7 && !l.open_editor && l.labels);
+        // R31: a file from before OFX hosting searches no extra folders and has every plug-in on; saved choices read
+        // back, and a damaged entry costs only itself.
+        assert_eq!(p.ofx, crate::engine::ofx::OfxPrefs::default());
+        let o = Prefs::parse(Ok(r#"{"ofx":{"folders":["D:\\OFX"],"disabled":["ofx:a@1"]},"quantize":false}"#.into())).unwrap();
+        assert!(!o.quantize && o.ofx.folders == [std::path::PathBuf::from(r"D:\OFX")] && o.ofx.disabled.contains("ofx:a@1"));
+        let bad = Prefs::parse(Ok(r#"{"ofx":{"folders":7},"quantize":false}"#.into())).unwrap();
+        assert!(!bad.quantize && bad.ofx == crate::engine::ofx::OfxPrefs::default());
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

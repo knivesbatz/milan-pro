@@ -116,6 +116,9 @@ impl Host {
         }
         // SAFETY: checked by load_one.
         let p = unsafe { &*self.plugins[index as usize] };
+        if p.pluginIdentifier.is_null() {
+            return Err("the plug-in has no identifier".into());
+        }
         let id = unsafe { CStr::from_ptr(p.pluginIdentifier) }.to_string_lossy().into_owned();
         let props = Box::new(Props::default());
         props.s(kOfxPropType, kOfxTypeImageEffect);

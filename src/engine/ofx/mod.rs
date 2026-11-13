@@ -357,12 +357,13 @@ pub fn add_frame_vals(e: &mut FxEval, instance: &str, t: f64, full_h: f64, fps: 
 type Slot = Arc<Mutex<Option<Conn>>>;
 static HOSTS: LazyLock<Mutex<HashMap<PathBuf, Slot>>> = LazyLock::new(Default::default);
 
-/// Close every plug-in host (Rescan: binaries may have changed).
+/// Close every plug-in host (Rescan: binaries may have changed). Never waits: a host busy with a frame is left to the
+/// thread rendering it, and is killed when that thread lets go of it (it is no longer in the list).
 pub fn close_hosts() {
     let all: Vec<Slot> = lock(&HOSTS).drain().map(|h| h.1).collect();
     for s in all {
-        if let Some(c) = lock(&s).take() {
-            c.quit();
+        if let Ok(mut g) = s.try_lock() {
+            drop(g.take());
         }
     }
 }
