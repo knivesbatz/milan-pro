@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/brand/milan-pro-256.png" width="128" height="128" alt="Milan Pro icon"></p>
+
 # Milan Pro
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.

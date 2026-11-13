@@ -874,7 +874,7 @@ impl Dock {
             let &(_, r0, scale, _) = self.opened.iter().find(|o| o.0 == p).expect("opened above");
             // The builder stays as the window opened: egui moves a window whose builder changes.
             let pts = monitors::to_points(r0, ctx.zoom_factor() * scale);
-            let b = ViewportBuilder::default().with_title(p.title(t.look())).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false);
+            let b = ViewportBuilder::default().with_title(p.title(t.look())).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false).with_icon(crate::icon());
             let b = if offscreen {
                 crate::offscreen(b)
             } else {

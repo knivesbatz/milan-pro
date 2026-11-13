@@ -508,7 +508,7 @@ impl MeridianApp {
     /// off-screen run opens it off every monitor, small, and never full screen.
     fn show_external(&mut self, ctx: &egui::Context) {
         let Some((m, placing)) = &mut self.external else { return };
-        let b = egui::ViewportBuilder::default().with_title("Video Preview (External Monitor)").with_decorations(false).with_active(false).with_taskbar(false);
+        let b = egui::ViewportBuilder::default().with_title("Video Preview (External Monitor)").with_decorations(false).with_active(false).with_taskbar(false).with_icon(crate::icon());
         let b = if self.offscreen {
             crate::offscreen(b).with_inner_size([640.0, 360.0])
         } else {

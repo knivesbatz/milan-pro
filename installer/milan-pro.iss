@@ -26,15 +26,27 @@ OutputBaseFilename=MilanPro-{#AppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Brand: tools/make-icons.py makes these; image areas at 100/125/150/175/200% DPI, Setup picks the closest.
+SetupIconFile=..\assets\brand\milan-pro.ico
+WizardImageFile=..\assets\brand\installer\wizard-202x386.png,..\assets\brand\installer\wizard-269x515.png,..\assets\brand\installer\wizard-336x643.png,..\assets\brand\installer\wizard-403x772.png,..\assets\brand\installer\wizard-430x824.png
+WizardSmallImageFile=..\assets\brand\installer\wizard-small-58.png,..\assets\brand\installer\wizard-small-77.png,..\assets\brand\installer\wizard-small-97.png,..\assets\brand\installer\wizard-small-116.png,..\assets\brand\installer\wizard-small-124.png
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; MilanPro.exe carries assets/brand/milan-pro.ico as its icon (build.rs), as do the shortcuts below.
 UninstallDisplayIcon={app}\MilanPro.exe
 UninstallDisplayName=Milan Pro
 CloseApplications=yes
 ; The updater relaunches Milan Pro itself (/RELAUNCH below); Restart Manager restarting it too would open two.
 RestartApplications=no
+
+[Messages]
+WelcomeLabel1=Welcome to Milan Pro
+WelcomeLabel2=Setup will install [name/ver], the open-source video editor, on your computer.%n%nMultitrack editing, effects, titles, audio and rendering, with FFmpeg included so your media opens right away.%n%nClick Next to continue, or Cancel to exit Setup.
+FinishedHeadingLabel=Milan Pro is ready
+FinishedLabel=Setup has installed [name] on your computer. Start it any time from the Start Menu or its shortcut.
+FinishedLabelNoIcons=Setup has installed [name] on your computer.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"

@@ -45,7 +45,8 @@ fn main() -> eframe::Result<()> {
         .with_title("Untitled - Milan Pro")
         .with_inner_size([1600.0, 900.0])
         .with_min_inner_size([960.0, 540.0])
-        .with_decorations(look.look == ui::theme::UiLook::Vegas16);
+        .with_decorations(look.look == ui::theme::UiLook::Vegas16)
+        .with_icon(icon());
     if offscreen_run(launch.screenshot.is_some()) {
         // The app resizes to 1920x1080 px on its first frame.
         viewport = offscreen(viewport).with_min_inner_size([100.0, 100.0]);
@@ -56,6 +57,16 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(app::MeridianApp::new(cc, launch)))),
     )
+}
+
+/// The window and taskbar icon of every Milan Pro window (the exe's own icon is assets/brand/milan-pro.ico, build.rs).
+pub fn icon() -> std::sync::Arc<egui::IconData> {
+    static ICON: std::sync::OnceLock<std::sync::Arc<egui::IconData>> = std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        let png = include_bytes!("../assets/brand/milan-pro-256.png");
+        std::sync::Arc::new(eframe::icon_data::from_png_bytes(png).expect("assets/brand/milan-pro-256.png is a valid PNG"))
+    })
+    .clone()
 }
 
 /// The screenshot harness (`screenshot`) or an automatic update run: every window opens off-screen.

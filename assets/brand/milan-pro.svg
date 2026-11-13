@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>Milan Pro</title>
+  <defs><linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="256"><stop offset="0" stop-color="#0B2E8A"/><stop offset="1" stop-color="#001751"/></linearGradient></defs>
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#258EE4"/>
+  <rect x="16" y="16" width="224" height="224" rx="40" fill="url(#tile)"/>
+  <g fill="#FFFFFF">
+    <rect x="60" y="50" width="30" height="114"/>
+    <rect x="166" y="50" width="30" height="114"/>
+    <polygon points="60,50 92.65,50 128,101.98 128,150"/>
+    <polygon points="196,50 163.35,50 128,101.98 128,150"/>
+  </g>
+  <rect x="60" y="184" width="136" height="14" rx="7" fill="#123F8F"/>
+  <rect x="60" y="184" width="68" height="14" rx="7" fill="#258EE4"/>
+  <rect x="147.9" y="177.7" width="4.2" height="26.6" fill="#FFFFFF"/>
+  <polygon points="142.3,172.1 157.7,172.1 150,182.6" fill="#FFFFFF"/>
+</svg>
