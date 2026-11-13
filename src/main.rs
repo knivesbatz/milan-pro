@@ -18,6 +18,8 @@ mod render;
 mod settings;
 mod ui;
 mod updater;
+#[cfg(windows)]
+mod wasapi;
 
 use eframe::egui;
 

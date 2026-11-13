@@ -13,7 +13,8 @@ serde_json = "1"
 rfd = "0.15"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"
-rodio = { version = "0.20.1", default-features = false }
+# R9: the audio device layer (playback, recording, input monitoring). Already in Cargo.lock (it came with rodio).
+cpal = "0.15.3"
 png = "0.18"  # screenshot harness (already in the tree via eframe)
 # Updater (src/updater.rs): small blocking HTTPS client (rustls, no OpenSSL) and SHA-256 of the installer.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
@@ -27,6 +28,8 @@ ab_glyph = "0.2"
 # Already in Cargo.lock (via other crates).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+# src/wasapi.rs (R9): the WASAPI exclusive output, which cpal 0.15 lacks. The version and features cpal already uses.
+windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Security", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem"] }
 
 [profile.release]
 opt-level = 3

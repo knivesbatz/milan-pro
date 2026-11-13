@@ -103,7 +103,7 @@ pub enum Command {
     /// Options › Audio Follows Video Velocity (per project, off as in VEGAS).
     AudioFollowsVelocity,
     /// R8a: Insert › Audio Bus and Audio Assignable FX...; Tools › Audio › Remove Assignable FX...
-    InsertAudioBus, InsertAssignableFx, RemoveAssignableFx,
+    InsertAudioBus, InsertAssignableFx, RemoveAssignableFx, InsertInputBus,
     /// R8b: Project Properties › Audio (Master Bus Properties, the Mixing Console's Audio Properties...).
     AudioProperties,
     /// R8b: Edit › Post-Edit Ripple › Affected Tracks, Markers, and Regions (not the bus tracks).

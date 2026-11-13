@@ -325,7 +325,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
         if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
             continue;
         }
-        let sends = project.timeline.audio != AudioSettings::default();
+        let sends = project.timeline.audio.has_targets();
         let l = layout(&t, g, row, project.timeline.tracks(row.is_video)[row.idx].armed, sends, meter_opts(ui.ctx()));
         let id = ui.id().with(("track_hdr", row.is_video, row.idx));
         let tid = track_id(project, row);
@@ -645,7 +645,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             continue;
         }
         let tr = &project.timeline.tracks(row.is_video)[row.idx];
-        let l = layout(&t, g, row, tr.armed, project.timeline.audio != AudioSettings::default(), meter_opts(p.ctx()));
+        let l = layout(&t, g, row, tr.armed, project.timeline.audio.has_targets(), meter_opts(p.ctx()));
         let cx = send_cx(&project.timeline, tr);
         let color = t.track_color(row.num);
         let selected = sel.tracks.contains(&tr.id);

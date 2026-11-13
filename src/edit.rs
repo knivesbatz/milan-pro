@@ -2788,6 +2788,27 @@ pub fn insert_assignable_fx(project: &mut Project, fx: Vec<Fx>) -> Option<String
     Some(id)
 }
 
+/// R9: Insert › Audio Input Bus: one more input bus ("Input Bus A"..., the first free letter) to the master. Its id, or
+/// None at VEGAS's 26.
+pub fn insert_input_bus(project: &mut Project) -> Option<String> {
+    let a = &mut project.timeline.audio;
+    let name = (b'A'..=b'Z').map(|c| format!("Input Bus {}", c as char)).find(|n| !a.inputs.iter().any(|b| b.name == *n))?;
+    let b = Bus::new(name, Vec::new());
+    let id = b.id.clone();
+    a.inputs.push(b);
+    project.mark_modified();
+    Some(id)
+}
+
+/// R9: the input bus strip's Delete. False when there is no such input bus.
+pub fn delete_input_bus(project: &mut Project, id: &str) -> bool {
+    let a = &mut project.timeline.audio;
+    let n = a.inputs.len();
+    a.inputs.retain(|b| b.id != id);
+    let done = a.inputs.len() != n;
+    changed(project, done)
+}
+
 /// Tools › Audio › Remove Assignable FX: the chains `ids` go, and every send to them.
 pub fn remove_assignable_fx(project: &mut Project, ids: &[String]) -> bool {
     let a = &mut project.timeline.audio;
@@ -2810,7 +2831,7 @@ fn unroute(tl: &mut Timeline, gone: &[String]) {
             t.send_view = None;
         }
     }
-    for b in tl.audio.buses.iter_mut().chain(&mut tl.audio.fx).filter(|b| lost(&b.out)) {
+    for b in tl.audio.buses.iter_mut().chain(&mut tl.audio.fx).chain(&mut tl.audio.inputs).filter(|b| lost(&b.out)) {
         b.out = Out::Master;
     }
 }
@@ -2824,6 +2845,16 @@ pub fn set_track_out(project: &mut Project, ids: &[String], out: &Out) -> bool {
     let mut done = false;
     for t in project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && t.out != *out) {
         t.out = out.clone();
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// R9: Input › Input Monitoring for the audio tracks `ids`. False when nothing changed.
+pub fn set_monitor(project: &mut Project, ids: &[String], m: Monitor) -> bool {
+    let mut done = false;
+    for t in project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && t.monitor != m) {
+        t.monitor = m;
         done = true;
     }
     changed(project, done)
@@ -2848,8 +2879,7 @@ pub fn set_bus_out(project: &mut Project, id: &str, out: &Out) -> Result<bool, S
             }
         }
     }
-    let a = &mut project.timeline.audio;
-    let Some(b) = a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id).filter(|b| b.out != *out) else { return Ok(false) };
+    let Some(b) = project.timeline.audio.bus_mut(id).filter(|b| b.out != *out) else { return Ok(false) };
     b.out = out.clone();
     Ok(changed(project, true))
 }
@@ -2927,7 +2957,7 @@ pub fn fx_chain_mut<'a>(p: &'a mut Project, target: &FxTarget) -> Option<&'a mut
         }
         FxTarget::VideoOutput => Some(&mut p.timeline.master.video_fx),
         FxTarget::AudioMaster => Some(&mut p.timeline.master.audio_fx),
-        FxTarget::Bus(id) => p.timeline.audio.buses.iter_mut().chain(&mut p.timeline.audio.fx).find(|b| b.id == *id).map(|b| &mut b.fx),
+        FxTarget::Bus(id) => p.timeline.audio.bus_mut(id).map(|b| &mut b.fx),
         FxTarget::Media(_) | FxTarget::Transition(_) | FxTarget::Compositor(_) => None,
     }
 }

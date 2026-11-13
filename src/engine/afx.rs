@@ -82,14 +82,20 @@ impl Chain {
     /// Run `fx` over `buf` with its values at `t` (event-relative for event FX). Disabled, unknown and neutral
     /// plug-ins pass the signal through.
     pub fn run(&mut self, fx: &[Fx], t: f64, buf: &mut [f32]) {
+        let vals: Vec<Option<FxEval>> = fx.iter().map(|f| f.enabled.then(|| plugins::eval(f, t)).flatten()).collect();
+        self.run_with(fx, &vals, buf);
+    }
+
+    /// R9: `run` with the values already evaluated (one per plug-in of `fx`, None to pass through), so the real-time
+    /// input monitor allocates nothing while the chain keeps its plug-ins.
+    pub fn run_with(&mut self, fx: &[Fx], vals: &[Option<FxEval>], buf: &mut [f32]) {
         self.sync(fx);
-        for (s, f) in self.slots.iter_mut().zip(fx) {
-            let p = f.enabled.then(|| plugins::eval(f, t)).flatten();
+        for (s, p) in self.slots.iter_mut().zip(vals) {
             let (Some(dsp), Some(p)) = (s.dsp.as_mut(), p) else {
                 s.idle = true;
                 continue;
             };
-            if dsp.neutral(&p) {
+            if dsp.neutral(p) {
                 s.idle = true;
                 continue;
             }
@@ -97,7 +103,7 @@ impl Chain {
                 dsp.reset();
                 s.idle = false;
             }
-            dsp.process(&p, buf);
+            dsp.process(p, buf);
         }
     }
 }

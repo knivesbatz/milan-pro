@@ -14,10 +14,10 @@ use crate::project::*;
 use super::Selection;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{self, Later, Mark, entry, send};
+use super::menus::{self, Mark, entry, send};
 use super::theme::{self, Theme, UiLook};
 use super::timeline::{fader_gain, fader_pos};
-use super::toolbar::{inert_button, tool_button};
+use super::toolbar::tool_button;
 
 /// Meter range: 0 dB at the top of a well, -60 dB at the bottom.
 pub const RANGE_DB: f32 = 60.0;
@@ -117,26 +117,28 @@ fn levels_id() -> Id {
 /// session runs (stopped, the last RMS is stale and the meters fall). Meters that left the plan fall to silence too.
 // shortcut: track and bus meters are fed as the mixer makes a block, up to the device queue (about 128 ms) before it is
 // heard; the master meter is exact. Delay them by the queue if users notice.
-pub fn feed_levels(ctx: &Context, meters: &Meters, master: &Master, live: bool) {
+/// R9: `inputs` are the input busses' meters, fed by the input monitor whether or not a session plays.
+pub fn feed_levels(ctx: &Context, meters: &Meters, inputs: &Meters, master: &Master, live: bool) {
     let (now, dt) = ctx.input(|i| (i.time, i.stable_dt.min(0.1)));
     let rms = |r: [f32; 2]| if live { r } else { [0.0; 2] };
     let active = ctx.data_mut(|d| {
         let lv = &mut d.get_temp_mut_or_default::<Levels>(levels_id()).0;
-        for id in meters.keys() {
+        for id in meters.keys().chain(inputs.keys()) {
             if !lv.contains_key(id) {
                 lv.insert(id.clone(), MeterView::default());
             }
         }
         lv.entry(MASTER.to_string()).or_default();
         for (id, v) in lv.iter_mut() {
-            let (p, r) = match (id.as_str(), meters.get(id)) {
-                (MASTER, _) => (master.take_peaks(), master.rms()),
-                (_, Some(m)) => (m.take_peaks(), m.rms()),
+            let (p, r) = match (id.as_str(), meters.get(id), inputs.get(id)) {
+                (MASTER, ..) => (master.take_peaks(), rms(master.rms())),
+                (_, Some(m), _) => (m.take_peaks(), rms(m.rms())),
+                (.., Some(m)) => (m.take_peaks(), m.rms()),
                 _ => ([0.0; 2], [0.0; 2]),
             };
-            v.feed(p, rms(r), now, dt);
+            v.feed(p, r, now, dt);
         }
-        lv.retain(|id, v| id == MASTER || meters.contains_key(id) || v.active());
+        lv.retain(|id, v| id == MASTER || meters.contains_key(id) || inputs.contains_key(id) || v.active());
         lv.values().any(MeterView::active)
     });
     if active {
@@ -242,11 +244,13 @@ pub struct ConsolePrefs {
     pub channels: [bool; 4],
     pub regions: [bool; 6],
     pub width: u8,
+    /// R9: Show Channels › Input Busses.
+    pub inputs: bool,
 }
 
 impl Default for ConsolePrefs {
     fn default() -> Self {
-        Self { channel_list: true, channels: [true; 4], regions: [true, true, true, false, true, true], width: 1 }
+        Self { channel_list: true, channels: [true; 4], regions: [true, true, true, false, true, true], width: 1, inputs: true }
     }
 }
 
@@ -281,10 +285,10 @@ pub struct ConsoleView {
     rename: Option<(String, String, bool)>,
 }
 
-/// The strips the project has, in console order (audio tracks, busses, assignable FX chains, master), with their label
-/// and colour.
-fn strips(project: &Project, t: &Theme, kinds: [bool; 4]) -> Vec<(Strip, String, Color32)> {
-    let tl = &project.timeline;
+/// The strips the project has, in console order (audio tracks, input busses, busses, assignable FX chains, master), with
+/// their label and colour.
+fn strips(project: &Project, t: &Theme, prefs: &ConsolePrefs) -> Vec<(Strip, String, Color32)> {
+    let (tl, kinds) = (&project.timeline, prefs.channels);
     let mut v = Vec::new();
     if kinds[0] {
         let n0 = tl.video_tracks.len();
@@ -292,6 +296,9 @@ fn strips(project: &Project, t: &Theme, kinds: [bool; 4]) -> Vec<(Strip, String,
             let name = if tr.name.is_empty() { format!("{}", n0 + i + 1) } else { format!("{}: {}", n0 + i + 1, tr.name) };
             v.push((Strip::Track(tr.id.clone()), name, t.track_color(n0 + i)));
         }
+    }
+    if prefs.inputs {
+        v.extend(tl.audio.inputs.iter().map(|b| (Strip::Bus(b.id.clone()), b.name.clone(), t.text_dim)));
     }
     for (k, list) in [(1, &tl.audio.buses), (2, &tl.audio.fx)] {
         if kinds[k] {
@@ -315,7 +322,7 @@ fn icon_menu(ui: &mut Ui, icon: Icon, tip: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 /// The Mixing Console toolbar: Views, Properties and Layout, Downmix Output, Dim Output, Insert Audio Track, Insert
-/// Assignable FX, Insert Bus (and Insert Input Bus, R9). True when the layout changed (save the preferences).
+/// Assignable FX, Insert Bus and (R9) Insert Input Bus. True when the layout changed (save the preferences).
 pub fn mixer_toolbar(ui: &mut Ui, prefs: &mut ConsolePrefs, master: &Master) -> bool {
     let before = prefs.clone();
     icon_menu(ui, Icon::Views, "Views", |ui| {
@@ -330,12 +337,15 @@ pub fn mixer_toolbar(ui: &mut Ui, prefs: &mut ConsolePrefs, master: &Master) -> 
         menus::sep(ui);
         menus::sub(ui, "Show &Channels", true, |ui| {
             if entry(ui, "Show &All Channels", "", true, Mark::None) {
-                prefs.channels = [true; 4];
+                (prefs.channels, prefs.inputs) = ([true; 4], true);
             }
             menus::sep(ui);
             for (k, label) in ["Audio &Tracks", "Audio &Busses", "Assignable &FX", "&Master Bus"].into_iter().enumerate() {
                 if entry(ui, label, "", true, Mark::Check(prefs.channels[k])) {
                     prefs.channels[k] = !prefs.channels[k];
+                }
+                if k == 0 && entry(ui, "&Input Busses", "", true, Mark::Check(prefs.inputs)) {
+                    prefs.inputs = !prefs.inputs;
                 }
             }
         });
@@ -367,19 +377,24 @@ pub fn mixer_toolbar(ui: &mut Ui, prefs: &mut ConsolePrefs, master: &Master) -> 
         send(ui.ctx(), Command::DimMaster);
     }
     super::toolbar::separator(ui);
-    for (icon, tip, c) in [(Icon::TrackAudio, "Insert Audio Track", Command::InsertAudioTrack), (Icon::TrackFx, "Insert Assignable FX", Command::InsertAssignableFx), (Icon::InsertBus, "Insert Bus", Command::InsertAudioBus)] {
+    for (icon, tip, c) in [
+        (Icon::TrackAudio, "Insert Audio Track", Command::InsertAudioTrack),
+        (Icon::TrackFx, "Insert Assignable FX", Command::InsertAssignableFx),
+        (Icon::InsertBus, "Insert Bus", Command::InsertAudioBus),
+        (Icon::InsertBus, "Insert Input Bus", Command::InsertInputBus),
+    ] {
         if tool_button(ui, icon, tip, true, false).clicked() {
             send(ui.ctx(), c);
         }
     }
-    inert_button(ui, Icon::InsertBus, &Later("R9").tip("Insert Input Bus"), false);
     *prefs != before
 }
 
 /// The y ranges of the control regions (None when hidden) and of the label, for strips `h` tall.
 fn regions(prefs: &ConsolePrefs, sends: usize, h: f32) -> ([Option<Rangef>; 6], Rangef) {
     let on = prefs.regions;
-    let fixed = [64.0, if sends > 0 { 4.0 + 26.0 * sends as f32 } else { 0.0 }, 26.0, 100.0];
+    // I/O: the input (R9) over the output.
+    let fixed = [64.0, if sends > 0 { 4.0 + 26.0 * sends as f32 } else { 0.0 }, 48.0, 100.0];
     let mut out = [None; 6];
     let mut y = 0.0;
     for k in [FX_R, SENDS_R, IO_R, VU_R] {
@@ -491,8 +506,7 @@ fn track_mut<'a>(project: &'a mut Project, id: &str) -> Option<&'a mut Track> {
 }
 
 fn bus_mut<'a>(project: &'a mut Project, id: &str) -> Option<&'a mut Bus> {
-    let a = &mut project.timeline.audio;
-    a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id)
+    project.timeline.audio.bus_mut(id)
 }
 
 /// Set strip `s`'s volume (the master's both channels, linked) or pan.
@@ -524,7 +538,7 @@ pub fn mixing_console(ui: &mut Ui, view: &mut ConsoleView, prefs: &ConsolePrefs,
     let t = theme::get();
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0.0, t.panel_bg);
-    let all = strips(project, &t, prefs.channels);
+    let all = strips(project, &t, prefs);
     let mut area = rect;
     if prefs.channel_list && rect.width() > 260.0 {
         let list = rect.with_max_x(rect.min.x + 130.0);
@@ -650,9 +664,49 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         }
     }
 
-    // I/O: the output (Master or a bus); the master goes to the output device.
+    // I/O: the input (R9: a track's Input Monitoring; an input bus's recording input) over the output (Master or a
+    // bus; the master goes to the output device).
     if let Some(r) = regs[IO_R] {
-        let b = Rect::from_min_max(pos2(r.min.x + 3.0, r.min.y + 4.0), pos2(r.max.x - 3.0, r.max.y - 4.0));
+        let inb = Rect::from_min_max(pos2(r.min.x + 3.0, r.min.y + 3.0), pos2(r.max.x - 3.0, r.min.y + 22.0));
+        let is_input = project.timeline.audio.inputs.iter().any(|b| b.id == s.key());
+        match s {
+            Strip::Track(tid) => {
+                let mon = project.timeline.audio_tracks.iter().find(|x| x.id == *tid).map_or(Monitor::Off, |x| x.monitor);
+                p.rect_filled(inb, 2.0, t.input_bg);
+                let text = ["Monitor Off", "Monitor On", "Monitor Auto"][mon as usize];
+                p.with_clip_rect(inb).text(inb.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, small.clone(), if mon == Monitor::Off { t.text_dim } else { t.text });
+                let resp = ui.interact(inb, id.with("in"), Sense::click()).on_hover_text("Record Input: input monitoring of the armed track (the recording device is chosen in Preferences › Audio Device)");
+                let pid = id.with("in_popup");
+                if resp.clicked() {
+                    ui.memory_mut(|m| m.toggle_popup(pid));
+                }
+                let mut picked = None;
+                super::chrome::with_menu_style(&ui.ctx().clone(), &t, || {
+                    #[allow(deprecated)]
+                    popup::popup_below_widget(ui, pid, &resp, PopupCloseBehavior::CloseOnClick, |ui| {
+                        ui.set_min_width(160.0);
+                        for m in Monitor::ALL {
+                            if entry(ui, m.name(), "", true, Mark::Radio(mon == m)) {
+                                picked = Some(m);
+                            }
+                        }
+                    });
+                });
+                if let Some(m) = picked {
+                    let before = project.clone();
+                    if edit::set_monitor(project, std::slice::from_ref(tid), m) {
+                        history.push(before);
+                    }
+                }
+            }
+            _ if is_input => {
+                p.rect_filled(inb, 2.0, t.input_bg);
+                p.with_clip_rect(inb).text(inb.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, "Record Input", small.clone(), t.text);
+                ui.interact(inb, id.with("in"), Sense::hover()).on_hover_text("The recording device chosen in Preferences › Audio Device, in stereo");
+            }
+            _ => {}
+        }
+        let b = Rect::from_min_max(pos2(r.min.x + 3.0, r.min.y + 25.0), pos2(r.max.x - 3.0, r.max.y - 4.0));
         p.rect_filled(b, 2.0, t.input_bg);
         let a = &project.timeline.audio;
         let text = match &c.out {
@@ -696,7 +750,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
                 }
             }
         } else {
-            ui.interact(b, id.with("out"), Sense::hover()).on_hover_text("The default output device (a device choice comes with batch R9)");
+            ui.interact(b, id.with("out"), Sense::hover()).on_hover_text("The playback device chosen in Preferences › Audio Device");
         }
     }
 
@@ -857,6 +911,18 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     // Label: colour bar and name; a click selects the track, a double-click renames.
     p.rect_filled(Rect::from_x_y_ranges(label.x_range(), Rangef::new(label.min.y, label.min.y + 3.0)), 0.0, color);
     let lr = ui.interact(label, id.with("label"), Sense::click());
+    // R9: an input bus strip's label menu deletes it (one undo step).
+    if project.timeline.audio.inputs.iter().any(|b| b.id == s.key()) {
+        let mut del = false;
+        menus::context(&lr, |ui| del = entry(ui, "&Delete", "", true, Mark::None));
+        if del {
+            let before = project.clone();
+            if edit::delete_input_bus(project, s.key()) {
+                history.push(before);
+            }
+            return;
+        }
+    }
     if lr.clicked() {
         if let Strip::Track(tid) = s {
             (sel.tracks, sel.list_focus, sel.env) = (vec![tid.clone()], true, None);

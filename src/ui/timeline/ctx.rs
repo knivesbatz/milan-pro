@@ -869,7 +869,6 @@ const AUDIO_HEADER_MID: &[M] = &[
     C("&Delete", Delete),
     S,
     C("&Arm for Record", Arm),
-    Sub("I&nput", &[X("None", Later("R9"))]),
 ];
 
 /// R8a: Output ▸ (Master and the busses) and Pan Type ▸ for audio track `i`, or every selected track when it is one of
@@ -877,7 +876,22 @@ const AUDIO_HEADER_MID: &[M] = &[
 fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], i: usize) {
     let tr = &project.timeline.audio_tracks[i];
     let ids = if sel.contains(&tr.id) { sel.to_vec() } else { vec![tr.id.clone()] };
-    let (cur, pt) = (tr.out.clone(), tr.pan_type);
+    let (cur, pt, mon) = (tr.out.clone(), tr.pan_type, tr.monitor);
+    // R9: Input ▸ Input Monitoring Off / On / Auto (the record input is the one in Preferences › Audio Device).
+    let mut monitor = None;
+    sub(ui, "I&nput", true, |ui| {
+        for m in Monitor::ALL {
+            if entry(ui, m.name(), "", true, Mark::Radio(mon == m)) {
+                monitor = Some(m);
+            }
+        }
+    });
+    if let Some(m) = monitor {
+        let before = project.clone();
+        if edit::set_monitor(project, &ids, m) {
+            history.push(before);
+        }
+    }
     let outs: Vec<(String, Out)> = std::iter::once(("Master".to_string(), Out::Master))
         .chain(project.timeline.audio.buses.iter().map(|b| (b.name.replace('&', "&&"), Out::Bus(b.id.clone()))))
         .collect();

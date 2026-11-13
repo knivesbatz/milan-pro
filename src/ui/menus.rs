@@ -232,7 +232,7 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
-            Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx => true,
+            Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx | InsertInputBus => true,
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
@@ -919,7 +919,7 @@ pub const INSERT: &[M] = &[
     V23(&C("Adjustment Track", InsertAdjustmentTrack)),
     S,
     C("Audio &Bus", InsertAudioBus),
-    X("Audio In&put Bus", Later("R9")),
+    C("Audio In&put Bus", InsertInputBus),
     C("Audio Assignable &FX...", InsertAssignableFx),
     S,
     C("&Empty Event", InsertEmptyEvent),
@@ -1487,7 +1487,17 @@ mod tests {
             greyed(items, &mut rows);
         }
         assert!(!rows.iter().any(|(_, w)| *w == Later("R8a")), "{rows:?}");
-        assert!(rows.iter().any(|(l, w)| l == "Audio Input Bus" && *w == Later("R9")), "{rows:?}");
+    }
+
+    /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.
+    #[test]
+    fn input_bus_command_works() {
+        assert!(unfinished(InsertInputBus).is_none() && CmdState::default().enabled(InsertInputBus));
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R9")), "{rows:?}");
     }
 
     /// R8b: the Mixing Console, Audio Bus Tracks, Dim master, Audio Properties (Master Bus Properties) and the fourth

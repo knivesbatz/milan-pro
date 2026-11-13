@@ -35,14 +35,14 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 204 |
-| PARTIAL | 139 |
-| MISSING | 77 |
+| DONE | 207 |
+| PARTIAL | 137 |
+| MISSING | 76 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
 What matters most:
-- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
+- **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). The gaps are nested timelines and about 60 VEGAS commands that are still greyed out.
 - **Preview has known defects.** Scrub jumps 0.7-1.2 s. Reverse playback shows only some frames. There is no GPU path, no adaptive quality and no RAM preview or prerender.
 - **Render is basic.** There are 5 fixed presets, no custom template, no hardware encoders (all present in the bundled FFmpeg), no queue or batch, and the dialog is modal. An update can kill a running render.
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
@@ -104,7 +104,7 @@ What matters most:
 | 3.5 | Vulkan / Direct3D or another graphics API evaluated | PARTIAL | The UI renders through glow (OpenGL). wgpu 24.0.5 and egui-wgpu 0.31.1 are in `Cargo.lock` but inactive (eframe feature `wgpu` is off). → R21a, R53 |
 | 3.6 | Hardware video decoding and encoding | PARTIAL | Decode: `-hwaccel auto` only for HEVC/AV1 or width ≥ 2560 (`vdecode.rs:40-44`). Encode: none. → R22 |
 | 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
-| 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer on rodio (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`). Missing: multichannel, output device choice, latency compensation. → R9, R10a |
+| 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
 | 3.9 | OpenFX and VST hosting where compatible | MISSING | → R31-R35 |
 | 3.10 | Frameworks evaluated for performance, extensibility, maintainability | PARTIAL | `FEATURE_PLAN.md` section 0/1 records decisions but no comparison → R53 |
 
@@ -117,7 +117,7 @@ What matters most:
 | 4.3 | Preview monitor | DONE | `ui/preview.rs`, `decode.rs`, `engine/worker.rs` |
 | 4.4 | Multitrack timeline | DONE | `ui/timeline/` |
 | 4.5 | Track controls | DONE | `ui/timeline/tracks.rs` (mute, solo, lock, FX, level/vol/pan, arm) |
-| 4.6 | Audio mixer | DONE | (R8b) Master Bus window (`ui/master_bus.rs`) with working Properties, Downmix, Dim and Mixing Console buttons; the Mixing Console window (`ui/mixer.rs`: strips for audio tracks, busses, assignable FX chains and the master, with Insert FX, Sends, I/O, VU Meters, Peak Meters and Faders regions); live meters in the track headers. |
+| 4.6 | Audio mixer | DONE | (R8b) Master Bus window (`ui/master_bus.rs`) with working Properties, Downmix, Dim and Mixing Console buttons; the Mixing Console window (`ui/mixer.rs`: strips for audio tracks, (R9) input busses, busses, assignable FX chains and the master, with Insert FX, Sends, I/O (input and output), VU Meters, Peak Meters and Faders regions); live meters in the track headers. |
 | 4.7 | Effects and transitions browser | DONE | `ui/choosers.rs` (search, categories, presets, animated transition thumbnails) |
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
@@ -195,7 +195,7 @@ What matters most:
 | 6.1 | No whole-video-in-memory player; dedicated pipeline | DONE | Persistent decoder pool plus worker (`engine/vdecode.rs`, `engine/worker.rs`) |
 | 6.2 | Low-latency playback | DONE | Play start ≤ 250 ms target (`FEATURE_PLAN.md` 1.9) |
 | 6.3 | Accurate frame timing | DONE | Frames are popped against the audio clock (`FEATURE_PLAN.md` 1.5.4) |
-| 6.4 | Audio/video synchronization | PARTIAL | Locked to the audio clock, but the playhead leads the sound by 10-20 ms (rodio has no latency figure, `FEATURE_PLAN.md:401`). → R9 |
+| 6.4 | Audio/video synchronization | DONE | Locked to the audio clock; (R9) the playhead is what is heard: the clock less the output latency the device reports, carried on between callbacks (`audio::Stamp`, test `the_playhead_follows_what_is_heard`). The manual click-track check (under 5 ms) is the user's. |
 | 6.5 | GPU-accelerated compositing | MISSING | → R21a-c |
 | 6.6 | Hardware decoding when available | PARTIAL | Heavy sources only; no capability probe or preference. → R22 |
 | 6.7 | Efficient frame caching | DONE | `engine/cache.rs` (SourceCache 192 MB, CompositeCache 256 MB) |
@@ -411,9 +411,9 @@ What matters most:
 | 12.14 | Sample-rate conversion | DONE | FFmpeg `-ar` in decode (`mix.rs:70`); render at project rate |
 | 12.15 | Audio effects chains | DONE | |
 | 12.16 | Real-time audio processing | DONE | Block mixer with FX and live plan swaps |
-| 12.17 | Low-latency monitoring | MISSING | Input monitoring was skipped (`FEATURE_PLAN.md:1814`). → R9 |
+| 12.17 | Low-latency monitoring | DONE | (R9) Input Monitoring Off / On / Auto per armed track (track header › Input, console Record Input) and Insert › Audio Input Bus: the input goes through a lock-free ring into the output callback, the track's or bus's FX, volume, pan and routing, then the master (`audio::MonPlan`, `MonState`; tests `the_monitor_plays_armed_tracks_and_input_busses`, `the_input_is_heard_through_the_output_callback`). The round trip is printed in Preferences › Audio Device. |
 | 12.18 | VST hosting investigated | PARTIAL | `FEATURE_PLAN.md:1812` → R34a |
-| 12.19 | Audio-device compatibility | PARTIAL | Output is rodio's default device; there is no output-device choice, ASIO or WASAPI-exclusive option. Input device choice works (`prefs.rs:133`). → R9 |
+| 12.19 | Audio-device compatibility | DONE | (R9) Preferences › Audio Device: Microsoft Sound Mapper, Windows Classic Wave Driver (a chosen device) and Windows Audio (Exclusive Mode, Milan Pro's, off by default, `wasapi.rs`), buffer size, recording device; device loss reopens (watchdog). ASIO is not feasible (section 6; `docs/COMPATIBILITY.md`). |
 | 12.20 | Precise A/V sync through playback and render | DONE | Same mixer for both; render audio pass (`engine/render.rs`) |
 
 ### 2.13 Section 12: rendering and export
@@ -551,7 +551,7 @@ What matters most:
 | 19.1 | Test media import | PARTIAL | `media.rs` unit tests; real files only in ignored tests → R37 |
 | 19.2 | Test media decoding | PARTIAL | `vdecode.rs` ignored tests → R37 |
 | 19.3 | Test playback | PARTIAL | `worker.rs` ignored bench → R19 |
-| 19.4 | Test audio synchronization | PARTIAL | Mixer clock unit tests; no A/V offset measurement → R9, R19 |
+| 19.4 | Test audio synchronization | PARTIAL | Mixer clock unit tests; (R9) the latency-compensation test with a fake timestamp. No automated A/V offset measurement → R19 |
 | 19.5 | Test timeline editing | DONE | `edit.rs` tests |
 | 19.6 | Test multiple video tracks | DONE | Compositor and plan tests |
 | 19.7 | Test multiple audio tracks | DONE | `mix.rs` tests |
@@ -1116,7 +1116,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Audio Bus Tracks (View › Audio Bus Tracks, B; `Prefs.bus_tracks`): one 64 px row per bus and chain under the tracks (with the Video Bus Track), at most half the timeline (whole rows; shortcut: no scrolling of that area). Header: name, Mute, FX, Vol, Pan, meter; lane: Volume / Pan / Mute envelopes (right-click › Insert/Remove Envelope, point drags, double-click adds, point menu deletes). No Master bus track (it would need master envelopes in the engine).
 - Track header (R0 items): Show Output Meters, Use Vertical Meters (off draws L/R bars across the top row) and Channel Width (meter width) work and are saved in the preferences. Ripple: VEGAS's fourth mode, Affected Tracks, Markers, and Regions, is `RippleMode::AffectedMarkersOnly` (also Post-Edit Ripple); the bus-track modes (Affected Tracks, Bus Tracks, Markers, and Regions; All) also ripple the bus tracks' envelope keys.
 - View › Mixer Preview Fader is relabelled R57: the preview bus it shows plays the Explorer's previews, which Milan Pro does not have.
-- Not done: bus Solo, a Master bus track, the strips' recording input selector (R9), the console keys (F2, D/N/W, F/I/H/M/S: they clash with global keys while the pointer is over the console).
+- Not done: bus Solo, a Master bus track, the strips' recording input selector (R9: DONE), the console keys (F2, D/N/W, F/I/H/M/S: they clash with global keys while the pointer is over the console).
 
 **Scope**
 - Mixing Console window (strips: input/FX/sends/pan/fader/meter, mute, solo, arm).
@@ -1167,6 +1167,15 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ---
 
 ### R9: Audio device layer on cpal; latency compensation; input monitoring (L)
+
+**Status: DONE.** Built as designed below, except where VEGAS differs:
+- Output: rodio is gone. `audio.rs` opens the device with cpal (WASAPI shared) on a "milan-audio-device" thread, or with `wasapi.rs` (WASAPI exclusive, event driven, MMCSS "Pro Audio", 48 kHz or the mix rate, f32/32/24/16-bit). One callback (`Out::render`) serves both: it takes the session's blocks (`Feed`), resamples 48 kHz to the device rate (linear, as rodio did; bit exact at 48 kHz), adds the input monitor, applies the master (gain glide, Dim, Downmix, meters) and maps stereo onto the device's channels. It takes no lock and frees nothing: spent blocks, feeds and monitor plans go back to the UI thread (`Trash`). The stream stays open while stopped (as rodio's did), so monitoring works without playback; a lost device (error callback) or one that stops calling back is reopened every 2 s, playing or not.
+- Preferences › Audio Device follows VEGAS's tab: Audio device type (Microsoft Sound Mapper = the Windows default, the default as in VEGAS; Windows Classic Wave Driver = a chosen device; Windows Audio (Exclusive Mode), Milan Pro's, not VEGAS's; ASIO greyed as not feasible), Default stereo and front playback device, rear and center/LFE (greyed, R10a), Buffer size (VEGAS's Advanced › Buffer size: Default, 64-4096 samples), Default audio recording device, Recording latency offset, and the output, input and monitoring round-trip latency the devices report (for the user's loopback check). Changes apply at once (a recording keeps its device until it stops). Old preferences keep the Windows default device at its default buffer. The Audio tab (VEGAS's Audio preferences) is relabelled R49, where its scope already was.
+- Latency: the playhead is the feed clock less cpal's reported `playback - callback` (WASAPI exclusive: the buffer plus `GetStreamLatency`), carried on between callbacks from a seqlock stamp (`Stamp`, `Heard`) and held on underruns; at the start it waits at the cursor until the first sound is heard. Track and bus meters still lead by the mixer queue (R8b's note).
+- Input monitoring (VEGAS's Record Input › Input Monitoring Off / On / Auto, Off by default; Auto = while stopped and while recording): the track header's Input ▸ and the console track strip's Record Input button set it (one undo step, `Track.monitor`). The recording input feeds a lock-free SPSC ring (`Ring`) from its callback; the output callback runs it through each armed, monitored track's FX (values evaluated on the UI thread, automation bypassed as VEGAS does), volume, pan (Pan Type), phase and output gain, and adds it before the master. Plug-in state survives value changes (`Chain::run_with`). A dry signal is recorded, as in VEGAS. Monitoring needs the input and output at the same rate (the status bar says why otherwise).
+- Insert › Audio Input Bus (and the console's Insert Input Bus): up to 26 input busses (`AudioSettings.inputs`, "Input Bus A"...), console strips with Insert FX (pre-fader), Record Input, Output (Master or a bus), meters, Mute, Pan and fader, Show Channels › Input Busses, label › Delete. They are heard live through the monitor while the project has one (the input opens for them), never rendered.
+- Harness: the screenshot harness opens no audio device (`Player::new(false, ..)`, no capture); `MILAN_DIALOG=input-bus` shows an input bus and an armed Auto track in the console.
+- Not done: per-track record inputs (mono/left/right, input busses as a track's record input, recording a wet input bus), "Automatically detect and offset for hardware recording latency", the busses' FX and pan on monitored inputs (they run ahead in the mix thread; shortcut noted in `audio::route_gain`), following a change of the Windows default device while running. Not verified here: anything on a real device (the user's PC was not to make sound), so the exclusive path, the latency figures and the loopback and click-track checks are the user's.
 
 **Scope**
 - Output device choice (Preferences > Audio Device), buffer size, WASAPI shared/exclusive.
@@ -2024,7 +2033,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 | RAW video (7.19) | R3D, BRAW and ARRIRAW decoders are proprietary SDKs, not redistributable with an MIT project; FFmpeg has none | Documented in FORMAT_SUPPORT.md; optional user-installed BRAW SDK study (R41) |
 | CEA-608/708 caption embedding (part of 7.55) | The bundled FFmpeg has no 608/708 encoder | Caption import (608 extraction) plus SCC/SRT sidecar export (R39) |
 | ACES/OpenColorIO pipeline (part of 7.57/7.58) | OCIO is C++ with no Rust port | LUT-based transforms plus a 16f pipeline (R40b) |
-| ASIO output (part of 12.19) | The ASIO SDK licence forbids redistribution | WASAPI exclusive low-latency path (R9); documented |
+| ASIO output (part of 12.19) | The ASIO SDK licence forbids redistribution | WASAPI exclusive low-latency path (R9, DONE: `wasapi.rs`); documented in `docs/COMPATIBILITY.md` |
 | Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | minisign signature verification now, plus the Authenticode step wired and waiting on secrets (R46) |
 | VEGAS-licensed plug-ins (OFX first-party, DX audio) in Milan | Licence ties them to VEGAS; host checks are likely | Tested and reported per plug-in (R33c, R35), never claimed without a passing test (R55) |
 

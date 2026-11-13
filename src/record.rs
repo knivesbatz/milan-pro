@@ -1,6 +1,7 @@
-//! Audio recording (Ctrl+R into armed tracks): capture from one input device through cpal (rodio's), written as a
-//! stereo IEEE-float WAV, and the live input level of armed tracks.
-use rodio::cpal::{self, SampleFormat, traits::{DeviceTrait, HostTrait, StreamTrait}};
+//! Audio recording (Ctrl+R into armed tracks): capture from one input device through cpal, written as a stereo
+//! IEEE-float WAV, the live input level of armed tracks and (R9) the input for the monitor (`audio::Ring`).
+use cpal::{SampleFormat, traits::{DeviceTrait, HostTrait, StreamTrait}};
+use crate::audio::Ring;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -151,13 +152,15 @@ pub struct Capture {
     sent: Arc<AtomicU64>,
     rate: Arc<AtomicU32>,
     error: Arc<Mutex<Option<String>>>,
+    /// R9: the input monitor's ring, fed while the device is open.
+    ring: Option<Arc<Ring>>,
     pub path: Option<PathBuf>,
 }
 
 impl Capture {
-    /// Open input `device` (None or not found: the default one) on the "milan-rec" thread; with `out`, record into it.
-    /// Returns at once; a failure to open shows in `error()`.
-    pub fn start(device: Option<String>, out: Option<(PathBuf, File)>) -> Capture {
+    /// Open input `device` (None or not found: the default one) on the "milan-rec" thread; with `out`, record into it;
+    /// with `ring`, feed the input monitor. Returns at once; a failure to open shows in `error()`.
+    pub fn start(device: Option<String>, out: Option<(PathBuf, File)>, ring: Option<Arc<Ring>>) -> Capture {
         let peaks: Arc<[AtomicU32; 2]> = Arc::new([AtomicU32::new(0), AtomicU32::new(0)]);
         let (dropped, error) = (Arc::new(AtomicU64::new(0)), Arc::new(Mutex::new(None)));
         let (sent, rate) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU32::new(0)));
@@ -170,11 +173,11 @@ impl Capture {
             std::thread::Builder::new().name("milan-rec-wav".into()).spawn(move || write_wav(file, ready_rx, data_rx, &error)).expect("spawn milan-rec-wav")
         });
         let tx = writer.is_some().then_some(data_tx);
-        let (p, d, e, s, r) = (peaks.clone(), dropped.clone(), error.clone(), sent.clone(), rate.clone());
+        let (p, d, e, s, r, g) = (peaks.clone(), dropped.clone(), error.clone(), sent.clone(), rate.clone(), ring.clone());
         let device = std::thread::Builder::new()
             .name("milan-rec".into())
             .spawn(move || {
-                let stream = open(device.as_deref(), p, tx, d, s, r, e.clone());
+                let stream = open(device.as_deref(), p, tx, d, s, r, e.clone(), g);
                 let _ = ready_tx.send(stream.as_ref().map(|s| s.1).map_err(Clone::clone));
                 match stream {
                     Ok((s, _)) => {
@@ -185,7 +188,7 @@ impl Capture {
                 }
             })
             .expect("spawn milan-rec");
-        Capture { stop: Some(stop), device: Some(device), writer, peaks, dropped, sent, rate, error, path }
+        Capture { stop: Some(stop), device: Some(device), writer, peaks, dropped, sent, rate, error, ring, path }
     }
 
     /// Seconds of audio in the file so far; None until the first samples arrive.
@@ -217,6 +220,10 @@ impl Capture {
         if let Some(d) = self.device.take() {
             let _ = d.join();
         }
+        // The monitor stops listening (the device is closed).
+        if let Some(r) = &self.ring {
+            r.rate.store(0, Relaxed);
+        }
     }
 }
 
@@ -240,17 +247,26 @@ fn open(
     sent: Arc<AtomicU64>,
     rate_out: Arc<AtomicU32>,
     error: Arc<Mutex<Option<String>>>,
+    ring: Option<Arc<Ring>>,
 ) -> Result<(cpal::Stream, u32), String> {
     let host = cpal::default_host();
     let dev = name.and_then(|n| host.input_devices().ok()?.find(|d| d.name().is_ok_and(|x| x == n))).or_else(|| host.default_input_device()).ok_or("No recording device")?;
     let cfg = dev.default_input_config().map_err(|e| format!("Recording device: {e}"))?;
     let (fmt, ch, rate) = (cfg.sample_format(), cfg.channels().max(1) as usize, cfg.sample_rate().0);
     rate_out.store(rate, Relaxed);
-    let push = move |stereo: Vec<f32>| {
+    if let Some(r) = &ring {
+        r.rate.store(rate, Relaxed);
+    }
+    let push = move |stereo: Vec<f32>, info: &cpal::InputCallbackInfo| {
         for f in stereo.chunks_exact(2) {
             for c in 0..2 {
                 peaks[c].fetch_max(f[c].abs().to_bits(), Relaxed);
             }
+        }
+        if let Some(r) = &ring {
+            r.push(&stereo);
+            let ts = info.timestamp();
+            r.latency_us.store(ts.callback.duration_since(&ts.capture).unwrap_or_default().as_micros() as u32, Relaxed);
         }
         if let Some(tx) = &tx {
             let n = stereo.len() as u64 / 2;
@@ -266,9 +282,9 @@ fn open(
     };
     let config = cfg.config();
     let stream = match fmt {
-        SampleFormat::F32 => dev.build_input_stream(&config, move |d: &[f32], _: &_| push(to_stereo(d, ch, |s| *s)), err, None),
-        SampleFormat::I16 => dev.build_input_stream(&config, move |d: &[i16], _: &_| push(to_stereo(d, ch, |s| i16_to_f32(*s))), err, None),
-        SampleFormat::U16 => dev.build_input_stream(&config, move |d: &[u16], _: &_| push(to_stereo(d, ch, |s| u16_to_f32(*s))), err, None),
+        SampleFormat::F32 => dev.build_input_stream(&config, move |d: &[f32], i: &_| push(to_stereo(d, ch, |s| *s), i), err, None),
+        SampleFormat::I16 => dev.build_input_stream(&config, move |d: &[i16], i: &_| push(to_stereo(d, ch, |s| i16_to_f32(*s)), i), err, None),
+        SampleFormat::U16 => dev.build_input_stream(&config, move |d: &[u16], i: &_| push(to_stereo(d, ch, |s| u16_to_f32(*s)), i), err, None),
         f => return Err(format!("Recording device: {f:?} samples are not supported")),
     }
     .map_err(|e| format!("Recording device: {e}"))?;
@@ -438,7 +454,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("milan-rec-live-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let out = create_file(&dir, "t", "A").unwrap();
-        let cap = Capture::start(None, Some(out));
+        let cap = Capture::start(None, Some(out), None);
         std::thread::sleep(Duration::from_millis(500));
         let take = cap.finish();
         let len = take.as_ref().ok().and_then(|t| std::fs::metadata(&t.path).ok()).map(|m| m.len());

@@ -273,19 +273,32 @@ pub struct AudioSettings {
     /// Assignable FX chains ("FX 1"...): busses that tracks only send to.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fx: Vec<Bus>,
+    /// R9: input busses (Insert › Audio Input Bus): the recording input through FX, volume, pan and mute to the master or
+    /// a bus, heard live (input monitoring) and never rendered. Not in the mix plan: the input monitor plays them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<Bus>,
 }
 
 impl AudioSettings {
-    /// VEGAS allows 26 busses (A-Z).
+    /// VEGAS allows 26 busses (A-Z), and 26 input busses.
     pub const MAX_BUSES: usize = 26;
 
     fn is_empty(&self) -> bool {
-        self.buses.is_empty() && self.fx.is_empty()
+        self.buses.is_empty() && self.fx.is_empty() && self.inputs.is_empty()
     }
 
-    /// The bus or assignable FX chain `id`.
+    /// Something a track can send to (a bus or an assignable FX chain): the track headers show the multipurpose slider.
+    pub fn has_targets(&self) -> bool {
+        !(self.buses.is_empty() && self.fx.is_empty())
+    }
+
+    /// The bus, assignable FX chain or input bus `id`.
     pub fn bus(&self, id: &str) -> Option<&Bus> {
-        self.buses.iter().chain(&self.fx).find(|b| b.id == id)
+        self.buses.iter().chain(&self.fx).chain(&self.inputs).find(|b| b.id == id)
+    }
+
+    pub fn bus_mut(&mut self, id: &str) -> Option<&mut Bus> {
+        self.buses.iter_mut().chain(&mut self.fx).chain(&mut self.inputs).find(|b| b.id == id)
     }
 }
 
@@ -352,6 +365,38 @@ impl AutoMode {
     /// An automation control writes points.
     pub fn writes(self) -> bool {
         matches!(self, AutoMode::Touch | AutoMode::Latch)
+    }
+}
+
+/// R9: an armed audio track's input monitoring (VEGAS's Record Input › Input Monitoring): Off; On, the input is heard
+/// through the track's FX whenever the track is armed; Auto, while stopped and while recording (playback plays the
+/// track instead).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Monitor {
+    #[default]
+    Off,
+    On,
+    Auto,
+}
+
+impl Monitor {
+    pub const ALL: [Monitor; 3] = [Monitor::Off, Monitor::On, Monitor::Auto];
+
+    pub fn name(self) -> &'static str {
+        ["Input Monitoring Off", "Input Monitoring On", "Input Monitoring Auto"][self as usize]
+    }
+
+    fn is_off(&self) -> bool {
+        *self == Monitor::Off
+    }
+
+    /// The input is heard now, on an armed track.
+    pub fn hears(self, playing: bool, recording: bool) -> bool {
+        match self {
+            Monitor::Off => false,
+            Monitor::On => true,
+            Monitor::Auto => !playing || recording,
+        }
     }
 }
 
@@ -512,6 +557,9 @@ pub struct Track {
     pub automation: AutoMode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_controls: bool,
+    /// R9 (audio): Record Input › Input Monitoring (Off, as in VEGAS, unless set).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Monitor::is_off")]
+    pub monitor: Monitor,
     /// The bus or FX chain the header's multipurpose slider shows (a view choice: not saved).
     #[serde(skip)]
     pub send_view: Option<String>,
@@ -1325,6 +1373,7 @@ impl Track {
             pan_type: PanType::Balance0,
             automation: AutoMode::Read,
             auto_controls: false,
+            monitor: Monitor::Off,
             send_view: None,
             armed: false,
         }
@@ -1848,6 +1897,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(t2.automation, AutoMode::Read);
+        // R9: no input busses and input monitoring off; neither written.
+        assert!(tl.audio.inputs.is_empty() && a.monitor == Monitor::Off && v["timeline"]["audio_tracks"][0].get("monitor").is_none());
     }
 
     #[test]
@@ -1922,7 +1973,10 @@ mod tests {
         (a.out, a.pan_type) = (Out::Bus(bus.id.clone()), PanType::ConstantPower);
         (a.automation, a.auto_controls) = (AutoMode::Off, true);
         a.sends = vec![AudioSend { to: fxb.id.clone(), level: 0.25, pre: true }];
-        p.timeline.audio = AudioSettings { buses: vec![bus], fx: vec![fxb] };
+        a.monitor = Monitor::Auto;
+        let mut inb = Bus::new("Input Bus A".into(), vec![fx("milan.afx.gate")]);
+        inb.out = Out::Bus(bus.id.clone());
+        p.timeline.audio = AudioSettings { buses: vec![bus], fx: vec![fxb], inputs: vec![inb] };
         p.settings.ruler = Ruler { format: RulerFormat::MeasuresBeats, offset: 3600.0, tempo: 92.5, beats_per_measure: 3, beat_note: 8 };
         p.media_pool.push(MediaItem {
             id: "g".into(),
@@ -1951,6 +2005,7 @@ mod tests {
         let (a, b) = (&back.timeline.audio_tracks[0], &p.timeline.audio_tracks[0]);
         assert!(back.timeline.audio == p.timeline.audio && a.out == b.out && a.sends == b.sends && a.pan_type == b.pan_type);
         assert!(a.automation == AutoMode::Off && a.auto_controls && back.timeline.master.audio_fx[0].auto == p.timeline.master.audio_fx[0].auto);
+        assert!(a.monitor == Monitor::Auto && back.timeline.audio.inputs.len() == 1);
         assert_eq!(back.settings, p.settings);
         // A resample mode or channel map from a newer build loads as the default.
         let c: Clip = serde_json::from_str(&serde_json::to_string(&p.timeline.video_tracks[0].clips[0]).unwrap().replace("OpticalFlow", "Warp").replace(r#""channels":"Combine","stream""#, r#""channels":"Mid","stream""#)).unwrap();

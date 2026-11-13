@@ -88,6 +88,8 @@ pub struct MeridianApp {
     decorated: bool,
     /// MILAN_DEMO: nothing is written to the user's autosave or prefs.
     demo: bool,
+    /// R9: audio devices may be opened (not in the screenshot harness, which never plays or records).
+    devices: bool,
     shot: Option<Shot>,
     // Dock window state.
     media_view: ui::MediaView,
@@ -241,7 +243,7 @@ impl MeridianApp {
             env_drag: None,
             timeline_scroll_y: 0.0,
             preview: Preview::timeline(&cc.egui_ctx),
-            audio: Player::new(),
+            audio: Player::new(launch.screenshot.is_none(), prefs.device()),
             waves: Waveforms::new(&cc.egui_ctx),
             normalizer: crate::audio::Normalizer::new(),
             thumbs: Thumbs::new(&cc.egui_ctx),
@@ -270,6 +272,7 @@ impl MeridianApp {
             layouts_changed: Default::default(),
             decorated: look.look == UiLook::Vegas16,
             demo: launch.demo,
+            devices: launch.screenshot.is_none(),
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
@@ -480,7 +483,7 @@ impl eframe::App for MeridianApp {
             self.preview.mute = self.mute_video;
             let edit_point = self.edit_point();
             // R8b: this frame's levels for every meter (track headers, Master Bus, Mixing Console).
-            ui::feed_levels(ctx, &self.audio.meters, &self.audio.master, self.audio.running());
+            ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             self.dock.show(ui, a.dock, |panel, bar, body| match panel {
                 Panel::ProjectMedia => {
@@ -774,6 +777,13 @@ impl eframe::App for MeridianApp {
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
         (self.audio.bypass_fx, self.audio.quickfade) = (self.bypass_audio_fx, self.prefs.quickfade);
+        // R9: Preferences › Audio Device takes effect (a recording keeps its device until it stops); the device opens,
+        // recovers, and the input monitor follows the armed tracks and input busses.
+        if self.rec_start.is_none() {
+            self.audio.configure(self.prefs.device());
+        }
+        self.audio.tick();
+        self.audio.set_monitor(crate::audio::MonPlan::new(&self.project, self.playing, self.rec_start.is_some(), cursor));
         if self.playing != self.was_playing || (self.playing && (cursor != self.clock_pos || lp != self.play_loop)) {
             self.audio.stop();
             self.shuttle_audio = None;

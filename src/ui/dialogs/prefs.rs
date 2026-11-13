@@ -25,14 +25,15 @@ pub struct PrefsDialog {
     draft: Option<Prefs>,
     tab: usize,
     track: usize,
-    /// Input device names, listed once per opening of the Audio Device page (listing devices is slow).
+    /// Input and output device names, listed once per opening of the Audio Device page (listing devices is slow).
     inputs: Option<Vec<String>>,
+    outputs: Option<Vec<String>>,
 }
 
 impl PrefsDialog {
     pub fn open(&mut self, prefs: &Prefs) {
         self.draft = Some(prefs.clone());
-        self.inputs = None;
+        (self.inputs, self.outputs) = (None, None);
     }
 
     /// Open on the Display tab (screenshot harness).
@@ -51,8 +52,9 @@ impl PrefsDialog {
         self.draft.is_some()
     }
 
-    /// Show the dialog; returns the preferences to apply on OK / Apply.
-    pub fn show(&mut self, ctx: &Context, current: &Prefs) -> Option<Prefs> {
+    /// Show the dialog; returns the preferences to apply on OK / Apply. `latency`: the audio device's output, input and
+    /// monitoring round-trip latency in ms (`audio::Player::latency_ms`), shown on the Audio Device page.
+    pub fn show(&mut self, ctx: &Context, current: &Prefs, latency: Option<(f64, f64, f64)>) -> Option<Prefs> {
         let d = self.draft.as_mut()?;
         // Layouts change behind the dialog (Apply on a new look saves the old look's); OK must not hand back stale ones.
         if d.layouts != current.layouts {
@@ -60,14 +62,14 @@ impl PrefsDialog {
         }
         let t = theme::get();
         let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
-        let (tab, track, inputs) = (&mut self.tab, &mut self.track, &mut self.inputs);
+        let (tab, track, inputs, outputs) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs);
         let changed = d != current;
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
                 GENERAL => general(ui, d),
                 VIDEO => video(ui, d),
-                AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices)),
+                AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
@@ -87,7 +89,7 @@ impl PrefsDialog {
 fn page_why(page: &str) -> Why {
     match page {
         "Preview Device" => Later("R14"),
-        "Audio" => Later("R9"),
+        "Audio" => Later("R49"),
         "VST Effects" => Later("R31"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
         _ => Later("R49"), // File I/O, Deprecated Features
@@ -148,29 +150,92 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
     }
 }
 
-/// Audio Device: playback goes to the Windows default device; recording takes the chosen input and its latency offset.
-fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String]) {
+/// The Buffer size choices (frames; 0 the device's default), VEGAS's Advanced Audio Configuration › Buffer size.
+const BUFFERS: [u32; 8] = [0, 64, 128, 256, 512, 1024, 2048, 4096];
+
+/// The Audio Device page's label and combo widths (VEGAS's long device labels).
+const LABEL_W: f32 = 225.0;
+const COMBO_W: f32 = 185.0;
+
+fn buffer_text(n: u32) -> String {
+    if n == 0 { "Default".into() } else { format!("{n} samples") }
+}
+
+/// Audio Device (R9): the device type (VEGAS's Microsoft Sound Mapper and Windows Classic Wave Driver, and Milan Pro's
+/// exclusive mode), the playback device, the buffer size, the recording input and its latency offset, and the latency
+/// the device reports.
+fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String], latency: Option<(f64, f64, f64)>) {
+    use crate::audio::DeviceType;
     const DEFAULT: &str = "Windows default device";
-    super::row(ui, "Audio device type:", 175.0, false, |ui| super::fixed_combo(ui, "pad_type", "Windows Classic Wave Driver", 200.0, Later("R9")));
-    super::row(ui, "Default playback device:", 175.0, false, |ui| super::fixed_combo(ui, "pad_out", DEFAULT, 200.0, Later("R9")));
-    super::row(ui, "Default record device:", 175.0, true, |ui| {
+    super::row(ui, "Audio device type:", LABEL_W, true, |ui| {
+        ComboBox::from_id_salt("pad_type").width(COMBO_W).selected_text(d.device_type.name()).show_ui(ui, |ui| {
+            for k in DeviceType::ALL {
+                if !cfg!(windows) && k == DeviceType::Exclusive {
+                    continue;
+                }
+                let r = ui.selectable_value(&mut d.device_type, k, k.name());
+                if k == DeviceType::Exclusive {
+                    r.on_hover_text("Milan Pro's low-latency output (not in VEGAS): takes the device for itself, so other programs go silent while Milan Pro runs");
+                }
+            }
+            ui.add_enabled(false, SelectableLabel::new(false, "ASIO")).on_disabled_hover_text(Fixed("not feasible: the ASIO SDK licence forbids shipping it (use exclusive mode for low latency)").text());
+        });
+    });
+    let mapper = d.device_type == DeviceType::SoundMapper;
+    super::row(ui, "Default stereo and front playback device:", LABEL_W, !mapper, |ui| {
+        if mapper {
+            ui.add_enabled_ui(false, |ui| ComboBox::from_id_salt("pad_out").width(COMBO_W).selected_text("Microsoft Sound Mapper").show_ui(ui, |_| {}).response)
+                .inner
+                .on_disabled_hover_text(Fixed("the Microsoft Sound Mapper plays on the Windows default device").text());
+            return;
+        }
+        let shown = d.playback_device.clone().unwrap_or_else(|| DEFAULT.into());
+        ComboBox::from_id_salt("pad_out").width(COMBO_W).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.playback_device, None, DEFAULT);
+            for n in outputs {
+                ui.selectable_value(&mut d.playback_device, Some(n.clone()), n.as_str());
+            }
+        });
+    });
+    super::row(ui, "Default rear playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_rear", "None", COMBO_W, Later("R10a")));
+    super::row(ui, "Default center and LFE playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_lfe", "None", COMBO_W, Later("R10a")));
+    super::row(ui, "Buffer size:", LABEL_W, true, |ui| {
+        ComboBox::from_id_salt("pad_buf")
+            .width(COMBO_W)
+            .selected_text(buffer_text(d.buffer_frames))
+            .show_ui(ui, |ui| {
+                for n in BUFFERS {
+                    ui.selectable_value(&mut d.buffer_frames, n, buffer_text(n));
+                }
+            })
+            .response
+            .on_hover_text("Smaller buffers lower the latency of playback and input monitoring; too small for this computer, and the sound breaks up");
+    });
+    super::row(ui, "Default audio recording device:", LABEL_W, true, |ui| {
         let shown = d.record_input.clone().unwrap_or_else(|| DEFAULT.into());
-        ComboBox::from_id_salt("pad_rec").width(200.0).selected_text(shown).show_ui(ui, |ui| {
+        ComboBox::from_id_salt("pad_rec").width(COMBO_W).selected_text(shown).show_ui(ui, |ui| {
             ui.selectable_value(&mut d.record_input, None, DEFAULT);
             for n in inputs {
                 ui.selectable_value(&mut d.record_input, Some(n.clone()), n.as_str());
             }
         });
     });
-    super::row(ui, "Recording latency offset (ms):", 175.0, true, |ui| {
+    super::row(ui, "Recording latency offset (ms):", LABEL_W, true, |ui| {
         ui.add(DragValue::new(&mut d.record_offset_ms).range(-1000.0..=1000.0).speed(0.5).fixed_decimals(1))
             .on_hover_text("Recorded events are placed this much earlier, to line up with what was playing")
     });
     if inputs.is_empty() {
         ui.label("No recording devices were found.");
     }
+    // What the device reports, for checking against a loopback cable (output to input).
+    ui.add_space(6.0);
+    ui.label(match latency {
+        Some((out, inp, round)) => format!("Output latency: {out:.1} ms    Input latency: {inp:.1} ms\nInput monitoring round trip: {round:.1} ms"),
+        None => "Latency: the audio device is not open.".into(),
+    });
     if default_all(ui) {
         (d.record_input, d.record_offset_ms) = (None, 0.0);
+        (d.device_type, d.playback_device, d.buffer_frames) = (DeviceType::SoundMapper, None, 0);
     }
 }
 
@@ -293,7 +358,7 @@ mod tests {
         let l = crate::ui::dock::Dock::new(&theme::Theme::new(LookChoice::VEGAS16)).layout("");
         current.layouts.insert(crate::settings::layout_key(UiLook::Vegas16, "last"), l);
         let ctx = Context::default();
-        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current).is_none()));
+        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current, None).is_none()));
         assert_eq!(dlg.draft.as_ref(), Some(&current));
     }
 }

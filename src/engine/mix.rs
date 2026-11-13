@@ -421,6 +421,14 @@ impl Meter {
     pub fn rms(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.rms[c].load(Relaxed)))
     }
+
+    /// R9: a block's peak and RMS from the input monitor (lock-free, for the real-time output callback).
+    pub fn put(&self, peak: [f32; 2], rms: [f32; 2]) {
+        for c in 0..2 {
+            self.peak[c].fetch_max(peak[c].abs().to_bits(), Relaxed);
+            self.rms[c].store(rms[c].to_bits(), Relaxed);
+        }
+    }
 }
 
 /// Meters by track and bus id. The UI thread builds a new map with each plan (keeping the meters of ids it had), so the

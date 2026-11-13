@@ -80,6 +80,11 @@ pub struct Prefs {
     /// latency offset, how many milliseconds earlier recorded events are placed.
     pub record_input: Option<String>,
     pub record_offset_ms: f64,
+    /// R9: Preferences › Audio Device: the audio device type, the playback device (None = the Windows default) and the
+    /// buffer size in frames (0 = the device's default).
+    pub device_type: crate::audio::DeviceType,
+    pub playback_device: Option<String>,
+    pub buffer_frames: u32,
     /// Window layouts by `layout_key`: each look's last layout ("vp16:last") and user slots 0-9 ("vp16:3").
     /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
     #[serde(deserialize_with = "lenient_layouts")]
@@ -196,12 +201,20 @@ impl Default for Prefs {
             default_track_fx: None,
             record_input: None,
             record_offset_ms: 0.0,
+            device_type: crate::audio::DeviceType::SoundMapper,
+            playback_device: None,
+            buffer_frames: 0,
             layouts: BTreeMap::new(),
         }
     }
 }
 
 impl Prefs {
+    /// R9: the output device these preferences choose.
+    pub fn device(&self) -> crate::audio::DeviceConfig {
+        crate::audio::DeviceConfig { kind: self.device_type, device: self.playback_device.clone(), buffer: self.buffer_frames }
+    }
+
     fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("prefs.json"))
     }
@@ -540,6 +553,12 @@ mod tests {
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
         assert!(d.record_input.is_none() && d.record_offset_ms == 0.0);
+        // R9: old preferences play on the Windows default device at its default buffer, as before.
+        assert_eq!(d.device(), crate::audio::DeviceConfig::default());
+        assert_eq!(d.device_type, crate::audio::DeviceType::SoundMapper);
+        let o = Prefs { device_type: crate::audio::DeviceType::Exclusive, playback_device: Some("Speakers (USB)".into()), buffer_frames: 128, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&o).unwrap()).unwrap(), o);
+        assert_eq!(Prefs::parse(Ok(r#"{"device_type":"Asio","quantize":false}"#.into())).map(|p| (p.device_type, p.quantize)), Some((crate::audio::DeviceType::SoundMapper, false)));
         assert!(!d.snap_grid && !d.snap_all && d.grid == crate::project::GridSpacing::RulerMarks);
         let g = Prefs { snap_grid: true, snap_all: true, grid: crate::project::GridSpacing::Note(16, true), ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&g).unwrap()).unwrap(), g);

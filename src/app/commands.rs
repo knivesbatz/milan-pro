@@ -151,10 +151,11 @@ impl MeridianApp {
             if !self.playing {
                 self.stop_recording();
             }
-        } else if !self.project.timeline.audio_tracks.iter().any(|t| t.armed) {
+        } else if !self.devices || !(self.project.timeline.audio_tracks.iter().any(|t| t.armed) || !self.project.timeline.audio.inputs.is_empty()) {
+            // R9: the input stays open while a track is armed or the project has an input bus (heard live, as in VEGAS).
             (self.input, self.input_failed) = (None, false);
         } else if self.input.is_none() && !self.input_failed {
-            self.input = Some(Capture::start(self.prefs.record_input.clone(), None));
+            self.input = Some(Capture::start(self.prefs.record_input.clone(), None, Some(self.audio.ring.clone())));
         }
         let Some(c) = &self.input else {
             self.input_level = 0.0;
@@ -188,7 +189,7 @@ impl MeridianApp {
             Ok(out) => {
                 self.message = Some(format!("Recording to {}", out.0.display()));
                 self.input = None; // the meter lets go of the device first
-                self.input = Some(crate::record::Capture::start(self.prefs.record_input.clone(), Some(out)));
+                self.input = Some(crate::record::Capture::start(self.prefs.record_input.clone(), Some(out), Some(self.audio.ring.clone())));
                 (self.rec_start, self.rec_anchor, self.rec_looping) = (Some(p.timeline.cursor_position), None, self.looping);
                 (self.looping, self.shuttle, self.playing) = (false, 0.0, true);
             }
@@ -982,6 +983,14 @@ impl MeridianApp {
                 }
             }
             RemoveAssignableFx => self.remove_fx = Some(dialogs::RemoveAssignableFx::new(&self.project)),
+            // R9: an input bus is a Mixing Console strip, so the console opens on it.
+            InsertInputBus => {
+                if self.edit(|p| edit::insert_input_bus(p).is_some()) {
+                    self.dock.open(crate::ui::dock::Panel::MixingConsole);
+                } else {
+                    ui::hint(ctx, "A project has at most 26 input busses.");
+                }
+            }
             DefaultTrackFx => {
                 self.default_track = self.focus_of(false).map(|i| dialogs::DefaultTrackProps::new(self.project.timeline.audio_tracks[i].id.clone()));
             }
@@ -1711,7 +1720,7 @@ impl MeridianApp {
             });
             self.about = !(ok || close);
         }
-        if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs) {
+        if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms()) {
             if new.track_colors != self.prefs.track_colors {
                 theme::set_palette(ctx, new.palette());
             }
@@ -2008,6 +2017,19 @@ impl MeridianApp {
                     self.dock.open(crate::ui::dock::Panel::MixingConsole);
                 } else {
                     self.prefs.bus_tracks = true;
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            "input-bus" => {
+                // R9: an input bus (the Mixing Console opens on it) and the first audio track armed with Input
+                // Monitoring Auto. The harness opens no audio device, so nothing is heard or recorded.
+                self.exec(ctx, InsertInputBus);
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    (t.armed, t.monitor) = (true, crate::project::Monitor::Auto);
+                }
+                let ids: Vec<String> = self.project.timeline.audio.inputs.iter().map(|b| b.id.clone()).chain([ui::MASTER_LEVEL.to_string()]).collect();
+                for id in &ids {
+                    ui::show_level(ctx, id, [-12.0, -14.0]);
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }
