@@ -133,6 +133,8 @@ struct FrameRequest {
     generator: Option<Fx>,
     /// The media's frame rate, if known: `time` then shows the frame on screen at it, as the timeline does.
     fps: Option<f64>,
+    /// R6b: `path` is a nested timeline: composed by the engine, never read by ffmpeg.
+    nested: bool,
 }
 
 /// The `-ss` that gives the frame on screen at `t` (the latest at or before it). ffmpeg returns the first frame at or
@@ -164,6 +166,10 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
     if let Some(g) = &req.generator {
         let e = crate::engine::plugins::eval(g, req.time).ok_or_else(|| format!("Unknown generator {}", g.plugin))?;
         return Ok(crate::engine::generate::render(&e, req.width, req.height, req.time));
+    }
+    if req.nested {
+        let q = if req.scaler == "lanczos" { Quality::Best } else { Quality::Good };
+        return crate::engine::nested::frame(&req.path, req.time, req.width, req.height, q);
     }
     let proxied = req.proxy.as_ref().map(|p| decode_file(req, p));
     if let Some(Ok(img)) = proxied {
@@ -215,7 +221,7 @@ pub(crate) fn premultiply(px: &mut [egui::Color32]) {
 
 /// The first frame of `path` (a still) at `w` x `h`, premultiplied.
 pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
-    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None })
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None, nested: false })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -407,6 +413,7 @@ impl Preview {
                         proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(),
                         generator: m.generator.clone(),
                         fps: Some(rate(m)),
+                        nested: m.nested,
                     };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
@@ -458,6 +465,8 @@ fn key_path(m: &MediaItem) -> PathBuf {
             std::hash::Hash::hash(&format!("{g:?}"), &mut h);
             format!("<generated {:016x}>", std::hash::Hasher::finish(&h)).into()
         }
+        // R6b: a nested timeline saved since is a new picture.
+        None if m.nested => format!("{}|{:?}", m.path.display(), crate::engine::nested::version(&m.path)).into(),
         None => m.path.clone(),
     }
 }
@@ -543,11 +552,6 @@ impl Thumbs {
     /// Thumbnail of `m` at source time `time` (callers quantise it), requesting it on first use.
     pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
         self.receive();
-        // shortcut: a nested timeline (R6a) has no thumbnails (ffmpeg cannot read a project); compose them through the
-        // engine if events need pictures.
-        if m.nested {
-            return None;
-        }
         let time = if m.media_type == MediaType::Image { 0.0 } else { m.file_time(time.max(0.0)) };
         let key = (key_path(m), (time * 1000.0).round() as i64);
         if !self.cache.contains_key(&key) {
@@ -556,7 +560,7 @@ impl Thumbs {
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
             // Keyed by the source, so thumbnails made before its proxy was ready stay; new ones read the proxy.
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone(), fps: m.frame_rate };
+            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone(), fps: m.frame_rate, nested: m.nested };
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
             q.push((key.clone(), req, crate::proxy::is_video(m)));

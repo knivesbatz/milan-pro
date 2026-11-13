@@ -34,6 +34,15 @@ impl PartialEq for NestedMix {
     }
 }
 
+impl NestedMix {
+    /// R6b: one of its own events plays across its time `t` (not starting or ending there): an event of it cut there
+    /// needs the parent's quickfade.
+    pub fn sounds_across(&self, t: f64) -> bool {
+        const EPS: f64 = 1e-6;
+        self.plan.as_ref().is_ok_and(|p| p.tracks.iter().flat_map(|tr| &tr.events).any(|e| e.src.pos + EPS < t && t < e.src.pos + e.src.dur - EPS))
+    }
+}
+
 impl std::fmt::Debug for NestedMix {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "NestedMix({:p}, end {})", self, self.end)
@@ -194,6 +203,47 @@ pub fn stamp(p: &Project) -> u64 {
         }
     }
     s
+}
+
+/// R6b: nested timeline `path`'s picture at its time `t`, `w` x `h`, composed by the engine (never ffmpeg on the
+/// project file): event thumbnails and the Trimmer. Transparent where it shows nothing.
+pub fn frame(path: &Path, t: f64, w: u32, h: u32, q: crate::decode::Quality) -> Result<eframe::egui::ColorImage, String> {
+    let c = load(path, &[])?;
+    let mut wk = crate::engine::worker::Worker::new();
+    wk.set_plan(c.video.clone());
+    // A missing file inside it leaves the rest drawn, as the timeline preview does.
+    let img = wk.frame(plan::frame_at(t.max(0.0), c.video.fps), w, h, q, None).0;
+    Ok(Arc::try_unwrap(img).unwrap_or_else(|a| (*a).clone()))
+}
+
+/// R6b: the waveform of nested timeline `path`: peaks of its master bus mix (`mix::mix_nested`, never ffmpeg on the
+/// project file), one per 1/`per_sec` s, left and right. Empty when it is offline.
+pub fn peaks(path: &Path, per_sec: f64) -> Vec<Vec<f32>> {
+    let Ok(c) = load(path, &[]) else { return Vec::new() };
+    let per = ((crate::audio::RATE as f64 / per_sec) as usize).max(1);
+    let (mut out, mut peak, mut n) = (vec![Vec::new(); 2], [0.0f32; 2], 0);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::engine::mix::mix_nested(&c.audio, 0.0, c.audio.end, &stop, |pcm| {
+        for s in pcm.chunks_exact(2) {
+            peak = [peak[0].max(s[0].abs().min(1.0)), peak[1].max(s[1].abs().min(1.0))];
+            n += 1;
+            if n == per {
+                (0..2).for_each(|k| out[k].push(peak[k]));
+                (peak, n) = ([0.0; 2], 0);
+            }
+        }
+        true
+    });
+    if n > 0 {
+        (0..2).for_each(|k| out[k].push(peak[k]));
+    }
+    out
+}
+
+/// R6b: the modified time of nested timeline `path`'s file, so a picture or waveform of it made before a save is made
+/// again. shortcut: only its own file; a timeline nested inside it saved since shows on its next save or a restart.
+pub fn version(path: &Path) -> Option<SystemTime> {
+    mtime(path)
 }
 
 /// Tools › Rebuild Offline Nested Audio: every nested timeline is read from disk again and every plan recompiled.
@@ -364,6 +414,101 @@ mod tests {
         let h = crate::engine::content_hash(&parent);
         reload();
         assert_ne!(crate::engine::content_hash(&parent), h);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// `p`'s frame at `t`, full size (320x180), from a fresh engine.
+    fn full(p: &Project, t: f64) -> Arc<ColorImage> {
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(p)));
+        wk.frame(plan::frame_at(t, 30.0), 320, 180, Quality::Good, None).0
+    }
+
+    fn event(p: &mut Project, track: usize, m: &MediaItem, at: f64, len: f64) -> String {
+        let mut c = Clip::from_media(m, at);
+        c.duration = len;
+        let id = c.id.clone();
+        p.timeline.video_tracks[track].clips.push(c);
+        id
+    }
+
+    fn json(p: &Project) -> String {
+        serde_json::to_string(p).unwrap()
+    }
+
+    /// R6b: Create Nested Timeline keeps the picture. Events on one track with Track Motion: the nested event goes on
+    /// that track, whose copy in the child is plain. Events on two tracks: a new plain track above them, the copies
+    /// keeping their own motion. Each is one undo step; a file that cannot be written, or the project itself, leaves
+    /// the project as it was.
+    #[test]
+    fn create_nested_keeps_the_picture_and_undoes() {
+        let d = dir("create");
+        let half = |x: f32| Keyframes { keys: vec![Keyframe { t: 0.0, v: Motion { w: 0.5, h: 0.5, x, ..Default::default() }, curve: Curve::Linear }] };
+        let mut p = project(solid("Blue"), 10.0);
+        p.timeline.video_tracks.insert(0, Track::new("Top", TrackKind::Video));
+        p.timeline.video_tracks.insert(1, Track::new("Mid", TrackKind::Video));
+        (p.timeline.video_tracks[0].motion, p.timeline.video_tracks[1].motion) = (half(-40.0), half(60.0));
+        let (red, green, white) = (solid("Red"), solid("Green"), solid("White"));
+        let ids = vec![event(&mut p, 0, &red, 1.0, 2.0), event(&mut p, 0, &green, 4.0, 2.0)];
+        let mid = event(&mut p, 1, &white, 2.0, 3.0);
+        p.media_pool.extend([red, green, white]);
+        let times = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5];
+        let before: Vec<_> = times.iter().map(|&t| full(&p, t)).collect();
+        let same = |p: &Project| times.iter().zip(&before).all(|(&t, b)| full(p, t).pixels == b.pixels);
+
+        // A file that cannot be written, and the project's own file: nothing changes.
+        let (snapshot, mut h) = (p.clone(), crate::history::History::default());
+        assert!(crate::edit::create_nested(&mut p, &ids, &d.join("no such folder").join("c.mnle"), &[]).is_err());
+        assert!(crate::edit::create_nested(&mut p, &ids, &d.join("parent.mnle"), &[d.join("parent.mnle")]).unwrap_err().ends_with(SELF_REF));
+        assert_eq!(json(&p), json(&snapshot));
+
+        // One track: the nested event replaces the two events on it, over their span, its copy plain.
+        let one = d.join("one.mnle");
+        let new = crate::edit::create_nested(&mut p, &ids, &one, &[]).unwrap();
+        h.push(snapshot.clone());
+        let top = &p.timeline.video_tracks[0];
+        assert_eq!((p.timeline.video_tracks.len(), new.len(), top.clips.len()), (3, 1, 1));
+        let c = &top.clips[0];
+        assert_eq!((c.id.as_str(), c.position, c.in_point, c.duration, c.group.is_none()), (new[0].as_str(), 1.0, 1.0, 5.0, true));
+        let child = Project::load(&one).unwrap();
+        assert_eq!((child.timeline.video_tracks.len(), child.timeline.video_tracks[0].clips.len(), child.media_pool.len()), (1, 2, 2));
+        assert_eq!(child.timeline.video_tracks[0].motion, Keyframes::default(), "its copy is plain: Top's motion acts on the nested event");
+        assert!(child.timeline.audio_tracks.is_empty() && p.modified);
+        assert!(same(&p), "the picture is the same");
+        assert!(h.undo(&mut p) && json(&p) == json(&snapshot), "one undo step restores the events");
+
+        // Two tracks (Top's red and green, Mid's white): a new plain track above; the copies keep their motion.
+        let mut both = ids.clone();
+        both.push(mid);
+        let two = d.join("two.mnle");
+        crate::edit::create_nested(&mut p, &both, &two, &[]).unwrap();
+        let tl = &p.timeline;
+        assert_eq!((tl.video_tracks.len(), tl.video_tracks[0].motion == Keyframes::default()), (4, true));
+        assert!(tl.video_tracks[1].clips.is_empty() && tl.video_tracks[2].clips.is_empty());
+        let child = Project::load(&two).unwrap();
+        assert_eq!(child.timeline.video_tracks.iter().map(|t| t.motion.clone()).collect::<Vec<_>>(), [half(-40.0), half(60.0)]);
+        assert!(same(&p), "the picture is the same");
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// R6b: an event's sound plays across a time (it needs the parent's quickfade there) only strictly inside it; the
+    /// picture of a nested timeline for thumbnails and the Trimmer is its own frame, composed by the engine.
+    #[test]
+    fn edges_and_pictures_of_a_nested_timeline() {
+        let d = dir("edges");
+        let path = d.join("child.mnle");
+        let wav = MediaItem { id: "w".into(), path: d.join("w.wav"), media_type: MediaType::Audio, duration: 10.0, sample_rate: Some(48_000), ..Default::default() };
+        let mut child = project(solid("Red"), 4.0);
+        let mut c = Clip::from_media(&wav, 1.0);
+        c.duration = 3.0;
+        child.timeline.audio_tracks[0].clips.push(c);
+        child.media_pool.push(wav);
+        save(&mut child, &path, 0);
+        let n = load(&path, &[]).unwrap().audio.clone();
+        assert_eq!([0.5, 1.0, 2.0, 4.0, 4.5].map(|t| n.sounds_across(t)), [false, false, true, false, false]);
+        let img = super::frame(&path, 1.5, 64, 36, Quality::Good).unwrap();
+        assert!(img.size == [64, 36] && img.pixels.iter().all(|p| *p == Color32::RED));
+        assert!(super::frame(&d.join("missing.mnle"), 0.0, 64, 36, Quality::Good).is_err());
         std::fs::remove_dir_all(&d).unwrap();
     }
 

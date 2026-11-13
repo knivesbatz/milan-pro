@@ -55,7 +55,7 @@ pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar
 pub use properties::draw_properties;
 pub use scopes::{ScopePrefs, ScopeView, Scopes, draw_scopes, scopes_toolbar};
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, take_crumb};
 pub use toolbar::{Bar, draw_main_toolbar};
 pub use trackmotion::TrackMotionWin;
 pub use transport::{Cmd, Playback, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
@@ -69,6 +69,8 @@ pub enum WinAction {
     Import(Vec<PathBuf>),
     /// Project Media › Create Video Proxy for these media.
     CreateProxy(Vec<crate::project::MediaItem>),
+    /// R6b: Project Media › Edit Source Project: open this nested timeline (Open Parent Timeline returns).
+    OpenNested(PathBuf),
 }
 
 /// A Pan/Crop (event id), Track Motion (track id) or FX window asked for by a timeline button, a drop or a menu; the

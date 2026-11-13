@@ -960,6 +960,7 @@ const EVENT_TAIL: &[M] = &[
     V23(&S),
     V23(&C("Motion Tracking", MotionTracking)),
     V23(&X("Add Missing Stream for Selected Event", NotPlanned("R58"))),
+    V23(&C("Open Nested Timeline", NestedOpen)),
     V23(&X("Beat Detection", NotPlanned("R57"))),
 ];
 
@@ -967,7 +968,7 @@ const VIDEO_EVENT: &[M] = &[
     C("Open in Tri&mmer", EventOpenInTrimmer),
     X("Open Parent Media in Tri&mmer", NotPlanned("R57")),
     C("Select &in Project Media List", EventSelectInMedia),
-    X("Edit Source Pro&ject", Later("R6b")),
+    C("Edit Source Pro&ject", NestedOpen),
     S,
     X("Media &FX...", NotPlanned("R57")),
     S,
@@ -990,7 +991,7 @@ const AUDIO_EVENT: &[M] = &[
     X("Open Parent Media in Tri&mmer", NotPlanned("R57")),
     C("Open in Audio Editor", OpenInAudioEditor),
     X("Open Copy in Audio Editor", Later("R18a")),
-    X("Edit Source Pro&ject", Later("R6b")),
+    C("Edit Source Pro&ject", NestedOpen),
     C("Select &in Project Media List", EventSelectInMedia),
     S,
     C("Audio Event &FX...", AudioEventFx),

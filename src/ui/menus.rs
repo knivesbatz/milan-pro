@@ -28,6 +28,8 @@ pub enum MenuAction {
     Exit,
     /// Replace the project with an imported VEGAS project (after the save prompt).
     ImportVegas,
+    /// R6b: Open Parent Timeline: back to the project the nested timeline was opened from (after the save prompt).
+    OpenParent,
 }
 
 impl From<MenuAction> for Command {
@@ -38,6 +40,7 @@ impl From<MenuAction> for Command {
             MenuAction::Open => Open,
             MenuAction::Exit => Exit,
             MenuAction::ImportVegas => ImportVegas,
+            MenuAction::OpenParent => NestedParent,
         }
     }
 }
@@ -157,6 +160,9 @@ pub struct CmdState {
     pub external: bool,
     /// R16c: Options › Loudness Meters.
     pub loudness: super::loudness::LoudPrefs,
+    /// R6b: the focus event is a nested timeline; this one was opened from a parent (Open Parent Timeline).
+    pub nested_clip: bool,
+    pub nested_parent: bool,
 }
 
 impl CmdState {
@@ -244,6 +250,9 @@ impl CmdState {
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
             Loudness(_) | GenerateLoudnessLog | RebuildNestedAudio => true,
+            NestedCreate => self.n_sel > 0,
+            NestedOpen => self.nested_clip,
+            NestedParent => self.nested_parent,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -375,7 +384,6 @@ impl Why {
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
-        NestedCreate | NestedOpen | NestedParent => Later("R6b"),
         SurroundPanner => Later("R10b"),
         Multicam => Later("R17b"),
         SmartSplit | OpenInAudioEditor | InsertCommand | CdTrack | CdIndex | MediaMarkers | RebuildPeaks | ContextMenu => Later("R18a"),
@@ -951,11 +959,11 @@ pub const INSERT: &[M] = &[
 pub const TOOLS: &[M] = &[
     C("&Open in Audio Editor", OpenInAudioEditor),
     X("Open &Copy in Audio Editor", Later("R18a")),
-    X("Edit Source Pro&ject", Later("R6b")),
+    C("Edit Source Pro&ject", NestedOpen),
     Sub("&Audio", &[
         X("&Open in Audio Editor", Later("R18a")),
         X("Open &Copy in Audio Editor", Later("R18a")),
-        X("Edit Source Pro&ject", Later("R6b")),
+        C("Edit Source Pro&ject", NestedOpen),
         S,
         C("Audio &Event FX...", AudioEventFx),
         X("Apply Non-Real-Time Event &FX...", NotPlanned("R58")),
@@ -1599,6 +1607,28 @@ mod tests {
         assert!(tools.contains(&RebuildNestedAudio));
     }
 
+    /// R6b: Create / Open Nested Timeline, Open Parent Timeline and Edit Source Project work when they can, and nothing
+    /// in the menus (Project Media's included) waits on R6b any more.
+    #[test]
+    fn nested_timeline_commands_work() {
+        let off = CmdState::default();
+        let on = CmdState { n_sel: 1, nested_clip: true, nested_parent: true, ..CmdState::default() };
+        for c in [NestedCreate, NestedOpen, NestedParent] {
+            assert!(unfinished(c).is_none() && !off.enabled(c) && on.enabled(c), "{c:?}");
+        }
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        for items in crate::ui::media_panel::ITEM_MENUS {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R6b")), "{rows:?}");
+        let mut tools = Vec::new();
+        commands(TOOLS, &mut tools);
+        assert_eq!(tools.iter().filter(|c| **c == NestedOpen).count(), 2, "Tools › Edit Source Project and Tools › Audio › Edit Source Project");
+    }
+
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.
     #[test]
     fn input_bus_command_works() {
@@ -1784,6 +1814,8 @@ mod tests {
             edge_mode: true,
             transition: true,
             assignable_fx: true,
+            nested_clip: true,
+            nested_parent: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

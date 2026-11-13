@@ -122,6 +122,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         ui.add_enabled(!v16, Checkbox::new(&mut d.show_welcome, "Show Welcome Screen on startup"))
             .on_disabled_hover_text(Fixed("the Welcome Screen belongs to the VEGAS 23 look").text());
         ui.checkbox(&mut d.auto_update, "Check for updates automatically");
+        ui.checkbox(&mut d.nested_breadcrumb, "Show the parent timelines of a nested timeline above the track list");
     });
     ui.horizontal(|ui| {
         let mut on = true;
@@ -137,7 +138,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         });
     });
     if default_all(ui) {
-        (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update) = (false, true, 4, true);
+        (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, 4, true, false);
     }
 }
 

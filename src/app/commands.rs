@@ -144,6 +144,8 @@ impl MeridianApp {
             meter_width: self.prefs.meter_width,
             external: self.external.is_some(),
             loudness: self.prefs.loudness,
+            nested_clip: clip.and_then(|c| edit::media_of(&self.project, c)).is_some_and(|m| m.nested),
+            nested_parent: !self.parents.is_empty(),
         }
     }
 
@@ -580,7 +582,7 @@ impl MeridianApp {
     }
 
     /// Remember a saved project; show why a save failed. True when saved.
-    fn save_result(&mut self, r: Result<bool, String>) -> bool {
+    pub(super) fn save_result(&mut self, r: Result<bool, String>) -> bool {
         match r {
             Ok(saved) => {
                 if saved {
@@ -710,7 +712,7 @@ impl MeridianApp {
         }
         // An event drag restores the tracks every frame and pushes its own undo step on release: anything else that
         // changes tracks or pushes history now would be wiped or leave a mid-drag snapshot.
-        let changes_tracks = matches!(c, InsertMarker | InsertRegion | MinimizeTracks | TracksTaller | TracksShorter | DefaultTrackHeights);
+        let changes_tracks = matches!(c, InsertMarker | InsertRegion | MinimizeTracks | TracksTaller | TracksShorter | DefaultTrackHeights | NestedCreate | NestedOpen | NestedParent);
         if changes_tracks && self.dragging() {
             return;
         }
@@ -1352,6 +1354,9 @@ impl MeridianApp {
                 self.save_prefs();
             }
             GenerateLoudnessLog => self.generate_loudness_log(ctx),
+            NestedCreate => self.create_nested(),
+            NestedOpen => self.open_focus_nested(),
+            NestedParent => self.request(ctx, MenuAction::OpenParent),
             RebuildNestedAudio => {
                 // Nested sound is mixed live, so there is no proxy to render: the nested timelines are read again.
                 crate::engine::nested::reload();
@@ -1704,10 +1709,14 @@ impl MeridianApp {
             self.stop_recording();
             self.recorded = None;
         }
-        if self.project.modified {
-            self.confirm = Some(action);
-        } else {
-            self.run(ctx, action);
+        match super::nested::step(action, self.project.modified, self.parents.len()) {
+            super::nested::Step::Up => {
+                self.unwind = Some((0, Some(action)));
+                self.request(ctx, MenuAction::OpenParent);
+            }
+            super::nested::Step::Nothing => self.unwind = None,
+            super::nested::Step::Ask => self.confirm = Some(action),
+            super::nested::Step::Run => self.run(ctx, action),
         }
     }
 
@@ -1740,6 +1749,7 @@ impl MeridianApp {
                 }
                 p
             }
+            MenuAction::OpenParent => return self.back_to_parent(ctx),
             _ => {
                 if let Some((exe, sha)) = self.install_on_exit.take() {
                     if let Err(e) = crate::updater::launch_installer(&exe, &sha, self.updater.auto) {
@@ -1758,6 +1768,25 @@ impl MeridianApp {
                 return;
             }
         };
+        if action != MenuAction::ImportVegas {
+            self.vegas = Default::default(); // New/Open after starting an import: the newer choice wins
+        }
+        self.switch_project(project);
+        if action == MenuAction::Open {
+            self.remember();
+            let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
+            if !missing.is_empty() {
+                self.message = Some(format!("Media offline: {}", missing.join("; ")));
+            }
+        }
+        if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
+            self.settings.open(&self.project);
+        }
+    }
+
+    /// `project` replaces the one shown (New, Open, an import; R6b: into a nested timeline and back): a fresh undo
+    /// history and selection, and nothing left over from the old one.
+    pub(super) fn switch_project(&mut self, project: Project) {
         self.project = project;
         self.project_serial += 1;
         self.history.clear();
@@ -1769,9 +1798,6 @@ impl MeridianApp {
         self.clipboard.clear();
         // A probe batch still running for the old project is dropped (its send fails).
         self.importer = crate::media::Importer::new();
-        if action != MenuAction::ImportVegas {
-            self.vegas = Default::default(); // New/Open after starting an import: the newer choice wins
-        }
         // Files dropped on the old project's timeline are not placed in this one.
         self.file_drop.reset();
         self.drag_state = None;
@@ -1785,16 +1811,6 @@ impl MeridianApp {
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
         self.message = None;
-        if action == MenuAction::Open {
-            self.remember();
-            let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
-            if !missing.is_empty() {
-                self.message = Some(format!("Media offline: {}", missing.join("; ")));
-            }
-        }
-        if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
-            self.settings.open(&self.project);
-        }
     }
 
     /// A finished VEGAS import: a project replaces this one through the save prompt, as Open does; the media a .veg
@@ -1861,6 +1877,7 @@ impl MeridianApp {
                 (self.pending_open, self.new_settings, self.props_after_new, self.pending_import) = (None, None, false, None);
                 self.install_on_exit = None; // the update waits for the next "Install and restart"
                 self.exit_choice = None; // the renders carry on
+                self.unwind = None; // R6b: stays in this nested timeline
             }
         }
         self.show_update(ctx);
@@ -2283,6 +2300,26 @@ impl MeridianApp {
             "recorded" => {
                 let audio = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Audio);
                 self.recorded = audio.map(|m| dialogs::RecordedFiles::new(vec![m.id.clone()]));
+            }
+            // R6b: the demo's Video 1 and Audio 1 events made a nested timeline beside the demo media (the parent itself
+            // is not written, and stays unmodified): the parent showing the nested pair, or the nested timeline opened
+            // with the breadcrumb on.
+            "nested" | "nested-parent" => {
+                let dir = crate::demo::media_dir();
+                self.project.path = Some(dir.join("Milan Demo.mnle"));
+                let tl = &self.project.timeline;
+                let ids: Vec<String> = tl.video_tracks.iter().take(1).chain(tl.audio_tracks.iter().take(1)).flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+                match edit::create_nested(&mut self.project, &ids, &dir.join("Milan Demo_Untitled Timeline.mnle"), &[]) {
+                    Ok(new) => {
+                        (self.project.modified, self.sel.clips) = (false, new);
+                        self.sync_sel();
+                        if what == "nested" {
+                            self.prefs.nested_breadcrumb = true;
+                            self.open_focus_nested();
+                        }
+                    }
+                    Err(e) => self.message = Some(e),
+                }
             }
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),

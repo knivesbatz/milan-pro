@@ -413,7 +413,7 @@ fn run_ffmpeg(argv: impl FnOnce() -> Vec<String> + Send + 'static, feed: Option<
 /// R6a: nested timeline `n`'s master bus from `t0` for `len` seconds, mixed (as its own render mixes it: every decoder
 /// waited for, times its master gain) and handed to `each` in chunks until it refuses one or `stop` is set. Returns the
 /// first decoder error.
-fn mix_nested(n: &NestedMix, t0: f64, len: f64, stop: &Arc<AtomicBool>, mut each: impl FnMut(Vec<f32>) -> bool) -> String {
+pub(crate) fn mix_nested(n: &NestedMix, t0: f64, len: f64, stop: &Arc<AtomicBool>, mut each: impl FnMut(Vec<f32>) -> bool) -> String {
     let Ok(plan) = &n.plan else { return String::new() };
     let mut m = Mixer::ffmpeg();
     m.render = Some(stop.clone());
@@ -831,6 +831,16 @@ impl Mixer {
                 self.ev_last.insert(e.id.clone(), e.gain);
                 let len = (b - a) as f32;
                 let shaped = e.pan_env.is_some() || e.mute_env.is_some();
+                // R6b: a nested timeline's edge where none of its own events plays across it is already quickfaded (or
+                // silent) inside it: a second ramp would change the sound Create Nested Timeline must keep.
+                let (qf_in, qf_out) = match &e.src.nested {
+                    Some(n) => {
+                        let (s0, s1) = (e.src.in_point, e.src.in_point + e.src.dur * e.src.rate);
+                        let (t_in, t_out) = if e.src.reverse { (s1, s0) } else { (s0, s1) };
+                        (n.sounds_across(t_in), n.sounds_across(t_out))
+                    }
+                    None => (true, true),
+                };
                 for (i, (o, x)) in track[(a - f0) as usize * 2..].chunks_exact_mut(2).zip(pcm.chunks_exact(2)).enumerate() {
                     let local = (a - ps + i as i64) as f64 / r;
                     let s = i as f32 / len;
@@ -843,10 +853,10 @@ impl Mixer {
                     }
                     // Quickfade Audio Edits: a short fade at an edge without one of its own, so a cut never clicks.
                     let qf = plan.quickfade;
-                    if local < qf && e.fade_in <= 0.0 {
+                    if local < qf && e.fade_in <= 0.0 && qf_in {
                         g *= fade(Curve::Linear, local, qf);
                     }
-                    if e.src.dur - local < qf && e.fade_out <= 0.0 {
+                    if e.src.dur - local < qf && e.fade_out <= 0.0 && qf_out {
                         g *= fade(Curve::Linear, (e.src.dur - local).max(0.0), qf);
                     }
                     if shaped {

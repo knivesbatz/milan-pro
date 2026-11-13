@@ -914,6 +914,79 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// R6b, needs ffmpeg: a timeline renders the same before and after Create Nested Timeline. The video events are on
+    /// one track with Track Motion (the nested event goes on it); the audio events on two tracks (a new track), the
+    /// first one starting where the nested event does, so its edge is quickfaded once, as before. The nested event's
+    /// waveform and picture come from the engine. `cargo test --release -- --ignored create_nested_renders_the_same`
+    #[test]
+    #[ignore]
+    fn create_nested_renders_the_same() {
+        let dir = std::env::temp_dir().join(format!("milan-render-create-nested-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, args: &[&str]| {
+            let path = dir.join(name);
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y"]).args(args).arg(&path).status().unwrap().success());
+            crate::media::probe_media(&path).unwrap()
+        };
+        let a = make("a.mov", &["-f", "lavfi", "-i", "testsrc2=d=3:s=320x240:r=30", "-f", "lavfi", "-i", "sine=f=440:d=3:r=48000", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p", "-c:a", "pcm_s16le", "-shortest"]);
+        let bars = make("bars.mp4", &["-f", "lavfi", "-i", "smptebars=d=4:s=320x240:r=30", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"]);
+        let clip = |m: &MediaItem, pos: f64, inp: f64, dur: f64| {
+            let mut c = Clip::from_media(m, pos);
+            (c.in_point, c.duration, c.out_point) = (inp, dur, inp + dur);
+            c
+        };
+        let mut p = Project::new("parent");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+        p.timeline.video_tracks = vec![Track::new("Top", TrackKind::Video), Track::new("Bars", TrackKind::Video)];
+        let motion = crate::project::Motion { w: 0.6, h: 0.6, x: 30.0, ..Default::default() };
+        p.timeline.video_tracks[0].motion = crate::project::Keyframes { keys: vec![crate::project::Keyframe { t: 0.0, v: motion, curve: crate::project::Curve::Linear }] };
+        p.timeline.video_tracks[1].clips.push(clip(&bars, 0.0, 0.0, 3.5));
+        let mut v = clip(&a, 0.5, 0.5, 1.2);
+        v.fade_in = 0.4;
+        p.timeline.video_tracks[0].clips.extend([v, clip(&a, 1.9, 0.0, 1.1)]);
+        let mut s = clip(&a, 0.5, 0.5, 1.5);
+        s.gain_db = -6.0;
+        p.timeline.audio_tracks[0].clips.push(s);
+        p.timeline.add_audio_track();
+        p.timeline.audio_tracks[1].clips.push(clip(&a, 1.2, 1.0, 1.0));
+        p.media_pool = vec![a, bars];
+        p.save(&dir.join("parent.mnle")).unwrap();
+        let run = |p: &Project, t: &Template, name: &str| {
+            let out = dir.join(name);
+            let job = start(p, t, out.clone(), (0.0, 3.5), Opts::default(), egui::Context::default());
+            assert_eq!(wait(&job), Status::Done, "{name}");
+            out
+        };
+        let (pf, sf) = (run(&p, &BUILTIN[2], "before.mov"), pcm(&run(&p, &BUILTIN[3], "before.wav")));
+        let ids: Vec<String> = [&p.timeline.video_tracks[0], &p.timeline.audio_tracks[0], &p.timeline.audio_tracks[1]].iter().flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+        let child = dir.join("parent_Untitled Timeline.mnle");
+        assert_eq!(crate::edit::nested_file_name(&dir.join("parent.mnle")), child);
+        let new = crate::edit::create_nested(&mut p, &ids, &child, &[]).unwrap();
+        // A grouped pair: the video on Top (it keeps its motion), the audio on a new track above the two.
+        assert_eq!((new.len(), p.timeline.video_tracks.len(), p.timeline.audio_tracks.len()), (2, 2, 3));
+        let (vc, ac) = (&p.timeline.video_tracks[0].clips[0], &p.timeline.audio_tracks[0].clips[0]);
+        assert!(vc.group.is_some() && vc.group == ac.group && (vc.position, vc.in_point, vc.duration) == (0.5, 0.5, 2.5));
+        assert!(p.timeline.audio_tracks[1].clips.is_empty() && p.timeline.audio_tracks[2].clips.is_empty());
+        let (pn, sn) = (run(&p, &BUILTIN[2], "after.mov"), pcm(&run(&p, &BUILTIN[3], "after.wav")));
+        for k in [5i64, 15, 20, 30, 45, 60, 70, 90, 100] {
+            let (g, w) = (decoded_frame(&pn, k), decoded_frame(&pf, k));
+            assert_eq!(g.len(), 320 * 240 * 4);
+            let mae = g.iter().zip(&w).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / g.len() as f64;
+            assert!(mae <= 0.5, "frame {k}: before and after differ by {mae:.2}/255 on average");
+        }
+        assert!(sn.len() == sf.len() && sn.len() >= 2 * 167_000, "{} {}", sn.len(), sf.len());
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+        assert!(peak(&sn) > 0.1, "the nested sound plays");
+        let worst = sn.iter().zip(&sf).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 2.0 / 32768.0, "before and after differ by {worst}");
+        // Thumbnails and waveforms of the nested event: the engine's picture and the child's mix.
+        let peaks = crate::engine::nested::peaks(&child, 100.0);
+        assert!(peaks.len() == 2 && peaks[0].len() >= 240 && peak(&peaks[0]) > 0.1, "{}", peaks[0].len());
+        let at = |t: f64| crate::engine::nested::frame(&child, t, 160, 120, crate::decode::Quality::Good).unwrap();
+        assert!(at(1.0).pixels.iter().all(|p| p.a() == 255) && at(1.8).pixels.iter().all(|p| p.a() == 0), "the child's picture, transparent between its events");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// ffprobe's view of a rendered file: streams, chapters, format duration; video frames counted.
     fn probe(path: &Path) -> serde_json::Value {
         let mut cmd = crate::proc::ffprobe();

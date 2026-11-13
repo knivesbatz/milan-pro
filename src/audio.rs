@@ -1274,7 +1274,8 @@ fn retry_empty(mut decode: impl FnMut() -> Vec<Vec<f32>>) -> Vec<Vec<f32>> {
 /// Per-media peak cache filled by a background thread. Failures (after one retry) cache as empty.
 pub struct Waveforms {
     cache: HashMap<String, Option<Vec<Vec<f32>>>>,
-    tx: Sender<(String, PathBuf)>,
+    /// (cache key, file, R6b: a nested timeline: its mix's peaks)
+    tx: Sender<(String, PathBuf, bool)>,
     rx: Receiver<(String, Vec<Vec<f32>>)>,
     /// Set while the timeline plays, so peak decodes leave the CPU to playback.
     paused: Arc<AtomicBool>,
@@ -1282,17 +1283,18 @@ pub struct Waveforms {
 
 impl Waveforms {
     pub fn new(ctx: &egui::Context) -> Self {
-        let (tx, req_rx) = mpsc::channel::<(String, PathBuf)>();
+        let (tx, req_rx) = mpsc::channel::<(String, PathBuf, bool)>();
         let (res_tx, rx) = mpsc::channel();
         let ctx = ctx.clone();
         let paused = Arc::new(AtomicBool::new(false));
         let p = paused.clone();
         std::thread::spawn(move || {
-            for (id, path) in req_rx {
+            for (id, path, nested) in req_rx {
                 while p.load(Relaxed) {
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                if res_tx.send((id, retry_empty(|| peaks(&path)))).is_err() {
+                let read = || if nested { crate::engine::nested::peaks(&path, PEAKS_PER_SEC) } else { peaks(&path) };
+                if res_tx.send((id, retry_empty(read))).is_err() {
                     break;
                 }
                 ctx.request_repaint();
@@ -1315,18 +1317,19 @@ impl Waveforms {
 
     /// Peaks for `m`, one list per channel (1 or 2), requesting them on first use.
     pub fn get(&mut self, m: &MediaItem) -> Option<&[Vec<f32>]> {
-        // shortcut: nor does a nested timeline (R6a) have a waveform yet: ffmpeg cannot read a project; mix its peaks if asked.
-        if m.generator.is_some() || m.nested {
+        if m.generator.is_some() {
             return None; // generated media has no sound and no file to read
         }
         for (id, p) in self.rx.try_iter() {
             self.cache.insert(id, Some(p));
         }
-        if !self.cache.contains_key(&m.id) {
-            self.cache.insert(m.id.clone(), None);
-            let _ = self.tx.send((m.id.clone(), m.path.clone()));
+        // R6b: a nested timeline's peaks are its mix's, made again once it is saved.
+        let key = if m.nested { format!("{}|{:?}", m.id, crate::engine::nested::version(&m.path)) } else { m.id.clone() };
+        if !self.cache.contains_key(&key) {
+            self.cache.insert(key.clone(), None);
+            let _ = self.tx.send((key.clone(), m.path.clone(), m.nested));
         }
-        self.cache[&m.id].as_deref().filter(|p| p.first().is_some_and(|c| !c.is_empty()))
+        self.cache[&key].as_deref().filter(|p| p.first().is_some_and(|c| !c.is_empty()))
     }
 }
 

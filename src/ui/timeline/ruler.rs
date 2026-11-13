@@ -8,7 +8,8 @@ use crate::ui::theme::{self, Theme, UiLook};
 use super::{Geo, Rename, TlState, SNAP_PX};
 
 /// Time display at the top of the track list (§5.9.1): gripper dots, cursor timecode right-aligned with 8 px padding.
-pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project) {
+/// `crumbs`: R6b's breadcrumb runs along the top, so the time sits lower.
+pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs: bool) {
     let t = theme::get();
     p.rect_filled(r, 0.0, t.time_display_bg);
     let v16 = t.look() == UiLook::Vegas16;
@@ -28,7 +29,8 @@ pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project) {
     }
     let font = if t.font.time_display_semibold { t.semibold(t.font.time_display) } else { t.font(t.font.time_display) };
     let tc = project.settings.ruler_time(project.timeline.cursor_position);
-    p.with_clip_rect(r).text(pos2(r.max.x - 8.0, cy), Align2::RIGHT_CENTER, tc, font, t.time_display_text);
+    let y = if crumbs { cy + 7.0 } else { cy };
+    p.with_clip_rect(r).text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, tc, font, t.time_display_text);
 }
 
 /// (loop bar, marker bar, ruler) rows of the band: VP16 loop 2–6 · markers 8–21 · ruler 31–46 · line 47;

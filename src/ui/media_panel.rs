@@ -236,8 +236,8 @@ pub fn draw_media_browser(
             Mode::List => list(ui, project, &items, &view.sel),
         };
         for (i, r) in resps {
-            let video = crate::proxy::is_video(&project.media_pool[i]);
-            item_interaction(ui, &r, i, view.sel.contains(&i), video, &mut cmd);
+            let (video, nested) = (crate::proxy::is_video(&project.media_pool[i]), project.media_pool[i].nested);
+            item_interaction(ui, &r, i, view.sel.contains(&i), video, nested, &mut cmd);
             // The payload is every selected item when the grabbed one is selected, so they are added across time.
             if r.drag_started() {
                 r.dnd_set_drag_payload(MediaDrag::Pool(targets(view, &items, i), None));
@@ -272,6 +272,7 @@ pub fn draw_media_browser(
             remove_media(project, history, targets(view, &items, i));
             (*selected, *sel_clips) = (None, Vec::new());
         }
+        Some((i, ItemCmd::EditSource)) => actions.push(WinAction::OpenNested(project.media_pool[i].path.clone())),
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
         Some((i, ItemCmd::Proxy)) => actions.push(WinAction::CreateProxy(targets(view, &items, i).into_iter().map(|k| project.media_pool[k].clone()).collect())),
         // Replace...: the item (and every event using it) takes another file, probed in the background like an import.
@@ -313,11 +314,14 @@ enum ItemCmd {
     Proxy,
     Replace,
     Properties,
+    /// R6b: Edit Source Project (a nested timeline).
+    EditSource,
 }
 
 /// `selected`: a right-click on a selected item keeps the selection, so its menu acts on all of it.
-/// `video`: the item is file-based video without alpha, which Create Video Proxy needs.
-fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool, cmd: &mut Option<(usize, ItemCmd)>) {
+/// `video`: the item is file-based video without alpha, which Create Video Proxy needs; `nested`: a nested timeline.
+#[allow(clippy::too_many_arguments)]
+fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool, nested: bool, cmd: &mut Option<(usize, ItemCmd)>) {
     if r.double_clicked() {
         *cmd = Some((i, ItemCmd::Trim));
     } else if r.clicked() || (r.secondary_clicked() && !selected) {
@@ -338,6 +342,7 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool
         item(ui, "Add to &Video Track", ItemCmd::Add(true), true);
         item(ui, "Add to A&udio Track", ItemCmd::Add(false), true);
         menus::show(ui, ITEM_ADD);
+        item(ui, "Edit Source Pro&ject", ItemCmd::EditSource, nested);
         item(ui, "Explore &Containing Folder", ItemCmd::Explore, true);
         item(ui, "Create Video Pro&xy", ItemCmd::Proxy, video);
         menus::sep(ui);
@@ -358,7 +363,6 @@ const ITEM_ADD: &[menus::M] = &[
     X("Add at Project &Frame Rate", NotPlanned("R57")),
     X("Se&lect Timeline Events", NotPlanned("R57")),
     X("Match Pr&oject Video Settings", NotPlanned("R57")),
-    X("Edit Source Pro&ject", Later("R6b")),
 ];
 
 const ITEM_BIN: &[menus::M] = &[X("Remove from Current &Bin", Later("R45a"))];

@@ -576,6 +576,126 @@ fn split_where(project: &mut Project, at: f64, pick: impl Fn(&Track, &Clip) -> b
     changed(project, done)
 }
 
+// ---- Nested timelines (R6b) ----
+
+/// R6b: the file Create Nested Timeline proposes, as VEGAS does: the parent's name plus "_Untitled Timeline", beside
+/// the parent, numbered when that name is taken.
+pub fn nested_file_name(parent: &std::path::Path) -> std::path::PathBuf {
+    let dir = parent.parent().unwrap_or(std::path::Path::new("."));
+    let stem = parent.file_stem().map_or("Untitled".into(), |s| s.to_string_lossy().into_owned());
+    let name = |k: u32| if k == 1 { format!("{stem}_Untitled Timeline.mnle") } else { format!("{stem}_Untitled Timeline {k}.mnle") };
+    (1..).map(|k| dir.join(name(k))).find(|p| !p.exists()).expect("a free name")
+}
+
+/// R6b: the project Create Nested Timeline saves for the events `picked` covering `start..end` of `p`, the tracks they
+/// were on (`plain`: the tracks whose copy is plain, top first) and the media they use. Their timeline positions,
+/// the project settings and busses stay, so it plays as they did; the master bus and markers stay in `p`.
+fn extract_to_project(p: &Project, picked: &HashSet<String>, plain: [Option<usize>; 2]) -> Project {
+    let tl = &p.timeline;
+    let tracks = |video: bool| -> Vec<Track> {
+        let any_solo = tl.any_solo(video);
+        let mut out = Vec::new();
+        for (i, t) in tl.tracks(video).iter().enumerate() {
+            let clips: Vec<Clip> = t.clips.iter().filter(|c| picked.contains(&c.id)).cloned().collect();
+            if clips.is_empty() {
+                continue;
+            }
+            out.push(if plain[video as usize] == Some(i) {
+                // Its Track Motion, FX, volume... act on the nested event in `p`, as they did on these events.
+                Track { clips, height: t.height, fx: Vec::new(), ..Track::new(&t.name, t.kind) }
+            } else {
+                // Unheard (muted, un-soloed or in a muted group) here stays unheard there.
+                Track { clips, muted: !tl.plays(t, any_solo), solo: false, armed: false, monitor: Monitor::Off, hidden: false, ..t.clone() }
+            });
+        }
+        out
+    };
+    let clips = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| &t.clips).filter(|c| picked.contains(&c.id));
+    let mut used: HashSet<&str> = clips.flat_map(|c| c.media_id.as_deref().into_iter().chain(c.takes.iter().map(|t| t.media_id.as_str()))).collect();
+    // A subclip's parent item comes along.
+    used.extend(p.media_pool.iter().filter(|m| used.contains(m.id.as_str())).filter_map(|m| m.subclip.as_ref().map(|s| s.parent.as_str())).collect::<Vec<_>>());
+    // The Video Bus Track's motion blur and supersampling act inside a nested timeline (Fade to Color stays outside).
+    let blur = tl.master.video_envelopes.iter().filter(|e| matches!(e.kind, EnvKind::MotionBlur | EnvKind::Supersampling)).cloned().collect();
+    let timeline = Timeline {
+        video_tracks: tracks(true),
+        audio_tracks: tracks(false),
+        master: MasterBus { video_envelopes: blur, ..MasterBus::default() },
+        audio: AudioSettings { buses: tl.audio.buses.clone(), fx: tl.audio.fx.clone(), inputs: Vec::new() },
+        audio_follows_velocity: tl.audio_follows_velocity,
+        cursor_position: tl.cursor_position,
+        ..Timeline::new()
+    };
+    let media_pool = p.media_pool.iter().filter(|m| used.contains(m.id.as_str())).cloned().collect();
+    Project { settings: p.settings.clone(), timeline, media_pool, ..Project::new("") }
+}
+
+/// R6b: Edit › Create Nested Timeline (Alt+C): events `ids` move into a new project saved at `path` (written
+/// atomically, before anything in `p` changes) and are replaced by it, a nested timeline, as a grouped video and audio
+/// event pair over the span they covered (VEGAS). The picture and sound stay the same: when the events of a kind are
+/// on one track with no other event over that span, the nested event goes on it (its copy in the nested timeline is
+/// plain); otherwise on a new plain track above the topmost of them (the copies keep their own settings). `inside`:
+/// the projects open around `p`, which it must not nest. The new event ids (video last); Err leaves `p` as it was.
+pub fn create_nested(p: &mut Project, ids: &[String], path: &std::path::Path, inside: &[std::path::PathBuf]) -> Result<Vec<String>, String> {
+    use crate::engine::nested;
+    let target = nested::canon(path);
+    if p.path.iter().map(|q| nested::canon(q)).chain(inside.iter().map(|q| nested::canon(q))).any(|q| q == target) {
+        return Err(format!("{}: {}", path.display(), nested::SELF_REF));
+    }
+    let tl = &p.timeline;
+    let refs = p.find_clips(ids);
+    let clip = |r: &ClipRef| &tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx];
+    if refs.is_empty() {
+        return Err("no events are selected".into());
+    }
+    if refs.iter().any(|r| tl.tracks(r.is_video)[r.track_idx].locked || clip(r).locked) {
+        return Err("locked events cannot be nested".into());
+    }
+    let picked: HashSet<String> = refs.iter().map(|r| clip(r).id.clone()).collect();
+    let start = refs.iter().map(|r| clip(r).position).fold(f64::INFINITY, f64::min);
+    let end = refs.iter().map(|r| clip(r).position + clip(r).duration).fold(f64::NEG_INFINITY, f64::max);
+    if end <= start {
+        return Err("the selected events have no length".into());
+    }
+    // Per kind (audio, video): where the nested event goes, Ok(that track) or Err(a new track inserted there).
+    let dest = |video: bool| -> Option<Result<usize, usize>> {
+        let ts = tl.tracks(video);
+        let used: Vec<usize> = (0..ts.len()).filter(|&i| ts[i].clips.iter().any(|c| picked.contains(&c.id))).collect();
+        let top = *used.first()?;
+        let free = ts[top].clips.iter().all(|c| picked.contains(&c.id) || c.position + c.duration <= start || c.position >= end);
+        Some(if used.len() == 1 && free { Ok(top) } else { Err(top) })
+    };
+    let dests = [dest(false), dest(true)];
+    let mut child = extract_to_project(p, &picked, dests.map(|d| d.and_then(Result::ok)));
+    child.save(&path.to_path_buf()).map_err(|e| format!("{}: {e}", path.display()))?;
+    let item = nested::probe(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Nothing above changed `p`.
+    for t in tracks_mut(&mut p.timeline) {
+        t.clips.retain(|c| !picked.contains(&c.id));
+    }
+    let pair = dests.iter().flatten().count() == 2;
+    let group = pair.then(|| uuid::Uuid::new_v4().to_string());
+    let mut out = Vec::new();
+    for (video, d) in [false, true].into_iter().zip(dests) {
+        let Some(d) = d else { continue };
+        let i = d.unwrap_or_else(|at| {
+            let kind = if video { TrackKind::Video } else { TrackKind::Audio };
+            // Plain: a new audio track's default FX chain would touch the sound.
+            p.timeline.tracks_mut(video).insert(at, Track { fx: Vec::new(), ..Track::new(&item.name, kind) });
+            at
+        });
+        let c = Clip { in_point: start, out_point: end, duration: end - start, group: group.clone(), ..Clip::from_media(&item, start) };
+        out.push(c.id.clone());
+        let t = &mut p.timeline.tracks_mut(video)[i];
+        t.clips.push(c);
+        t.clips.sort_by(|a, b| a.position.total_cmp(&b.position));
+    }
+    p.media_pool.push(item);
+    dissolve_lone_groups(&mut p.timeline);
+    tidy_track_groups(&mut p.timeline);
+    changed(p, true);
+    Ok(out)
+}
+
 // ---- Grouping ----
 
 /// A group with one event left in it is no group.

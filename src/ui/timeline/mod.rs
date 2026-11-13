@@ -221,6 +221,7 @@ pub fn draw_timeline(
     playing: bool,
     track_w: &mut f32,
     drops: &mut super::FileDrag,
+    crumbs: &[String],
 ) -> Option<Vec<edit::RippleOp>> {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
@@ -1094,7 +1095,10 @@ pub fn draw_timeline(
     tracks::paint(&painter, &g, &rows, &heads, project, sel);
     tracks::paint_reorder(&painter, &g, &rows, &st);
     let display = Rect::from_min_size(rect.min, vec2(header_w, t.m.time_display_h.min(t.m.band_h)));
-    ruler::draw_time_display(&painter, display, project);
+    ruler::draw_time_display(&painter, display, project, crumbs.len() > 1);
+    if crumbs.len() > 1 {
+        breadcrumb(ui, display, crumbs);
+    }
     ruler::paint_band(&painter, &g, project, st.loop_drag.is_some());
     ruler::paint_selection(&painter, &g, project.timeline.loop_region);
     ruler::paint_playhead(&painter, &g, project.timeline.cursor_position, opts.ripple.is_some());
@@ -1368,6 +1372,45 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut 
     }
 }
 
+/// R6b: where a breadcrumb click asks to go (0 = the top project), for the app.
+const CRUMB: &str = "milan_nested_crumb";
+
+/// R6b (Preferences › General, off by default; VEGAS names the nested timeline in the title bar only): the projects
+/// from the top one to the nested timeline shown, along the top of the time display; a click on one goes up to it.
+fn breadcrumb(ui: &Ui, r: Rect, crumbs: &[String]) {
+    let t = theme::get();
+    let font = t.font(t.font.ui);
+    let p = ui.painter().with_clip_rect(r);
+    let mut x = r.min.x + 10.0;
+    for (k, name) in crumbs.iter().enumerate() {
+        let last = k + 1 == crumbs.len();
+        if k > 0 {
+            let g = p.layout_no_wrap(" \u{203A} ".into(), font.clone(), t.text_dim);
+            let w = g.size().x;
+            p.galley(pos2(x, r.min.y + 2.0), g, t.text_dim);
+            x += w;
+        }
+        let g = p.layout_no_wrap(name.clone(), font.clone(), if last { t.time_display_text } else { t.accent });
+        let at = Rect::from_min_size(pos2(x, r.min.y + 2.0), g.size());
+        x += g.size().x;
+        p.galley(at.min, g, t.text);
+        if !last {
+            let resp = ui.interact(at.intersect(r), ui.id().with(("nested_crumb", k)), Sense::click()).on_hover_text(format!("Open {name} (Open Parent Timeline)"));
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+            }
+            if resp.clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(Id::new(CRUMB), k));
+            }
+        }
+    }
+}
+
+/// R6b: the breadcrumb clicked this frame, if any.
+pub fn take_crumb(ctx: &Context) -> Option<usize> {
+    ctx.data_mut(|d| d.remove_temp::<usize>(Id::new(CRUMB)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1418,7 +1461,7 @@ mod tests {
                     let opts = EditOpts { snapping: true, quantize: r.quantize, ..r.opts };
                     r.released = draw_timeline(
                         &mut child, &mut r.project, &mut r.sel, &mut r.drag, &mut r.env_drag, &mut r.scroll_y, &mut r.history, opts,
-                        &mut r.waves, &mut r.thumbs, false, &mut r.track_w, &mut r.drops,
+                        &mut r.waves, &mut r.thumbs, false, &mut r.track_w, &mut r.drops, &[],
                     )
                     .or(r.released.take());
                 });

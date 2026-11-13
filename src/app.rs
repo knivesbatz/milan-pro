@@ -1,5 +1,6 @@
 mod commands;
 mod drop;
+mod nested;
 
 use eframe::egui;
 use crate::audio::{Player, Waveforms};
@@ -211,6 +212,19 @@ pub struct MeridianApp {
     external: Option<(ui::monitors::Monitor, u8)>,
     /// The screenshot harness or an automatic update: every extra window opens off-screen (`crate::offscreen`).
     offscreen: bool,
+    /// R6b: the projects the nested timeline shown was opened from (outermost first), and Open Parent going up until
+    /// this many are left, then this New/Open/Exit (a breadcrumb click, or one of those inside a nested timeline).
+    parents: Vec<Parent>,
+    unwind: Option<(usize, Option<MenuAction>)>,
+}
+
+/// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
+/// selection and scroll.
+struct Parent {
+    project: Project,
+    history: History,
+    sel: Selection,
+    scroll_y: f32,
 }
 
 /// R14: frames the external preview's window gets to reach its display before it goes full screen.
@@ -390,6 +404,8 @@ impl MeridianApp {
             remove_fx: None,
             external: None,
             offscreen,
+            parents: Vec::new(),
+            unwind: None,
         };
         app.sync_sel();
         app.open_from_env(&cc.egui_ctx);
@@ -721,6 +737,7 @@ impl eframe::App for MeridianApp {
                     WinAction::Show(p) => self.dock.open(p),
                     WinAction::Import(paths) => self.import_new(ctx, paths),
                     WinAction::CreateProxy(items) => self.proxies.add(&items),
+                    WinAction::OpenNested(path) => self.open_nested(&path, 0.0),
                 }
             }
             menu_action = menu_action.or(dock_action);
@@ -754,6 +771,7 @@ impl eframe::App for MeridianApp {
             let mut tl = ui.new_child(egui::UiBuilder::new().max_rect(a.timeline));
             tl.set_clip_rect(a.timeline);
             let opts = self.edit_opts();
+            let crumbs = if self.prefs.nested_breadcrumb { self.crumbs() } else { Vec::new() };
             let dragged = ui::draw_timeline(
                 &mut tl,
                 &mut self.project,
@@ -768,6 +786,7 @@ impl eframe::App for MeridianApp {
                 self.playing,
                 &mut self.dock.track_list_w,
                 &mut drag,
+                &crumbs,
             );
             if let Some(op) = dragged {
                 // Auto Ripple already rippled it; otherwise Post-Edit Ripple can.
@@ -809,6 +828,9 @@ impl eframe::App for MeridianApp {
             }
         });
         self.sync_sel();
+        if let Some(k) = ui::take_crumb(ctx) {
+            self.up_to(ctx, k);
+        }
         self.show_external(ctx);
 
         // A new look (Preferences) applies live; each look keeps its own last layout.
@@ -831,9 +853,10 @@ impl eframe::App for MeridianApp {
             // R12: a render is running: wait, cancel it, or keep it for the next start.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.render_guard = Some(false);
-        } else if closing && self.project.modified {
+        } else if closing && (self.project.modified || !self.parents.is_empty()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.confirm = Some(MenuAction::Exit);
+            // R6b: inside a nested timeline, each project up to the top asks to save first.
+            self.request(ctx, MenuAction::Exit);
         }
         if let Some(a) = menu_action {
             self.exec(ctx, Command::from(a));
