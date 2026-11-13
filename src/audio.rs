@@ -1305,6 +1305,35 @@ impl Waveforms {
 mod tests {
     use super::*;
 
+    /// The real default output device (shared mode) plays an empty timeline: inaudible (silence, master at 0), and the
+    /// heard clock must advance in step with the wall clock. Never opens an input or exclusive mode.
+    /// cargo test --release live_device_plays_silence -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_device_plays_silence() {
+        let ctx = egui::Context::default();
+        let mut p = Player::new(true, DeviceConfig::default());
+        p.master.set_gain([0.0, 0.0]);
+        let t0 = Instant::now();
+        while p.latency_ms().is_none() && t0.elapsed() < Duration::from_secs(5) {
+            p.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(p.status().is_none(), "device error: {:?}", p.status());
+        p.start(&ctx, &Project::new("silence"), 0.0, None, 1.0);
+        let start = Instant::now();
+        let mut last = None;
+        while start.elapsed() < Duration::from_millis(2000) {
+            p.tick();
+            last = p.position().or(last);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let heard = last.expect("the clock never moved");
+        println!("latency {:?} ms; heard {heard:.3} s after 2.0 s", p.latency_ms());
+        assert!(!p.stalled() && (heard - 2.0).abs() < 0.4, "heard {heard}");
+        p.stop();
+    }
+
     /// An output callback at device `rate` and the channels that feed it, as `Player::open` makes them.
     struct Rig {
         out: Out,
