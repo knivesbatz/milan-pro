@@ -682,11 +682,31 @@ mod tests {
         240.0 / start.elapsed().as_secs_f64()
     }
 
+    /// R17b: playback with the multicamera grid showing: the four 1080p clips of `bench_project` made one multicamera
+    /// track (Create Multicamera Track), its four takes in the Video Preview's grid at Preview (960x540), against a
+    /// 29.97 fps clock. `cargo test --release -- --ignored --nocapture bench_playback_multicam_grid`
+    #[test]
+    #[ignore]
+    fn bench_playback_multicam_grid() {
+        let mut p = bench_project(4, 12);
+        let ids: Vec<String> = p.timeline.video_tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+        crate::edit::create_multicam(&mut p, &ids).unwrap();
+        assert_eq!(p.timeline.video_tracks[0].clips[0].takes.len(), 3);
+        let grid = crate::engine::multicam::grid(&p);
+        let (fps, skipped, dropped) = play_project(&grid);
+        println!("bench_playback_multicam_grid 4 takes: {fps:.2} fps real time, {skipped} skipped, {dropped} late or read-past layer frames");
+        assert!(fps >= 29.5 && (skipped as f64) < 0.01 * 240.0, "{fps:.2} fps, {skipped} skipped");
+    }
+
     /// `layers` blended 1080p layers at Preview (960×540) against a 29.97 fps clock: (fps shown, frames skipped, late layer frames).
     fn play_layers(layers: usize) -> (f64, i64, u64) {
-        let p = bench_project(layers, 12);
+        play_project(&bench_project(layers, 12))
+    }
+
+    /// `p` played at Preview (960×540) against a 29.97 fps clock: (fps shown, frames skipped, late layer frames).
+    fn play_project(p: &Project) -> (f64, i64, u64) {
         let mut wk = Worker::new();
-        wk.set_plan(Arc::new(plan::compile(&p)));
+        wk.set_plan(Arc::new(plan::compile(p)));
         let (tx, frames) = mpsc::sync_channel(4);
         let (_cmd_tx, cmd_rx) = mpsc::channel();
         let (clock, stats) = (Arc::new(AtomicI64::new(0)), Arc::new(Stats::default()));

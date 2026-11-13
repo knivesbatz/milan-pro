@@ -1803,6 +1803,36 @@ pub fn cycle_take(c: &mut Clip, forward: bool) -> bool {
     };
     let old = make_active(c, t);
     if forward { c.takes.push(old) } else { c.takes.insert(0, old) }
+    let n = c.takes.len() as u32 + 1;
+    c.take_no = (c.take_no % n + if forward { 1 } else { n - 1 }) % n;
+    true
+}
+
+/// R17b: the event's takes in their fixed order (Take 1, 2, ...: the cameras of a multicamera event), and the active
+/// one's place in it. An empty take ("(no camera)") has no media.
+pub fn take_list(c: &Clip) -> (Vec<Take>, usize) {
+    let k = c.take_no as usize % (c.takes.len() + 1);
+    let mut ring = vec![Take { media_id: c.media_id.clone().unwrap_or_default(), in_point: c.in_point, name: c.name.clone() }];
+    ring.extend(c.takes.iter().cloned());
+    ring.rotate_right(k);
+    (ring, k)
+}
+
+/// R17b: the event's takes become `list` (fixed order), take `k` active.
+fn set_take_list(c: &mut Clip, mut list: Vec<Take>, k: usize) {
+    list.rotate_left(k);
+    let first = list.remove(0);
+    make_active(c, first);
+    (c.takes, c.take_no) = (list, k as u32);
+}
+
+/// R17b: take `k` (fixed order) becomes active; false when it is already, or there is no such take.
+pub fn set_take(c: &mut Clip, k: usize) -> bool {
+    let (list, now) = take_list(c);
+    if k >= list.len() || k == now {
+        return false;
+    }
+    set_take_list(c, list, k);
     true
 }
 
@@ -1878,6 +1908,7 @@ pub fn delete_active_take(project: &mut Project, ids: &[String]) -> bool {
         if any {
             let t = c.takes.remove(0);
             make_active(c, t);
+            c.take_no %= c.takes.len() as u32 + 1;
         }
         any
     })
@@ -1895,10 +1926,14 @@ pub fn take_chooser(project: &mut Project, id: &str, k: usize, delete: bool) -> 
             (0, _) => {
                 let t = c.takes.remove(0);
                 make_active(c, t);
+                c.take_no %= c.takes.len() as u32 + 1;
             }
             (_, false) => choose_take(c, k - 1),
             (_, true) => {
+                // The fixed order loses the take `k` steps on from the active one.
+                let (n, no) = (c.takes.len() as u32 + 1, c.take_no % (c.takes.len() as u32 + 1));
                 c.takes.remove(k - 1);
+                c.take_no = if (no + k as u32) % n < no { no - 1 } else { no };
             }
         }
         true
@@ -1915,14 +1950,269 @@ pub fn uses_media(c: &Clip, id: &str) -> bool {
 pub fn forget_media(tl: &mut Timeline, id: &str) {
     for tr in tracks_mut(tl) {
         tr.clips.retain_mut(|c| {
-            c.takes.retain(|t| t.media_id != id);
-            if c.media_id.as_deref() != Some(id) {
+            if !uses_media(c, id) {
                 return true;
             }
-            let next = (!c.takes.is_empty()).then(|| c.takes.remove(0));
-            next.map(|t| make_active(c, t)).is_some()
+            // In the fixed take order: the active take stays, or the next one left after it takes over.
+            let (list, k) = take_list(c);
+            let k = list.iter().take(k).filter(|t| t.media_id != id).count();
+            let left: Vec<Take> = list.into_iter().filter(|t| t.media_id != id).collect();
+            if left.is_empty() {
+                return false;
+            }
+            let k = k % left.len();
+            set_take_list(c, left, k);
+            true
         });
     }
+}
+
+// ---- Multicamera (R17b) ----
+
+/// A multicamera event (VEGAS keeps the cameras as takes): one with more than one take.
+pub fn is_multicam(c: &Clip) -> bool {
+    !c.takes.is_empty()
+}
+
+/// Tracks of kind `video` whose unmuted multicamera events overlap [a, b) (a point when b <= a), topmost first, with
+/// the last such event's index. Video tracks out of the preview (hidden, muted or not soloed) are skipped.
+fn multicam_tracks(tl: &Timeline, video: bool, a: f64, b: f64) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let hit = move |c: &Clip| !c.muted && is_multicam(c) && c.position + c.duration > a + 1e-9 && if b > a { c.position < b - 1e-9 } else { c.position <= a + 1e-9 };
+    let any_solo = tl.any_solo(true);
+    tl.tracks(video).iter().enumerate().filter(move |(_, t)| !video || (t.visible && tl.plays(t, any_solo))).filter_map(move |(i, t)| t.clips.iter().rposition(hit).map(|j| (i, j)))
+}
+
+/// The topmost multicamera event of kind `video` playing at `t` (track, event index): with overlapping video it is
+/// the one the multicamera preview shows, and the one a take choice edits (VEGAS).
+pub fn multicam_at(tl: &Timeline, video: bool, t: f64) -> Option<(usize, usize)> {
+    multicam_tracks(tl, video, t, t).next()
+}
+
+/// Two events next to each other that are one event split (same takes, active take and settings, each take's source
+/// running on across the cut, no fade or transition between them): a take choice joins them back.
+fn joins(x: &Clip, y: &Clip) -> bool {
+    let bare = |c: &Clip| Clip {
+        id: String::new(),
+        media_id: None,
+        position: 0.0,
+        duration: 0.0,
+        in_point: 0.0,
+        out_point: 0.0,
+        name: String::new(),
+        fade_in: 0.0,
+        fade_out: 0.0,
+        transition: None,
+        transition_out: None,
+        takes: Vec::new(),
+        take_no: 0,
+        normalized: None,
+        ..c.clone()
+    };
+    let ((lx, kx), (ly, ky)) = (take_list(x), take_list(y));
+    let runs_on = |a: &Take, b: &Take| a.media_id == b.media_id && (a.in_point + x.duration * x.rate - b.in_point).abs() < 1e-6;
+    (x.position + x.duration - y.position).abs() < 1e-9
+        && (kx, lx.len()) == (ky, ly.len())
+        && lx.iter().zip(&ly).all(|(a, b)| runs_on(a, b))
+        && !x.reverse
+        && !x.locked
+        && x.fade_out == 0.0
+        && y.fade_in == 0.0
+        && x.transition_out.is_none()
+        && y.transition.is_none()
+        && x.envelopes.is_empty()
+        && x.pan_crop.keys.len() <= 1
+        && x.masks.is_empty()
+        && bare(x) == bare(y)
+}
+
+/// Join every pair of events on `t` that `joins`, meeting in [a, b].
+fn join_split(t: &mut Track, a: f64, b: f64) {
+    t.clips.sort_by(|x, y| x.position.total_cmp(&y.position));
+    let mut i = 0;
+    while i + 1 < t.clips.len() {
+        let at = t.clips[i + 1].position;
+        if at >= a - 1e-9 && at <= b + 1e-9 && joins(&t.clips[i], &t.clips[i + 1]) {
+            let y = t.clips.remove(i + 1);
+            let x = &mut t.clips[i];
+            x.duration += y.duration;
+            (x.fade_out, x.fade_out_curve, x.transition_out) = (y.fade_out, y.fade_out_curve, y.transition_out);
+            sync_out(x);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Multicamera editing (Tools › Multicamera › Enable Multicamera Editing): take `k` (from 0) plays from `t` in the
+/// topmost multicamera event of kind `video` there, split at `t` (VEGAS: choosing a take cuts at the cursor, also
+/// while playing). With a time selection `range`, every multicamera event in it on the topmost multicamera track
+/// there plays take `k`, split at the selection's edges; events without that take (or where it is empty, "(no
+/// camera)") keep theirs. Events left playing one take on across a cut join again. False when nothing changed.
+pub fn switch_take(p: &mut Project, video: bool, t: f64, range: Option<(f64, f64)>, k: usize) -> bool {
+    let (a, b) = range.unwrap_or((t, t));
+    let Some((ti, j)) = multicam_tracks(&p.timeline, video, a, b).next() else { return false };
+    let mut tr = p.timeline.tracks(video)[ti].clone();
+    if tr.locked {
+        return false;
+    }
+    let cut = |tr: &mut Track, i: usize, e: f64| {
+        if let Some((l, r)) = split_clip(&tr.clips[i], e).filter(|_| !tr.clips[i].locked) {
+            tr.clips[i] = l;
+            tr.clips.insert(i + 1, r);
+        }
+    };
+    // A point choice cuts the event under it and runs to its end.
+    let (a, b) = match range {
+        Some(r) => {
+            for e in [r.0, r.1] {
+                if let Some(i) = tr.clips.iter().position(|c| is_multicam(c) && split_clip(c, e).is_some()) {
+                    cut(&mut tr, i, e);
+                }
+            }
+            r
+        }
+        None => {
+            let end = tr.clips[j].position + tr.clips[j].duration;
+            cut(&mut tr, j, t);
+            (t.max(tr.clips[j].position), end)
+        }
+    };
+    let mut done = false;
+    for c in tr.clips.iter_mut().filter(|c| is_multicam(c) && !c.locked && !c.muted && c.position >= a - 1e-9 && c.position + c.duration <= b + 1e-9) {
+        if take_list(c).0.get(k).is_some_and(|t| !t.media_id.is_empty()) {
+            done |= set_take(c, k);
+        }
+    }
+    if !done {
+        return false;
+    }
+    join_split(&mut tr, a, b);
+    p.timeline.tracks_mut(video)[ti] = tr;
+    changed(p, true)
+}
+
+/// Tools › Multicamera › Create Multicamera Track: of each kind, the selected events `ids` on two or more tracks
+/// become one track of multicamera events, the tracks their takes in track order (Take 1 the topmost), split wherever
+/// one of them starts or ends; a track with nothing there gives an empty take, "(no camera)". The topmost track gets
+/// them, the others lose the events (a track left empty goes), and the active take is the topmost one with something
+/// there. The new events' ids; Err says why nothing changed.
+// shortcut: a take plays at its event's rate, pan/crop and FX, the topmost camera's there; cameras edited differently
+// (other rates, reversed) lose that. Keep per-take settings if VEGAS-style per-take attributes are asked for.
+pub fn create_multicam(p: &mut Project, ids: &[String]) -> Result<Vec<String>, String> {
+    let before = p.clone();
+    let made = make_multicam(p, ids);
+    if made.is_err() {
+        *p = before; // a locked audio event found after the video was made
+    }
+    made
+}
+
+fn make_multicam(p: &mut Project, ids: &[String]) -> Result<Vec<String>, String> {
+    let mut made = Vec::new();
+    let mut gone = Vec::new();
+    for video in [true, false] {
+        let tl = &p.timeline;
+        let cams: Vec<usize> = (0..tl.tracks(video).len()).filter(|&i| tl.tracks(video)[i].clips.iter().any(|c| ids.contains(&c.id))).collect();
+        if cams.len() < 2 {
+            continue;
+        }
+        let picked = |i: usize| tl.tracks(video)[i].clips.iter().filter(|c| ids.contains(&c.id));
+        if let Some(c) = cams.iter().flat_map(|&i| picked(i)).find(|c| c.locked) {
+            return Err(format!("\"{}\" is locked", c.name));
+        }
+        if let Some(&i) = cams.iter().find(|&&i| tl.tracks(video)[i].locked) {
+            return Err(format!("track \"{}\" is locked", tl.tracks(video)[i].name));
+        }
+        let mut cuts: Vec<f64> = cams.iter().flat_map(|&i| picked(i)).flat_map(|c| [c.position, c.position + c.duration]).collect();
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        // Each camera's events cut at every edge: each piece then covers one stretch between two edges.
+        let pieces: Vec<Vec<Clip>> = cams
+            .iter()
+            .map(|&i| {
+                let mut out = Vec::new();
+                for c in picked(i) {
+                    let mut rest = c.clone();
+                    for &e in &cuts {
+                        if let Some((l, r)) = split_clip(&rest, e) {
+                            out.push(l);
+                            rest = r;
+                        }
+                    }
+                    out.push(rest);
+                }
+                out
+            })
+            .collect();
+        let mut events = Vec::new();
+        for w in cuts.windows(2) {
+            let mid = (w[0] + w[1]) * 0.5;
+            let at: Vec<Option<&Clip>> = pieces.iter().map(|ps| ps.iter().rev().find(|c| c.position <= mid && mid < c.position + c.duration)).collect();
+            let Some(k) = at.iter().position(Option::is_some) else { continue };
+            let list = at.iter().map(|c| c.map_or(Take { media_id: String::new(), in_point: 0.0, name: String::new() }, |c| Take { media_id: c.media_id.clone().unwrap_or_default(), in_point: c.in_point, name: c.name.clone() })).collect();
+            let mut e = Clip { group: None, takes: Vec::new(), take_no: 0, ..at[k].expect("found").clone() };
+            set_take_list(&mut e, list, k);
+            made.push(e.id.clone());
+            events.push(e);
+        }
+        let tracks = p.timeline.tracks_mut(video);
+        for &i in &cams {
+            tracks[i].clips.retain(|c| !ids.contains(&c.id));
+        }
+        let top = &mut tracks[cams[0]];
+        top.clips.extend(events);
+        top.clips.sort_by(|x, y| x.position.total_cmp(&y.position));
+        gone.extend(cams[1..].iter().map(|&i| &tracks[i]).filter(|t| t.clips.is_empty()).map(|t| t.id.clone()));
+    }
+    if made.is_empty() {
+        return Err("select events on two or more tracks of one kind (one track per camera)".into());
+    }
+    delete_tracks(p, &gone);
+    p.mark_modified();
+    Ok(made)
+}
+
+/// Tools › Multicamera › Expand to Multiple Tracks on the multicamera tracks `ids`: take `k` of each multicamera event
+/// goes to the `k`th track (Take 1 stays on the multicamera track, the others go on new tracks below it, named after
+/// their takes). The active takes play; with `keep_unused` the others are kept as muted events (so the multicamera
+/// track can be made again), else they go, as VEGAS asks. False when none of the tracks (unlocked) has a multicamera
+/// event.
+pub fn expand_multicam(p: &mut Project, ids: &[String], keep_unused: bool) -> bool {
+    let mut done = false;
+    for id in ids {
+        let Some((video, ti)) = p.find_track(id) else { continue };
+        let tr = &p.timeline.tracks(video)[ti];
+        let n = tr.clips.iter().filter(|c| is_multicam(c)).map(|c| c.takes.len() + 1).max().unwrap_or(0);
+        if tr.locked || n < 2 {
+            continue;
+        }
+        let mut lanes: Vec<Track> = (0..n).map(|_| Track { id: uuid::Uuid::new_v4().to_string(), clips: Vec::new(), armed: false, ..tr.clone() }).collect();
+        (lanes[0].id, lanes[0].name) = (tr.id.clone(), tr.name.clone());
+        for c in &tr.clips {
+            if !is_multicam(c) {
+                lanes[0].clips.push(c.clone());
+                continue;
+            }
+            let (list, active) = take_list(c);
+            for (k, t) in list.into_iter().enumerate().filter(|(_, t)| !t.media_id.is_empty()) {
+                if k > 0 && lanes[k].name == tr.name {
+                    lanes[k].name = t.name.clone();
+                }
+                if k == active || keep_unused {
+                    let mut e = Clip { id: if k == active { c.id.clone() } else { uuid::Uuid::new_v4().to_string() }, muted: c.muted || k != active, ..c.clone() };
+                    set_take_list(&mut e, vec![t], 0);
+                    lanes[k].clips.push(e);
+                }
+            }
+        }
+        let tracks = p.timeline.tracks_mut(video);
+        tracks.splice(ti..=ti, lanes);
+        done = true;
+    }
+    if done {
+        tidy_track_groups(&mut p.timeline);
+    }
+    changed(p, done)
 }
 
 // ---- Empty events, subclips, attribute paste (R3a) ----
@@ -5874,5 +6164,146 @@ mod tests {
         assert!(p.modified);
         let (ids, skipped) = lay_out_tracks(&mut p, &[4], 0.0, |m| m.timecode);
         assert!(ids.is_empty() && skipped == 1);
+    }
+
+    /// R17b: three cameras on Video 1-3 (a 0..6 s, b 1..8 s, c 2..6 s, each from 10 s in) and their sound on Audio
+    /// 1-2 (a and b).
+    fn cameras() -> (Project, Vec<String>) {
+        let mut p = Project::new("mc");
+        let media = |id: &str, video: bool| MediaItem {
+            id: id.into(),
+            path: format!("{id}.mp4").into(),
+            name: id.into(),
+            media_type: if video { MediaType::Video } else { MediaType::Audio },
+            duration: 60.0,
+            sample_rate: Some(48_000),
+            ..Default::default()
+        };
+        let ev = |id: &str, pos: f64, end: f64| Clip { in_point: 10.0, duration: end - pos, ..Clip::from_media(&media(id, true), pos) };
+        p.timeline.video_tracks = (1..=3).map(|n| Track::new(&format!("Video {n}"), TrackKind::Video)).collect();
+        p.timeline.audio_tracks = (1..=2).map(|n| Track::new(&format!("Audio {n}"), TrackKind::Audio)).collect();
+        for (k, (id, a, b)) in [("a", 0.0, 6.0), ("b", 1.0, 8.0), ("c", 2.0, 6.0)].into_iter().enumerate() {
+            p.timeline.video_tracks[k].clips.push(ev(id, a, b));
+            if k < 2 {
+                p.timeline.audio_tracks[k].clips.push(ev(id, a, b));
+            }
+            p.media_pool.push(media(id, true));
+        }
+        let ids = p.timeline.video_tracks.iter().chain(&p.timeline.audio_tracks).flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+        (p, ids)
+    }
+
+    /// (position, end, active take, each take's (media, in point)) of a track's events.
+    fn takes_of(t: &Track) -> Vec<(f64, f64, usize, Vec<(String, f64)>)> {
+        t.clips.iter().map(|c| {
+            let (list, k) = take_list(c);
+            (c.position, c.position + c.duration, k, list.into_iter().map(|t| (t.media_id, t.in_point)).collect())
+        }).collect()
+    }
+
+    #[test]
+    fn create_multicamera_track_makes_takes_of_the_tracks() {
+        let (mut p, ids) = cameras();
+        let made = create_multicam(&mut p, &ids).unwrap();
+        // The camera tracks left empty go; Video 1 and Audio 1 hold the cameras as takes, split at every edge.
+        assert_eq!((p.timeline.video_tracks.len(), p.timeline.audio_tracks.len(), made.len()), (1, 1, 4 + 3));
+        let s = |m: &str, i: f64| (m.to_string(), i);
+        let none = (String::new(), 0.0);
+        assert_eq!(takes_of(&p.timeline.video_tracks[0]), vec![
+            (0.0, 1.0, 0, vec![s("a", 10.0), none.clone(), none.clone()]),
+            (1.0, 2.0, 0, vec![s("a", 11.0), s("b", 10.0), none.clone()]),
+            (2.0, 6.0, 0, vec![s("a", 12.0), s("b", 11.0), s("c", 10.0)]),
+            // Take 1 has nothing here: the first camera that has something plays.
+            (6.0, 8.0, 1, vec![none.clone(), s("b", 15.0), none.clone()]),
+        ]);
+        assert_eq!(takes_of(&p.timeline.audio_tracks[0]).len(), 3);
+        assert!(p.modified && p.timeline.video_tracks[0].clips.iter().all(|c| c.group.is_none()));
+        // One track selected, a locked event or a locked camera track: nothing changes.
+        let (mut q, ids) = cameras();
+        assert!(create_multicam(&mut q, &ids[..1]).is_err());
+        q.timeline.audio_tracks[1].locked = true;
+        let before = serde_json::to_string(&q).unwrap();
+        assert!(create_multicam(&mut q, &ids).unwrap_err().contains("Audio 2"));
+        assert_eq!(serde_json::to_string(&q).unwrap(), before, "the video made first is put back");
+    }
+
+    /// Acceptance: pressing 2 at 3.0 s splits the multicamera event there and plays take 2 from 3.0 s.
+    #[test]
+    fn choosing_take_2_at_3_s_cuts_there() {
+        let (mut p, ids) = cameras();
+        create_multicam(&mut p, &ids).unwrap();
+        assert!(switch_take(&mut p, true, 3.0, None, 1));
+        let v = takes_of(&p.timeline.video_tracks[0]);
+        assert_eq!(v[2..4].iter().map(|e| (e.0, e.1, e.2)).collect::<Vec<_>>(), [(2.0, 3.0, 0), (3.0, 6.0, 1)]);
+        // Take 2's source runs on across the cut; the audio stays, as Edit Multicamera Audio with Video is off.
+        assert_eq!(v[3].3[1], ("b".to_string(), 12.0));
+        assert_eq!(takes_of(&p.timeline.audio_tracks[0]).len(), 3);
+        // The same take again, an empty take or no such take: nothing changes.
+        assert!(!switch_take(&mut p, true, 4.0, None, 1) && !switch_take(&mut p, true, 0.5, None, 2) && !switch_take(&mut p, true, 3.5, None, 7));
+        // Back to take 1 at 3.0 s: the two halves are one event again.
+        assert!(switch_take(&mut p, true, 3.0, None, 0));
+        assert_eq!(takes_of(&p.timeline.video_tracks[0])[2].1, 6.0);
+        // The audio's takes, as Edit Multicamera Audio with Video switches them.
+        assert!(switch_take(&mut p, false, 3.0, None, 1));
+        let a = &takes_of(&p.timeline.audio_tracks[0])[2];
+        assert_eq!((a.0, a.1, a.2), (3.0, 6.0, 1));
+    }
+
+    /// A time selection gets the take in every multicamera event in it that has it, cut at its edges.
+    #[test]
+    fn a_take_over_a_time_selection() {
+        let (mut p, ids) = cameras();
+        create_multicam(&mut p, &ids).unwrap();
+        assert!(switch_take(&mut p, true, 0.0, Some((0.5, 4.0)), 1));
+        let v: Vec<(f64, f64, usize)> = takes_of(&p.timeline.video_tracks[0]).into_iter().map(|e| (e.0, e.1, e.2)).collect();
+        // 0.5..1 has no take 2 and keeps take 1 (joined back up); 1..2 and 2..4 take it; the rest is as it was.
+        assert_eq!(v, [(0.0, 1.0, 0), (1.0, 2.0, 1), (2.0, 4.0, 1), (4.0, 6.0, 0), (6.0, 8.0, 1)]);
+        // The track locked: refused.
+        p.timeline.video_tracks[0].locked = true;
+        assert!(!switch_take(&mut p, true, 5.0, None, 2));
+    }
+
+    /// The fixed take order stays as takes are cycled, chosen, deleted or lose their media.
+    #[test]
+    fn take_numbers_stay_with_their_takes() {
+        let (mut p, _) = take_project(); // active v, take a
+        let id = p.timeline.audio_tracks[0].clips[0].id.clone();
+        p.timeline.audio_tracks[0].clips[0].takes.push(Take { media_id: "i".into(), in_point: 0.0, name: "i".into() });
+        let order = |p: &Project| {
+            let (l, k) = take_list(p.clip(&id).unwrap());
+            (l.into_iter().map(|t| t.name).collect::<Vec<_>>(), k)
+        };
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(order(&p), (names(&["v", "a", "i"]), 0));
+        next_take(&mut p, std::slice::from_ref(&id), true);
+        assert_eq!(order(&p), (names(&["v", "a", "i"]), 1));
+        next_take(&mut p, std::slice::from_ref(&id), false);
+        next_take(&mut p, std::slice::from_ref(&id), false);
+        assert_eq!(order(&p), (names(&["v", "a", "i"]), 2));
+        assert!(take_chooser(&mut p, &id, 1, true)); // deletes v, one step on from i
+        assert_eq!(order(&p), (names(&["a", "i"]), 1));
+        let mut c = p.clip(&id).unwrap().clone();
+        assert!(set_take(&mut c, 0) && c.name == "a" && !set_take(&mut c, 0) && !set_take(&mut c, 2));
+        forget_media(&mut p.timeline, "i"); // the active take goes: the next one plays
+        assert_eq!(order(&p), (names(&["a"]), 0));
+    }
+
+    /// Expand to Multiple Tracks without the unused takes: only what plays is kept, each take on its own track.
+    #[test]
+    fn expand_without_the_unused_takes() {
+        let (mut p, ids) = cameras();
+        create_multicam(&mut p, &ids).unwrap();
+        switch_take(&mut p, true, 3.0, None, 2);
+        let id = p.timeline.video_tracks[0].id.clone();
+        assert!(expand_multicam(&mut p, std::slice::from_ref(&id), false));
+        let tl = &p.timeline;
+        assert_eq!(tl.video_tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["Video 1", "b", "c"]);
+        let spans = |t: &Track| t.clips.iter().map(|c| (c.position, c.position + c.duration, c.muted, c.takes.len())).collect::<Vec<_>>();
+        assert_eq!(spans(&tl.video_tracks[0]), [(0.0, 1.0, false, 0), (1.0, 2.0, false, 0), (2.0, 3.0, false, 0)]);
+        assert_eq!(spans(&tl.video_tracks[1]), [(6.0, 8.0, false, 0)]);
+        assert_eq!(spans(&tl.video_tracks[2]), [(3.0, 6.0, false, 0)]);
+        assert_eq!(tl.video_tracks[2].clips[0].in_point, 11.0);
+        // No multicamera event left: nothing to expand.
+        assert!(!expand_multicam(&mut p, &[id], true));
     }
 }

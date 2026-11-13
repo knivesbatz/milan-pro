@@ -257,9 +257,21 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         pv.rect_stroke(widgets::px(r), 0.0, Stroke::new(1.0_f32, Color32::from_white_alpha(140)), StrokeKind::Inside);
     }
     paint_overlays(&pv, frame, view);
+    // R17b: the take grid's names and numbers, and the active take's border.
+    let grid = preview.multicam.then(|| crate::engine::multicam::at(project, project.timeline.cursor_position)).flatten();
+    if let Some(g) = &grid {
+        paint_takes(&pv, frame, g);
+    }
     // With Split-Screen View on, a drag draws the region and a double-click takes the whole frame (VEGAS).
     let sense = if view.split { Sense::click_and_drag() } else { Sense::click() };
     let resp = ui.interact(video, ui.id().with("preview_video"), sense);
+    // R17b: a click on a take chooses it at the cursor, also while playing; Ctrl+click crossfades into it (VEGAS).
+    if let (Some(g), Some(at)) = (&grid, resp.interact_pointer_pos().filter(|_| resp.clicked() && !view.split)) {
+        let p = (at - frame.min) / frame.size();
+        if let Some(k) = crate::engine::multicam::hit(g.n, g.names.len(), [p.x, p.y]).filter(|&k| g.names[k].is_some()) {
+            super::menus::send(ui.ctx(), super::keymap::Command::MulticamTake(k, ui.input(|i| i.modifiers.command)));
+        }
+    }
     if view.split {
         let at = |p: Pos2| ((p - frame.min) / frame.size()).clamp(Vec2::ZERO, Vec2::splat(1.0)).to_pos2();
         if resp.hovered() {
@@ -401,6 +413,29 @@ fn paint_overlays(p: &Painter, frame: Rect, view: &PreviewView) {
     }
 }
 
+/// R17b: the active take's indicator colour (VEGAS: Preferences › Video › Active take indicator color).
+const ACTIVE_TAKE: Color32 = Color32::from_rgb(0, 120, 215);
+
+/// R17b: over the take grid in `frame`: each take's number and name ("(no camera)" for an empty take, as VEGAS
+/// labels it), and a border round the active take.
+// shortcut: drawn on the unrotated layout; turn it with Project Properties › Output rotation if rotated multicamera
+// projects show up.
+fn paint_takes(p: &Painter, frame: Rect, g: &crate::engine::multicam::At) {
+    let t = theme::get();
+    for (k, name) in g.names.iter().enumerate() {
+        let [x0, y0, x1, y1] = crate::engine::multicam::tile(g.n, k);
+        let r = Rect::from_min_max(frame.lerp_inside(vec2(x0, y0)), frame.lerp_inside(vec2(x1, y1)));
+        let label = format!("{}  {}", k + 1, name.as_deref().unwrap_or("(no camera)"));
+        let galley = p.layout_no_wrap(label, t.font(12.0), Color32::WHITE);
+        let at = r.min + vec2(6.0, 4.0);
+        p.rect_filled(Rect::from_min_size(at - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0)), 2.0, Color32::from_black_alpha(150));
+        p.galley(at, galley, Color32::WHITE);
+        if k == g.active {
+            p.rect_stroke(widgets::px(r.shrink(1.0)), 0.0, Stroke::new(3.0_f32, ACTIVE_TAKE), StrokeKind::Inside);
+        }
+    }
+}
+
 /// R14: Preview on External Monitor's picture, filling `ui`: the Video Preview's frame on black, at one project pixel
 /// per display pixel or scaled to fit (Preferences › Preview Device), turned by the project's output rotation if
 /// `rotate`. The decode width follows the larger of this and the Video Preview window.
@@ -413,7 +448,7 @@ pub fn draw_external(ui: &mut Ui, project: &Project, preview: &mut Preview, fit:
     let frame = external_frame(rect, vec2(s.width as f32, s.height.max(1) as f32), rot % 180 == 90, fit, ui.ctx().pixels_per_point());
     let w = if rot % 180 == 90 { frame.height() } else { frame.width() } * ui.ctx().pixels_per_point();
     preview.display_w = preview.display_w.max(w as u32);
-    if let Some(tex) = preview.texture.as_ref().filter(|_| !mute) {
+    if let Some(tex) = preview.external_texture().filter(|_| !mute) {
         p.add(rotated_image(tex.id(), frame, rot, [0.0, 0.0, 1.0, 1.0]));
     }
 }

@@ -914,6 +914,65 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// R17b, needs ffmpeg: a cut multicamera track renders its active takes. Two cameras (red with a 440 Hz tone, blue
+    /// with 880 Hz) on two video and two audio tracks are made one multicamera track; take 2 is chosen at 1 s with Edit
+    /// Multicamera Audio with Video, so picture and sound both cut there; the grid is only a preview, never rendered.
+    /// `cargo test --release -- --ignored multicam_render_cuts_between_cameras`
+    #[test]
+    #[ignore]
+    fn multicam_render_cuts_between_cameras() {
+        let dir = std::env::temp_dir().join(format!("milan-render-multicam-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, color: &str, hz: u32| {
+            let path = dir.join(name);
+            let (v, a) = (format!("color=c={color}:d=3:s=320x240:r=30"), format!("sine=f={hz}:d=3:r=48000"));
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", &v, "-f", "lavfi", "-i", &a, "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p", "-c:a", "pcm_s16le", "-shortest"]).arg(&path).status().unwrap().success());
+            crate::media::probe_media(&path).unwrap()
+        };
+        let (a, b) = (make("a.mov", "red", 440), make("b.mov", "blue", 880));
+        let mut p = Project::new("multicam");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+        p.timeline.video_tracks = vec![Track::new("Camera A", TrackKind::Video), Track::new("Camera B", TrackKind::Video)];
+        p.timeline.audio_tracks = vec![Track::new("A", TrackKind::Audio), Track::new("B", TrackKind::Audio)];
+        for (k, m) in [&a, &b].into_iter().enumerate() {
+            let c = Clip { duration: 2.0, ..Clip::from_media(m, 0.0) };
+            p.timeline.video_tracks[k].clips.push(c.clone());
+            p.timeline.audio_tracks[k].clips.push(Clip { id: format!("audio{k}"), ..c });
+        }
+        p.media_pool = vec![a, b];
+        let ids: Vec<String> = p.timeline.video_tracks.iter().chain(&p.timeline.audio_tracks).flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+        crate::edit::create_multicam(&mut p, &ids).unwrap();
+        assert!(crate::edit::switch_take(&mut p, true, 1.0, None, 1) && crate::edit::switch_take(&mut p, false, 1.0, None, 1));
+        assert_eq!((p.timeline.video_tracks.len(), p.timeline.audio_tracks.len()), (1, 1));
+        let run = |t: &Template, name: &str| {
+            let out = dir.join(name);
+            let job = start(&p, t, out.clone(), (0.0, 2.0), Opts::default(), egui::Context::default());
+            assert_eq!(wait(&job), Status::Done, "{name}");
+            out
+        };
+        let mov = run(&BUILTIN[2], "cut.mov");
+        let rgb = |k: i64| {
+            let f = decoded_frame(&mov, k);
+            let c = (120 * 320 + 160) * 4;
+            (f[c], f[c + 1], f[c + 2])
+        };
+        let (red, blue) = (|(r, _, b): (u8, u8, u8)| r > 200 && b < 60, |(r, _, b): (u8, u8, u8)| b > 200 && r < 60);
+        for k in [0, 15, 29] {
+            assert!(red(rgb(k)), "frame {k}: {:?}", rgb(k));
+        }
+        for k in [30, 45, 59] {
+            assert!(blue(rgb(k)), "frame {k}: {:?}", rgb(k));
+        }
+        // The sound: 440 Hz before the cut, 880 Hz after (zero crossings of the left channel over 0.5 s).
+        let s = pcm(&run(&BUILTIN[3], "cut.wav"));
+        let hz = |t0: f64| {
+            let l: Vec<f32> = s.iter().step_by(2).skip((t0 * 48_000.0) as usize).take(24_000).copied().collect();
+            l.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count() as f64
+        };
+        assert!((hz(0.25) - 440.0).abs() < 4.0 && (hz(1.25) - 880.0).abs() < 4.0, "{} Hz, {} Hz", hz(0.25), hz(1.25));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// R6b, needs ffmpeg: a timeline renders the same before and after Create Nested Timeline. The video events are on
     /// one track with Track Motion (the nested event goes on it); the audio events on two tracks (a new track), the
     /// first one starting where the nested event does, so its edge is quickfaded once, as before. The nested event's

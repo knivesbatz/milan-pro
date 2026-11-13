@@ -256,6 +256,12 @@ pub struct Preview {
     bypass: Option<Bypass>,
     /// Playing (with its loop region) or not, for a bypassed engine started mid-playback.
     playing: Option<Option<(f64, f64)>>,
+    /// R17b: Enable Multicamera Editing is on (set by the app each frame): the picture is the take grid.
+    pub multicam: bool,
+    /// R17b: Show Full Frame in External Monitor while the grid shows (set by the app each frame): a second engine
+    /// makes the timeline's own picture for the external monitor.
+    pub ext_full: bool,
+    full: Option<Bypass>,
 }
 
 impl Preview {
@@ -298,6 +304,18 @@ impl Preview {
             fx_bypassed: false,
             bypass: None,
             playing: None,
+            multicam: false,
+            ext_full: false,
+            full: None,
+        }
+    }
+
+    /// R17b: the external monitor's picture: the full frame while the grid shows with Show Full Frame on, else the
+    /// Video Preview's.
+    pub fn external_texture(&self) -> Option<&TextureHandle> {
+        match &self.full {
+            Some(f) => f.texture.as_ref(),
+            None => self.texture.as_ref(),
         }
     }
 
@@ -331,27 +349,38 @@ impl Preview {
         let h = ((w as f64 * s.height as f64 / s.width.max(1) as f64 / 2.0).round() as u32 * 2).max(2);
         let (q, visible) = (self.quality, self.visible);
         let Some(e) = &mut self.engine else { return };
+        e.grid = self.multicam;
         if let Some((img, err)) = e.update(project, w, h, q, visible) {
             // A failed layer still shows the others; the error goes to the status bar.
             self.error = err;
             self.set_image(ctx, img);
         }
-        // R16b: the FX Bypassed engine runs only while that split is on (it composes every frame a second time).
-        match (self.fx_bypassed, &mut self.bypass) {
-            (false, b) => *b = None,
-            (true, None) => {
-                let mut engine = VideoEngine::without_fx(ctx);
-                if let Some(lp) = self.playing {
+        // R16b: the FX Bypassed engine runs only while that split is on (it composes every frame a second time); R17b:
+        // the external monitor's full frame only while the grid shows there.
+        let playing = self.playing;
+        let start = |on: bool, slot: &mut Option<Bypass>, engine: fn(&egui::Context) -> VideoEngine| match (on, slot.is_some()) {
+            (false, _) => *slot = None,
+            (true, false) => {
+                let mut engine = engine(ctx);
+                if let Some(lp) = playing {
                     engine.play(lp);
                 }
-                self.bypass = Some(Bypass { engine, image: None, texture: None });
+                *slot = Some(Bypass { engine, image: None, texture: None });
             }
-            (true, Some(_)) => {}
-        }
+            (true, true) => {}
+        };
+        start(self.fx_bypassed, &mut self.bypass, VideoEngine::without_fx);
+        start(self.multicam && self.ext_full, &mut self.full, VideoEngine::new);
         if let Some(b) = &mut self.bypass {
             if let Some((img, _)) = b.engine.update(project, w, h, q, visible) {
                 upload(ctx, &mut b.texture, "preview_bypassed", &img, self.isolate);
                 b.image = Some(img);
+            }
+        }
+        if let Some(f) = &mut self.full {
+            if let Some((img, _)) = f.engine.update(project, w, h, q, visible) {
+                upload(ctx, &mut f.texture, "preview_full", &img, Isolate::None);
+                f.image = Some(img);
             }
         }
         if self.isolate != self.shown_isolate {
@@ -370,16 +399,20 @@ impl Preview {
     /// Play the timeline from the cursor (again, after a seek), looping over `loop_` if set.
     pub fn play(&mut self, loop_: Option<(f64, f64)>) {
         self.playing = Some(loop_);
-        for e in self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)) {
+        for e in self.engines() {
             e.play(loop_);
         }
     }
 
     pub fn stop(&mut self) {
         self.playing = None;
-        for e in self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)) {
+        for e in self.engines() {
             e.stop();
         }
+    }
+
+    fn engines(&mut self) -> impl Iterator<Item = &mut VideoEngine> {
+        self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)).chain(self.full.as_mut().map(|b| &mut b.engine))
     }
 
     fn set_image(&mut self, ctx: &egui::Context, img: Arc<ColorImage>) {

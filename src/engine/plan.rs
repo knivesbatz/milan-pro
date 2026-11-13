@@ -791,6 +791,9 @@ pub struct AEvent {
     pub mute_env: Option<Envelope>,
     /// Audio Event FX, keyed event-relative; they run on the PCM before gain, fades and envelope.
     pub fx: Vec<Fx>,
+    /// R17b: a multicamera event's other takes (not empty), each as the event would read it: decoded along while
+    /// `AudioPlan::standby`, so a take switched to while playing goes on from a running decoder.
+    pub standby: Vec<ASrc>,
 }
 
 #[derive(Debug)]
@@ -855,6 +858,9 @@ pub struct AudioPlan {
     pub quickfade: f64,
     /// R8a: playback's level meters by track and bus id (None in a render).
     pub meters: Option<Arc<crate::engine::mix::Meters>>,
+    /// R17b: read the events' `standby` takes along (playback in multicamera editing with Edit Multicamera Audio with
+    /// Video; never a render).
+    pub standby: bool,
 }
 
 /// R8a: the busses and assignable FX chains in mixing order (each before the bus it goes to), each one's output as an
@@ -976,6 +982,12 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
                         vol_env: env(&c.envelopes, EnvKind::Volume),
                         pan_env: env(&c.envelopes, EnvKind::Pan),
                         mute_env: env(&c.envelopes, EnvKind::Mute),
+                        standby: c
+                            .takes
+                            .iter()
+                            .filter_map(|t| media.get(t.media_id.as_str()).filter(|m| !m.nested).map(|m| (m, t)))
+                            .map(|(m, t)| ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: m.file_time(t.in_point), rate: c.rate, reverse: c.reverse, stream: c.stream.min(m.streams(false) - 1), pitch: c.pitch_cents, nested: None })
+                            .collect(),
                     })
                 })
                 .collect();
@@ -1019,7 +1031,7 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
             }
         })
         .collect();
-    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None }
+    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None, standby: false }
 }
 
 /// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it

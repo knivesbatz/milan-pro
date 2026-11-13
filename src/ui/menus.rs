@@ -164,6 +164,14 @@ pub struct CmdState {
     /// R6b: the focus event is a nested timeline; this one was opened from a parent (Open Parent Timeline).
     pub nested_clip: bool,
     pub nested_parent: bool,
+    /// R17b: events are selected on two or more tracks of one kind (Create Multicamera Track); a selected track has
+    /// multicamera events (Expand to Multiple Tracks); Enable Multicamera Editing, Edit Multicamera Audio with Video
+    /// and Show Full Frame in External Monitor are on.
+    pub multicam_create: bool,
+    pub multicam_track: bool,
+    pub multicam: bool,
+    pub multicam_audio: bool,
+    pub multicam_full: bool,
 }
 
 impl CmdState {
@@ -253,6 +261,10 @@ impl CmdState {
             Loudness(_) | GenerateLoudnessLog | RebuildNestedAudio => true,
             NestedCreate => self.n_sel > 0,
             Synchronize(_) => self.n_sel >= 2,
+            MulticamCreate => self.multicam_create,
+            MulticamExpand => self.multicam_track,
+            Multicam | MulticamAudio | MulticamFullFrame => true,
+            MulticamTake(..) => self.multicam,
             NestedOpen => self.nested_clip,
             NestedParent => self.nested_parent,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
@@ -314,7 +326,10 @@ impl CmdState {
             EventHeaders => self.look == UiLook::Vegas16,
             ExternalMonitor => self.external,
             Loudness(k) => return self.loudness.checked(k),
-            MediaMarkers | Multicam => false,
+            MediaMarkers => false,
+            Multicam => self.multicam,
+            MulticamAudio => self.multicam_audio,
+            MulticamFullFrame => self.multicam_full,
             _ => return None,
         })
     }
@@ -387,7 +402,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
-        Multicam => Later("R17b"),
         SmartSplit | OpenInAudioEditor | InsertCommand | CdTrack | CdIndex | MediaMarkers | RebuildPeaks | ContextMenu => Later("R18a"),
         InsertAdjustmentTrack => Later("R18b"),
         Prerender | RamPreview => Later("R23"),
@@ -1018,12 +1032,12 @@ pub const TOOLS: &[M] = &[
         C("Synchronize Audio to A&lign Events", Synchronize(By::Audio)),
         C("Synchronize Media &Timecode to Align Events", Synchronize(By::Timecode)),
         C("Synchronize &Date/Time Stamp to Align Events", Synchronize(By::Date)),
-        X("&Create Multicamera Track", Later("R17b")),
-        X("E&xpand to Multiple Tracks...", Later("R17b")),
+        C("&Create Multicamera Track", MulticamCreate),
+        C("E&xpand to Multiple Tracks...", MulticamExpand),
         S,
         C("&Enable Multicamera Editing", Multicam),
-        K("Edit Multicamera &Audio with Video", false, Later("R17b")),
-        K("Show Full Frame in External &Monitor", false, Later("R17b")),
+        C("Edit Multicamera &Audio with Video", MulticamAudio),
+        C("Show Full Frame in External &Monitor", MulticamFullFrame),
     ]),
     S,
     X("&Clean Project Media", Later("R45b")),
@@ -1652,6 +1666,28 @@ mod tests {
         assert!(tools.contains(&Synchronize(By::Audio)) && tools.contains(&Synchronize(By::Date)));
     }
 
+    /// R17b: Tools › Multicamera's items work when they can, the switches show their state, and nothing in the menus
+    /// waits on R17b any more.
+    #[test]
+    fn multicamera_commands_work() {
+        let off = CmdState::default();
+        let on = CmdState { multicam_create: true, multicam_track: true, multicam: true, multicam_audio: true, multicam_full: true, ..CmdState::default() };
+        for c in [MulticamCreate, MulticamExpand, MulticamTake(1, false)] {
+            assert!(unfinished(c).is_none() && !off.enabled(c) && on.enabled(c), "{c:?}");
+        }
+        for c in [Multicam, MulticamAudio, MulticamFullFrame] {
+            assert!(unfinished(c).is_none() && off.enabled(c) && off.checked(c) == Some(false) && on.checked(c) == Some(true), "{c:?}");
+        }
+        let mut rows = Vec::new();
+        for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+            greyed(items, &mut rows);
+        }
+        assert!(!rows.iter().any(|(_, w)| *w == Later("R17b")), "{rows:?}");
+        let mut tools = Vec::new();
+        commands(TOOLS, &mut tools);
+        assert!([MulticamCreate, MulticamExpand, Multicam, MulticamAudio, MulticamFullFrame].iter().all(|c| tools.contains(c)));
+    }
+
     /// R9: Insert › Audio Input Bus works, and nothing in the menus waits on R9 any more.
     #[test]
     fn input_bus_command_works() {
@@ -1839,6 +1875,9 @@ mod tests {
             assignable_fx: true,
             nested_clip: true,
             nested_parent: true,
+            multicam_create: true,
+            multicam_track: true,
+            multicam: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

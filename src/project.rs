@@ -764,6 +764,10 @@ pub struct Clip {
     /// Inactive takes; the active take is the event's own media.
     #[serde(default)]
     pub takes: Vec<Take>,
+    /// R17b: the active take's number (from 0) in the event's fixed take order: the ring `[active, takes...]` starts at
+    /// it, so Take 1, 2, ... (a multicamera event's cameras) keep their numbers as the active take changes.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub take_no: u32,
     /// Switches › Loop (on by default, as in VEGAS): the event may run past its media's end, which then repeats.
     #[serde(default = "yes")]
     pub looping: bool,
@@ -878,6 +882,10 @@ fn one32() -> f32 {
 
 fn is_zero(v: &f32) -> bool {
     *v == 0.0
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1570,6 +1578,7 @@ impl Clip {
             envelopes: Vec::new(),
             group: None,
             takes: Vec::new(),
+            take_no: 0,
             looping: true,
             invert: false,
             normalize: false,
@@ -1988,6 +1997,8 @@ mod tests {
         assert_eq!((c.rate, c.gain_db, c.reverse, c.muted), (1.0, 0.0, false, false));
         assert_eq!((c.fade_in_curve, c.fade_out_curve), (Curve::Smooth, Curve::Smooth));
         assert!(c.group.is_none() && c.takes.is_empty() && c.fx.is_empty() && c.transition.is_none());
+        // R17b: the active take is the first in the take order, and that is not written.
+        assert!(c.take_no == 0 && !serde_json::to_string(c).unwrap().contains("take_no"));
         assert!(c.pan_crop.keys.is_empty() && c.envelopes.is_empty());
         assert!(c.looping, "R3a: an old event loops, as VEGAS events do by default");
         // R3b: switches off (Maintain Aspect Ratio on), both channels, the first stream, the project resample mode;
@@ -2121,6 +2132,7 @@ mod tests {
         c.envelopes = vec![env(EnvKind::Volume), env(EnvKind::Velocity)];
         c.group = Some("g1".into());
         c.takes = vec![Take { media_id: "m2".into(), in_point: 2.0, name: "Take 2".into() }];
+        c.take_no = 1;
         c.looping = false;
         (c.invert, c.normalize, c.auto_normalize, c.channels, c.stream) = (true, true, true, ChannelMap::Combine, 2);
         c.normalized = Some(Normalized { db: 4.5, span: NormSpan { media: Some("m".into()), stream: 2, channels: ChannelMap::Combine, in_point: 1.0, duration: 4.0, rate: 0.5 } });

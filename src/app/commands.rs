@@ -52,6 +52,7 @@ impl MeridianApp {
             || self.paste_repeat.is_some()
             || self.paste_attrs.is_some()
             || self.remove_fx.is_some()
+            || self.expand_ask.is_some()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -146,6 +147,11 @@ impl MeridianApp {
             loudness: self.prefs.loudness,
             nested_clip: clip.and_then(|c| edit::media_of(&self.project, c)).is_some_and(|m| m.nested),
             nested_parent: !self.parents.is_empty(),
+            multicam_create: self.can_create_multicam(),
+            multicam_track: !self.multicam_tracks().is_empty(),
+            multicam: self.multicam,
+            multicam_audio: self.prefs.multicam_audio,
+            multicam_full: self.prefs.multicam_full,
         }
     }
 
@@ -508,6 +514,15 @@ impl MeridianApp {
         for c in self.keymap.poll(ctx, look, Scope { blocked, over_dock }) {
             self.exec(ctx, c);
         }
+        // R17b: Ctrl+1-9 crossfade into a take in multicamera editing (Ctrl, as Ctrl+click does in VEGAS).
+        if self.multicam && !blocked {
+            use egui::Key::*;
+            let keys = [Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9];
+            let k = ctx.input(|i| keys.iter().position(|&k| i.modifiers.command_only() && i.key_pressed(k)));
+            if let Some(k) = k {
+                self.choose_take(k, true);
+            }
+        }
     }
 
     /// Commands queued by menus and context menus this frame.
@@ -535,7 +550,7 @@ impl MeridianApp {
     }
 
     /// One undoable edit (not while a timeline drag holds its own undo step).
-    fn edit(&mut self, f: impl FnOnce(&mut Project) -> bool) -> bool {
+    pub(super) fn edit(&mut self, f: impl FnOnce(&mut Project) -> bool) -> bool {
         if self.dragging() {
             return false;
         }
@@ -572,7 +587,7 @@ impl MeridianApp {
 
     /// `t` on the frame grid when Quantize to Frames is on: edits at the cursor or selection (Split, Trim, Paste)
     /// land on frames even when the cursor does not (playback stop, ruler scrub).
-    fn quantized(&self, t: f64) -> f64 {
+    pub(super) fn quantized(&self, t: f64) -> f64 {
         if self.prefs.quantize { edit::quantize(t, self.project.settings.frame_rate) } else { t }
     }
 
@@ -1172,6 +1187,8 @@ impl MeridianApp {
                     self.project.timeline.cursor_position = if c == SelEventStart { cl.position } else { cl.position + cl.duration };
                 }
             }
+            // R17b: in multicamera editing the number keys choose takes (VEGAS).
+            Marker(n) if self.multicam && n <= 9 => self.choose_take(n - 1, false),
             Marker(n) => {
                 if let Some(m) = self.project.timeline.markers.get(n - 1) {
                     self.project.timeline.cursor_position = m.position;
@@ -1355,6 +1372,16 @@ impl MeridianApp {
             }
             GenerateLoudnessLog => self.generate_loudness_log(ctx),
             Synchronize(by) => self.synchronize(ctx, by),
+            MulticamCreate => self.create_multicam(),
+            MulticamExpand => self.ask_expand(),
+            Multicam => self.multicam = !self.multicam,
+            MulticamTake(k, xfade) => self.choose_take(k, xfade),
+            MulticamAudio | MulticamFullFrame => {
+                let p = &mut self.prefs;
+                let on = if c == MulticamAudio { &mut p.multicam_audio } else { &mut p.multicam_full };
+                *on = !*on;
+                self.save_prefs();
+            }
             NestedCreate => self.create_nested(),
             NestedOpen => self.open_focus_nested(),
             NestedParent => self.request(ctx, MenuAction::OpenParent),
@@ -1849,6 +1876,7 @@ impl MeridianApp {
 
     /// Save prompt, About, Preferences, Welcome and Keyboard Shortcuts.
     pub(super) fn show_dialogs(&mut self, ctx: &egui::Context) {
+        self.show_expand(ctx);
         if let Some(action) = self.confirm {
             let name = self.project.name.clone();
             let (hit, close) = dialogs::modal(ctx, "save_changes", "Milan Pro", egui::vec2(380.0, 150.0), |ui| {
@@ -2421,6 +2449,23 @@ impl MeridianApp {
                 let tl = &self.project.timeline;
                 self.sel.clips = tl.video_tracks.iter().chain(&tl.audio_tracks).flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
                 self.exec(ctx, Synchronize(crate::engine::sync::By::Date));
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            // R17b: the demo's video events made one multicamera track (three cameras), a take chosen at 7 s, multicamera
+            // editing on at 7.5 s; or the Expand to Multiple Tracks question on it.
+            "multicam" | "multicam-expand" => {
+                let tl = &self.project.timeline;
+                self.sel.clips = tl.video_tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.clone())).collect();
+                self.exec(ctx, MulticamCreate);
+                // No time selection: the take is chosen at the cursor.
+                (self.project.timeline.cursor_position, self.project.timeline.loop_region) = (7.0, None);
+                self.exec(ctx, Multicam);
+                self.exec(ctx, MulticamTake(1, false));
+                self.project.timeline.cursor_position = 7.5;
+                if what == "multicam-expand" {
+                    self.sel.tracks = self.project.timeline.video_tracks.first().map(|t| t.id.clone()).into_iter().collect();
+                    self.exec(ctx, MulticamExpand);
+                }
                 self.project.modified = false; // the harness closes without a save prompt
             }
             "goto" => self.exec(ctx, GoTo),

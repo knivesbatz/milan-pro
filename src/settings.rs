@@ -125,6 +125,10 @@ pub struct Prefs {
     pub scopes: crate::ui::ScopePrefs,
     /// R16c: Options › Loudness Meters, and Preferences › Audio › "Open editor when new loudness log is generated".
     pub loudness: crate::ui::LoudPrefs,
+    /// R17b: Tools › Multicamera › Edit Multicamera Audio with Video (a take choice also switches the multicamera audio)
+    /// and Show Full Frame in External Monitor; both off, as in VEGAS.
+    pub multicam_audio: bool,
+    pub multicam_full: bool,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -269,6 +273,8 @@ impl Default for Prefs {
             toolbars: BTreeMap::new(),
             scopes: Default::default(),
             loudness: Default::default(),
+            multicam_audio: false,
+            multicam_full: false,
         }
     }
 }
@@ -686,6 +692,10 @@ mod tests {
         let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
         assert!(!e.float_dock(UiLook::Vegas23));
+        // R17b: old preferences leave the multicamera audio alone and show the grid on the external monitor too (VEGAS).
+        assert!(!d.multicam_audio && !d.multicam_full);
+        let m = Prefs { multicam_audio: true, multicam_full: true, ..Default::default() };
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&m).unwrap()).unwrap(), m);
         // R15: old preferences have the default keys and toolbars; custom ones read back.
         assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
         let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };

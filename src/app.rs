@@ -1,5 +1,6 @@
 mod commands;
 mod drop;
+mod multicam;
 mod nested;
 mod sync;
 
@@ -132,6 +133,10 @@ pub struct MeridianApp {
     loud_log: Option<render::Job>,
     /// R17a: Synchronize Audio to Align Events analysing.
     syncing: Option<sync::Syncing>,
+    /// R17b: Tools › Multicamera › Enable Multicamera Editing (this session, as in VEGAS), and the multicamera tracks
+    /// Expand to Multiple Tracks is asking about.
+    multicam: bool,
+    expand_ask: Option<Vec<String>>,
     /// A Master Bus fader gesture has its undo step already (see `set_master_gain`).
     master_gesture: bool,
     // Commands, preferences and dialogs (app/commands.rs).
@@ -361,6 +366,8 @@ impl MeridianApp {
             loudness: ui::Loudness::default(),
             loud_log: None,
             syncing: None,
+            multicam: false,
+            expand_ask: None,
             master_gesture: false,
             keymap: Keymap::default(),
             prefs_dlg: PrefsDialog::default(),
@@ -981,6 +988,7 @@ impl eframe::App for MeridianApp {
         let tl = &self.project.timeline;
         let lp = tl.loop_region.filter(|&(a, b)| self.looping && b > a);
         (self.audio.bypass_fx, self.audio.quickfade) = (self.bypass_audio_fx, self.prefs.quickfade);
+        self.tick_multicam();
         // R9: Preferences › Audio Device takes effect (a recording keeps its device until it stops); the device opens,
         // recovers, and the input monitor follows the armed tracks and input busses.
         if self.rec_start.is_none() {

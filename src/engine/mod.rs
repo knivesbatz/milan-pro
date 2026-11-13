@@ -18,6 +18,7 @@ pub mod keyframes;
 pub mod lut;
 pub mod loudness;
 pub mod mix;
+pub mod multicam;
 pub mod nested;
 pub mod plan;
 #[allow(dead_code)]
@@ -112,6 +113,8 @@ pub struct VideoEngine {
     last_clock: i64,
     /// R16b: the picture without any video FX (Split-Screen View › FX Bypassed).
     no_fx: bool,
+    /// R17b: the multicamera grid (`multicam::grid`) instead of the timeline's picture; set by the preview each frame.
+    pub grid: bool,
 }
 
 /// `p` with every video FX taken off (event, track and Video Output FX), as Split-Screen View › FX Bypassed shows it.
@@ -156,6 +159,7 @@ impl VideoEngine {
             wraps: 0,
             last_clock: 0,
             no_fx: false,
+            grid: false,
         }
     }
 
@@ -179,9 +183,13 @@ impl VideoEngine {
     /// Returns a new picture and the first decode error behind it.
     pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<ColorImage>, Option<String>)> {
         // A proxy becoming ready replans, so Draft and Preview switch to it.
-        let hash = content_hash(p) ^ crate::proxy::generation();
+        let hash = content_hash(p) ^ crate::proxy::generation() ^ if self.grid { 0x6d75_6c74_6963_616d } else { 0 };
         if hash != self.sent_hash {
-            let plan = if self.no_fx { plan::compile(&without_video_fx(p)) } else { plan::compile(p) };
+            let plan = match (self.grid, self.no_fx) {
+                (true, _) => plan::compile(&multicam::grid(p)),
+                (_, true) => plan::compile(&without_video_fx(p)),
+                _ => plan::compile(p),
+            };
             self.fps = plan.fps;
             let _ = self.tx.send(VCmd::Plan(Arc::new(plan)));
             (self.sent_hash, self.want) = (hash, None);

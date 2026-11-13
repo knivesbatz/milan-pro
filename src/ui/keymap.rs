@@ -123,6 +123,11 @@ pub enum Command {
     RebuildNestedAudio,
     /// R17a: Tools › Multicamera › Synchronize Audio / Media Timecode / Date/Time Stamp to Align Events.
     Synchronize(crate::engine::sync::By),
+    /// R17b: Tools › Multicamera › Create Multicamera Track, Expand to Multiple Tracks..., Edit Multicamera Audio with
+    /// Video and Show Full Frame in External Monitor; choosing take N (from 0) in multicamera editing (a click in the
+    /// grid or a number key), crossfading into it when true (Ctrl).
+    MulticamCreate, MulticamExpand, MulticamAudio, MulticamFullFrame,
+    MulticamTake(usize, bool),
 }
 
 use Command::*;

@@ -771,7 +771,7 @@ struct Session {
     stop: Arc<AtomicBool>,
     /// The plan the mixer reads once per block, and the content hash, bypass and quickfade it was compiled with.
     slot: Arc<Mutex<Arc<AudioPlan>>>,
-    hash: (u64, bool, bool),
+    hash: (u64, bool, bool, bool),
     /// The play rate (f64 bits): 1, or a shuttle's, which `set_rate` changes on the fly.
     rate: Arc<AtomicU64>,
     serial: u64,
@@ -833,6 +833,9 @@ pub struct Player {
     pub bypass_fx: bool,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
+    /// R17b: multicamera editing with Edit Multicamera Audio with Video: the plans keep the multicamera audio's other
+    /// takes decoding, so a take switched to while playing is heard at once.
+    pub standby: bool,
     /// R8a: the level meters of the tracks and busses in the last plan, by id.
     pub meters: Arc<Meters>,
     /// R9: the recording input the monitor plays (the recorder pushes it), what it plays, and the input busses' meters.
@@ -868,6 +871,7 @@ impl Player {
             master: Arc::new(Master::new()),
             bypass_fx: false,
             quickfade: true,
+            standby: false,
             meters: Arc::default(),
             ring: Arc::default(),
             mon: MonPlan::default(),
@@ -1014,7 +1018,7 @@ impl Player {
                 })
             })
             .expect("spawn milan-mix");
-        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby);
         let calls = self.calls();
         self.session = Some(Session { watch: (calls, Instant::now()), stop, slot, hash, rate, serial: self.serial, from: start, reached: false, last: start });
     }
@@ -1040,7 +1044,7 @@ impl Player {
 
     /// The plan, with a meter for each of its tracks and busses (the ones they had kept, so a reader holds on).
     fn plan(&mut self, project: &Project) -> AudioPlan {
-        let mut plan = AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, ..compile_audio(project) };
+        let mut plan = AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, standby: self.standby, ..compile_audio(project) };
         let ids = plan.tracks.iter().map(|t| &t.id).chain(plan.buses.iter().map(|b| &b.id));
         self.meters = Arc::new(ids.map(|id| (id.clone(), self.meters.get(id).cloned().unwrap_or_default())).collect());
         plan.meters = Some(self.meters.clone());
@@ -1050,7 +1054,7 @@ impl Player {
     /// While playing: give the mixer the project's new plan after an edit (or a Bypass All Audio FX toggle). It is
     /// heard within about 150 ms.
     pub fn set_plan(&mut self, project: &Project) {
-        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade);
+        let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby);
         if self.session.as_ref().is_none_or(|s| s.hash == hash) {
             return;
         }

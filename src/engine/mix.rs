@@ -591,6 +591,10 @@ pub struct Mixer {
     send_last: HashMap<(String, String), f32>,
     /// R8a: each metered node's last 50 ms (frames, sum of squares per channel) and the block that last fed it.
     rms: HashMap<String, (u64, VecDeque<(usize, [f32; 2])>)>,
+    /// R17b: the source each track with multicamera standby takes played last in the last block, and a scratch buffer
+    /// the standby takes are read into.
+    heard: HashMap<String, (PathBuf, u32)>,
+    sb: Vec<f32>,
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -629,6 +633,8 @@ impl Mixer {
             bus_buf: Vec::new(),
             send_last: HashMap::new(),
             rms: HashMap::new(),
+            heard: HashMap::new(),
+            sb: Vec::new(),
         }
     }
 
@@ -727,10 +733,47 @@ impl Mixer {
         }
     }
 
+    /// R17b: read multicamera event `e`'s other takes over frames [a, b) (`ps` its start) of the block, so each one's
+    /// decoder keeps up, and drop them: a take switched to while playing goes on from its running decoder, which this
+    /// leaves free for the event that plays it next in the same block. The first block of an event heard from part way
+    /// in after another take of it on the track (`was`: a take switch heard late) crossfades from that take over the
+    /// quickfade, so the switch does not click.
+    #[allow(clippy::too_many_arguments)]
+    fn standby(&mut self, e: &crate::engine::plan::AEvent, track: &str, (a, b, ps): (i64, i64, i64), was: Option<&(PathBuf, u32)>, fresh: bool, qf: f64, pcm: &mut [f32]) {
+        let r = RATE as f64;
+        let mut sb = std::mem::take(&mut self.sb);
+        for src in &e.standby {
+            sb.clear();
+            sb.resize(pcm.len(), 0.0);
+            let l = self.stream(src, a - ps);
+            (l.next, l.t, l.pass) = (b - ps, l.t + (b - a) as f64 * src.rate / r, 0);
+            if let Some(err) = l.s.read(&mut sb, false, None) {
+                self.error.get_or_insert(err);
+            }
+            let n = ((qf * r) as usize).min(pcm.len() / 2);
+            if fresh && a > ps && n > 0 && was.is_some_and(|(p, s)| *p == src.path && *s == src.stream) {
+                for (i, (o, x)) in pcm.chunks_exact_mut(2).zip(sb.chunks_exact(2)).take(n).enumerate() {
+                    let g = i as f32 / n as f32;
+                    (o[0], o[1]) = (x[0] + (o[0] - x[0]) * g, x[1] + (o[1] - x[1]) * g);
+                }
+            }
+        }
+        self.sb = sb;
+        self.heard.insert(track.to_string(), (e.src.path.clone(), e.src.stream));
+    }
+
     /// Open the streams for what plays in frames [w0, w1) now, so their first decode is not heard as a gap.
     pub fn warm(&mut self, plan: &AudioPlan, w0: i64, w1: i64) {
         self.pass += 1;
         for e in plan.tracks.iter().flat_map(|t| &t.events) {
+            // R17b: the multicamera takes that may be switched to, too.
+            for src in e.standby.iter().filter(|_| plan.standby && e.vel.is_none()) {
+                let (ps, pe) = (frame(src.pos), frame(src.pos + src.dur));
+                let a = w0.max(ps);
+                if a < pe.min(w1) {
+                    self.stream(src, a - ps).pass = 0;
+                }
+            }
             if let Some(v) = &e.vel {
                 let (ps, pe) = (frame(e.src.pos), frame(e.src.pos + e.src.dur));
                 let a = w0.max(ps);
@@ -776,6 +819,7 @@ impl Mixer {
         let (mut ev_old, mut tr_old, mut bus_old) = (std::mem::take(&mut self.ev_fx), std::mem::take(&mut self.tr_fx), std::mem::take(&mut self.bus_fx));
         let (mut tr_last, mut ev_last) = (std::mem::take(&mut self.tr_last), std::mem::take(&mut self.ev_last));
         let mut send_last = std::mem::take(&mut self.send_last);
+        let heard_old = std::mem::take(&mut self.heard);
         let mut bus_buf = std::mem::take(&mut self.bus_buf);
         bus_buf.resize_with(plan.buses.len(), Vec::new);
         for b in &mut bus_buf {
@@ -815,6 +859,9 @@ impl Mixer {
                     if let Some(err) = l.s.read(&mut pcm[(pa - a) as usize * 2..(pb - a) as usize * 2], wait, stop.as_deref()) {
                         self.error.get_or_insert(err);
                     }
+                }
+                if plan.standby && e.vel.is_none() {
+                    self.standby(e, &tr.id, (a, b, ps), heard_old.get(&tr.id), !ev_last.contains_key(&e.id), plan.quickfade, &mut pcm);
                 }
                 map_channels(&mut pcm, e.channels, e.invert);
                 if fx_on && !e.fx.is_empty() {
@@ -1931,6 +1978,41 @@ mod tests {
         p.timeline.audio_tracks[0].clips[0].position += 0.5;
         mix(&p, &mut m, frame(0.6), BLOCK);
         assert_eq!(opens.load(Relaxed), 2);
+    }
+
+    /// R17b: in multicamera editing (standby plans) a multicamera event's other take decodes along, so a take switch
+    /// heard after the cut (the mixer runs ahead) goes on from that decoder without opening one, crossfading from the
+    /// take heard before over the quickfade instead of clicking.
+    #[test]
+    fn a_take_switch_while_playing_goes_on_from_the_standby_decoder() {
+        let mut p = solo_track();
+        let b = MediaItem { id: "b".into(), path: "b.wav".into(), name: "b".into(), ..p.media_pool[0].clone() };
+        p.timeline.audio_tracks[0].clips[0].takes = vec![crate::project::Take { media_id: "b".into(), in_point: 0.0, name: "b".into() }];
+        p.media_pool.push(b);
+        let opens = Arc::new(AtomicUsize::new(0));
+        let n = opens.clone();
+        let mut m = Mixer::new(Box::new(move |src: &ASrc, at| {
+            n.fetch_add(1, Relaxed);
+            let v = if src.path == Path::new("b.wav") { 0.75 } else { 0.25 };
+            let total = frame(src.pos + src.dur) - frame(src.pos);
+            let (tx, rx) = mpsc::sync_channel(1 << 16);
+            for c in vec![v; (total - at) as usize * 2].chunks(600) {
+                tx.send(c.to_vec()).unwrap();
+            }
+            Ok(Stream::from_rx(rx))
+        }));
+        let plan = |p: &Project| AudioPlan { standby: true, quickfade: QUICKFADE, ..compile_audio(p) };
+        let (mut out, q) = (vec![0.0; 2 * BLOCK], (QUICKFADE * RATE as f64) as usize);
+        m.block(&plan(&p), 0, &mut out);
+        // (Past the quickfade in at the event's start.)
+        assert!(out[2 * q..].iter().all(|&v| v == 0.25) && opens.load(Relaxed) == 2, "take 1 heard, take 2 decoding along");
+        // Take 2 chosen 100 frames in, after the mixer has passed there.
+        assert!(crate::edit::switch_take(&mut p, false, 100.0 / RATE as f64, None, 1));
+        m.block(&plan(&p), BLOCK as i64, &mut out);
+        let l = left(&out);
+        assert!((l[0] - 0.25).abs() < 1e-3 && (l[q / 2] - 0.5).abs() < 0.01 && l[q..].iter().all(|&v| v == 0.75), "{:?}", &l[..4]);
+        assert!(l.windows(2).all(|w| w[1] >= w[0]), "a smooth crossfade");
+        assert_eq!(opens.load(Relaxed), 2, "no decoder opened for the switch");
     }
 
     #[test]
