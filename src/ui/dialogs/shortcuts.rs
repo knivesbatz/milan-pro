@@ -1,7 +1,7 @@
-//! Help › Keyboard Shortcuts: the keymap table for the current look.
+//! Help › Keyboard Shortcuts: the keys of the current look, the user's (Customize Keyboard) where set.
 use eframe::egui::*;
 use super::super::keymap::{self, TABLE};
-use super::super::theme;
+use super::super::{menus, theme};
 
 /// Shows the list while `open`; × / Esc / OK close it.
 pub fn shortcuts_window(ctx: &Context, open: &mut bool) {
@@ -9,15 +9,17 @@ pub fn shortcuts_window(ctx: &Context, open: &mut bool) {
         return;
     }
     let look = theme::get().look();
+    let binds = keymap::active(look);
+    // Commands the user gave keys that the table has no row for go by their menu path.
+    let named = if binds.len() > TABLE.len() { menus::named_commands(look) } else { Vec::new() };
     let (ok, close) = super::modal(ctx, "keyboard_shortcuts", "Keyboard Shortcuts", vec2(520.0, 600.0), |ui| {
         ScrollArea::vertical().max_height(490.0).auto_shrink(false).show(ui, |ui| {
             Grid::new("shortcut_grid").num_columns(2).striped(true).spacing(vec2(16.0, 2.0)).show(ui, |ui| {
-                for row in TABLE {
-                    let keys = keymap::keys(row.0, look);
+                for (k, (cmd, keys)) in binds.iter().enumerate() {
                     if keys.is_empty() {
                         continue;
                     }
-                    ui.label(row.1);
+                    ui.label(TABLE.get(k).map(|r| r.1.to_string()).or_else(|| named.iter().find(|n| n.1 == *cmd).map(|n| n.0.clone())).unwrap_or_default());
                     ui.label(keys.iter().map(|k| keymap::fmt_key(k)).collect::<Vec<_>>().join("  or  "));
                     ui.end_row();
                 }

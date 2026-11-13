@@ -48,9 +48,9 @@ pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar
 pub use properties::draw_properties;
 pub use status::draw_status_bar;
 pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event};
-pub use toolbar::draw_main_toolbar;
+pub use toolbar::{Bar, draw_main_toolbar};
 pub use trackmotion::TrackMotionWin;
-pub use transport::{Cmd, Playback, TransportAction, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
+pub use transport::{Cmd, Playback, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
 pub use trimmer::{EditSide, Trimmer, draw_trimmer, draw_trimmer_toolbar};
 
 /// Requests from dock windows that the app carries out after the dock has been drawn.

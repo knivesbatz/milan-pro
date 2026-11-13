@@ -45,6 +45,8 @@ impl MeridianApp {
             || self.default_track.is_some()
             || self.layout_as.is_some()
             || self.organize.is_some()
+            || self.customize_keys.is_some()
+            || self.customize_bar.is_some()
             || self.vegas_report.is_some()
             || self.recorded.is_some()
             || self.paste_repeat.is_some()
@@ -712,6 +714,15 @@ impl MeridianApp {
             Exit => self.request(ctx, MenuAction::Exit),
             Preferences => self.open_prefs(None),
             KeyboardShortcuts => self.shortcuts_open = true,
+            // The screenshot harness lists no keyboard maps and saves none.
+            CustomizeKeyboard => {
+                let dir = if self.demo { None } else { crate::settings::keyboard_dir() };
+                self.customize_keys = Some(dialogs::CustomizeKeys::new(&self.prefs.keys, self.prefs.key_map.clone(), st.look, dir));
+            }
+            CustomizeToolbar | CustomizeTimelineToolbar => {
+                let bar = if c == CustomizeToolbar { ui::Bar::Main } else { ui::Bar::Timeline };
+                self.customize_bar = Some(dialogs::CustomizeToolbar::new(bar, bar.buttons(&self.prefs.toolbars, st.look), st.look));
+            }
             UnfinishedFeatures => self.unfinished_open = true,
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
@@ -1859,6 +1870,7 @@ impl MeridianApp {
         }
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
+        self.show_customize(ctx);
         self.show_layout_as(ctx);
         if let Some(ok) = self.event_props.as_mut().and_then(|ep| ep.show(ctx, &self.project)) {
             // One undo step on OK, none when nothing changed (`apply_props`).
@@ -1982,6 +1994,31 @@ impl MeridianApp {
                 }
                 self.save_prefs();
             }
+        }
+    }
+
+    /// R15: Customize Keyboard keeps its keys on OK; Customize (Timeline) Toolbar changes the bar as it goes, as VEGAS's do.
+    fn show_customize(&mut self, ctx: &egui::Context) {
+        if let Some(ok) = self.customize_keys.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.customize_keys.take().filter(|_| ok) {
+                (self.prefs.keys, self.prefs.key_map) = (d.keys, d.map);
+                ui::keymap::set_overrides(&self.prefs.keys);
+                self.save_prefs();
+            }
+        }
+        let Some(d) = &mut self.customize_bar else { return };
+        let (changed, close) = d.show(ctx);
+        if changed {
+            let key = d.bar.key(d.look);
+            if d.list == d.bar.defaults(d.look) {
+                self.prefs.toolbars.remove(&key);
+            } else {
+                self.prefs.toolbars.insert(key, d.list.iter().map(|s| s.to_string()).collect());
+            }
+            self.save_prefs();
+        }
+        if close {
+            self.customize_bar = None;
         }
     }
 
@@ -2319,6 +2356,15 @@ impl MeridianApp {
             "save" => self.confirm = Some(MenuAction::Exit),
             "welcome" => self.welcome = Some(Default::default()),
             "shortcuts" => self.shortcuts_open = true,
+            // R15: Customize Keyboard on Edit.Split; the toolbar dialogs.
+            "customize-keyboard" => {
+                self.exec(ctx, CustomizeKeyboard);
+                if let Some(d) = &mut self.customize_keys {
+                    d.select(Split);
+                }
+            }
+            "customize-toolbar" => self.exec(ctx, CustomizeToolbar),
+            "customize-timeline-toolbar" => self.exec(ctx, CustomizeTimelineToolbar),
             "unfinished" => self.unfinished_open = true,
             "event-props" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
             "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),

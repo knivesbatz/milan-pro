@@ -1,11 +1,15 @@
 //! Toolbar buttons shared by every bar (§5.2, §5.10, dock toolbars) and the main toolbar row.
 use eframe::egui::*;
+use crate::edit::RippleMode;
 use crate::history::History;
 use crate::project::Project;
+use super::EditTool;
+use super::dock::Panel;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{MenuAction, send};
+use super::menus::{Later, NotPlanned, Why, send};
 use super::theme::{self, UiLook};
+use super::transport::Playback;
 
 const HINT: &str = "milan_status_hint";
 
@@ -158,54 +162,225 @@ fn history_popup(ui: &mut Ui, arrow: &Response, steps: usize, verb: &str) -> Opt
     .flatten()
 }
 
-/// Main toolbar (§5.2): `ui` is a left-to-right row over the toolbar body. Returns app-level actions; Save, Cut,
-/// Copy, Paste, Undo and Redo go to the command bus.
-pub fn draw_main_toolbar(ui: &mut Ui, project: &Project, history: &History) -> Option<MenuAction> {
+/// Main toolbar (§5.2): `ui` is a left-to-right row over the toolbar body; `ids` its buttons (`bar_buttons`).
+pub fn draw_main_toolbar(ui: &mut Ui, ids: &[&'static str], project: &mut Project, history: &History) {
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     ui.spacing_mut().item_spacing.x = 0.0;
     // First 22 px hit area starts at x = 6 (glyph at x = 9).
     // VP23's first glyph sits 2 px further left (light2026: New at x = 9).
     ui.add_space(if v16 { 6.0 } else { 4.0 } - (t.m.button_pitch - t.m.button) * 0.5);
-    let mut action = None;
-    let mut act = |resp: Response, a: MenuAction| {
-        if resp.clicked() {
-            action = Some(a);
-        }
-    };
-    act(tool_button(ui, Icon::New, "New Empty Project (Ctrl+Shift+N)", true, false), MenuAction::New);
-    act(tool_button(ui, Icon::Open, "Open (Ctrl+O)", true, false), MenuAction::Open);
-    if tool_button(ui, Icon::Save, "Save (Ctrl+S)", true, false).clicked() {
-        send(ui.ctx(), Command::Save);
+    draw_buttons(ui, ids, project, history, None);
+}
+
+// ---- R15: the buttons a toolbar holds (Options › Customize Toolbar, Customize Timeline Toolbar) ----
+
+/// A button a toolbar can hold: its id in the preferences, glyph, name (the tooltip, with the command's key) and the
+/// command it sends; `look` limits it to one look, and `inert` draws it lit with nothing behind it yet.
+pub struct Btn {
+    pub id: &'static str,
+    pub icon: Icon,
+    pub name: &'static str,
+    pub cmd: Option<Command>,
+    look: Option<UiLook>,
+    inert: Option<Why>,
+}
+
+const fn b(id: &'static str, icon: Icon, name: &'static str, cmd: Command) -> Btn {
+    Btn { id, icon, name, cmd: Some(cmd), look: None, inert: None }
+}
+
+const fn play(id: &'static str, icon: Icon, name: &'static str) -> Btn {
+    Btn { id, icon, name, cmd: None, look: None, inert: None }
+}
+
+const V23: Option<UiLook> = Some(UiLook::Vegas23);
+
+/// A separator between button groups.
+pub const SEP: &str = "|";
+
+/// Every button, in the order Customize Toolbar lists them.
+pub const BUTTONS: &[Btn] = &[
+    Btn { id: SEP, icon: Icon::More, name: "Separator", cmd: None, look: None, inert: None },
+    b("New", Icon::New, "New Empty Project", Command::NewEmpty),
+    b("Open", Icon::Open, "Open", Command::Open),
+    b("Save", Icon::Save, "Save", Command::Save),
+    b("Render", Icon::Render, "Render As", Command::RenderAs),
+    b("Properties", Icon::Properties, "Properties", Command::Properties),
+    b("Cut", Icon::Cut, "Cut", Command::Cut),
+    b("Copy", Icon::Copy, "Copy", Command::Copy),
+    b("Paste", Icon::Paste, "Paste", Command::Paste),
+    b("Undo", Icon::Undo, "Undo", Command::Undo),
+    b("Redo", Icon::Redo, "Redo", Command::Redo),
+    Btn { id: "Tutorials", icon: Icon::Tutorials, name: "Interactive Tutorials", cmd: None, look: Some(UiLook::Vegas16), inert: Some(Later("R53")) },
+    Btn { look: Some(UiLook::Vegas16), inert: Some(Later("R53")), ..b("WhatsThis", Icon::WhatsThis, "What's This? Help", Command::WhatsThis) },
+    play("Record", Icon::Record, "Record"),
+    play("Loop", Icon::Loop, "Loop Playback"),
+    play("PlayFromStart", Icon::PlayFromStart, "Play From Start"),
+    play("Play", Icon::Play, "Play"),
+    play("Pause", Icon::Pause, "Pause"),
+    play("Stop", Icon::Stop, "Stop"),
+    play("GoToStart", Icon::GoToStart, "Go to Start"),
+    play("GoToEnd", Icon::GoToEnd, "Go to End"),
+    play("PrevFrame", Icon::PrevFrame, "Previous Frame"),
+    play("NextFrame", Icon::NextFrame, "Next Frame"),
+    b("NormalTool", Icon::NormalEdit, "Normal Edit Tool", Command::NormalTool),
+    b("EnvelopeTool", Icon::EnvelopeEdit, "Envelope Edit Tool", Command::Tool(EditTool::Envelope)),
+    b("SelectionTool", Icon::SelectionEdit, "Selection Edit Tool", Command::Tool(EditTool::Selection)),
+    Btn { id: "ZoomTool", icon: Icon::ZoomEdit, name: "Zoom Edit Tool", cmd: None, look: None, inert: Some(NotPlanned("R58")) },
+    b("Delete", Icon::Delete, "Delete", Command::Delete),
+    b("Trim", Icon::Trim, "Trim to Time Selection", Command::Trim),
+    b("TrimStart", Icon::TrimStart, "Trim Start", Command::TrimStart),
+    b("TrimEnd", Icon::TrimEnd, "Trim End", Command::TrimEnd),
+    b("Split", Icon::Split, "Split", Command::Split),
+    Btn { look: V23, ..b("SmartSplit", Icon::SmartSplit, "Smart Split", Command::SmartSplit) },
+    b("Lock", Icon::Lock, "Lock", Command::EventLock),
+    b("InsertMarker", Icon::InsertMarker, "Insert Marker", Command::InsertMarker),
+    b("InsertRegion", Icon::InsertRegion, "Insert Region", Command::InsertRegion),
+    b("Snapping", Icon::Snapping, "Enable Snapping", Command::Snapping),
+    b("AutoCrossfade", Icon::AutoCrossfade, "Automatic Crossfades", Command::AutoCrossfade),
+    b("AutoRipple", Icon::AutoRipple, "Auto Ripple", Command::AutoRipple),
+    b("LockEnvelopes", Icon::LockEnvelopes, "Lock Envelopes to Events", Command::LockEnvelopes),
+    b("IgnoreGrouping", Icon::IgnoreGrouping, "Ignore Event Grouping", Command::IgnoreGrouping),
+    Btn { look: V23, ..b("ColorGrading", Icon::ColorGrading, "Color Grading", Command::Window(Panel::ColorGrading)) },
+    Btn { look: V23, ..b("OpenParent", Icon::OpenParent, "Open Parent Timeline", Command::NestedParent) },
+    Btn { look: V23, ..b("OpenNested", Icon::OpenNested, "Open Nested Timeline", Command::NestedOpen) },
+    Btn { look: V23, ..b("CreateNested", Icon::CreateNested, "Create Nested Timeline", Command::NestedCreate) },
+];
+
+/// The play buttons, in `transport::Cmd::ALL` order: only the timeline toolbar, which has the play state, holds them.
+pub const TRANSPORT: [&str; 10] = ["Record", "Loop", "PlayFromStart", "Play", "Pause", "Stop", "GoToStart", "GoToEnd", "PrevFrame", "NextFrame"];
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Bar {
+    /// The main toolbar under the menu bar.
+    Main,
+    /// The transport and editing toolbar under the timeline.
+    Timeline,
+}
+
+impl Bar {
+    /// Its key in `Prefs::toolbars` for `look` (VEGAS 23 Dark and White share one).
+    pub fn key(self, look: UiLook) -> String {
+        crate::settings::layout_key(look, if self == Bar::Main { "toolbar" } else { "timeline_toolbar" })
     }
-    let render = if v16 { "Render As" } else { "Render" }; // no key: Ctrl+M is Render to New Track
-    // Greyed with nothing to render, as VEGAS does.
-    act(tool_button(ui, Icon::Render, render, crate::render::content_end(project) > 0.0, false), MenuAction::RenderAs);
-    act(tool_button(ui, Icon::Properties, "Properties (Alt+Enter)", true, false), MenuAction::Properties);
+
+    /// The buttons VEGAS's bar has in `look` (§5.2, §5.10).
+    pub fn defaults(self, look: UiLook) -> Vec<&'static str> {
+        let v23 = look == UiLook::Vegas23;
+        let mut ids: Vec<&'static str> = match self {
+            Bar::Main => vec!["New", "Open", "Save", "Render", "Properties", "Cut", "Copy", "Paste", "Undo", "Redo"],
+            Bar::Timeline => TRANSPORT.to_vec(),
+        };
+        if self == Bar::Main {
+            if !v23 {
+                ids.extend(["Tutorials", "WhatsThis"]);
+            }
+            return ids;
+        }
+        ids.extend([SEP, "NormalTool", "EnvelopeTool", "SelectionTool", "ZoomTool", SEP, "Delete", "Trim", "TrimStart", "TrimEnd", "Split"]);
+        if v23 {
+            ids.push("SmartSplit");
+        }
+        ids.extend(["Lock", SEP, "InsertMarker", "InsertRegion", SEP, "Snapping", "AutoCrossfade", "AutoRipple", "LockEnvelopes", "IgnoreGrouping"]);
+        if v23 {
+            ids.extend([SEP, "ColorGrading", SEP, "OpenParent", "OpenNested", "CreateNested"]);
+        }
+        ids
+    }
+
+    /// The buttons this bar can hold in `look`, the separator first.
+    pub fn allowed(self, look: UiLook) -> impl Iterator<Item = &'static Btn> {
+        BUTTONS.iter().filter(move |b| b.look.is_none_or(|l| l == look) && (self == Bar::Timeline || !TRANSPORT.contains(&b.id)))
+    }
+
+    /// The bar's buttons as saved in `toolbars` (ids it cannot hold dropped), else its defaults.
+    pub fn buttons(self, toolbars: &std::collections::BTreeMap<String, Vec<String>>, look: UiLook) -> Vec<&'static str> {
+        match toolbars.get(&self.key(look)) {
+            Some(ids) => ids.iter().filter_map(|id| self.allowed(look).find(|b| b.id == id).map(|b| b.id)).collect(),
+            None => self.defaults(look),
+        }
+    }
+}
+
+pub fn btn(id: &str) -> Option<&'static Btn> {
+    BUTTONS.iter().find(|b| b.id == id)
+}
+
+/// Draws `ids` left to right; `playback` (the timeline toolbar's) runs the play buttons.
+pub fn draw_buttons(ui: &mut Ui, ids: &[&'static str], project: &mut Project, history: &History, mut playback: Option<&mut Playback<'_>>) {
+    let look = theme::get().look();
     let st = super::menus::state(ui.ctx());
-    for (icon, tip, cmd) in [
-        (Icon::Cut, "Cut (Ctrl+X)", Command::Cut),
-        (Icon::Copy, "Copy (Ctrl+C)", Command::Copy),
-        (Icon::Paste, "Paste (Ctrl+V)", Command::Paste),
-    ] {
-        if tool_button(ui, icon, tip, st.enabled(cmd), false).clicked() {
-            send(ui.ctx(), cmd);
+    let tip = |name: &str, c: Option<Command>| match c.map(|c| super::keymap::shortcut_text(c, look)).filter(|k| !k.is_empty()) {
+        Some(k) => format!("{name} ({k})"),
+        None => name.to_string(),
+    };
+    for &id in ids {
+        let Some(b) = btn(id) else { continue };
+        if id == SEP {
+            separator(ui);
+            continue;
+        }
+        if let Some(k) = TRANSPORT.iter().position(|t| *t == id) {
+            if let Some(p) = playback.as_deref_mut() {
+                super::transport::cmd_button(ui, super::transport::Cmd::ALL[k], project, p);
+            }
+            continue;
+        }
+        if let Some(why) = b.inert {
+            inert_button(ui, b.icon, &why.tip(&tip(b.name, b.cmd)), false);
+            continue;
+        }
+        let Some(c) = b.cmd else { continue };
+        let name = if id == "Render" && look == UiLook::Vegas23 { "Render" } else { b.name };
+        let text = tip(name, Some(c));
+        match id {
+            "Undo" | "Redo" => {
+                let n = if id == "Undo" { history.lens().0 } else { history.lens().1 };
+                let (m, a) = split_button(ui, b.icon, &text, n > 0, false);
+                // One command per step, so the app's Undo/Redo handling (selection, drag state) runs for each.
+                let steps = if m.clicked() { Some(1) } else { history_popup(ui, &a, n, id) };
+                for _ in 0..steps.unwrap_or(0) {
+                    send(ui.ctx(), c);
+                }
+            }
+            // A radio group with the Envelope and Selection tools; ▾ also lists the tools that act on its drags.
+            "NormalTool" => {
+                let normal = !matches!(st.tool, EditTool::Envelope | EditTool::Selection);
+                let (m, a) = split_button(ui, b.icon, &text, true, normal);
+                if m.clicked() {
+                    send(ui.ctx(), c);
+                }
+                arrow_menu(ui, &a, |ui| {
+                    super::menus::cmd(ui, "&Normal", Command::NormalTool);
+                    super::menus::cmd(ui, "Sl&ip", Command::Tool(EditTool::Slip));
+                    super::menus::cmd(ui, "Sli&de", Command::Tool(EditTool::Slide));
+                    super::menus::cmd(ui, "Time &Stretch/Compress", Command::Tool(EditTool::Stretch));
+                });
+            }
+            "AutoRipple" => {
+                let (m, a) = split_button(ui, b.icon, &text, true, st.auto_ripple);
+                if m.clicked() {
+                    send(ui.ctx(), c);
+                }
+                arrow_menu(ui, &a, |ui| {
+                    super::menus::cmd(ui, "Affected &Tracks", Command::RippleMode(RippleMode::Affected));
+                    super::menus::cmd(ui, "Affected Tracks, &Bus Tracks, Markers, and Regions", Command::RippleMode(RippleMode::AffectedMarkers));
+                    super::menus::cmd(ui, "&All Tracks, Markers, and Regions", Command::RippleMode(RippleMode::All));
+                });
+            }
+            _ => {
+                // Render is greyed with nothing to render, as VEGAS does. Toggles show their state; Color Grading does not.
+                let enabled = st.enabled(c) && (c != Command::RenderAs || crate::render::content_end(project) > 0.0);
+                let active = st.checked(c) == Some(true) && !matches!(c, Command::Window(_));
+                let text = match super::menus::unfinished(c) {
+                    Some(why) => why.tip(&text),
+                    None => text,
+                };
+                if tool_button(ui, b.icon, &text, enabled, active).clicked() {
+                    send(ui.ctx(), c);
+                }
+            }
         }
     }
-    let (undo_n, redo_n) = history.lens();
-    let (m, a) = split_button(ui, Icon::Undo, "Undo (Ctrl+Z)", undo_n > 0, false);
-    let undo = if m.clicked() { Some(1) } else { history_popup(ui, &a, undo_n, "Undo") };
-    let (m, a) = split_button(ui, Icon::Redo, "Redo (Ctrl+Shift+Z)", redo_n > 0, false);
-    let redo = if m.clicked() { Some(1) } else { history_popup(ui, &a, redo_n, "Redo") };
-    // One command per step, so the app's Undo/Redo handling (selection, drag state) runs for each.
-    for (n, c) in [(undo, Command::Undo), (redo, Command::Redo)] {
-        for _ in 0..n.unwrap_or(0) {
-            send(ui.ctx(), c);
-        }
-    }
-    if v16 {
-        inert_button(ui, Icon::Tutorials, &super::menus::Later("R53").tip("Interactive Tutorials"), false);
-        inert_button(ui, Icon::WhatsThis, &super::menus::Later("R53").tip("What's This? Help"), false);
-    }
-    action
 }

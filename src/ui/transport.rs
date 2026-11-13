@@ -1,21 +1,14 @@
 //! Transport and editing toolbar under the timeline (§5.10), the Rate area left of it, and the transport
 //! commands shared with the Video Preview bar and its More menu.
 use eframe::egui::*;
-use crate::edit::RippleMode;
 use crate::history::History;
 use crate::project::*;
 use crate::render::content_end;
-use super::EditTool;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{self, Later, NotPlanned, add_marker};
+use super::menus;
 use super::theme::{self, UiLook};
-use super::toolbar::{arrow_menu, inert_button, separator, split_button, tool_button};
-
-/// What the bar asks the app to do beyond editing the project.
-pub enum TransportAction {
-    ToggleColorGrading,
-}
+use super::toolbar::{inert_button, tool_button};
 
 /// Playback commands: the first ten buttons of the bar, and the preview's More menu (§5.8).
 #[derive(Clone, Copy, PartialEq)]
@@ -155,15 +148,14 @@ pub fn cmd_menu(ui: &mut Ui, project: &mut Project, p: &mut Playback) {
 
 pub struct TransportState<'a> {
     pub project: &'a mut Project,
-    pub history: &'a mut History,
+    pub history: &'a History,
     pub playback: Playback<'a>,
-    pub snapping: &'a mut bool,
 }
 
-/// Buttons whose feature does not exist yet are drawn disabled rather than left out, to keep VEGAS's layout.
-pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<TransportAction> {
-    let t = theme::get();
-    let v23 = t.look() == UiLook::Vegas23;
+/// The bar's buttons are `ids` (`toolbar::Bar::buttons`). Buttons whose feature does not exist yet are drawn disabled
+/// rather than left out, to keep VEGAS's layout; edits and toggles go through the app's commands, so they act like
+/// their keys and menu items.
+pub fn draw_transport(ui: &mut Ui, rect: Rect, ids: &[&'static str], mut s: TransportState) {
     let boxes = ui.painter_at(rect);
     // The length boxes keep the right end: buttons that do not fit before them are cut off, and take no clicks.
     let buttons = rect.shrink2(vec2(1.0, 0.0)).with_max_x(rect.max.x - BOXES_W);
@@ -171,81 +163,8 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, mut s: TransportState) -> Option<
     row.set_clip_rect(buttons.intersect(ui.clip_rect()));
     let ui = &mut row;
     ui.spacing_mut().item_spacing.x = 0.0;
-    let mut action = None;
-
-    for cmd in Cmd::ALL {
-        cmd_button(ui, cmd, s.project, &mut s.playback);
-    }
-    separator(ui);
-    // Edits and toggles go through the app's commands, so they act like their keys and menu items.
-    let st = menus::state(ui.ctx());
-    let button = |ui: &mut Ui, icon, tip: &str, c: Command, active: bool| {
-        if tool_button(ui, icon, tip, st.enabled(c), active).clicked() {
-            menus::send(ui.ctx(), c);
-        }
-    };
-    // Edit tools: a radio group. Normal ▾ also lists the tools that act on its drags.
-    let normal = !matches!(st.tool, EditTool::Envelope | EditTool::Selection);
-    let (m, a) = split_button(ui, Icon::NormalEdit, "Normal Edit Tool (Ctrl+D)", true, normal);
-    if m.clicked() {
-        menus::send(ui.ctx(), Command::NormalTool);
-    }
-    arrow_menu(ui, &a, |ui| {
-        menus::cmd(ui, "&Normal", Command::NormalTool);
-        menus::cmd(ui, "Sl&ip", Command::Tool(EditTool::Slip));
-        menus::cmd(ui, "Sli&de", Command::Tool(EditTool::Slide));
-        menus::cmd(ui, "Time &Stretch/Compress", Command::Tool(EditTool::Stretch));
-    });
-    button(ui, Icon::EnvelopeEdit, "Envelope Edit Tool", Command::Tool(EditTool::Envelope), st.tool == EditTool::Envelope);
-    button(ui, Icon::SelectionEdit, "Selection Edit Tool", Command::Tool(EditTool::Selection), st.tool == EditTool::Selection);
-    inert_button(ui, Icon::ZoomEdit, &NotPlanned("R58").tip("Zoom Edit Tool"), false);
-    separator(ui);
-
-    let region = s.project.timeline.loop_region.filter(|(a, b)| b > a);
-    button(ui, Icon::Delete, "Delete (Delete)", Command::Delete, false);
-    button(ui, Icon::Trim, "Trim to Time Selection (Ctrl+T)", Command::Trim, false);
-    button(ui, Icon::TrimStart, "Trim Start (Alt+[)", Command::TrimStart, false);
-    button(ui, Icon::TrimEnd, "Trim End (Alt+])", Command::TrimEnd, false);
-    button(ui, Icon::Split, "Split (S)", Command::Split, false);
-    if v23 {
-        tool_button(ui, Icon::SmartSplit, &Later("R18a").tip("Smart Split (Alt+S)"), false, false);
-    }
-    button(ui, Icon::Lock, "Lock", Command::EventLock, st.clip_locked);
-    separator(ui);
-    if tool_button(ui, Icon::InsertMarker, "Insert Marker (M)", true, false).clicked() {
-        add_marker(s.project, s.history);
-    }
-    if tool_button(ui, Icon::InsertRegion, "Insert Region (R)", region.is_some(), false).clicked() {
-        add_region(s.project, s.history);
-    }
-    separator(ui);
-    if tool_button(ui, Icon::Snapping, "Enable Snapping (F8)", true, *s.snapping).clicked() {
-        *s.snapping = !*s.snapping;
-    }
-    button(ui, Icon::AutoCrossfade, "Automatic Crossfades (Ctrl+Shift+X)", Command::AutoCrossfade, st.auto_crossfade);
-    let (m, a) = split_button(ui, Icon::AutoRipple, "Auto Ripple (Ctrl+L)", true, st.auto_ripple);
-    if m.clicked() {
-        menus::send(ui.ctx(), Command::AutoRipple);
-    }
-    arrow_menu(ui, &a, |ui| {
-        menus::cmd(ui, "Affected &Tracks", Command::RippleMode(RippleMode::Affected));
-        menus::cmd(ui, "Affected Tracks, &Bus Tracks, Markers, and Regions", Command::RippleMode(RippleMode::AffectedMarkers));
-        menus::cmd(ui, "&All Tracks, Markers, and Regions", Command::RippleMode(RippleMode::All));
-    });
-    button(ui, Icon::LockEnvelopes, "Lock Envelopes to Events", Command::LockEnvelopes, st.lock_env);
-    button(ui, Icon::IgnoreGrouping, "Ignore Event Grouping (Ctrl+Shift+U)", Command::IgnoreGrouping, st.ignore_group);
-    if v23 {
-        separator(ui);
-        if tool_button(ui, Icon::ColorGrading, "Color Grading (Alt+G)", true, false).clicked() {
-            action = Some(TransportAction::ToggleColorGrading);
-        }
-        separator(ui);
-        tool_button(ui, Icon::OpenParent, &Later("R6b").tip("Open Parent Timeline (Alt+P)"), false, false);
-        tool_button(ui, Icon::OpenNested, &Later("R6b").tip("Open Nested Timeline (Alt+N)"), false, false);
-        tool_button(ui, Icon::CreateNested, &Later("R6b").tip("Create Nested Timeline (Alt+C)"), false, false);
-    }
+    super::toolbar::draw_buttons(ui, ids, s.project, s.history, Some(&mut s.playback));
     length_boxes(&boxes, rect, s.project);
-    action
 }
 
 /// Region over the time selection, numbered after the markers' scheme.

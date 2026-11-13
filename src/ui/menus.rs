@@ -22,7 +22,6 @@ use super::theme::{self, UiLook};
 /// toolbars, which predate `Command`.
 #[derive(Clone, Copy, PartialEq)]
 pub enum MenuAction {
-    RenderAs,
     Properties,
     New,
     Open,
@@ -34,7 +33,6 @@ pub enum MenuAction {
 impl From<MenuAction> for Command {
     fn from(a: MenuAction) -> Self {
         match a {
-            MenuAction::RenderAs => RenderAs,
             MenuAction::Properties => Properties,
             MenuAction::New => NewEmpty,
             MenuAction::Open => Open,
@@ -165,7 +163,8 @@ impl CmdState {
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
-            | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor => true,
+            | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
+            | CustomizeKeyboard => true,
             // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
             LayoutVp14 => !v23,
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
@@ -1143,9 +1142,9 @@ pub const OPTIONS: &[M] = &[
     ]),
     K("External Control", false, NotPlanned("R59")),
     S,
-    X("Customize &Toolbar...", Later("R15")),
-    X("Customize Timeline Toolbar...", Later("R15")),
-    X("Customize &Keyboard...", Later("R15")),
+    C("Customize &Toolbar...", CustomizeToolbar),
+    C("Customize Timeline Toolbar...", CustomizeTimelineToolbar),
+    C("Customize &Keyboard...", CustomizeKeyboard),
     C("&Preferences...", Preferences),
     V23(&X("Export Preferences...", Later("R49"))),
     V23(&X("Import Preferences...", Later("R49"))),
@@ -1180,6 +1179,36 @@ pub fn commands(items: &[M], out: &mut Vec<Command>) {
             _ => {}
         }
     }
+}
+
+/// R15: the commands Customize Keyboard lists in `look`, named as VEGAS names them: by menu path ("Edit.Undo", the
+/// first row that sends a command), then the context menus' ("Video event.Properties"), then the keymap's other rows.
+pub fn named_commands(look: UiLook) -> Vec<(String, Command)> {
+    fn clean(label: &str) -> String {
+        keymap::mnemonic(label).0.trim_end_matches("...").to_string()
+    }
+    fn walk(items: &[M], path: &str, look: UiLook, out: &mut Vec<(String, Command)>) {
+        for item in items {
+            match item {
+                C(l, c) if !out.iter().any(|o| o.1 == *c) => out.push((format!("{path}.{}", clean(l)), *c)),
+                Sub(l, items) => walk(items, &format!("{path}.{}", clean(l)), look, out),
+                Inline(items) => walk(items, path, look, out),
+                V16(i) if look == UiLook::Vegas16 => walk(std::slice::from_ref(*i), path, look, out),
+                V23(i) if look == UiLook::Vegas23 => walk(std::slice::from_ref(*i), path, look, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (menu, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
+        walk(items, &clean(menu), look, &mut out);
+    }
+    for r in keymap::TABLE {
+        if !out.iter().any(|o| o.1 == r.0) {
+            out.push((r.1.to_string(), r.0));
+        }
+    }
+    out
 }
 
 /// Every greyed row of `items` (submenus included, rows of both looks) as (label without '&', why), in menu order;
@@ -1757,6 +1786,25 @@ mod tests {
             }
         }
         assert!(found > 200, "{found}");
+    }
+
+    /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.
+    #[test]
+    fn menu_shortcut_text_follows_the_overrides() {
+        let named = named_commands(UiLook::Vegas23);
+        let path = |c| named.iter().find(|n| n.1 == c).map(|n| n.0.as_str());
+        assert_eq!(path(CustomizeKeyboard), Some("Options.Customize Keyboard"));
+        assert_eq!(path(Window(Panel::ColorGrading)), Some("View.Window.Color Grading"));
+        assert_eq!(path(ShuttlePause), Some("Shuttle pause"), "keymap rows outside the menus by their names");
+        assert!(named_commands(UiLook::Vegas16).iter().all(|n| n.1 != Welcome), "only the look's rows");
+        // Preferences has no default key, so no other test sees this one.
+        assert_eq!(keymap::shortcut_text(Preferences, UiLook::Vegas23), "");
+        let ov = keymap::Overrides::from([("vp23".to_string(), [(keymap::name(Preferences), vec!["Ctrl+Alt+F9".to_string()])].into())]);
+        keymap::set_overrides(&ov);
+        let (v23, v16) = (keymap::shortcut_text(Preferences, UiLook::Vegas23), keymap::shortcut_text(Preferences, UiLook::Vegas16));
+        keymap::set_overrides(&keymap::Overrides::new());
+        assert_eq!((v23.as_str(), v16.as_str()), ("Ctrl+Alt+F9", ""));
+        assert_eq!(keymap::shortcut_text(Preferences, UiLook::Vegas23), "");
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the

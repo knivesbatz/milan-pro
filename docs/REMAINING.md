@@ -35,9 +35,9 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 232 |
+| DONE | 233 |
 | PARTIAL | 122 |
-| MISSING | 66 |
+| MISSING | 65 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
@@ -125,7 +125,7 @@ What matters most:
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R4b), Summary (R16a). → R10a, R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
-| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again. Customize Toolbar is greyed. → R15, R49 |
+| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators per look, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). → R49 |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
 | 4.16 | Consistent icons | DONE | `ui/icons.rs` (967 lines of vector icons) |
 | 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics per look |
@@ -137,7 +137,7 @@ What matters most:
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
-| 4.26 | Custom keyboard shortcuts | MISSING | "Customize Keyboard..." is greyed (`menus.rs:904`). The keymap is a compile-time table (`keymap.rs:83`). → R15 |
+| 4.26 | Custom keyboard shortcuts | DONE | (R15) Options › Customize Keyboard: searchable command list named by menu path, key capture, "currently used by" with the key taken from the other command, Remove, Reset, [Default]; per-look keys in prefs override the table (`keymap::set_overrides`); keyboard maps saved, loaded and deleted as .ini files in %APPDATA%\MilanPro\Keyboard; menus and toolbar tooltips show the user's keys. Tests: `keymap::overrides_replace_defaults_and_clashes_are_found`, `customize_keys::rebind_conflict_and_reset`, `keyboard_maps_save_load_and_delete`, `menus::menu_shortcut_text_follows_the_overrides`. |
 | 4.27 | High-DPI display support | PARTIAL | egui follows the per-monitor scale automatically. Not tested above 100%; the UI spec gives pixel values at 1.0. No UI scale preference. → R48 |
 | 4.28 | Proper multi-monitor support | DONE | (R14) Floating windows on any display, saved in layouts with their rect (physical pixels) and display, reopened on the primary display when theirs is gone (`ui/monitors.rs`: `EnumDisplayMonitors`, `place`); each window takes its own display's scaling and is placed in it (`monitors::settle`). Preview on External Monitor (Alt+Shift+4, Video Preview toolbar) full screen on the Preferences › Preview Device display (`App::show_external`, `preview::draw_external`). Tests: `layout_serde_round_trip_with_floating_windows`, `floating_window_on_a_removed_monitor_reopens_on_the_primary`, `external_monitor_frame_geometry`. Not checked by hand on two monitors or a 150 %/100 % mix yet (the harness never opens a window on a monitor). |
 | 4.29 | No excessive visual effects; serious professional feel | DONE | |
@@ -575,7 +575,7 @@ What matters most:
 |---|---|---|
 | Public GitHub repository | DONE | |
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
-| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R15-R18 (R13, R14 DONE) |
+| VEGAS-inspired refined interface | DONE (minus greyed items, all labelled) | R16-R18 (R13, R14, R15 DONE) |
 | Real multitrack timeline engine | DONE | |
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
@@ -1309,6 +1309,12 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Manual (user, two monitors): external preview full screen; 150%/100% DPI mix.
 
 ### R15: Customize Keyboard and Customize Toolbar (M)
+
+**Status: DONE.** Built as designed below, except:
+- Keyboard maps follow VEGAS rather than JSON import/export: Save As writes the keys as a named .ini map in %APPDATA%\MilanPro\Keyboard, the Keyboard map list loads one (a map copied into that folder is listed), Delete removes one, and [Default] restores the table. A map holds every look's changed keys. The command name saved is the `Command` variant's derived `Debug` text, not a hand-written `name()`.
+- VEGAS's per-window contexts (Global, Timeline, Trimmer...) are not built: Milan Pro's keymap is global. Keys are single strokes; the table's Alt+D chords can be removed or taken, not recorded.
+- The Shortcut keys box says which command a pressed key belongs to ("Shortcut currently used by"); Add then takes it from that command, so no key does two things. Reset gives the selected command its default keys back, taking them from whichever commands had them.
+- The toolbar dialogs are VEGAS's (the Windows toolbar dialog): changes show at once, Reset restores VEGAS's buttons for the look, Close ends it. The main toolbar can take the edit buttons of the timeline toolbar; the play buttons stay on the timeline toolbar, which has the play state. Toolbar tooltips show the user's keys; the play buttons' tooltips keep their fixed text.
 
 **Scope**
 - Options > Customize Keyboard: a command list (searchable), key capture, conflict warning, reset one/all, per-look profiles, import/export (JSON).

@@ -111,6 +111,19 @@ pub struct Prefs {
     pub ext_fit: bool,
     pub ext_in_window: bool,
     pub ext_rotate: bool,
+    /// R15: Options › Customize Keyboard: per look, the commands whose keys the user changed (`keymap::Overrides`),
+    /// and the keyboard map last chosen (None = [Default]; maps are .ini files in `keyboard_dir`).
+    pub keys: crate::ui::keymap::Overrides,
+    pub key_map: Option<String>,
+    /// R15: Options › Customize Toolbar / Customize Timeline Toolbar: a bar's buttons by `toolbar::Bar::key`
+    /// ("vp16:toolbar"); a bar not listed has the look's default buttons.
+    pub toolbars: BTreeMap<String, Vec<String>>,
+}
+
+/// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
+/// its AppData folder.
+pub fn keyboard_dir() -> Option<PathBuf> {
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("Keyboard"))
 }
 
 /// A row of View › Audio Envelopes and Video Envelopes: one kind of envelope (or the video Track Keyframes row) the
@@ -243,6 +256,9 @@ impl Default for Prefs {
             ext_fit: false,
             ext_in_window: true,
             ext_rotate: true,
+            keys: BTreeMap::new(),
+            key_map: None,
+            toolbars: BTreeMap::new(),
         }
     }
 }
@@ -651,6 +667,13 @@ mod tests {
         let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
         assert!(!e.float_dock(UiLook::Vegas23));
+        // R15: old preferences have the default keys and toolbars; custom ones read back.
+        assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
+        let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };
+        c.keys.entry("vp23".into()).or_default().insert("Split".into(), vec!["Ctrl+Shift+F5".into()]);
+        c.toolbars.insert("vp16:toolbar".into(), vec!["Save".into(), "|".into(), "Split".into()]);
+        assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
+        assert_eq!(Prefs::parse(Ok(r#"{"keys":{"vp23":5},"toolbars":3,"quantize":false}"#.into())).map(|p| (p.keys.is_empty(), p.toolbars.is_empty(), p.quantize)), Some((true, true, false)));
         let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
         let t = Prefs { render_templates: vec![mine], render_favorites: vec!["Mine".into()], render_recent: vec!["Web 720p".into()], ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&t).unwrap()).unwrap(), t);

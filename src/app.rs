@@ -18,7 +18,7 @@ use crate::ui::theme::{self, LookChoice, Theme, UiLook};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
 use crate::engine::plugins::PluginKind;
-use crate::ui::{self, ClipRef, DragState, MenuAction, Playback, Selection, TransportAction, TransportState, WinAction};
+use crate::ui::{self, ClipRef, DragState, MenuAction, Playback, Selection, TransportState, WinAction};
 
 pub struct MeridianApp {
     pub project: Project,
@@ -99,6 +99,9 @@ pub struct MeridianApp {
     layout_as: Option<(String, usize)>,
     /// View › Window Layouts › Organize Layouts..., open.
     organize: Option<crate::ui::dialogs::OrganizeLayouts>,
+    /// R15: Options › Customize Keyboard and Customize (Timeline) Toolbar, open.
+    customize_keys: Option<crate::ui::dialogs::CustomizeKeys>,
+    customize_bar: Option<crate::ui::dialogs::CustomizeToolbar>,
     /// `prefs.layouts` keys changed here since the last save; the others are taken from disk (another window's).
     layouts_changed: std::collections::BTreeSet<String>,
     /// Native window decorations are on (VP16) or off (VP23 custom title bar).
@@ -214,6 +217,7 @@ impl MeridianApp {
         let look = launch.look.unwrap_or(prefs.look);
         // Before the first project: its audio track starts with this chain.
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
+        ui::keymap::set_overrides(&prefs.keys);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
@@ -313,6 +317,8 @@ impl MeridianApp {
             layout: Some(LayoutRef::Builtin(Builtin::Default)),
             layout_as: None,
             organize: None,
+            customize_keys: None,
+            customize_bar: None,
             layouts_changed: Default::default(),
             decorated: look.look == UiLook::Vegas16,
             demo: launch.demo,
@@ -535,7 +541,6 @@ impl eframe::App for MeridianApp {
         }
 
         let mut drag = self.file_drag(ctx);
-        let mut transport_action = None;
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
             let full = ui.max_rect();
             let hover = ctx.input(|i| i.pointer.hover_pos());
@@ -552,8 +557,8 @@ impl eframe::App for MeridianApp {
             });
 
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            let a_tb = ui::draw_main_toolbar(&mut row, &self.project, &self.history);
-            menu_action = menu_action.or(a_tb);
+            let ids = ui::Bar::Main.buttons(&self.prefs.toolbars, t.look());
+            ui::draw_main_toolbar(&mut row, &ids, &mut self.project, &self.history);
 
             // Dock windows.
             let mut dock_action = None;
@@ -742,14 +747,15 @@ impl eframe::App for MeridianApp {
                 None if self.rate_drag => (self.shuttle, self.rate_drag) = (0.0, false),
                 _ => {}
             }
-            transport_action = ui::draw_transport(
+            let ids = ui::Bar::Timeline.buttons(&self.prefs.toolbars, t.look());
+            ui::draw_transport(
                 ui,
                 a.transport,
+                &ids,
                 TransportState {
                     project: &mut self.project,
-                    history: &mut self.history,
+                    history: &self.history,
                     playback: Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start },
-                    snapping: &mut self.snapping,
                 },
             );
             // Last, so hovered-command hints from every bar this frame are shown.
@@ -770,9 +776,6 @@ impl eframe::App for MeridianApp {
         });
         self.sync_sel();
         self.show_external(ctx);
-        if let Some(TransportAction::ToggleColorGrading) = transport_action {
-            self.dock.toggle(Panel::ColorGrading);
-        }
 
         // A new look (Preferences) applies live; each look keeps its own last layout.
         if self.look != t.choice {

@@ -650,7 +650,7 @@ Coordinates are relative to each component's own rect unless stated. "Pitch" is 
 | 12 | What's This? Help | (none) | Shift+F1: cursor becomes "?" until the next click |
 
 - No group separators in the default set [M][L].
-- Customisable via Options › Customize Toolbar: Add, Remove, Move up/down, Separator, Reset [C]. Implement later.
+- Customisable via Options › Customize Toolbar: Add, Remove, Move up/down, Separator, Reset [C]. Built in R15.
 
 ### 5.3 Docked windows: common chrome
 - **VP16**:
@@ -1150,7 +1150,7 @@ VP23 stack [M], 45 px total: marker bar 14 px · loop bar 8 px · ruler 23 px.
 - Values are blank when there is no selection (16). Double-click to edit. "+10" and "-10" relative entries are allowed [C].
 - In VP16 they sit at x≈1650–1900.
 
-**Customisation:** Options › Customize Timeline Toolbar (later).
+**Customisation:** Options › Customize Timeline Toolbar (R15).
 
 ### 5.11 Status bar
 - **Height:** 17 px (16) or 20 px (23). Background `status_bg`. A 5 px #141414 gap sits above it in VP23.
@@ -2187,7 +2187,7 @@ About Milan Pro...
 
 ## 7. Keyboard shortcuts (defaults)
 
-The v23 column is authoritative; the v16 column lists only differences. Implement a `Keymap` with two default tables selected by look. Keys are rebindable later (Options › Customize Keyboard).
+The v23 column is authoritative; the v16 column lists only differences. Implement a `Keymap` with two default tables selected by look. Keys are rebindable per look in Options › Customize Keyboard (R15).
 
 | Area | Command | v23 | v16 if different |
 |---|---|---|---|

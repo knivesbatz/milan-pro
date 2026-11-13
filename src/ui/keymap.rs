@@ -1,6 +1,9 @@
 //! Commands and the default keymap (§7). One table holds every default binding for both looks; the menus read
-//! their shortcut text from it and the app turns key presses into `Command`s through it.
-use eframe::egui::{Context, Event, Key};
+//! their shortcut text from it and the app turns key presses into `Command`s through it. R15: the keys the user set
+//! in Options › Customize Keyboard (per look) replace a command's row (`set_overrides`).
+use std::collections::BTreeMap;
+use std::sync::{LazyLock, RwLock};
+use eframe::egui::{Context, Event, Key, Modifiers};
 use super::dock::Panel;
 use super::theme::UiLook;
 use crate::decode::Quality;
@@ -55,6 +58,8 @@ pub enum Command {
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, UnfinishedFeatures, CheckForUpdates, About,
+    /// R15: Options › Customize Toolbar, Customize Timeline Toolbar and Customize Keyboard.
+    CustomizeToolbar, CustomizeTimelineToolbar, CustomizeKeyboard,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
@@ -380,12 +385,105 @@ pub const TABLE: &[Row] = &[
     (MidiTrigger, "Trigger from MIDI Timecode", &["Ctrl+F7"], None),
 ];
 
-/// Keys of `cmd` in `look`, as written in the table.
-pub fn keys(cmd: Command, look: UiLook) -> &'static [&'static str] {
+/// Default keys of `cmd` in `look`, as written in the table.
+pub fn default_keys(cmd: Command, look: UiLook) -> &'static [&'static str] {
     TABLE
         .iter()
         .find(|r| r.0 == cmd)
         .map_or(&[], |r| if look == UiLook::Vegas16 { r.3.unwrap_or(r.2) } else { r.2 })
+}
+
+/// R15: Customize Keyboard's keys by look (`look_name`), then by command (`name`): the commands whose keys differ from
+/// the table's, with their keys (none = unbound). Names no command of that look has are ignored.
+pub type Overrides = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+/// A look's keys: every command of the table, then every other command the overrides give keys, with its keys.
+pub type Bindings = Vec<(Command, Vec<String>)>;
+
+/// The name a command's keys are saved under: its variant as written in this file ("SaveAs", "Marker(3)").
+// shortcut: the derived Debug text, so renaming a variant drops its saved keys; write a name table if variants get renamed.
+pub fn name(c: Command) -> String {
+    format!("{c:?}")
+}
+
+/// The key of a look in `Overrides` (VEGAS 23 Dark and White share one).
+pub fn look_name(look: UiLook) -> &'static str {
+    if look == UiLook::Vegas16 { "vp16" } else { "vp23" }
+}
+
+/// `look`'s keys with `ov` applied. Keys that do not parse are dropped.
+pub fn bindings(ov: &Overrides, look: UiLook) -> Bindings {
+    let mut out: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0, look).iter().map(|k| k.to_string()).collect())).collect();
+    let Some(mine) = ov.get(look_name(look)).filter(|m| !m.is_empty()) else { return out };
+    let named = super::menus::named_commands(look);
+    for (n, keys) in mine {
+        let Some(c) = named.iter().map(|x| x.1).find(|c| name(*c) == *n) else { continue };
+        let keys: Vec<String> = keys.iter().filter(|k| k.starts_with("Num ") || parse(k).is_some()).cloned().collect();
+        match out.iter_mut().find(|b| b.0 == c) {
+            Some(b) => b.1 = keys,
+            None => out.push((c, keys)),
+        }
+    }
+    out
+}
+
+/// Both looks' keys as the app uses them: the table's until `set_overrides`.
+static ACTIVE: LazyLock<RwLock<[Bindings; 2]>> = LazyLock::new(|| RwLock::new([UiLook::Vegas16, UiLook::Vegas23].map(|l| bindings(&Overrides::new(), l))));
+
+fn slot(look: UiLook) -> usize {
+    (look != UiLook::Vegas16) as usize
+}
+
+/// Use the keys of `ov` from now on (startup, Customize Keyboard › OK).
+pub fn set_overrides(ov: &Overrides) {
+    *ACTIVE.write().unwrap() = [UiLook::Vegas16, UiLook::Vegas23].map(|l| bindings(ov, l));
+}
+
+/// The keys in use in `look`.
+pub fn active(look: UiLook) -> Bindings {
+    ACTIVE.read().unwrap()[slot(look)].clone()
+}
+
+/// Keys of `cmd` in `look`, the user's if set.
+pub fn keys(cmd: Command, look: UiLook) -> Vec<String> {
+    ACTIVE.read().unwrap()[slot(look)].iter().find(|b| b.0 == cmd).map(|b| b.1.clone()).unwrap_or_default()
+}
+
+/// The commands of `binds` other than `cmd` holding a key that clashes with `key`, with that key: the same key, or a
+/// key that starts a chord the other ends (Alt+D against Alt+D, D).
+pub fn conflicts(binds: &Bindings, key: &str, cmd: Command) -> Vec<(Command, String)> {
+    let clash = |a: &str| {
+        a == key
+            || match (parse(a), parse(key)) {
+                (Some(x), Some(y)) => x == y || (x.0.is_none() && y.0 == Some(x.1)) || (y.0.is_none() && x.0 == Some(y.1)),
+                _ => false,
+            }
+    };
+    binds.iter().filter(|b| b.0 != cmd).flat_map(|b| b.1.iter().filter(|k| clash(k)).map(move |k| (b.0, k.clone()))).collect()
+}
+
+/// A stroke as the table writes it ("Ctrl+Shift+F5", "Alt+,"); `parse` reads it back.
+fn stroke_text(s: Stroke) -> String {
+    let sym = s.key.symbol_or_name();
+    let key = if s.key == Key::Minus { "-" } else if sym.len() == 1 && sym != "+" { sym } else { s.key.name() };
+    let mods = [(s.ctrl, "Ctrl+"), (s.alt, "Alt+"), (s.shift, "Shift+")];
+    mods.iter().filter(|m| m.0).map(|m| m.1).collect::<String>() + key
+}
+
+/// R15: the key pressed this frame (Customize Keyboard's Shortcut keys box), taken out of the input.
+pub fn capture(ctx: &Context) -> Option<String> {
+    let mut got = None;
+    ctx.input_mut(|i| {
+        let mods = i.modifiers;
+        i.events.retain(|e| match press(e, mods) {
+            Some((s, _)) => {
+                got = Some(stroke_text(s));
+                false
+            }
+            None => true,
+        });
+    });
+    got
 }
 
 /// Shortcut text shown right-aligned in menus: the first binding, chords as "Alt+D, D".
@@ -470,11 +568,15 @@ impl Keymap {
     /// Turn this frame's key presses into commands for `look`. Matched presses are removed from the input so
     /// egui widgets do not also act on them.
     pub fn poll(&mut self, ctx: &Context, look: UiLook, scope: Scope) -> Vec<Command> {
-        let mut out = Vec::new();
         if scope.blocked {
             self.chord = None;
-            return out;
+            return Vec::new();
         }
+        self.poll_with(ctx, &ACTIVE.read().unwrap()[slot(look)], scope)
+    }
+
+    fn poll_with(&mut self, ctx: &Context, binds: &Bindings, scope: Scope) -> Vec<Command> {
+        let mut out = Vec::new();
         let now = ctx.input(|i| i.time);
         if self.chord.is_some_and(|(_, t)| now - t > 1.5) {
             self.chord = None;
@@ -482,16 +584,7 @@ impl Keymap {
         ctx.input_mut(|i| {
             let mods = i.modifiers;
             i.events.retain(|e| {
-                // egui-winit sends Ctrl+X/C/V (and Shift+Delete, Ctrl+Insert, Shift+Insert) as Cut/Copy/Paste, without
-                // the key and whatever else is held: rebuild the stroke so Ctrl+Shift+X and the like reach their rows.
-                let (key, physical, repeat, m, clip) = match e {
-                    Event::Key { key, physical_key, pressed: true, repeat, modifiers } => (*key, *physical_key, *repeat, *modifiers, None),
-                    Event::Cut => (if mods.command { Key::X } else { Key::Delete }, None, false, mods, Some(Cut)),
-                    Event::Copy => (Key::C, None, false, mods, Some(Copy)),
-                    Event::Paste(_) => (if mods.command { Key::V } else { Key::Insert }, None, false, mods, Some(Paste)),
-                    _ => return true,
-                };
-                let stroke = Stroke { ctrl: m.ctrl || m.command, alt: m.alt, shift: m.shift, key: stroke_key(key, physical) };
+                let Some((stroke, repeat)) = press(e, mods) else { return true };
                 let digit = stroke.key.name().len() == 1 && stroke.key.name().as_bytes()[0].is_ascii_digit();
                 let plain_local =
                     !stroke.ctrl && !stroke.alt && !stroke.shift && (digit || matches!(stroke.key, Key::I | Key::O | Key::A | Key::Delete));
@@ -500,13 +593,12 @@ impl Keymap {
                     return true;
                 }
                 let first = self.chord.take().map(|(s, _)| s);
-                for row in TABLE {
-                    let ks = if look == UiLook::Vegas16 { row.3.unwrap_or(row.2) } else { row.2 };
+                for (cmd, ks) in binds {
                     for k in ks {
                         let Some((pre, s)) = parse(k) else { continue };
                         if pre == first && s == stroke {
-                            if !repeat || repeats(row.0) {
-                                out.push(row.0);
+                            if !repeat || repeats(*cmd) {
+                                out.push(*cmd);
                             }
                             return false;
                         }
@@ -516,15 +608,25 @@ impl Keymap {
                         }
                     }
                 }
-                if let Some(c) = clip {
-                    out.push(c);
-                    return false;
-                }
                 true
             });
         });
         out
     }
+}
+
+/// A key press as a stroke, and whether it auto-repeats. egui-winit sends Ctrl+X/C/V (and Shift+Delete, Ctrl+Insert,
+/// Shift+Insert) as Cut/Copy/Paste, without the key and whatever else is held: the stroke is rebuilt so Ctrl+Shift+X
+/// and the like reach their rows (and a rebound Ctrl+X leaves Cut).
+fn press(e: &Event, mods: Modifiers) -> Option<(Stroke, bool)> {
+    let (key, physical, repeat, m) = match e {
+        Event::Key { key, physical_key, pressed: true, repeat, modifiers } => (*key, *physical_key, *repeat, *modifiers),
+        Event::Cut => (if mods.command { Key::X } else { Key::Delete }, None, false, mods),
+        Event::Copy => (Key::C, None, false, mods),
+        Event::Paste(_) => (if mods.command { Key::V } else { Key::Insert }, None, false, mods),
+        _ => return None,
+    };
+    Some((Stroke { ctrl: m.ctrl || m.command, alt: m.alt, shift: m.shift, key: stroke_key(key, physical) }, repeat))
 }
 
 /// The key a stroke matches on. Letters follow the key's label (Ctrl+Z is Undo on QWERTZ and AZERTY too); digits and
@@ -583,7 +685,7 @@ mod tests {
         for look in [UiLook::Vegas16, UiLook::Vegas23] {
             let mut seen: Vec<(Option<Stroke>, Stroke, Command)> = Vec::new();
             for row in TABLE {
-                for k in keys(row.0, look) {
+                for k in default_keys(row.0, look) {
                     if k.starts_with("Num ") {
                         continue;
                     }
@@ -678,5 +780,62 @@ mod tests {
         assert_eq!(run(Event::Cut, Modifiers::SHIFT), vec![Cut]);
         assert_eq!(run(Event::Paste("x".into()), Modifiers::SHIFT), vec![Paste]);
         assert_eq!(run(Event::Copy, Modifiers::COMMAND), vec![Copy]);
+    }
+
+    /// R15: an override replaces a command's keys (or gives keys to one the table has none for) in its look only;
+    /// unknown names and keys that do not parse are ignored; clashes are found; no overrides is the table again.
+    #[test]
+    fn overrides_replace_defaults_and_clashes_are_found() {
+        let mut ov = Overrides::new();
+        let vp23 = ov.entry("vp23".into()).or_default();
+        vp23.insert(name(Split), vec!["Ctrl+Shift+F5".into(), "Nonsense+Q".into()]);
+        vp23.insert(name(Preferences), vec!["Ctrl+,".into()]);
+        vp23.insert("NoSuchCommand".into(), vec!["F4".into()]);
+        vp23.insert(name(Undo), vec![]);
+        let b = bindings(&ov, UiLook::Vegas23);
+        let get = |b: &Bindings, c| b.iter().find(|x| x.0 == c).map(|x| x.1.clone());
+        assert_eq!(get(&b, Split), Some(vec!["Ctrl+Shift+F5".to_string()]));
+        assert_eq!(get(&b, Preferences), Some(vec!["Ctrl+,".to_string()]));
+        assert_eq!(get(&b, Undo), Some(vec![]));
+        assert_eq!(get(&bindings(&ov, UiLook::Vegas16), Split), Some(vec!["S".to_string()]), "the other look keeps its keys");
+        assert_eq!(conflicts(&b, "Ctrl+O", Split), vec![(Open, "Ctrl+O".to_string())]);
+        assert!(conflicts(&b, "Alt+D", Split).iter().any(|c| c == &(LayoutDefault, "Alt+D D".to_string())), "Alt+D starts the layout chords");
+        assert!(conflicts(&b, "Ctrl+Shift+F5", Split).is_empty() && conflicts(&b, "S", NextTool).is_empty());
+        let ctx = Context::default();
+        let mut km = Keymap::default();
+        let mut run = |k: Key, m: Modifiers| {
+            let events = [true, false].map(|pressed| Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers: m }).to_vec();
+            let mut out = Vec::new();
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                out = km.poll_with(ctx, &b, Scope { blocked: false, over_dock: false });
+            });
+            out
+        };
+        assert_eq!(run(Key::F5, Modifiers::CTRL | Modifiers::SHIFT), vec![Split]);
+        assert_eq!(run(Key::S, Modifiers::NONE), vec![]);
+        assert_eq!(run(Key::Comma, Modifiers::CTRL), vec![Preferences]);
+        assert_eq!(run(Key::Z, Modifiers::CTRL), vec![]);
+        for look in [UiLook::Vegas16, UiLook::Vegas23] {
+            let table: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0, look).iter().map(|k| k.to_string()).collect())).collect();
+            assert_eq!(bindings(&Overrides::new(), look), table);
+        }
+    }
+
+    /// A captured key reads back as the same stroke, and Ctrl+Shift+X (sent by egui as Cut) is captured whole.
+    #[test]
+    fn captured_keys_read_back() {
+        for &key in Key::ALL {
+            for (ctrl, alt, shift) in [(false, false, false), (true, false, true), (false, true, false)] {
+                let s = Stroke { ctrl, alt, shift, key };
+                assert_eq!(parse_stroke(&stroke_text(s)), Some(s), "{}", stroke_text(s));
+            }
+        }
+        assert_eq!(stroke_text(Stroke { ctrl: true, alt: false, shift: true, key: Key::Minus }), "Ctrl+Shift+-");
+        let ctx = Context::default();
+        let mut got = None;
+        let _ = ctx.run(egui::RawInput { events: vec![Event::Cut], modifiers: Modifiers::COMMAND | Modifiers::SHIFT, ..Default::default() }, |ctx| {
+            got = capture(ctx);
+        });
+        assert_eq!(got.as_deref(), Some("Ctrl+Shift+X"));
     }
 }
