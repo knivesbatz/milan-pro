@@ -1,0 +1,73 @@
+name: Plug-in compatibility report
+description: How a third-party OFX, VST3 or CLAP plug-in behaves in Milan Pro (works or not).
+labels: ["plug-in compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reports of plug-ins that work are as useful as failures: they go into docs/COMPATIBILITY.md.
+        Milan Pro does not run the plug-ins bundled with VEGAS Pro (see docs/compat/ofx-vegas15.md), VST2 or DirectX audio plug-ins.
+  - type: input
+    id: name
+    attributes:
+      label: Plug-in name
+      placeholder: "Spektrafilm"
+    validations:
+      required: true
+  - type: input
+    id: vendor
+    attributes:
+      label: Vendor
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: Format
+      options:
+        - OFX (video effect, transition or generator)
+        - VST3 (audio effect)
+        - CLAP (audio effect)
+    validations:
+      required: true
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plug-in version
+    validations:
+      required: true
+  - type: input
+    id: milan_version
+    attributes:
+      label: Milan Pro version
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Works
+        - Works with problems
+        - Loads but fails to render or process
+        - Not listed, or listed as Failed in the Plug-In Manager
+        - Crashes or hangs (bypassed by Milan Pro)
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What you did and what you saw
+      description: Where you applied it (event, track, bus, master, transition, generator), which parameters, and the status or message the Plug-In Manager (View > Window > Plug-In Manager) shows for it.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Windows build, GPU and driver
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic report (optional)
+      description: Help > Create Diagnostic Report, zipped. The plug-in host's crash reports are included.

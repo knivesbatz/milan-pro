@@ -79,11 +79,11 @@ What matters most:
 | 2.5 | Installation instructions | DONE | `README.md` "Install (Windows)" |
 | 2.6 | Developer documentation | PARTIAL | The README has a 3-line build section. Missing: tests (including `--ignored` ffmpeg tests), the screenshot harness (`MILAN_SCREENSHOT`, `MILAN_DEMO`), the release process. → R53 |
 | 2.7 | Architecture documentation | PARTIAL | `FEATURE_PLAN.md` section 1 is the engine design, but its header says "plan only". There is no `ARCHITECTURE.md`. → R53 |
-| 2.8 | Contribution guidelines | MISSING | No `CONTRIBUTING.md` → R54 |
+| 2.8 | Contribution guidelines | DONE | (R54) [`CONTRIBUTING.md`](../CONTRIBUTING.md): reporting, build, batch rules, `shortcut:` convention, tests, branches and commits, what may go into the repository, the AE-format "no Adobe SDK material" rule. |
 | 2.9 | License | DONE | `LICENSE` (MIT) |
-| 2.10 | Issue templates | MISSING | No `.github/ISSUE_TEMPLATE/` → R54 |
-| 2.11 | Bug-report template | MISSING | → R54 |
-| 2.12 | Feature-request template | MISSING | → R54 |
+| 2.10 | Issue templates | DONE | (R54) `.github/ISSUE_TEMPLATE/`: `bug_report.yml`, `feature_request.yml`, `plugin_compat.yml`, `format_support.yml`, `config.yml`; `.github/PULL_REQUEST_TEMPLATE.md`. Rendering on GitHub to be checked by the user. |
+| 2.11 | Bug-report template | DONE | (R54) `.github/ISSUE_TEMPLATE/bug_report.yml` (version, Windows build, GPU, look, steps, expected/actual, media, diagnostic report). |
+| 2.12 | Feature-request template | DONE | (R54) `.github/ISSUE_TEMPLATE/feature_request.yml`. |
 | 2.13 | GitHub Actions CI | DONE | `.github/workflows/ci.yml` (build plus test on windows-latest) |
 | 2.14 | Automated build workflows | DONE | `ci.yml` uploads `milan-pro.exe` as an artifact |
 | 2.15 | Release workflows | DONE | `.github/workflows/release.yml` (Inno Setup, FFmpeg fetch, SHA-256, draft-then-publish) |
@@ -2178,6 +2178,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 **Acceptance:** links resolve (a markdown link check in CI); Help > Contents works.
 
 ### R54: Community files and templates (S)
+
+**Status: DONE.** [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) (Contributor Covenant 2.1, CC BY 4.0, attribution kept; reports go to the maintainers through the repository's private reporting form), the issue forms (`bug_report`, `feature_request`, `plugin_compat` in place of `plugin_compatibility`, `format_support`, `config.yml` with blank issues off and links to security reporting and the docs instead of Discussions, which the repository does not use), the pull request template, and [`CHANGELOG.md`](../CHANGELOG.md) from the 0.2.0-0.7.0 release notes and the 0.8.0 batches. `SECURITY.md` already covered reporting and the updater keys and is unchanged. The labels the forms name (`bug`, `enhancement`, `plug-in compatibility`, `format`) are applied only once they exist on the repository. Acceptance (GitHub renders the forms) is for the user to check on the repo page.
 
 **Scope**
 - `CONTRIBUTING.md` (build, branch and commit style, batch rules from FEATURE_PLAN, `shortcut:` convention, tests required).

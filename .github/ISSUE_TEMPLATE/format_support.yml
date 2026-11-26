@@ -1,0 +1,44 @@
+name: Media format problem
+description: A file that does not import, play or render correctly.
+labels: ["format"]
+body:
+  - type: input
+    id: milan_version
+    attributes:
+      label: Milan Pro version
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it goes wrong
+      options:
+        - Import (the file is refused or shows as offline)
+        - Preview or playback
+        - Render (Render As with a template)
+        - Proxy creation
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: File details
+      description: Where it comes from (camera, phone, screen recorder, other software), container, codec, resolution, frame rate, and its size.
+    validations:
+      required: true
+  - type: textarea
+    id: ffprobe
+    attributes:
+      label: ffprobe output
+      description: Run `ffprobe -hide_banner <file>` (ffprobe.exe is in the Milan Pro install folder) and paste what it prints.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The message Milan Pro shows, or what the picture or sound looks like. For renders, the template and the render log (its path is shown when the render ends).
+    validations:
+      required: true
