@@ -83,10 +83,16 @@ impl Chooser {
         self.kind == PluginKind::VideoFx && self.chip == PACKAGES
     }
 
-    /// The screenshot harness: plug-in `id` selected with its presets showing, or (None) the FX Packages.
+    /// The screenshot harness: plug-in `id` selected on its category's chip with its presets showing, or (None) the
+    /// FX Packages.
     pub fn show_for_harness(&mut self, id: Option<&str>) {
         match id {
-            Some(id) => (self.chip, self.plugin, self.preset) = (0, self.plugins.iter().position(|p| p.id == id), None),
+            Some(id) => {
+                // On its category's chip, so the list shows its neighbours too.
+                let at = self.plugins.iter().position(|p| p.id == id);
+                let chip = at.and_then(|i| CHIPS.iter().position(|c| *c == self.plugins[i].category)).unwrap_or(0);
+                (self.chip, self.plugin, self.preset) = (chip, at, None);
+            }
             None => self.chip = PACKAGES,
         }
     }

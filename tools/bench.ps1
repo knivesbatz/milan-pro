@@ -39,6 +39,7 @@ $tests = @(
     'engine::ofx::tests::bench_ofx_roundtrip_1080p',
     'engine::aplug::tests::bench_vst3_block_overhead',
     'engine::gpu::tests::bench_compose',
+    'engine::mvfx::temporal_tests::bench_mvfx_1080p',
     'engine::worker::tests::bench_ram_preview',
     'engine::worker::tests::bench_disk_cache',
     'engine::hw::tests::hw_capability_table'
@@ -209,6 +210,17 @@ foreach ($kind in @(@('full', '1920x1080, four full frames'), @('pip', '1920x108
     $gpuMs = if ($g) { "$($g.ms) ms" } else { 'no adapter' }
     $gpuRb = if ($g) { "$($g.ms_readback) ms" } else { 'no adapter' }
     L "| $($kind[1]) | $($c.ms) ms | $gpuMs | $gpuRb |"
+}
+L ''
+L '## Music-video FX (one 1920x1080 event, MVFX)'
+L ''
+L 'The three heaviest of the 2001-2009 music-video FX (`bench_mvfx_1080p` in `src/engine/mvfx/temporal_tests.rs`): one 1920x1080 event with the FX, composed at 1920x1080 on the CPU (all stripes) and on the GPU (read back, as a render takes it), median of 9 after a warm-up. Datamosh is twelve frames into its smear (twelve motion searches on the CPU, twelve warps), Film Burn evaluates six octaves of value noise per pixel, Radial Blur takes 24 bilinear samples. The times include fetching the (cached) source pictures and, on the GPU, uploading them.'
+L ''
+L '| FX | CPU | GPU |'
+L '|---|---|---|'
+foreach ($r in Rows 'mvfx') {
+    $gpu = if ($r.gpu_ms -eq 'n/a') { 'n/a (no Vulkan adapter)' } else { "$($r.gpu_ms) ms" }
+    L "| $($r.fx -replace '_', ' ') | $($r.cpu_ms) ms | $gpu |"
 }
 L ''
 L '## Dynamic RAM Preview (4 layers, Preview 960x540, R23)'

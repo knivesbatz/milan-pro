@@ -14,6 +14,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
 - Real-time multi-layer preview with persistent decoders, frame caches and video proxies; Build Dynamic RAM Preview (Shift+B), Selectively Prerender Video (Shift+M) with Clean Up, and an optional disk cache for decoded HEVC/AV1/4K frames
 - Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
+- The looks, lens tricks, temporal effects and transitions of 2001-2009 emo and hip-hop music videos (below), and FX Packages: saved chains of FX applied in one step
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
 - Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster
 - Autosave, safe saves, undo/redo, and an auto-updater
@@ -22,6 +23,16 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 ## Looks
 
 Milan Pro starts in the **Classic 2006** look: the brushed-metal, 3D-bevelled chrome of the 2005–2007 Windows video editors (Tahoma 8 pt, raised toolbars, sunken white lists, Windows 2000 dialogs and controls, a black LCD time display) on the VEGAS 23 window layout, with every menu, shortcut and docking area working as before. **Options > Preferences > Display > Interface Look** switches to the VEGAS 16 or VEGAS 23 (dark or white) looks, which are drawn as those applications are; the choice is kept in the preferences, and window layouts are saved per look. `docs/CLASSIC_2006_SPEC.md` and `docs/VEGAS_UI_SPEC.md` describe each look pixel by pixel.
+
+## Music-video FX (2001-2009)
+
+Researched in `docs/research/MUSIC_VIDEO_2000S.md` (emo / pop-punk / post-hardcore and hip-hop / crunk videos of 2001-2009, and the bedroom editors who cut them). Where VEGAS Pro has a built-in of the same purpose, Milan Pro's has its name, parameters and presets, and a VEGAS project's FX import onto it:
+
+- **Video FX:** Glow, Soft Contrast, Starburst, Light Rays, Film Effects (dust, hair, scratches, flicker, gate weave), Film Grain, Add Noise, TV Simulator, Newsprint, Pixelate, Threshold, Gradient Map, Spherize (fisheye), Pinch/Punch, Radial Blur, Linear Blur; and Bleach Bypass, Cross Process, Posterize, Light Leak, Film Burn, RGB Split, Glitch, VHS (with a date stamp), Webcam, Night Vision, Letterbox, Camera Shake (steady or on the beat), Strobe, Echo, Stutter and Datamosh (an approximation: a held picture dragged by the next frames' block motion).
+- **Transitions:** Flash, Cross Effect (zoom, pixelate or blur), Page Peel, Page Roll, Barn Door, Venetian Blinds, Spiral, Squeeze, Star Wipe, Portals; and Zoom Blur, Whip Pan, Film Burn, Light Leak, Glitch, Shake Cut, Strobe Cut, 3D Cube Spin and Explosion.
+- **FX Packages:** the Video FX window's **Filter Packages** chip lists 15 built-in looks (Emo Bleach 2005, Super 8 Memory, Camcorder 2003, Webcam 2007, Datamosh 2009, Crunk Bling Glow, Club Strobe, Fisheye Widescreen and more); drag one onto an event, track or the preview, or double-click it. **Save As...** in the FX window's chain bar saves your own chain as a package.
+
+Every one runs on the CPU and on the GPU with the same picture, keyframes like any FX, and is a pure function of the frame (grain, flicker and shake come from a seed and the frame number; Echo, Stutter and Datamosh read earlier frames through the decoder), so preview, RAM preview, prerender and render agree. Light leaks, burns and dust are generated; footage packs of them belong in the Overlays window.
 
 ## Overlay packs
 
