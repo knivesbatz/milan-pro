@@ -796,7 +796,7 @@ fn paint_toggle(p: &Painter, t: &Theme, r: Rect, icon: Icon, on: bool) {
             p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));
         }
     } else if on {
-        p.rect_filled(r, CornerRadius::same(2), t.accent.gamma_multiply(0.3));
+        p.rect_filled(r, t.radius(2), t.accent.gamma_multiply(0.3));
         paint_icon(p, r, icon, t.look(), Some(t.accent));
     } else {
         paint_icon(p, r, icon, t.look(), None);

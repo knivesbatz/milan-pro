@@ -232,13 +232,18 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 
     let t = theme::get();
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+    // Classic 2006: each scope is a black well with a sunken 3D frame on the panel; the VEGAS looks are black
+    // throughout.
+    ui.painter().rect_filled(rect, 0.0, if t.classic() { t.panel_bg } else { Color32::BLACK });
     let panes = p.view.panes();
     let cells = cells(rect, panes.len());
     for (&pane, &cell) in panes.iter().zip(&cells) {
         let mut row = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(cell.min, vec2(cell.width(), t.m.button))).layout(Layout::left_to_right(Align::Center)));
         row.add_space(2.0);
         let plot = cell.with_min_y(cell.min.y + t.m.button).shrink(6.0);
+        if t.classic() {
+            super::widgets::sunken(ui.painter(), plot.expand(3.0), Color32::BLACK, &t.metal);
+        }
         match pane {
             Pane::Vector => {
                 setting(&mut row, "Vectorscope Settings", &mut p.magnified, ["Normal", "Magnified"]);
@@ -318,7 +323,7 @@ fn line_color() -> Color32 {
 }
 
 fn label(p: &Painter, at: Pos2, align: Align2, text: impl ToString) {
-    p.text(at, align, text.to_string(), FontId::proportional(10.0), Color32::from_gray(150));
+    p.text(at, align, text.to_string(), theme::get().font(10.0), Color32::from_gray(150));
 }
 
 /// A graticule label sits above its line, or below it on the top line (where above is off the plot).

@@ -412,6 +412,31 @@ impl Theme {
         FontId::new(size, self.family())
     }
 
+    /// Corner radius of a small rounded highlight (hover boxes, chips, badges): none in Classic 2006, `v` otherwise.
+    pub fn radius(&self, v: u8) -> CornerRadius {
+        if self.classic() { CornerRadius::ZERO } else { CornerRadius::same(v) }
+    }
+
+    /// The Windows-classic 3D palette of a `#D4D0C8` property sheet (CLASSIC_2006_SPEC.md §2.5): the dialogs, their
+    /// controls and the floating-window frames paint their bevels with it, through the same `widgets` painters as
+    /// the metal bars. Flat (no streaks, no specular).
+    pub fn dialog_metal(&self) -> Metal {
+        let d = self.dialog();
+        Metal {
+            hi: d.body,
+            mid: d.body,
+            lo: d.body,
+            light: hex(0xFFFFFF),
+            face: d.body,
+            shadow: hex(0x808080),
+            dark: hex(0x404040),
+            streak: 0.0,
+            header_tint: hex(0xFFFFFF),
+            specular: Color32::TRANSPARENT,
+            pressed: self.metal.pressed,
+        }
+    }
+
     pub fn semibold(&self, size: f32) -> FontId {
         if self.classic() {
             return self.bold(size);
@@ -1304,6 +1329,8 @@ impl Theme {
             sp.menu_margin = egui::Margin::same(2);
             sp.scroll.bar_width = 16.0;
             sp.scroll.floating = false;
+            // Classic 2006: a grey 3D-face handle on the white rail (the VEGAS looks keep egui's light foreground handle).
+            sp.scroll.foreground_color = !self.classic();
         });
     }
 }
@@ -1392,6 +1419,10 @@ pub struct DialogColors {
     pub etch: (Color32, Color32),
     pub accent: Color32,
     pub accent_text: Color32,
+    /// Caption bar gradient (left → right) and its text: the Windows 2000 active caption in Classic 2006, the flat
+    /// title row elsewhere.
+    pub caption: (Color32, Color32),
+    pub caption_text: Color32,
 }
 
 impl Theme {
@@ -1416,6 +1447,8 @@ impl Theme {
                 etch: (hex(0x808080), hex(0xFFFFFF)),
                 accent: hex(0x316AC5),
                 accent_text: hex(0xFFFFFF),
+                caption: (hex(0x0A246A), hex(0xA6CAF0)),
+                caption_text: hex(0xFFFFFF),
             },
             UiLook::Vegas16 => DialogColors {
                 body: hex(0xF0F0F0),
@@ -1435,6 +1468,8 @@ impl Theme {
                 etch: (hex(0xA0A0A0), hex(0xFFFFFF)),
                 accent: hex(0x0067C0),
                 accent_text: hex(0xFFFFFF),
+                caption: (hex(0xF3F3F3), hex(0xF3F3F3)),
+                caption_text: hex(0x000000),
             },
             UiLook::Vegas23 => DialogColors {
                 body: self.panel_bg,
@@ -1454,6 +1489,8 @@ impl Theme {
                 etch: (self.line_dark, self.band_bg),
                 accent: self.accent,
                 accent_text: self.text_bright,
+                caption: (hex(0xFFFFFF), hex(0xFFFFFF)),
+                caption_text: hex(0x000000),
             },
         }
     }

@@ -332,6 +332,11 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         }
     });
 
+    if t.classic() {
+        // The transport row and the status block sit on metal under the picture.
+        let bar = Rect::from_min_max(pos2(rect.min.x, video.max.y), rect.max);
+        widgets::metal_bar(&p, bar, &t.metal);
+    }
     if view.show_transport {
         // Centred: VP16 ▶ ❚❚ ■ ≡; VP23 every command but Record, then ⋯ (light2026 overrides spec §5.8's five).
         let cmds: &[Cmd] = if v23 { &Cmd::ALL[1..] } else { &[Cmd::Play, Cmd::Pause, Cmd::Stop] };
@@ -351,7 +356,8 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     }
     if view.show_stats {
         let at = pos2(rect.min.x + 6.0, rect.max.y - stats_h + 2.0);
-        p.text(at, Align2::LEFT_TOP, stats_line(project, preview), t.font(t.font.ui), t.text_value);
+        let ink = if t.classic() { t.text } else { t.text_value };
+        p.text(at, Align2::LEFT_TOP, stats_line(project, preview), t.font(t.font.ui), ink);
     }
 }
 
@@ -393,19 +399,26 @@ fn status_block(p: &Painter, rect: Rect, status_h: f32, line_h: f32, frame: Rect
     let reduced = preview.effective(s.width) != (preview.quality, preview.size);
     if v23 {
         // light2026: page "1920x1080, 30.000p" · blue square "480x270, 30.000p" · frame "0" · display "748x421".
+        // Classic 2006: the same read-outs as cyan LCD digits in a sunken black well (the Vegas 6 status strip).
+        let classic = t.classic();
+        let (ink, warn) = if classic { (t.time_display_text, t.warning_text.lerp_to_gamma(Color32::from_rgb(0xFF, 0x60, 0x40), 0.7)) } else { (t.text_value, t.warning_text) };
         let items = [
-            (Icon::New, format!("{}x{}, {fps:.3}p", s.width, s.height), t.text_value),
-            (Icon::StatusPreview, format!("{pw}x{ph}, {fps:.3}p"), t.warning_text),
-            (Icon::StatusFrame, frame_no.to_string(), t.text_value),
-            (Icon::StatusDisplay, format!("{}x{}{}", frame.width() as u32, frame.height() as u32, shown_fps.map_or(String::new(), |f| format!(", {f:.3}"))), t.warning_text),
+            (Icon::New, format!("{}x{}, {fps:.3}p", s.width, s.height), ink),
+            (Icon::StatusPreview, format!("{pw}x{ph}, {fps:.3}p"), warn),
+            (Icon::StatusFrame, frame_no.to_string(), ink),
+            (Icon::StatusDisplay, format!("{}x{}{}", frame.width() as u32, frame.height() as u32, shown_fps.map_or(String::new(), |f| format!(", {f:.3}"))), warn),
         ];
         let galleys: Vec<_> = items.iter().map(|(_, s, c)| p.layout_no_wrap(s.clone(), font.clone(), *c)).collect();
         let (icon_w, gap, sep) = (14.0, 6.0, 30.0);
         let total: f32 = galleys.iter().map(|g| icon_w + gap + g.size().x).sum::<f32>() + sep * (items.len() - 1) as f32;
         let cy = (rect.max.y - status_h * 0.5).round();
         let mut x = (rect.center().x - total * 0.5).round();
+        if classic {
+            let well = Rect::from_center_size(pos2(rect.center().x, cy), vec2(total + 24.0, status_h - 4.0));
+            widgets::sunken(p, well, t.time_display_bg, &t.metal);
+        }
         for ((icon, _, c), g) in items.iter().zip(galleys) {
-            paint_icon(p, Rect::from_min_size(pos2(x, cy - 7.0), vec2(icon_w, icon_w)), *icon, t.look(), None);
+            paint_icon(p, Rect::from_min_size(pos2(x, cy - 7.0), vec2(icon_w, icon_w)), *icon, t.look(), classic.then_some(ink));
             x += icon_w + gap;
             let w = g.size().x;
             p.galley(pos2(x, cy - g.size().y * 0.5), g, *c);
@@ -468,7 +481,7 @@ fn paint_takes(p: &Painter, frame: Rect, g: &crate::engine::multicam::At) {
         let label = format!("{}  {}", k + 1, name.as_deref().unwrap_or("(no camera)"));
         let galley = p.layout_no_wrap(label, t.font(12.0), Color32::WHITE);
         let at = r.min + vec2(6.0, 4.0);
-        p.rect_filled(Rect::from_min_size(at - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0)), 2.0, Color32::from_black_alpha(150));
+        p.rect_filled(Rect::from_min_size(at - vec2(3.0, 1.0), galley.size() + vec2(6.0, 2.0)), t.radius(2), Color32::from_black_alpha(150));
         p.galley(at, galley, Color32::WHITE);
         if k == g.active {
             p.rect_stroke(widgets::px(r.shrink(1.0)), 0.0, Stroke::new(3.0_f32, ACTIVE_TAKE), StrokeKind::Inside);

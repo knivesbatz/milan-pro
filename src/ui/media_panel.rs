@@ -149,7 +149,10 @@ pub fn draw_media_toolbar(
     }
     // Import Media…: icon + text + ▾ in one hover box.
     let (rect, resp) = ui.allocate_exact_size(vec2(124.0, t.m.button), Sense::click());
-    if resp.hovered() {
+    if t.classic() {
+        use super::widgets::Chrome;
+        widgets::chrome_button(ui.painter(), rect, if resp.hovered() { Chrome::Hover } else { Chrome::Raised }, &t.metal);
+    } else if resp.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(t.m.widget_radius), t.button_hover_bg);
     }
     let icon = Rect::from_min_size(pos2(rect.min.x + 3.0, rect.center().y - 8.0), vec2(16.0, 16.0));
@@ -497,9 +500,10 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
 
 /// "P" on media that has a video proxy, its top-right corner at `tr`.
 fn proxy_badge(p: &Painter, tr: Pos2) {
+    let t = theme::get();
     let r = Rect::from_min_max(tr - vec2(13.0, 0.0), tr + vec2(0.0, 13.0));
-    p.rect_filled(r, CornerRadius::same(2), theme::get().accent);
-    p.text(r.center(), Align2::CENTER_CENTER, "P", FontId::proportional(10.0), Color32::WHITE);
+    p.rect_filled(r, t.radius(2), t.accent);
+    p.text(r.center(), Align2::CENTER_CENTER, "P", t.font(10.0), Color32::WHITE);
 }
 
 const DETAIL_COLS: [(&str, f32); 7] =

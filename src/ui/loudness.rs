@@ -204,7 +204,11 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
         }
         painter.text(pos2(rect.min.x + 8.0, top), Align2::LEFT_TOP, *label, small.clone(), t.text_dim);
         let bx = Rect::from_min_size(pos2(rect.min.x + 8.0, top + 13.0), vec2(stats_w - 16.0, 20.0));
-        painter.rect_filled(bx, 2.0, t.meter_bg);
+        if t.classic() {
+            super::widgets::sunken(&painter, bx, t.meter_bg, &t.metal);
+        } else {
+            painter.rect_filled(bx, 2.0, t.meter_bg);
+        }
         painter.text(bx.right_center() - vec2(38.0, 0.0), Align2::RIGHT_CENTER, value, font.clone(), t.text);
         painter.text(bx.right_center() - vec2(34.0, 0.0), Align2::LEFT_CENTER, *unit, small.clone(), t.text_dim);
         if let Some(on) = lamp {
@@ -226,7 +230,7 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
     let bars = [("M", r.momentary, Some((r.max_momentary, r.min_momentary))), ("S", r.short_term, Some((r.max_short, r.min_short))), ("I", r.integrated, None)];
     for (k, (name, v, holds)) in bars.iter().enumerate() {
         let well = Rect::from_min_size(pos2(x0 + k as f32 * (bar_w + 8.0), area.min.y), vec2(bar_w, area.height()));
-        painter.rect_filled(well, 0.0, t.meter_bg);
+        super::widgets::meter_well(&painter, well, &t);
         if v.is_finite() {
             let lu = v - target;
             let y = ly(lu);
@@ -275,7 +279,7 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
         if well.max.x > rect.max.x {
             break;
         }
-        painter.rect_filled(well, 0.0, t.meter_bg);
+        super::widgets::meter_well(&painter, well, &t);
         let v = r.true_peak[c];
         if v.is_finite() && v > bottom {
             super::master_bus::paint_bar(&painter, well, ty(v.min(0.0)), &|d: f32| ty(d as f64), v16, 1.0);

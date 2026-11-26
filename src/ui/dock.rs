@@ -896,7 +896,8 @@ impl Dock {
                     // A backend without native windows (tests): an egui window instead.
                     Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).show(vctx, |ui| draw(ui));
                 } else {
-                    CentralPanel::default().frame(Frame::NONE.fill(t.frame)).show(vctx, |ui| draw(ui));
+                    let fill = if t.classic() { t.metal.mid } else { t.frame };
+                    CentralPanel::default().frame(Frame::NONE.fill(fill)).show(vctx, |ui| draw(ui));
                 }
                 if class != ViewportClass::Embedded && vctx.input(|i| i.viewport().close_requested()) {
                     act = Some(FloatAction::Close(p));
@@ -920,7 +921,16 @@ impl Dock {
     fn float_ui(&mut self, ui: &mut Ui, t: &Theme, k: usize, fixed: bool, allow_dock: bool, content: &mut impl FnMut(Panel, &mut Ui, &mut Ui)) -> Option<FloatAction> {
         let p = self.floating[k].panel;
         let ctx = ui.ctx().clone();
-        let strip = self.window_ui(ui, t, p, ui.max_rect(), content);
+        let full = ui.max_rect();
+        let inner = if t.classic() {
+            // Classic tool window: a raised 3D frame round the window's contents (the OS draws its caption).
+            super::widgets::bevel(ui.painter(), full, true, &t.metal);
+            ui.painter().rect_stroke(full.shrink(2.0), 0.0, Stroke::new(1.0_f32, t.metal.face), StrokeKind::Inside);
+            full.shrink(3.0)
+        } else {
+            full
+        };
+        let strip = self.window_ui(ui, t, p, inner, content);
         let tab = float_tab(ui, t, p, strip, self.tabs_top);
         if tab.drag_started_by(PointerButton::Primary) && !fixed {
             // The tab moves the window, as its title bar does (the OS's own move; docking is checked when it ends).

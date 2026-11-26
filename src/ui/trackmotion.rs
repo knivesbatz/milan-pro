@@ -141,7 +141,11 @@ impl TrackMotionWin {
             let mid = Rect::from_min_max(pos2(full.min.x, bar.max.y + 4.0), pos2(full.max.x, kf_r.min.y - 5.0));
             let grid_r = mid.with_max_x(mid.min.x + 200.0);
             let ws_r = mid.with_min_x(grid_r.max.x + 5.0);
-            ui.painter().rect_filled(bar, 0.0, t.toolbar_bg);
+            if t.classic() {
+                super::widgets::metal_bar(ui.painter(), bar, &t.metal);
+            } else {
+                ui.painter().rect_filled(bar, 0.0, t.toolbar_bg);
+            }
             let mut row = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(vec2(4.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
             row.add_enabled_ui(editable, |ui| {
                 ComboBox::from_id_salt("tm_composite").width(130.0).selected_text(composite_name(comp)).show_ui(ui, |ui| {

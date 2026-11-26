@@ -225,6 +225,7 @@ pub fn edit_details(ui: &mut Ui, v: &mut EditDetails, project: &mut Project, his
         for row in &rows {
             let selected = v.row.as_ref() == Some(&row.key);
             let r = widgets::list_row(ui, ROW_H, selected);
+            widgets::grid_lines(ui.painter(), r.rect, &head);
             if r.clicked() {
                 v.row = Some(row.key.clone());
             }

@@ -120,6 +120,17 @@ pub fn draw_chooser_toolbar(ui: &mut Ui, c: &mut Chooser) {
         let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
         let active = c.chip == k;
         let p = ui.painter();
+        if t.classic() {
+            // Chrome buttons, the active category pressed in.
+            use super::widgets::Chrome;
+            let state = if active { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
+            widgets::chrome_button(p, r.shrink2(vec2(0.0, 1.0)), state, &t.metal);
+            p.text(r.center(), Align2::CENTER_CENTER, *chip, font, t.text);
+            if resp.clicked() {
+                c.chip = k;
+            }
+            continue;
+        }
         if active {
             p.rect_filled(r, CornerRadius::same(2), t.accent);
         } else if resp.hovered() {
@@ -211,7 +222,11 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     // Description strip.
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
     let p = ui.painter();
-    p.rect_filled(strip, 0.0, t.toolbar_bg);
+    if t.classic() {
+        widgets::sunken(p, strip, t.metal.mid, &t.metal);
+    } else {
+        p.rect_filled(strip, 0.0, t.toolbar_bg);
+    }
     if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)) {
         let text = if info.id.starts_with(ofx::PREFIX) {
             let v = info.id.rsplit_once('@').map_or("", |v| v.1);

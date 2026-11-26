@@ -218,7 +218,7 @@ pub fn draw_explorer(ui: &mut Ui, ex: &mut Explorer, actions: &mut Vec<WinAction
         };
         let cols = [("Name", 260.0), ("Size", 90.0), ("Type", 90.0)];
         if ex.details {
-            widgets::header_row(ui, &cols);
+            widgets::header_row_sorted(ui, &cols, Some((0, true)));
         }
         for (path, name, is_dir, size) in rows {
             let sel = ex.selected.as_ref() == Some(&path);

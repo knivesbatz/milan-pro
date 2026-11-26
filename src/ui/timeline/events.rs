@@ -444,7 +444,7 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
         }
     }
     for (icon, c) in buttons(t, r, ev.is_video, ev.generated) {
-        pr.rect_filled(c, CornerRadius::same(2), t.event_chip_bg);
+        pr.rect_filled(c, t.radius(2), t.event_chip_bg);
         paint_icon(&pr, c.shrink(2.0), icon, t.look(), Some(t.text_bright));
         fx_dot(&pr, t, ev, icon, c);
     }
@@ -499,7 +499,7 @@ fn paint_level(p: &Painter, t: &Theme, ev: &Ev) {
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     pr.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, t.fade_handle);
     if ev.hovered && r.width() >= 40.0 {
-        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), CornerRadius::same(2), t.fade_handle);
+        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), t.radius(2), t.fade_handle);
     }
 }
 

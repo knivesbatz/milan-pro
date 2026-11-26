@@ -218,8 +218,12 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
             let bx = Rect::from_center_size(pos2(resp.rect.min.x + CHECK_W * 0.5, resp.rect.center().y), vec2(12.0, 12.0));
             let hit = ui.interact(bx.expand(3.0), resp.id.with("on"), if ext { Sense::click() } else { Sense::hover() });
             let p = ui.painter();
-            p.rect_filled(bx, 0.0, t.input_bg);
-            p.rect_stroke(bx, 0.0, Stroke::new(1.0_f32, if ext { t.text_dim } else { t.text_dim.gamma_multiply(0.5) }), StrokeKind::Inside);
+            if t.classic() {
+                widgets::sunken(p, bx, if ext { t.input_bg } else { t.metal.face }, &t.metal);
+            } else {
+                p.rect_filled(bx, 0.0, t.input_bg);
+                p.rect_stroke(bx, 0.0, Stroke::new(1.0_f32, if ext { t.text_dim } else { t.text_dim.gamma_multiply(0.5) }), StrokeKind::Inside);
+            }
             if on {
                 let c = bx.center();
                 let s = Stroke::new(1.5_f32, if !ext { t.text_dim } else if sel { Color32::WHITE } else { t.text });
@@ -254,7 +258,11 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
     // Details: "Name, OFX, status: why, file".
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
     let p = ui.painter();
-    p.rect_filled(strip, 0.0, t.toolbar_bg);
+    if t.classic() {
+        widgets::sunken(p, strip, t.metal.mid, &t.metal);
+    } else {
+        p.rect_filled(strip, 0.0, t.toolbar_bg);
+    }
     if let Some(r) = pm.sel.as_ref().and_then(|k| rows.iter().find(|r| r.key == *k)) {
         let status = match &r.status {
             Status::Failed(w) => format!("Failed: {w}"),

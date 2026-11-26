@@ -336,9 +336,10 @@ fn tree(ui: &mut Ui, v: &mut OverlaysView, cmds: &mut Vec<Cmd>) {
 
 /// A small corner label on a tile ("α": the overlay has an alpha channel).
 fn badge(p: &Painter, bl: Pos2, text: &str) {
+    let t = theme::get();
     let r = Rect::from_min_max(bl - vec2(0.0, 14.0), bl + vec2(14.0, 0.0));
-    p.rect_filled(r, CornerRadius::same(2), Color32::from_black_alpha(170));
-    p.text(r.center(), Align2::CENTER_CENTER, text, FontId::proportional(11.0), Color32::WHITE);
+    p.rect_filled(r, t.radius(2), Color32::from_black_alpha(170));
+    p.text(r.center(), Align2::CENTER_CENTER, text, t.font(11.0), Color32::WHITE);
 }
 
 /// Tiles as Media Generators': VP16 100×60 thumbnails, VP23 120×75; only those on screen are probed and decoded.
@@ -393,7 +394,12 @@ const COLS: [(&str, f32); 8] = [("Name", 200.0), ("Pack", 150.0), ("Length", 90.
 
 fn details(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], fps: f64, cmds: &mut Vec<Cmd>) {
     let t = theme::get();
-    match widgets::header_row(ui, &COLS) {
+    let sorted = match v.sort {
+        Sort::Name => Some((0, true)),
+        Sort::Length => Some((2, true)),
+        Sort::Modified => None,
+    };
+    match widgets::header_row_sorted(ui, &COLS, sorted) {
         Some(0) => v.sort = Sort::Name,
         Some(2) => v.sort = Sort::Length,
         _ => {}
