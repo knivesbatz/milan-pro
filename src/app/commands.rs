@@ -532,7 +532,7 @@ impl MeridianApp {
         let (mut target, mut inserted) = (None, None);
         self.edit(|p| {
             target = match d.kind {
-                PluginKind::VideoFx => clip.map(FxTarget::Event).filter(|t| edit::add_fx(p, t, d.fx.clone())),
+                PluginKind::VideoFx => clip.map(FxTarget::Event).filter(|t| d.add_to(p, t)),
                 PluginKind::Transition => clip
                     .filter(|id| {
                         let (Some(r), Some(start)) = (p.find_clip(id), p.clip(id).map(|c| c.position)) else { return false };
@@ -2498,7 +2498,7 @@ impl MeridianApp {
         match self.palette.show(ctx, &st) {
             Some(ui::palette::Action::Run(c)) => self.exec(ctx, c),
             Some(ui::palette::Action::Plugin(info)) => {
-                let d = ui::PluginDrag { kind: info.kind, name: info.name.to_string(), fx: crate::engine::plugins::new_fx(info, None) };
+                let d = ui::PluginDrag { kind: info.kind, name: info.name.to_string(), fx: crate::engine::plugins::new_fx(info, None), package: Vec::new() };
                 self.apply_plugin(d);
             }
             None => {}
@@ -2765,6 +2765,16 @@ impl MeridianApp {
                 self.rel.crash_offer = Some(path);
             }
             "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
+            // MVFX review: the Video FX window on a music-video FX's presets, on the FX Packages, and the Transitions
+            // window on a music-video transition.
+            "video-fx-mvfx" | "video-fx-packages" => {
+                self.dock.open(crate::ui::dock::Panel::VideoFx);
+                self.choosers[1].show_for_harness((what == "video-fx-mvfx").then_some("milan.fx.glow"));
+            }
+            "transitions-mvfx" => {
+                self.dock.open(crate::ui::dock::Panel::Transitions);
+                self.choosers[0].show_for_harness(Some("milan.tr.page_peel"));
+            }
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
             "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
@@ -3147,7 +3157,7 @@ impl MeridianApp {
             "archive" => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
             "vegas-report" => {
                 let lines = [
-                    "Video 1: the event at 1.000 s: event FX: VEGAS Film Grain (com.sonycreativesoftware:filmgrain) is not available in Milan Pro; kept disabled as an OFX placeholder",
+                    "Video 1: the event at 1.000 s: event FX: VEGAS Radial Pixelate (com.sonycreativesoftware:radialpixelate) is not available in Milan Pro; kept disabled as an OFX placeholder",
                     "Video 1: the event at 1.000 s: transition: VEGAS Page Loop (com.sonycreativesoftware:pageloop) is not available in Milan Pro; a crossfade plays until the plug-in is installed",
                     "Music: track FX: audio FX Vinyl Restoration is not available in Milan Pro and was left out",
                     r"Media offline: D:\Footage\interview.mxf (file not found)",

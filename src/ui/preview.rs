@@ -299,7 +299,7 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     }
     if let Some(d) = super::plugin_dropped(&resp) {
         let (target, before) = (crate::edit::FxTarget::VideoOutput, project.clone());
-        if d.kind == crate::engine::plugins::PluginKind::VideoFx && crate::edit::add_fx(project, &target, d.fx.clone()) {
+        if d.kind == crate::engine::plugins::PluginKind::VideoFx && d.add_to(project, &target) {
             history.push(before);
             super::open_tool(ui.ctx(), super::ToolWin::Fx(target));
         } else {

@@ -380,7 +380,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             if row.is_video && comp && edit::set_compositor(project, std::slice::from_ref(&tid), &d.fx) {
                 history.push(before);
                 crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Compositor(tid.clone())));
-            } else if row.is_video && d.kind == crate::engine::plugins::PluginKind::VideoFx && edit::add_fx(project, &target, d.fx.clone()) {
+            } else if row.is_video && d.kind == crate::engine::plugins::PluginKind::VideoFx && d.add_to(project, &target) {
                 history.push(before);
                 crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
             } else {

@@ -5,12 +5,15 @@
 use eframe::egui::*;
 use std::collections::HashMap;
 use crate::engine::plugins::{self, PluginInfo, PluginKind, UserPreset};
+use crate::engine::mvfx::packages::{self, Package};
 use crate::engine::{ofx, thumbs};
 use super::icons::{Icon, paint_icon};
 use super::theme::{self, UiLook};
 use super::{PluginDrag, widgets};
 
 const CHIPS: [&str; 11] = ["All Plug-ins", "Favorites", "AI/ML", "Creative", "Color", "Utility", "Blur", "Light", "360°", "Third Party", "Filter Packages"];
+/// The "Filter Packages" chip: the Video FX window lists FX Packages there.
+const PACKAGES: usize = 10;
 /// New thumbnails rendered per frame; the rest come on the next frames.
 const THUMBS_PER_FRAME: usize = 4;
 /// Transitions animate at this rate while hovered.
@@ -58,6 +61,12 @@ pub struct Chooser {
     hover: Option<(ThumbKey, TextureHandle, i64)>,
     /// The user presets the thumbnails were drawn from; a save or delete redraws theirs.
     users: Vec<UserPreset>,
+    /// FX Packages (built in, then the user's) as of `packages::generation` `pkg_gen`, their thumbnails and the one
+    /// selected.
+    packages: Vec<Package>,
+    pkg_gen: Option<u64>,
+    pkg_thumbs: HashMap<String, TextureHandle>,
+    pkg_sel: Option<String>,
 }
 
 type ThumbKey = (&'static str, (bool, String));
@@ -66,7 +75,20 @@ impl Chooser {
     pub fn new(kind: PluginKind) -> Self {
         let generation = ofx::generation();
         let plugins: Vec<_> = plugins::catalog(kind).collect();
-        Self { kind, plugins, generation, query: String::new(), plugin: Some(0), preset: None, chip: 0, tree_w: 166.0, thumbs: HashMap::new(), hover: None, users: Vec::new() }
+        Self { kind, plugins, generation, query: String::new(), plugin: Some(0), preset: None, chip: 0, tree_w: 166.0, thumbs: HashMap::new(), hover: None, users: Vec::new(), packages: Vec::new(), pkg_gen: None, pkg_thumbs: HashMap::new(), pkg_sel: None }
+    }
+
+    /// The Video FX window on its FX Packages (the "Filter Packages" chip).
+    fn packages_shown(&self) -> bool {
+        self.kind == PluginKind::VideoFx && self.chip == PACKAGES
+    }
+
+    /// The screenshot harness: plug-in `id` selected with its presets showing, or (None) the FX Packages.
+    pub fn show_for_harness(&mut self, id: Option<&str>) {
+        match id {
+            Some(id) => (self.chip, self.plugin, self.preset) = (0, self.plugins.iter().position(|p| p.id == id), None),
+            None => self.chip = PACKAGES,
+        }
     }
 
     /// R33a: after a plug-in scan, or a plug-in turned on or off, list the plug-ins again (keeping the one selected).
@@ -165,6 +187,10 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     c.tree_w = tree_w;
     let mut out = ChooserOut::default();
     c.refresh();
+    if c.packages_shown() && c.pkg_gen != Some(packages::generation()) {
+        (c.packages, c.pkg_gen) = (packages::all(), Some(packages::generation()));
+        c.pkg_thumbs.clear();
+    }
     if c.users != users {
         c.thumbs.retain(|k, _| !k.1.0);
         c.hover = None;
@@ -172,6 +198,20 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     }
 
     widgets::scroll_pane(ui, left, "chooser_list", |ui| {
+        if c.packages_shown() {
+            let q = c.query.to_lowercase();
+            for pk in c.packages.iter().filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q)) {
+                let sel = c.pkg_sel.as_deref() == Some(pk.name.as_str());
+                let r = widgets::list_row(ui, 26.0, sel);
+                let p = ui.painter();
+                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, t.look(), sel.then_some(Color32::WHITE));
+                p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, &pk.name, t.font(t.font.ui), if sel { Color32::WHITE } else { t.text });
+                if r.clicked() {
+                    c.pkg_sel = Some(pk.name.clone());
+                }
+            }
+            return;
+        }
         if v16 {
             let (r, _) = widgets::tree_row(ui, 0, Some(true), Some(Icon::Folder), "All", c.plugin.is_none());
             if r.clicked() {
@@ -217,7 +257,7 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
         }
     });
 
-    widgets::scroll_pane(ui, right, "chooser_presets", |ui| preset_grid(ui, c, users, favorites, &mut out));
+    widgets::scroll_pane(ui, right, "chooser_presets", |ui| if c.packages_shown() { package_grid(ui, c, &mut out) } else { preset_grid(ui, c, users, favorites, &mut out) });
 
     // Description strip.
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
@@ -227,7 +267,12 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     } else {
         p.rect_filled(strip, 0.0, t.toolbar_bg);
     }
-    if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)) {
+    let package = c.packages_shown().then(|| c.pkg_sel.as_ref().and_then(|n| c.packages.iter().find(|p| &p.name == n))).flatten();
+    if let Some(pk) = package {
+        let what = if pk.builtin { "FX Package" } else { "FX Package (yours)" };
+        let text = format!("{}: {}{}{}, {what}", pk.name, pk.desc, if pk.desc.is_empty() { "" } else { " - " }, packages::summary(pk));
+        p.with_clip_rect(strip.intersect(ui.clip_rect())).text(pos2(strip.min.x + 6.0, strip.center().y), Align2::LEFT_CENTER, text, t.font(t.font.ui), t.text);
+    } else if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)).filter(|_| !c.packages_shown()) {
         let text = if info.id.starts_with(ofx::PREFIX) {
             let v = info.id.rsplit_once('@').map_or("", |v| v.1);
             format!("{}{}, Grouping: {}, OFX plug-in version {v}", info.name, if info.desc.is_empty() { String::new() } else { format!(": {}", info.desc) }, info.group)
@@ -290,7 +335,7 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
                 ui.painter().with_clip_rect(th.intersect(ui.clip_rect())).image(tex, th, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
             }
         }
-        let drag = || PluginDrag { kind: info.kind, name: info.name.to_string(), fx: preset.instance(info) };
+        let drag = || PluginDrag { kind: info.kind, name: info.name.to_string(), fx: preset.instance(info), package: Vec::new() };
         if resp.drag_started() {
             DragAndDrop::set_payload(ui.ctx(), drag());
         }
@@ -302,6 +347,72 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
             out.apply = Some(drag());
         }
         resp.on_hover_text(format!("{} - {name}", info.name));
+    }
+}
+
+/// FX Package tiles: the chain on the sample picture; a tile drags onto an event like an FX, a double-click applies
+/// it to the selection, and a user package's context menu deletes it.
+fn package_grid(ui: &mut Ui, c: &mut Chooser, out: &mut ChooserOut) {
+    let (thumb, gap) = (vec2(120.0, 75.0), 12.0);
+    let tile = thumb + vec2(16.0, 36.0);
+    let q = c.query.to_lowercase();
+    let shown: Vec<Package> = c.packages.iter().filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q)).cloned().collect();
+    let width = ui.available_width().max(tile.x + gap);
+    let cols = (((width - gap) / (tile.x + gap)).floor() as usize).max(1);
+    let rows = shown.len().div_ceil(cols);
+    let (area, _) = ui.allocate_exact_size(vec2(width, gap + rows as f32 * (tile.y + gap)), Sense::hover());
+    let mut budget = THUMBS_PER_FRAME;
+    for (n, pk) in shown.iter().enumerate() {
+        let min = area.min + vec2(gap + (n % cols) as f32 * (tile.x + gap), gap + (n / cols) as f32 * (tile.y + gap));
+        let r = Rect::from_min_size(min, tile);
+        let resp = ui.interact(r, ui.id().with(("package", &pk.name)), Sense::click_and_drag());
+        let sel = c.pkg_sel.as_deref() == Some(pk.name.as_str());
+        let th = Rect::from_min_size(min + vec2(8.0, 6.0), thumb);
+        widgets::tile(ui, r, th, &pk.name, sel, resp.hovered());
+        if ui.clip_rect().intersects(r) {
+            let tex = match c.pkg_thumbs.get(&pk.name) {
+                Some(h) => Some(h.id()),
+                None if budget > 0 => {
+                    budget -= 1;
+                    let h = ui.ctx().load_texture(format!("package_{}", pk.name), packages::thumb(pk), TextureOptions::LINEAR);
+                    let id = h.id();
+                    c.pkg_thumbs.insert(pk.name.clone(), h);
+                    Some(id)
+                }
+                None => {
+                    ui.ctx().request_repaint();
+                    None
+                }
+            };
+            if let Some(tex) = tex {
+                ui.painter().with_clip_rect(th.intersect(ui.clip_rect())).image(tex, th, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+            }
+        }
+        let drag = || {
+            let mut chain = packages::instantiate(pk);
+            let first = chain.remove(0);
+            PluginDrag { kind: PluginKind::VideoFx, name: pk.name.clone(), fx: first, package: chain }
+        };
+        if resp.drag_started() && !pk.fx.is_empty() {
+            DragAndDrop::set_payload(ui.ctx(), drag());
+        }
+        if resp.clicked() || resp.double_clicked() {
+            c.pkg_sel = Some(pk.name.clone());
+        }
+        if resp.double_clicked() && !pk.fx.is_empty() {
+            out.apply = Some(drag());
+        }
+        let resp = resp.on_hover_text(format!("{} - {}", pk.name, packages::summary(pk)));
+        if !pk.builtin {
+            resp.context_menu(|ui| {
+                if ui.button("Delete FX Package").clicked() {
+                    if let Err(e) = packages::delete_user(&pk.name) {
+                        log::warn!("could not delete the FX Package {}: {e}", pk.name);
+                    }
+                    ui.close_menu();
+                }
+            });
+        }
     }
 }
 
