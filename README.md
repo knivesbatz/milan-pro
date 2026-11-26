@@ -8,7 +8,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 ## Features
 
-- Two interface looks modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
+- Three interface looks: Classic 2006, and two modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
@@ -18,6 +18,10 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Render As through the same engine as the preview (FFmpeg encoders)
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
+
+## Looks
+
+Milan Pro starts in the **Classic 2006** look: the brushed-metal, 3D-bevelled chrome of the 2005–2007 Windows video editors (Tahoma 8 pt, raised toolbars, sunken white lists, Windows 2000 dialogs and controls, a black LCD time display) on the VEGAS 23 window layout, with every menu, shortcut and docking area working as before. **Options > Preferences > Display > Interface Look** switches to the VEGAS 16 or VEGAS 23 (dark or white) looks, which are drawn as those applications are; the choice is kept in the preferences, and window layouts are saved per look. `docs/CLASSIC_2006_SPEC.md` and `docs/VEGAS_UI_SPEC.md` describe each look pixel by pixel.
 
 ## Overlay packs
 

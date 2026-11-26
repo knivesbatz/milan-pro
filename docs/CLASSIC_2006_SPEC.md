@@ -1,6 +1,6 @@
 # Milan Pro: "Classic 2006" look specification
 
-Status: implementation spec, Stages 1 and 2 (2026-11-26). Companion to `VEGAS_UI_SPEC.md`, which keeps the two VEGAS looks.
+Status: implementation spec, Stages 1–3 complete (2026-11-26). Companion to `VEGAS_UI_SPEC.md`, which keeps the two VEGAS looks.
 `UiLook::Classic2006` is the default look of a new install (preferences without a look choice, and `MILAN_DEMO`);
 `MILAN_LOOK=classic2006` (also `classic`, `2006`, `c2006`) selects it in the harness.
 
@@ -276,15 +276,62 @@ The coloured VP16 shapes, rendered as 2006 pixel art:
 `MILAN_DIALOG` gained `paste-attrs`, `default-track`, `scopes`, `loudness`, `edit-details`, `plugin-manager` (the
 other dialogs already had values). Stage 2 screenshots: `%TEMP%\milan-review\c2006s2\`.
 
-### 8.5 Polish pass (left)
+### 8.5 Stage 3: the polish pass (complete)
 
-* Check boxes, radio buttons, combo arrows and spinners are still egui's flat drawing on classic colours; true 3D
-  check boxes / sunken combos with bevelled arrow buttons need custom widgets.
-* The Trimmer's read-outs and film strip, the Color Grading and Project Notes bodies and the Render dialog's template
-  tiles keep their VP23 drawing on the metal (only their frames changed).
-* Dialogs open at the top-left in the harness (the first frame is laid out before the 1920×1080 resize); in a live
-  session they centre.
-* Floating windows: only the content frame is classic (the caption is the OS's); the external preview stays a plain
-  black full-screen picture.
-* Tree lines are drawn per row (no knowledge of siblings), so the vertical line runs the full height of every nested
-  row rather than stopping at the last child.
+* **Classic controls everywhere egui draws them** (`widgets.rs` §8.6): check boxes, radio buttons, combo boxes,
+  spinners (drag values), sliders, progress bars, text fields and push buttons go through one set of wrappers
+  (`widgets::checkbox`, `radio`, `radio_value`, `combo`, `spin`, `slider`, `progress`, `edit`, `push_button`,
+  `small_push`; `_enabled` forms for `Ui::add_enabled`). The VEGAS looks get egui's control exactly as before; Classic
+  2006 lets egui lay out and run the control and paints the Windows 2000 one over it. The dialogs' `classic_button`
+  and `sized_button` are the same painter (`classic_push`).
+* **Bodies finished**: the Trimmer's strips sit in a sunken well, its transport and read-outs on a metal bar with
+  the In / Out / Length as cyan LCD digits in a black well; Color Grading's wheels and curves are on sunken dark wells
+  with chrome knobs (puck, curve points) and chrome channel buttons; Project Notes separates notes with etched rules
+  and sunken note fields; the Render dialog's lists and details are sunken field boxes and its template tiles raised
+  bevelled buttons (pressed, blue-tinted when chosen); the Keyboard Shortcuts and Slideshow lists are sunken white
+  boxes (no stripes); the external preview gets a 1 px sunken edge when the picture does not fill its display.
+* **Harness placement**: `MILAN_DIALOG` opens once the harness window has its 1920×1080 size (`env_dialog`), so
+  dialogs centre as in a live session. eframe cannot shoot an immediate viewport, so an off-screen run draws floating
+  windows and the external preview inside the main window at their place (their own frame and caption) for the
+  screenshot; a live session keeps the native windows.
+* **Tree lines** stop at the last child: each row draws the column above itself from the last connector at its depth
+  (the parent's box or the previous sibling), kept per list and pass (`tree_row`), with a stub from the column to the
+  node; dots keep one phase (`dotted` on even pixels).
+* **Floating windows** carry the Windows 2000 tool-window caption (`classic_caption`, the small bevelled × closes,
+  dragging it moves the window) under the OS title bar, which cannot be restyled.
+* **Consistency**: no rounded corners, soft shadows, translucent panel fills or VP23 dark panels remain in this look
+  (the translucent fills left are overlays: time selection, drop ghosts, the Trimmer's in/out shading); every text
+  face is Tahoma through `Theme::font`.
+* **Performance**: the metal painters are unchanged; `bench_playback` (release, alone) still holds 30 fps at 1–4
+  layers (see §8.7).
+
+Deliberately left as-is:
+
+* The OS title bar above a floating window (two captions: the native one moves and closes the window too).
+* The hover bar of a combo list and of egui popup menus stays the dialog's button face rather than the `#316AC5` bar.
+* The classic slider has no keyboard stepping (its spinner has); the thumb is the Vegas fader block, not the Windows
+  trackbar pointer.
+* egui scroll bars inside lists keep egui's grey handle (classic chrome scroll bars are the timeline's only).
+* The external preview full screen on a second display stays a plain black picture (the edge shows only when the
+  picture is inset).
+
+### 8.6 Control painters (`widgets.rs`)
+
+| Painter | Draws |
+|---|---|
+| `check_box` | 14×14 sunken 2 px edge, white (face when disabled), a 7×7 pixel check in black [W] |
+| `radio_mark` | white disc with a 3D ring (shadow / dark upper left, light / face lower right), a 4 px black dot [W] |
+| `combo_frame` | sunken 2 px edge round egui's white field, a raised 20 px arrow button with a black ▾ (pressed while the list is open) [W] |
+| `spin_buttons` | two raised 13 px faces with black ▴ ▾ at the right end of a sunken field; they step the value [W] |
+| `progress_blocks` | sunken face-grey well, `#316AC5` blocks two thirds as wide as tall, 2 px apart [W] |
+| `classic_push` | `#D4D0C8` face, 2 px bevel (sunken while pressed, label shifted), black ring on the default button, greyed label with a white emboss when disabled [W] |
+| `slider` (classic path) | `groove` + 11×15 chrome `thumb`, then the value spinner and the label [R Vegas] |
+| `edit` | egui's field with a 5 / 3 px margin and the sunken 2 px edge over it [W] |
+
+The palette comes from `widgets::skin`: the `#D4D0C8` property-sheet one inside a dialog (`dialogs::style` fills the
+panel with the dialog page colour), the metal one in the dock windows.
+
+### 8.7 Stage 3 results
+
+Screenshots: `%TEMP%\milan-review\c2006s3\` (the Stage 2 set plus `color-grading`, `external-preview`; `float`
+shows the floating Trimmer drawn in the main window). `bench_playback` after Stage 3: see the commit message.
