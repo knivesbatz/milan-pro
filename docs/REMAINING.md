@@ -105,7 +105,7 @@ What matters most:
 | 3.6 | Hardware video decoding and encoding | PARTIAL | Decode: `-hwaccel auto` only for HEVC/AV1 or width ≥ 2560 (`vdecode.rs:40-44`). Encode: none. → R22 |
 | 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
 | 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
-| 3.9 | OpenFX and VST hosting where compatible | MISSING | → R31-R35 |
+| 3.9 | OpenFX and VST hosting where compatible | DONE | OFX video (R31-R33c), VST3 and CLAP audio effects (R34a-b, R35) in the out-of-process host; VST2 not feasible (10.11), DX/DMO investigated and not pursued (`docs/compat/dx-audio.md`). |
 | 3.10 | Frameworks evaluated for performance, extensibility, maintainability | PARTIAL | `FEATURE_PLAN.md` section 0/1 records decisions but no comparison → R53 |
 
 ### 2.4 Section 4: interface
@@ -341,8 +341,8 @@ What matters most:
 | 10.9 | Research the actual plug-in standards VEGAS 15 uses | PARTIAL | `FEATURE_PLAN.md:1812-1813` only → R52 |
 | 10.10 | OpenFX | MISSING | → R33a-c |
 | 10.11 | VST2 | NOT FEASIBLE | Steinberg stopped licensing the VST2 SDK (2018); new hosts cannot get a licence, and clean-room headers carry legal risk. Deliverable: stated in COMPATIBILITY.md with the VST3/CLAP alternative (R55). |
-| 10.12 | VST3 | MISSING | → R34a-b |
-| 10.13 | Other documented standards (CLAP, DirectX/DMO) | MISSING | → R35 |
+| 10.12 | VST3 | DONE | (R34a-b) `engine/aplug`, `src/bin/milan-plugin-host/vst3.rs`: scan (IPluginFactory, moduleinfo.json cross-check), IComponent/IAudioProcessor at 48 kHz float with 1024-frame blocks, IEditController parameters as `ParamSpec`s with keyframes and automation, program lists, latency → PDC in the mixer, tail, IPlugView editor windows, `.vstpreset`. Tests `aplug::tests::*`. |
+| 10.13 | Other documented standards (CLAP, DirectX/DMO) | DONE | (R35) CLAP effects through the same host (`clap.rs`: params, state, latency, tail, process; no editor yet). DX/DMO: investigated in the isolated host and not pursued (`docs/compat/dx-audio.md`). |
 | 10.14 | Modular plug-in hosting architecture | PARTIAL | One registry for built-ins (`engine/plugins.rs`). `Fx.plugin` ids are open to an `ofx:` prefix. No external sources. → R31, R32 |
 | 10.15 | Plug-in scanning | MISSING | → R31 |
 | 10.16 | Plug-in discovery | MISSING | → R31 |
@@ -351,9 +351,9 @@ What matters most:
 | 10.19 | Plug-in enable/disable | MISSING | → R31 |
 | 10.20 | Plug-in compatibility reporting | MISSING | → R31, R55 |
 | 10.21 | Plug-in error handling | MISSING | No external plug-ins to fail yet. → R32 |
-| 10.22 | Plug-in presets | PARTIAL | Video FX presets work; (R8c) audio FX presets too: built-in ones for each audio plug-in and user presets saved and loaded in the FX window (test `audio_preset_round_trips`). External presets (`.vstpreset`, OFX presets) are missing. → R34b |
+| 10.22 | Plug-in presets | PARTIAL | Video FX presets work; (R8c) audio FX presets too: built-in ones for each audio plug-in and user presets saved and loaded in the FX window (test `audio_preset_round_trips`); (R34b) `.vstpreset` load and save for VST3 effects (`aplug::preset`, test `preset_round_trip_restores_parameters`). OFX presets are missing. |
 | 10.23 | Effect chains | DONE | `Vec<Fx>` on event, track, output, master and media; FX window (`ui/fx_window.rs`) |
-| 10.24 | Plug-in UI integration | PARTIAL | A generic parameter grid for built-ins. No native editor windows. → R34b |
+| 10.24 | Plug-in UI integration | PARTIAL | The generic parameter grid for every plug-in; (R34b) a VST3 plug-in's own editor (IPlugView) in a host-owned window from the FX window's Show plug-in UI, resizable, its edits written to the project (automation while recording). CLAP editors are left. |
 | 10.25 | Compatibility matrix (native / standard / adapter / unsupported / investigate) | MISSING | → R55 |
 | 10.26 | No fake compatibility claims | DONE | Nothing claims external plug-in support |
 | 10.27 | A plug-in crash must not bring down the editor | PARTIAL | FFmpeg runs out of process (`proc.rs` Job Object). A plug-in host process is still to be built. → R32 |
@@ -412,7 +412,7 @@ What matters most:
 | 12.15 | Audio effects chains | DONE | |
 | 12.16 | Real-time audio processing | DONE | Block mixer with FX and live plan swaps |
 | 12.17 | Low-latency monitoring | DONE | (R9) Input Monitoring Off / On / Auto per armed track (track header › Input, console Record Input) and Insert › Audio Input Bus: the input goes through a lock-free ring into the output callback, the track's or bus's FX, volume, pan and routing, then the master (`audio::MonPlan`, `MonState`; tests `the_monitor_plays_armed_tracks_and_input_busses`, `the_input_is_heard_through_the_output_callback`). The round trip is printed in Preferences › Audio Device. |
-| 12.18 | VST hosting investigated | PARTIAL | `FEATURE_PLAN.md:1812` → R34a |
+| 12.18 | VST hosting investigated | DONE | Built (R34a-b): see 10.12. |
 | 12.19 | Audio-device compatibility | DONE | (R9) Preferences › Audio Device: Microsoft Sound Mapper, Windows Classic Wave Driver (a chosen device) and Windows Audio (Exclusive Mode, Milan Pro's, off by default, `wasapi.rs`), buffer size, recording device; device loss reopens (watchdog). ASIO is not feasible (section 6; `docs/COMPATIBILITY.md`). |
 | 12.20 | Precise A/V sync through playback and render | DONE | Same mixer for both; render audio pass (`engine/render.rs`) |
 
@@ -558,7 +558,7 @@ What matters most:
 | 19.8 | Test transitions | DONE | `engine/transition.rs` tests |
 | 19.9 | Test effects | DONE | `vfx.rs`, `afx.rs` tests |
 | 19.10 | Test keyframes | DONE | `engine/keyframes.rs` tests |
-| 19.11 | Test plug-in loading | MISSING | No external plug-ins → R33c, R34a |
+| 19.11 | Test plug-in loading | DONE | OFX: the test bundle (`tools/ofx-test-plugin`) and the VEGAS 15 probe (R33c); VST3 and CLAP: Milan's own test modules (`tools/vst3-test-plugin`, `tools/clap-test-plugin`) scanned, processed, crashed, hung, preset-loaded and shown through the host (`aplug::tests`). |
 | 19.12 | Test project saving | DONE | `project.rs` tests (atomic save, failed save) |
 | 19.13 | Test project reopening | DONE | `old_projects_load_*` tests |
 | 19.14 | Test project interchange | PARTIAL | VEGAS JSON import tests (`interchange.rs`); no OTIO/EDL/XML → R28, R29 |
@@ -1725,7 +1725,7 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R31: Plug-in manager and registry sources (M-L)
 
-**Status: DONE for OFX; VST3/CLAP sources left.** Built (`engine/ofx/scan.rs`, `ui/plugin_manager.rs`): OFX bundles in `%CommonProgramFiles%\OFX\Plugins`, `OFX_PLUGIN_PATH` and user folders (Plug-In Manager › Folders, `prefs.ofx.folders`) are described in plug-in host processes and cached in `%LOCALAPPDATA%\MilanPro\plugins.json` by path, size and mtime; the Plug-In Manager (View › Window, Ctrl+Alt+1) lists built-ins and OFX plug-ins with OK / Failed (reason) / Disabled, a check box per OFX plug-in (`prefs.ofx.disabled`) and Rescan; the Video FX chooser lists enabled OFX plug-ins in a folder per grouping (VP16) and under Third Party (VP23); missing, disabled or failed plug-ins keep their saved settings and are bypassed, the FX window saying why. Tests: `scan_cache_invalidates_on_mtime_change`, `a_project_with_a_missing_ofx_plugin_keeps_its_parameters`, `plugin_manager_works`. Left: `PluginSource` for VST3/CLAP and the VST folders (Preferences › VST Effects, now labelled R34a), the tree by kind/vendor, search by vendor, "Export compatibility report" (the unmerged WIP branch `r31-plugin-manager` has a PE/moduleinfo reader and the report; reuse it with R34a).
+**Status: DONE for OFX; VST3/CLAP sources DONE in R34a/R35 (the VST folders live in Preferences › VST Effects and Plug-In Manager › Folders; `Binary::audio` in the same cache; the tree by kind/vendor, search by vendor and the compatibility report are still left).** Built (`engine/ofx/scan.rs`, `ui/plugin_manager.rs`): OFX bundles in `%CommonProgramFiles%\OFX\Plugins`, `OFX_PLUGIN_PATH` and user folders (Plug-In Manager › Folders, `prefs.ofx.folders`) are described in plug-in host processes and cached in `%LOCALAPPDATA%\MilanPro\plugins.json` by path, size and mtime; the Plug-In Manager (View › Window, Ctrl+Alt+1) lists built-ins and OFX plug-ins with OK / Failed (reason) / Disabled, a check box per OFX plug-in (`prefs.ofx.disabled`) and Rescan; the Video FX chooser lists enabled OFX plug-ins in a folder per grouping (VP16) and under Third Party (VP23); missing, disabled or failed plug-ins keep their saved settings and are bypassed, the FX window saying why. Tests: `scan_cache_invalidates_on_mtime_change`, `a_project_with_a_missing_ofx_plugin_keeps_its_parameters`, `plugin_manager_works`. Left: `PluginSource` for VST3/CLAP and the VST folders (Preferences › VST Effects, now labelled R34a), the tree by kind/vendor, search by vendor, "Export compatibility report" (the unmerged WIP branch `r31-plugin-manager` has a PE/moduleinfo reader and the report; reuse it with R34a).
 
 **Scope**
 - `PluginSource { Builtin, Ofx { bundle, index }, Vst3 { path, class_id }, Clap { path, id } }`.
@@ -1798,6 +1798,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R34a: VST3 host, scan, process and parameters (L)
 
+**Status: DONE.** `milan-plugin-host.exe` loads a `.vst3` module through the coupler-rs `vst3` bindings (`src/bin/milan-plugin-host/vst3.rs`): the factory's "Audio Module Class" effects (Fx sub categories; PClassInfo2 vendor/version/SDK), each set up once at scan to read its parameters (IEditController, IUnitInfo program lists), latency, tail and whether it has an editor; `ofx::scan` finds `.vst3` bundles (`Contents\x86_64-win`) and single files in `%CommonProgramFiles%\VST3`, `%LOCALAPPDATA%\Programs\Common\VST3` and the Preferences › VST Effects folders, cross-checks `moduleinfo.json`, and caches them in `plugins.json` (`Binary::audio`). Instances: IComponent + IAudioProcessor (stereo main buses, 32-bit float, the project rate, 1024-frame blocks) with their IEditController (a separate class or the component itself) connected directly, a host IHostApplication with IMessage/IAttributeList, IComponentHandler for edits and restarts, memory IBStreams, parameter changes per block (and a 0-sample flush before a state read). Milan side (`engine/aplug`): `vst3:<class id>` registry entries with `p<id>` controls (normalized values; stepped parameters as choices with the plug-in's step names, program change parameters with their program list), the chooser under the vendor, `aplug::Node` as an `afx::AudioFx` in the mixer's chains (blocks in shared memory, a host per module), a crash or hang bypassing the effect with a message exactly as OFX. Plug-in delay compensation (`mix::Lat`): every path from an event to the master is delayed to the longest latency and the mix runs that far ahead, pre-rolling after a seek, sample-exact (`pdc_aligns_a_latent_plug_in_with_a_dry_track`). Preview and render share the mixer (`render_matches_preview_with_a_vst3_fx`). Overhead per 1024-frame block: 0.012 ms over a built-in (`bench_vst3_block_overhead`, `docs/PERFORMANCE.md`). Tests (`#[ignore]`, with `tools/vst3-test-plugin`): `vst3_and_clap_modules_are_scanned`, `vst3_gain_applies_to_a_sine`, `crash_and_hang_are_contained`. Left: mono and surround bus layouts, sample-accurate parameter ramps within a block, MIDI/event buses, instruments.
+
 **Scope**
 - In the host process: `IPluginFactory` scan, `IComponent` / `IAudioProcessor` setup (32-bit float, the project rate, max block 1024), `IEditController` parameters → `ParamSpec` and automation (R8c), bypass, latency reporting → plug-in delay compensation in the mixer, tail.
 - Bindings: the `vst3` crate (coupler-rs, MIT OR Apache-2.0; check the current version on crates.io before adding). Avoid `vst3-sys` (GPL-3.0).
@@ -1809,6 +1811,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R34b: VST3 editor windows and presets (L)
 
+**Status: DONE.** IPlugView in a top-level window the host owns (`editor.rs`: a thread with its own message loop; IPlugFrame resize requests and WM_SIZE both way; off every monitor and never activated in tests and the harness), opened and closed from the FX window's "Show plug-in UI" and polled ten times a second for the plug-in's edits (IComponentHandler::performEdit/beginEdit/endEdit → `aplug::take_edits`): the app writes them as FX automation keys at the cursor while the owning track or bus records automation (Write Touch/Latch) and plays, else as values, a gesture an undo step; the window closes with the FX window, the project and Milan (and dies with its host in the Job Object). `.vstpreset` load/save (`aplug::preset`: header, Comp/Cont/Info chunks and the chunk list, as `vstpresetfile.cpp` writes them) through `ASetState`/`AGetState`; the plug-in's state also travels in `Fx.text["state"]` (and `"cstate"`), refreshed when the editor closes. Program lists: IUnitInfo program names on the kIsProgramChange parameter, shown as a Program choice. Tests: `preset_round_trip_restores_parameters`, `editor_opens_off_screen_and_closes_with_the_host`. Left: IPlugViewContentScaleSupport (DPI), keyboard forwarding, CLAP editors.
+
 **Scope:** `IPlugView` attached to a host-owned top-level HWND, opened from the FX window's "Show plug-in UI" with resize support; `.vstpreset` load/save; program lists; parameter changes from the GUI recorded as automation (Touch).
 
 **Files:** `plugin_host/vst3/editor.rs`, `ui/fx_window.rs`, `engine/host_ipc.rs`.
@@ -1816,6 +1820,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a preset round-trip restores parameters; closing Milan closes plug-in windows; manual GUI check.
 
 ### R35: CLAP host and DirectX/DMO feasibility (M)
+
+**Status: DONE.** CLAP (`clap.rs`, `clap-sys` 0.6): `clap_entry`, the plug-in factory, "audio-effect" descriptors, instances with the params (plain values; stepped and enum parameters with their texts), state, latency, tail and audio-ports extensions (stereo main ports), process with param value events in and out (edits and gestures back to Milan), a host object answering params/latency/state/log/thread-check/tail/audio-ports; `clap:<id>` entries in the same registry and mixer node, PDC alike (`clap_plug_in_processes_audio`, the CLAP track in the PDC test). DX/DMO: a read-only probe in the isolated host (`dmo.rs`: DMOEnum, CoCreateInstance(IMediaObject), float stereo types, one block) found no VEGAS `Audio_x64` DMOs on this machine (the folder is not installed) and ran Windows' own ParamEq DMO outside its host; report and licence position in `docs/compat/dx-audio.md`; no DX path ships.
 
 **Scope**
 - CLAP audio effects through `clap-sys` (MIT OR Apache-2.0) in the same host, reusing the R34a mixer node.

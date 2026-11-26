@@ -5,7 +5,8 @@
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
 //! - `MILAN_OFX_DIR=<folder>` (with `MILAN_DEMO` or `MILAN_SCREENSHOT`): the only OFX folder searched (otherwise none),
-//!   scanned before the screenshot; the user's plug-in list is never read or written.
+//!   scanned before the screenshot; the user's plug-in list is never read or written. `MILAN_AUDIO_PLUGIN_DIR=<folder>`
+//!   (R34a) likewise for VST3 and CLAP modules.
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.

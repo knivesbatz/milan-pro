@@ -4,7 +4,7 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.6). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, recording and rendering work; VST hosting is next.
+> Early development (v0.6). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording and rendering work.
 
 ## Features
 
@@ -52,13 +52,24 @@ Milan Pro runs third-party OFX video effects, transitions and generators (Filter
 
 The OFX C API bindings in `src/bin/milan-plugin-host/ofx.rs` were written from the OpenFX 1.4 headers, Copyright (c) 2003-2015 The Open Effects Association Ltd, used under the BSD 3-Clause licence.
 
+## VST3 and CLAP plug-ins
+
+Milan Pro runs third-party **VST3** and **CLAP** audio effects (stereo, 32-bit float, at the project's 48 kHz) in the same **milan-plugin-host.exe** process as OFX: a plug-in that crashes or hangs is stopped and bypassed with a message, and Milan Pro keeps running. Its settings stay in the project.
+
+- **Where Milan Pro looks:** `C:\Program Files\Common Files\VST3` and `%LOCALAPPDATA%\Programs\Common\VST3` (`.vst3` bundles or single files), `C:\Program Files\Common Files\CLAP` and `%LOCALAPPDATA%\Programs\Common\CLAP` (`.clap` files), and folders you add in **Options > Preferences > VST Effects** (or Plug-In Manager > Folders). A VST3 bundle's `moduleinfo.json` is cross-checked against what its factory reports.
+- **Using them:** found effects appear in the Audio FX menu (fx+ in the FX window) under their vendor and apply to events, tracks, busses and the master like the built-in audio FX, in preview and in renders, with their parameters, keyframes and FX automation envelopes in the FX window. A plug-in's latency is compensated in the mixer (plug-in delay compensation, sample-exact: every other path is delayed to match, and the mix runs that far ahead). **Show plug-in UI** opens the plug-in's own editor in a window of the plug-in host (resizable; it closes with Milan Pro); what you change there is written to the project, as FX automation keys while the track records automation (Write Touch/Latch) and plays, else as values. **Load/Save .vstpreset** read and write Steinberg's preset file format; program lists appear as a Program parameter. Projects store them as `vst3:<class id>` or `clap:<id>` with the parameter values and the plug-in's own state; a project that uses a plug-in you do not have keeps its settings and shows the FX as missing, with a red "!" on the event's fx button.
+- **Plug-In Manager** (View > Window, Ctrl+Alt+1): VST3 and CLAP effects with their status, a check box to turn one off, and **Rescan**; results are cached in `%LOCALAPPDATA%\MilanPro\plugins.json` with the OFX plug-ins.
+- **Limits:** stereo effects only (instruments, MIDI effects, mono- or surround-only plug-ins are listed as unsupported); CLAP plug-ins have no editor window yet; parameter changes are sent once per block (1024 frames); the editor's controls are not shown in Milan's generic parameter grid beyond the plug-in's own parameter list. **VST2** is not supported: Steinberg no longer licenses its SDK. **DirectX (DMO)** audio plug-ins were investigated and not pursued (`docs/compat/dx-audio.md`).
+
+VST3 is hosted through the `vst3` crate (coupler-rs, MIT OR Apache-2.0; the VST 3 SDK itself is MIT-licensed since VST 3.8) and CLAP through `clap-sys` (MIT OR Apache-2.0). The test plug-ins in `tools/vst3-test-plugin` and `tools/clap-test-plugin` are Milan Pro's own.
+
 ## Build from source
 
 ```bash
 cargo build --release
 ```
 
-Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/milan-pro.exe` and `target/release/milan-plugin-host.exe` (the OFX plug-in host, which must sit beside it).
+Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/milan-pro.exe` and `target/release/milan-plugin-host.exe` (the OFX / VST3 / CLAP plug-in host, which must sit beside it).
 
 ## Project layout
 
@@ -73,7 +84,7 @@ Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/
 
 ## Roadmap
 
-- VST plug-in hosting; OFX transitions, generators and GPU render
+- CLAP editor windows; OFX GPU render
 - Masks, freely dockable panels, direct `.veg` reading
 - EDL / OTIO interchange
 

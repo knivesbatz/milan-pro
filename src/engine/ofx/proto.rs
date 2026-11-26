@@ -20,6 +20,24 @@ pub enum Req {
     Button(Render, String),
     /// Testing aid: the host panics (the R32 crash test without a plug-in).
     Panic,
+    /// R34a/R35: the loaded binary is a VST3 or CLAP module (by its extension): list its audio effects.
+    AScan,
+    /// Make (or reset) an audio plug-in instance without processing: its latency and tail, its values.
+    AOpen(AInstance),
+    /// Process `frames` interleaved stereo 32-bit float frames: the input at the start of the shared memory, the output
+    /// right after it (`frames * 2 * 4` bytes each).
+    AProcess(AProcess),
+    /// The instance's state (component and controller), for the project and `.vstpreset` files.
+    AGetState(AInstance),
+    /// Load a state into the instance (a `.vstpreset`, a program): the values afterwards come back.
+    ASetState(AInstance, AState),
+    /// R34b: the plug-in's own editor window, owned by the host.
+    AEditor(AInstance, EditorOp),
+    /// Forget an instance (its FX was removed).
+    AClose(String),
+    /// R35 research spike: enumerate the DirectX Media Object audio effects and try one; the findings are in
+    /// `Outcome::messages`. Read-only; nothing is kept.
+    DmoProbe,
     /// Can this process make a Vulkan device of its own (as Spektrafilm does)? The answer is in `Outcome::messages`.
     GpuCheck,
     Quit,
@@ -103,6 +121,165 @@ pub enum Reply {
     /// A frame was rendered, or a button's action ran.
     Rendered(Outcome),
     Error(String),
+    /// R34a/R35: the audio effects of the loaded module.
+    AScanned(Vec<AudioDesc>),
+    /// An audio instance did something (opened, processed, loaded a state, its editor changed).
+    AOut(AOut),
+    AStateIs(AState),
+}
+
+// ---------------------------------------------------------------- audio plug-ins (R34a, R34b, R35)
+
+/// One audio effect of a VST3 or CLAP module, as scanned.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AudioDesc {
+    /// "vst3" or "clap".
+    pub format: String,
+    /// VST3: the class id, 32 hex digits (as `.vstpreset` and `moduleinfo.json` spell it); CLAP: the plug-in id.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub vendor: String,
+    #[serde(default)]
+    pub version: String,
+    /// VST3 sub categories ("Fx|Dynamics"); CLAP features ("audio-effect|compressor").
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub sdk: String,
+    #[serde(default)]
+    pub params: Vec<AParam>,
+    #[serde(default)]
+    pub has_editor: bool,
+    /// Its latency (samples at 48 kHz) and tail when first set up.
+    #[serde(default)]
+    pub latency: u32,
+    #[serde(default)]
+    pub tail: u32,
+    /// Why it cannot run (not stereo, no audio buses, failed to set up); "" when it can.
+    #[serde(default)]
+    pub error: String,
+}
+
+/// One parameter of an audio effect. VST3 values are normalized 0..=1 (as the API has them); CLAP values are plain.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AParam {
+    pub id: u32,
+    pub name: String,
+    #[serde(default)]
+    pub units: String,
+    /// 0: continuous; n: n + 1 discrete steps (VST3 stepCount; a stepped CLAP range).
+    #[serde(default)]
+    pub steps: i32,
+    #[serde(default)]
+    pub min: f64,
+    #[serde(default)]
+    pub max: f64,
+    #[serde(default)]
+    pub default: f64,
+    #[serde(default)]
+    pub automatable: bool,
+    #[serde(default)]
+    pub hidden: bool,
+    /// The plug-in's own bypass switch (Milan has its own; this one is not shown).
+    #[serde(default)]
+    pub bypass: bool,
+    #[serde(default)]
+    pub readonly: bool,
+    /// The names of the steps (a list parameter, a program change parameter's programs), when the plug-in gives them.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// VST3 kIsProgramChange: selects a program of the plug-in's program list.
+    #[serde(default)]
+    pub program: bool,
+}
+
+/// An instance of an audio effect in the host: what is needed to make it (or make it again after the host died).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AInstance {
+    /// The effect (`AudioDesc::id`).
+    pub id: String,
+    /// Milan's FX id.
+    pub instance: String,
+    pub rate: f64,
+    /// The largest block that will be processed.
+    pub block: u32,
+    /// A saved state to load when the instance is made (the project's).
+    #[serde(default)]
+    pub state: Option<AState>,
+    /// Parameter values (by id) to set: all of them when the instance is made, the changed ones afterwards.
+    #[serde(default)]
+    pub params: Vec<(u32, f64)>,
+    /// Start afresh (silent delay lines): the chain was idle.
+    #[serde(default)]
+    pub reset: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AProcess {
+    pub inst: AInstance,
+    pub frames: u32,
+    /// Timeline time of the first frame (seconds) and whether the transport runs.
+    pub time: f64,
+    pub playing: bool,
+    pub shm: String,
+    pub shm_size: u64,
+}
+
+/// A plug-in's state: its processor's (component) and its controller's bytes, base64.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AState {
+    pub component: String,
+    #[serde(default)]
+    pub controller: String,
+}
+
+/// What an audio instance reports with a reply.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AOut {
+    pub latency: u32,
+    #[serde(default)]
+    pub tail: u32,
+    /// Parameters the plug-in changed itself (its editor, a program change), by id.
+    #[serde(default)]
+    pub edits: Vec<(u32, f64)>,
+    /// Begin (true) and end (false) of a control gesture in the editor, by parameter id: Touch automation.
+    #[serde(default)]
+    pub gestures: Vec<(u32, bool)>,
+    /// Every parameter's value, after a state was loaded or the instance was made.
+    #[serde(default)]
+    pub values: Option<Vec<(u32, f64)>>,
+    #[serde(default)]
+    pub editor: Option<EditorState>,
+    #[serde(default)]
+    pub messages: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum EditorOp {
+    /// Open the editor in a top-level window at (x, y); `offscreen`: never shown on a monitor nor activated (tests).
+    Open { x: i32, y: i32, offscreen: bool, title: String },
+    Close,
+    /// Nothing: the reply says how it is (and brings the edits made in it).
+    Poll,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorState {
+    pub open: bool,
+    pub w: u32,
+    pub h: u32,
+    pub hwnd: u64,
+}
+
+pub fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+pub fn unb64(s: &str) -> Vec<u8> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.decode(s.trim()).unwrap_or_default()
 }
 
 /// What the plug-in did besides the picture.

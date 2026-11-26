@@ -177,6 +177,8 @@ pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
     }
     *REG.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(r);
     GEN.fetch_add(1, Ordering::Relaxed);
+    // R34a/R35: the VST3 and CLAP effects of the same scan.
+    super::aplug::set_registry(cache, prefs);
 }
 
 fn reg() -> Arc<Registry> {
@@ -186,6 +188,7 @@ fn reg() -> Arc<Registry> {
 pub fn generation() -> u64 {
     GEN.load(Ordering::Relaxed)
 }
+
 
 pub fn find(id: &str) -> Option<Arc<Plugin>> {
     if !id.starts_with(PREFIX) {
@@ -226,12 +229,15 @@ pub fn failure(id: &str) -> Option<String> {
 /// Rescan and the Plug-In Manager try failed plug-ins again.
 pub fn clear_failures() {
     lock(&FAILED).clear();
+    super::aplug::clear_failures();
     GEN.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Messages for the status bar since the last call.
 pub fn take_events() -> Vec<String> {
-    std::mem::take(&mut *lock(&EVENTS))
+    let mut v = std::mem::take(&mut *lock(&EVENTS));
+    v.extend(super::aplug::take_events());
+    v
 }
 
 /// What plug-ins changed themselves since the last call (the app writes it into the project).
@@ -647,6 +653,7 @@ pub fn close_hosts() {
             drop(g.take());
         }
     }
+    super::aplug::close_hosts();
 }
 
 /// The request for one frame (or a button) of `p` as `e` evaluates it, for pictures of `size`.

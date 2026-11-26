@@ -680,16 +680,22 @@ pub fn gpu_check() -> Reply {
     }
 }
 
-/// Milan's shared memory, mapped.
-struct Shm {
-    name: String,
-    size: u64,
+/// Milan's shared memory, mapped (frames, or R34a audio blocks).
+pub struct Shm {
+    pub name: String,
+    pub size: u64,
     handle: windows_sys::Win32::Foundation::HANDLE,
     ptr: *mut u8,
 }
 
 impl Shm {
-    fn open(name: &str, size: u64) -> Result<Shm, String> {
+    /// The whole view.
+    pub fn bytes(&mut self) -> &mut [u8] {
+        // SAFETY: the mapped view of `size` bytes, owned by self.
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size as usize) }
+    }
+
+    pub fn open(name: &str, size: u64) -> Result<Shm, String> {
         use windows_sys::Win32::System::Memory::{FILE_MAP_ALL_ACCESS, MapViewOfFile, OpenFileMappingW};
         let w: Vec<u16> = name.encode_utf16().chain([0]).collect();
         // SAFETY: a NUL-terminated name; the view is unmapped and the handle closed on drop.

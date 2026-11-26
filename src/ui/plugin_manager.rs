@@ -1,10 +1,12 @@
 //! R31: the Plug-In Manager (View › Window › Plug-In Manager, Ctrl+Alt+1), as in VEGAS: the plug-ins Milan Pro has
-//! (built in, and the OFX plug-ins found) with their grouping, version and status (OK / Failed with the reason /
-//! Disabled), a check box to turn an OFX plug-in on or off, Rescan, and the folders searched (Add Folder).
+//! (built in, the OFX plug-ins found and, R34a/R35, the VST3 and CLAP effects) with their grouping, version and status
+//! (OK / Failed with the reason / Disabled), a check box to turn an external plug-in on or off, Rescan, and the folders
+//! searched (Add Folder; the VST folders also in Preferences › VST Effects).
 //! Scanning runs on a thread of its own; the plug-ins are described in plug-in host processes, never in Milan.
 use eframe::egui::*;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use crate::engine::aplug;
 use crate::engine::ofx::{self, OfxPrefs, ScanCache, Status, scan};
 use crate::engine::plugins::{self, PluginKind};
 use super::icons::{Icon, paint_icon};
@@ -54,7 +56,7 @@ impl PluginManager {
     }
 
     fn folders(&self, prefs: &OfxPrefs) -> Vec<PathBuf> {
-        self.only.clone().unwrap_or_else(|| scan::folders(prefs))
+        self.only.clone().unwrap_or_else(|| scan::folders(prefs).into_iter().chain(scan::audio_folders(prefs)).collect())
     }
 
     /// Scan on a thread of its own (`poll` takes the result). Unchanged binaries keep their entries unless `force`
@@ -126,7 +128,7 @@ impl PluginManager {
             version: env!("CARGO_PKG_VERSION").into(),
             file: "Built in".into(),
         });
-        let found = ofx::entries().into_iter().map(|e| Row {
+        let found = ofx::entries().into_iter().chain(aplug::entries()).map(|e| Row {
             key: if e.id.is_empty() { e.binary.display().to_string() } else { e.id.clone() },
             id: e.id,
             name: e.name,
@@ -137,10 +139,22 @@ impl PluginManager {
             file: e.binary.display().to_string(),
         });
         let q = self.query.trim().to_lowercase();
-        let mut v: Vec<Row> = found.chain(builtins).filter(|r| q.is_empty() || [&r.name, &r.group, &r.id, &r.file, &r.status.name().to_string()].iter().any(|s| s.to_lowercase().contains(&q))).collect();
-        let ext = |r: &Row| r.kind.starts_with("OFX");
-        v.sort_by(|a, b| (!ext(a), a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(!ext(b), b.group.to_lowercase(), b.name.to_lowercase())));
+        let mut v: Vec<Row> = found.chain(builtins).filter(|r| q.is_empty() || [&r.name, &r.group, &r.id, &r.file, &r.kind.to_string(), &r.status.name().to_string()].iter().any(|s| s.to_lowercase().contains(&q))).collect();
+        v.sort_by(|a, b| (!external(a.kind), a.kind, a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(!external(b.kind), b.kind, b.group.to_lowercase(), b.name.to_lowercase())));
         v
+    }
+}
+
+/// An external plug-in's row kind (OFX, VST3, CLAP): it has a check box and a file.
+fn external(kind: &str) -> bool {
+    kind.starts_with("OFX") || kind == "VST3" || kind == "CLAP"
+}
+
+impl PluginManager {
+    /// R34a: the VST3 and CLAP effects found and OK, for the toolbar's count.
+    fn audio_counts() -> (usize, usize) {
+        let a = aplug::entries();
+        (a.len(), a.iter().filter(|e| e.status == Status::Ok).count())
     }
 }
 
@@ -160,23 +174,33 @@ pub fn plugin_manager_toolbar(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut O
     paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, t.look(), None);
     widgets::search_field(ui, &mut pm.query, "Search plug-ins", 160.0);
     ui.add_space(6.0);
-    out.rescan = tool_button(ui, Icon::Refresh, "Rescan: read every OFX plug-in again and try failed ones again", !pm.scanning(), false).clicked();
+    out.rescan = tool_button(ui, Icon::Refresh, "Rescan: read every OFX, VST3 and CLAP plug-in again and try failed ones again", !pm.scanning(), false).clicked();
     ui.menu_button("Folders", |ui| {
         for f in pm.folders(prefs) {
-            let mine = prefs.folders.contains(&f);
+            let mine = prefs.folders.contains(&f) || prefs.vst_folders.contains(&f);
             ui.horizontal(|ui| {
                 ui.label(f.display().to_string());
                 if mine && widgets::small_push(ui, "×").on_hover_text("Stop searching this folder").clicked() {
                     prefs.folders.retain(|x| *x != f);
+                    prefs.vst_folders.retain(|x| *x != f);
                     out.prefs_changed = true;
                 }
             });
         }
         ui.separator();
-        if widgets::push_button_enabled(ui, pm.only.is_none(), "Add Folder...").clicked() {
+        if widgets::push_button_enabled(ui, pm.only.is_none(), "Add OFX Folder...").clicked() {
             if let Some(d) = rfd::FileDialog::new().set_title("Add an OFX plug-in folder").pick_folder() {
                 if !prefs.folders.contains(&d) {
                     prefs.folders.push(d);
+                    out.prefs_changed = true;
+                }
+            }
+            ui.close_menu();
+        }
+        if widgets::push_button_enabled(ui, pm.only.is_none(), "Add VST3 / CLAP Folder...").on_hover_text("Also in Preferences › VST Effects").clicked() {
+            if let Some(d) = rfd::FileDialog::new().set_title("Add a VST3 or CLAP plug-in folder").pick_folder() {
+                if !prefs.vst_folders.contains(&d) {
+                    prefs.vst_folders.push(d);
                     out.prefs_changed = true;
                 }
             }
@@ -189,7 +213,8 @@ pub fn plugin_manager_toolbar(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut O
         "Scanning plug-in folders...".to_string()
     } else {
         let ok = found.iter().filter(|e| e.status == Status::Ok).count();
-        format!("{} built in; {} OFX found, {ok} OK", plugins::PLUGINS.len(), found.len())
+        let (a, a_ok) = PluginManager::audio_counts();
+        format!("{} built in; {} OFX found, {ok} OK; {a} VST3/CLAP found, {a_ok} OK", plugins::PLUGINS.len(), found.len())
     };
     ui.label(RichText::new(text).font(t.font(t.font.ui)).color(t.text_dim));
     out
@@ -214,7 +239,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
         for r in &rows {
             let sel = pm.sel.as_ref() == Some(&r.key);
             let resp = widgets::list_row(ui, row_h, sel);
-            let ext = r.kind.starts_with("OFX") && !r.id.is_empty();
+            let ext = external(r.kind) && !r.id.is_empty();
             let on = !ext || !prefs.disabled.contains(&r.id);
             let bx = Rect::from_center_size(pos2(resp.rect.min.x + CHECK_W * 0.5, resp.rect.center().y), vec2(12.0, 12.0));
             let hit = ui.interact(bx.expand(3.0), resp.id.with("on"), if ext { Sense::click() } else { Sense::hover() });
@@ -239,7 +264,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
                 }
                 out.prefs_changed = true;
             }
-            hit.on_hover_text(if !ext { "Built-in plug-ins are always on" } else if on { "On: offered in the Video FX window. Click to turn it off" } else { "Off: not offered or run; projects that use it keep it, bypassed. Click to turn it on" });
+            hit.on_hover_text(if !ext { "Built-in plug-ins are always on" } else if on { "On: offered in the FX choosers. Click to turn it off" } else { "Off: not offered or run; projects that use it keep it, bypassed. Click to turn it on" });
             let color = if sel { Color32::WHITE } else if !on { t.text_dim } else { t.text };
             let status_color = if matches!(r.status, Status::Failed(_)) && !sel { t.warning_text } else { color };
             let x = resp.rect.min.x + CHECK_W;

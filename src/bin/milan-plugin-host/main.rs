@@ -1,5 +1,5 @@
-//! milan-plugin-host.exe: runs OFX plug-ins for Milan Pro in a process of their own, so a plug-in that crashes or hangs
-//! never takes the editor down (R32, R33a, R33b). Milan starts it with `--pipe <name>`; the host serves that named pipe
+//! milan-plugin-host.exe: runs OFX plug-ins (R32, R33a, R33b) and VST3 and CLAP audio effects (R34a, R34b, R35) for
+//! Milan Pro in a process of their own, so a plug-in that crashes or hangs never takes the editor down. Milan starts it with `--pipe <name>`; the host serves that named pipe
 //! (requests in `proto.rs`, one reply each) and maps the frames Milan puts in shared memory. It has no window and no
 //! console, and shows no error dialogs: a crash ends the process silently and Milan reports it.
 #![windows_subsystem = "windows"]
@@ -9,11 +9,15 @@
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 compile_error!("milan-plugin-host hosts 64-bit Windows OFX plug-ins (its variadic parameter functions rely on the Win64 ABI)");
 
+mod clap;
+mod dmo;
+mod editor;
 mod host;
 mod ofx;
 #[path = "../../engine/ofx/proto.rs"]
 mod proto;
 mod suites;
+mod vst3;
 
 use std::fs::File;
 use std::os::windows::io::FromRawHandle;
@@ -29,17 +33,90 @@ fn main() {
     };
     let Some(mut pipe) = serve(&name) else { std::process::exit(3) };
     let mut host = host::Host::new();
+    let mut audio = Audio::None;
+    // Audio blocks travel in shared memory Milan names with each request (mapped once per name).
+    let mut shm: Option<(String, host::Shm)> = None;
     loop {
         let Ok(req) = proto::read_msg::<Req>(&mut pipe) else { break };
         let reply = match req {
-            Req::Load { binary } => host.load(&binary),
+            // A VST3 or CLAP module by its extension; anything else is an OFX binary.
+            Req::Load { binary } => match binary.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+                Some("vst3") => match vst3::Module::load(&binary) {
+                    Ok(m) => {
+                        audio = Audio::Vst3(m);
+                        Reply::Loaded(1)
+                    }
+                    Err(e) => Reply::Error(e),
+                },
+                Some("clap") => match clap::Module::load(&binary) {
+                    Ok(m) => {
+                        audio = Audio::Clap(m);
+                        Reply::Loaded(1)
+                    }
+                    Err(e) => Reply::Error(e),
+                },
+                _ => host.load(&binary),
+            },
             Req::Describe { index } => host.describe(index),
             Req::Render(r) => host.render(&r),
             Req::Button(r, name) => host.button(&r, &name),
             Req::Panic => panic!("asked to panic"),
             Req::GpuCheck => host::gpu_check(),
+            Req::AScan => match &mut audio {
+                Audio::Vst3(m) => Reply::AScanned(m.scan()),
+                Audio::Clap(m) => Reply::AScanned(m.scan()),
+                Audio::None => Reply::Error("no VST3 or CLAP module is loaded".into()),
+            },
+            Req::AOpen(inst) => a_reply(match &mut audio {
+                Audio::Vst3(m) => m.open(&inst),
+                Audio::Clap(m) => m.open(&inst),
+                Audio::None => Err("no VST3 or CLAP module is loaded".into()),
+            }),
+            Req::AProcess(p) => {
+                let mem = match &mut shm {
+                    Some((name, s)) if *name == p.shm && s.size >= p.shm_size => Ok(s),
+                    _ => host::Shm::open(&p.shm, p.shm_size).map(|s| &mut shm.insert((p.shm.clone(), s)).1),
+                };
+                a_reply(mem.and_then(|s| match &mut audio {
+                    Audio::Vst3(m) => m.process(&p, s.bytes()),
+                    Audio::Clap(m) => m.process(&p, s.bytes()),
+                    Audio::None => Err("no VST3 or CLAP module is loaded".into()),
+                }))
+            }
+            Req::AGetState(inst) => match match &mut audio {
+                Audio::Vst3(m) => m.get_state(&inst),
+                Audio::Clap(m) => m.get_state(&inst),
+                Audio::None => Err("no VST3 or CLAP module is loaded".into()),
+            } {
+                Ok(s) => Reply::AStateIs(s),
+                Err(e) => Reply::Error(e),
+            },
+            Req::ASetState(inst, st) => a_reply(match &mut audio {
+                Audio::Vst3(m) => m.set_state(&inst, &st),
+                Audio::Clap(m) => m.set_state(&inst, &st),
+                Audio::None => Err("no VST3 or CLAP module is loaded".into()),
+            }),
+            Req::AEditor(inst, op) => a_reply(match &mut audio {
+                Audio::Vst3(m) => m.editor(&inst, &op),
+                Audio::Clap(_) => Err("CLAP editors are not shown in this version of Milan Pro".into()),
+                Audio::None => Err("no VST3 or CLAP module is loaded".into()),
+            }),
+            Req::AClose(instance) => {
+                match &mut audio {
+                    Audio::Vst3(m) => m.close(&instance),
+                    Audio::Clap(m) => m.close(&instance),
+                    Audio::None => {}
+                }
+                Reply::AOut(Default::default())
+            }
+            Req::DmoProbe => Reply::Rendered(proto::Outcome { messages: dmo::probe(), ..Default::default() }),
             Req::Quit => {
                 host.shutdown();
+                match &mut audio {
+                    Audio::Vst3(m) => m.shutdown(),
+                    Audio::Clap(m) => m.shutdown(),
+                    Audio::None => {}
+                }
                 let _ = proto::write_msg(&mut pipe, &Reply::Rendered(Default::default()));
                 break;
             }
@@ -50,6 +127,20 @@ fn main() {
     }
     // Skip the plug-ins' unload and the DLL's detach: a hung or crashing unload must not keep the process alive.
     std::process::exit(0);
+}
+
+/// The audio module this host runs (one per host, as one OFX binary per host).
+enum Audio {
+    None,
+    Vst3(vst3::Module),
+    Clap(clap::Module),
+}
+
+fn a_reply(r: Result<proto::AOut, String>) -> Reply {
+    match r {
+        Ok(o) => Reply::AOut(o),
+        Err(e) => Reply::Error(e),
+    }
 }
 
 /// No crash dialog, no "cannot find DLL" box, no Windows Error Reporting window: the user must never see the host.

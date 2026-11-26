@@ -1,6 +1,7 @@
 //! Audio FX (batch 16): the built-in plug-ins' DSP, made by plug-in id (their parameters and presets live in the
 //! registry, `plugins.rs`), and `Chain`, which runs an event's, track's or the master's plug-in list over interleaved
-//! stereo blocks at RATE and keeps each instance's state by its id.
+//! stereo blocks at RATE and keeps each instance's state by its id. R34a: VST3 and CLAP effects join a chain as
+//! `aplug::Node`s (their blocks go through the plug-in host); `latency` is what the mixer compensates for a chain.
 // shortcut: parameters are read once per 1024-frame block; add per-sample smoothing if zipper noise is heard.
 use crate::audio::RATE;
 use crate::engine::plugins::{self, FxEval};
@@ -15,6 +16,8 @@ pub trait AudioFx: Send {
     fn reset(&mut self);
     /// With `p` it would pass the signal through unchanged, so the chain skips it.
     fn neutral(&self, p: &FxEval) -> bool;
+    /// The timeline time of the next block (an external plug-in's transport).
+    fn at(&mut self, _t: f64) {}
 }
 
 /// The DSP of a built-in audio plug-in; None for any other id.
@@ -30,9 +33,21 @@ pub fn new(plugin: &str) -> Option<Box<dyn AudioFx>> {
     })
 }
 
-/// Some plug-in of `fx` changes the sound at `t`: enabled, built in and not at neutral settings (a track's fx dot).
+/// The DSP of `fx`'s plug-in: a built-in, or (R34a) a VST3 or CLAP effect's node; None for any other id.
+fn new_for(fx: &Fx) -> Option<Box<dyn AudioFx>> {
+    new(&fx.plugin).or_else(|| crate::engine::aplug::node(fx))
+}
+
+/// Some plug-in of `fx` changes the sound at `t`: enabled, built in and not at neutral settings (a track's fx dot); an
+/// enabled external plug-in always counts.
 pub fn audible(fx: &[Fx], t: f64) -> bool {
-    fx.iter().any(|f| f.enabled && new(&f.plugin).zip(plugins::eval(f, t)).is_some_and(|(d, p)| !d.neutral(&p)))
+    fx.iter().any(|f| f.enabled && (crate::engine::aplug::find(&f.plugin).is_some() || new(&f.plugin).zip(plugins::eval(f, t)).is_some_and(|(d, p)| !d.neutral(&p))))
+}
+
+/// R34a: the latency (samples) of the chain `fx`: the sum of its enabled plug-ins' reported latencies (built-ins
+/// report none). What plug-in delay compensation delays the other paths by.
+pub fn latency(fx: &[Fx]) -> usize {
+    fx.iter().filter(|f| f.enabled).map(|f| crate::engine::aplug::latency(&f.plugin)).sum()
 }
 
 /// One-pole smoothing coefficient for a time constant of `ms`.
@@ -74,7 +89,7 @@ impl Chain {
             .iter()
             .map(|f| match old.iter().position(|s| s.id == f.id && s.plugin == f.plugin) {
                 Some(i) => old.swap_remove(i),
-                None => Slot { id: f.id.clone(), plugin: f.plugin.clone(), dsp: new(&f.plugin), idle: true },
+                None => Slot { id: f.id.clone(), plugin: f.plugin.clone(), dsp: new_for(f), idle: true },
             })
             .collect();
     }
@@ -83,12 +98,12 @@ impl Chain {
     /// plug-ins pass the signal through.
     pub fn run(&mut self, fx: &[Fx], t: f64, buf: &mut [f32]) {
         let vals: Vec<Option<FxEval>> = fx.iter().map(|f| f.enabled.then(|| plugins::eval(f, t)).flatten()).collect();
-        self.run_with(fx, &vals, buf);
+        self.run_with(fx, &vals, t, buf);
     }
 
     /// R9: `run` with the values already evaluated (one per plug-in of `fx`, None to pass through), so the real-time
-    /// input monitor allocates nothing while the chain keeps its plug-ins.
-    pub fn run_with(&mut self, fx: &[Fx], vals: &[Option<FxEval>], buf: &mut [f32]) {
+    /// input monitor allocates nothing while the chain keeps its plug-ins. `t`: the block's timeline time.
+    pub fn run_with(&mut self, fx: &[Fx], vals: &[Option<FxEval>], t: f64, buf: &mut [f32]) {
         self.sync(fx);
         for (s, p) in self.slots.iter_mut().zip(vals) {
             let (Some(dsp), Some(p)) = (s.dsp.as_mut(), p) else {
@@ -103,6 +118,7 @@ impl Chain {
                 dsp.reset();
                 s.idle = false;
             }
+            dsp.at(t);
             dsp.process(p, buf);
         }
     }

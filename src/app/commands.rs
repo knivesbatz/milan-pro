@@ -504,7 +504,11 @@ impl MeridianApp {
 
     /// The FX window on `target`, its last plug-in selected (a drop just put it there).
     pub(super) fn open_fx(&mut self, target: edit::FxTarget) {
-        self.fx_win = ui::FxWindow::open(&self.project, target).map(|w| w.select_last(&self.project));
+        let offscreen = self.demo || self.shot.is_some();
+        self.fx_win = ui::FxWindow::open(&self.project, target).map(|w| w.select_last(&self.project)).map(|mut w| {
+            w.offscreen = offscreen;
+            w
+        });
     }
 
     /// A chooser tile double-clicked: video FX go on the focus video event, a transition on its start, generated media
@@ -2142,9 +2146,14 @@ impl MeridianApp {
             if theme::get().look() == UiLook::Vegas16 && self.prefs_dlg.timeline_bottom == self.dock.timeline_top() {
                 self.dock.set_timeline_top(!self.prefs_dlg.timeline_bottom);
             }
+            // R34a: new VST folders are searched.
+            let rescan = new.ofx.vst_folders != self.prefs.ofx.vst_folders;
             self.look = new.look;
             self.prefs = new;
             self.save_prefs();
+            if rescan {
+                self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
+            }
         }
         self.show_organize(ctx);
         if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {
@@ -2574,6 +2583,24 @@ impl MeridianApp {
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
             "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
+            // R34a review: the FX window on the first audio track with the first VST3 effect of MILAN_AUDIO_PLUGIN_DIR
+            // (the test module's "Milan Test Gain") after the default chain; "fx-vst3-ui" also opens its editor
+            // (off-screen in the harness).
+            "fx-vst3" | "fx-vst3-ui" => {
+                if let Some(id) = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()) {
+                    let target = edit::FxTarget::Track(id);
+                    let vst: Vec<_> = crate::engine::plugins::catalog(crate::engine::plugins::PluginKind::AudioFx).filter(|i| i.id.starts_with(crate::engine::aplug::VST3)).collect();
+                    if let Some(info) = vst.iter().find(|i| i.name.contains("Gain")).or(vst.first()) {
+                        let fx = crate::engine::plugins::new_fx(info, None);
+                        if what == "fx-vst3-ui" {
+                            let _ = crate::engine::aplug::editor(&fx, crate::engine::aplug::EditorOp::Open { x: 0, y: 0, offscreen: true, title: info.name.to_string() });
+                        }
+                        edit::add_fx(&mut self.project, &target, fx);
+                    }
+                    self.project.modified = false;
+                    self.open_fx(target);
+                }
+            }
             // R33a review: the FX window on the focus video event with an OFX plug-in from MILAN_OFX_DIR (the test
             // bundle's "Test Params", else the first OFX video FX) and a missing OFX plug-in behind it (the bypassed
             // notice and the timeline badge).

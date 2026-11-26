@@ -6,6 +6,7 @@ use eframe::egui::*;
 use crate::ui::widgets;
 use std::collections::HashSet;
 use crate::edit::{self, FxTarget};
+use crate::engine::aplug;
 use crate::engine::ofx;
 use crate::engine::plugins::{self, FxEval, ParamKind, PluginInfo, PluginKind, UserPreset, Val};
 use crate::history::History;
@@ -47,6 +48,10 @@ pub struct FxWindow {
     fonts: Option<Vec<String>>,
     /// R33a: OFX groups (FX id, group) the user opened or closed against the plug-in's default.
     toggled: HashSet<(String, String)>,
+    /// R34b: a plug-in editor opened from this window is made off-screen and inactive (the screenshot harness, tests).
+    pub offscreen: bool,
+    /// When an open plug-in editor was last polled for its edits.
+    polled: f64,
 }
 
 /// A parameter's name cell: "Name *" when off its default, a hint on hover; true on a double-click (reset).
@@ -70,9 +75,9 @@ fn live_choice(ui: &mut Ui, fx: &mut Fx, key: &str, options: &[String], cur: f32
     });
 }
 
-/// The name a chain shows for plug-in `id`: its name, or (an OFX plug-in that does not run) what is known of it.
+/// The name a chain shows for plug-in `id`: its name, or (an external plug-in that does not run) what is known of it.
 fn chain_name(id: &str) -> String {
-    plugins::find(id).map(|i| i.name.to_string()).or_else(|| ofx::label(id)).unwrap_or_else(|| id.to_string())
+    plugins::find(id).map(|i| i.name.to_string()).or_else(|| ofx::label(id)).or_else(|| aplug::label(id)).unwrap_or_else(|| id.to_string())
 }
 
 /// Some parameter is keyed over time (a key off 0, or several).
@@ -209,7 +214,7 @@ impl FxWindow {
     pub fn open(project: &Project, target: FxTarget) -> Option<Self> {
         let (list, _) = edit::fx_list(project, &target)?;
         let animate = list.iter().filter(|f| animated(f)).map(|f| f.id.clone()).collect();
-        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None, toggled: HashSet::new() })
+        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None, toggled: HashSet::new(), offscreen: false, polled: 0.0 })
     }
 
     /// Select the plug-in last in the chain (just dropped on it).
@@ -335,17 +340,39 @@ impl FxWindow {
                             // shortcut: a menu of plug-ins and their presets, without the chooser's thumbnails; reuse
                             // the chooser widget here if users miss them.
                             ui.menu_button("fx+", |ui| {
-                                for info in plugins::catalog(kind) {
+                                // A plug-in's presets as its submenu; a click adds it.
+                                let mut add: Option<Fx> = None;
+                                let mut item = |ui: &mut Ui, info: &'static PluginInfo| {
                                     ui.menu_button(info.name, |ui| {
                                         let builtin = info.presets.iter().map(|p| (p.name.to_string(), plugins::new_fx(info, Some(p))));
                                         let mine = users.iter().filter(|u| u.plugin == info.id).map(|u| (u.name.clone(), plugins::new_user_fx(info, u)));
                                         for (name, fx) in builtin.chain(mine) {
                                             if ui.button(name).clicked() {
-                                                (op, self.sel) = (Some(ChainOp::Add(fx)), list.len());
+                                                add = Some(fx);
                                                 ui.close_menu();
                                             }
                                         }
                                     });
+                                };
+                                let all: Vec<&'static PluginInfo> = plugins::catalog(kind).collect();
+                                for info in all.iter().filter(|i| !aplug::is_ext(i.id)) {
+                                    item(ui, info);
+                                }
+                                // R34a: VST3 and CLAP effects under their vendor.
+                                let mut vendors: Vec<&str> = all.iter().filter(|i| aplug::is_ext(i.id)).map(|i| i.group).collect();
+                                vendors.dedup();
+                                if !vendors.is_empty() {
+                                    ui.separator();
+                                }
+                                for vendor in vendors {
+                                    ui.menu_button(vendor, |ui| {
+                                        for info in all.iter().filter(|i| aplug::is_ext(i.id) && i.group == vendor) {
+                                            item(ui, info);
+                                        }
+                                    });
+                                }
+                                if let Some(fx) = add {
+                                    (op, self.sel) = (Some(ChainOp::Add(fx)), list.len());
                                 }
                             })
                             .response
@@ -367,8 +394,8 @@ impl FxWindow {
                 ui.label(if audio { "No plug-ins. Use fx+ to add one." } else { "No plug-ins. Drag one here from the Video FX window, or use fx+." });
                 return;
             };
-            // R33a: an OFX plug-in that is missing, turned off or failed says why it is bypassed; its settings stay.
-            let why = ofx::bypassed_because(&fx.plugin);
+            // R33a/R34a: an external plug-in that is missing, turned off or failed says why it is bypassed; its settings stay.
+            let why = ofx::bypassed_because(&fx.plugin).or_else(|| aplug::bypassed_because(&fx.plugin));
             let Some(info) = plugins::find(&fx.plugin) else {
                 let why = why.unwrap_or_else(|| format!("\"{}\" is not available in this version of Milan Pro. It is kept, and bypassed.", fx.plugin));
                 ui.add(Label::new(RichText::new(why).color(super::theme::get().warning_text)).wrap());
@@ -455,6 +482,51 @@ impl FxWindow {
                     }
                 }
             });
+            // R34b: a VST3 effect's own editor in a window of the plug-in host, and `.vstpreset` files, on a row of their own.
+            if aplug::find(&fx.plugin).is_some() {
+                ui.horizontal(|ui| {
+                    if let Some(p) = aplug::find(&fx.plugin) {
+                        let open = aplug::editor_state(&fx.id).is_some();
+                        if p.desc.has_editor {
+                            let label = if open { "Hide plug-in UI" } else { "Show plug-in UI" };
+                            if widgets::push_button(ui, label).on_hover_text("The plug-in's own window; its changes are written to the project (as automation while recording)").clicked() {
+                                let op = if open {
+                                    aplug::EditorOp::Close
+                                } else {
+                                    let at = ui.ctx().input(|i| i.viewport().outer_rect.map(|r| (r.min + vec2(240.0, 160.0)) * i.pixels_per_point)).unwrap_or(pos2(120.0, 120.0));
+                                    aplug::EditorOp::Open { x: at.x as i32, y: at.y as i32, offscreen: self.offscreen, title: format!("{} - Milan Pro", info.name) }
+                                };
+                                if let Err(e) = aplug::editor(fx, op) {
+                                    msg = Some(format!("Could not open the plug-in's window: {e}"));
+                                }
+                            }
+                            if open {
+                                // Its edits come with each poll, ten times a second.
+                                let now = ui.ctx().input(|i| i.time);
+                                if now - self.polled > 0.1 {
+                                    self.polled = now;
+                                    let _ = aplug::editor(fx, aplug::EditorOp::Poll);
+                                }
+                                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+                            }
+                        }
+                        if widgets::push_button_enabled(ui, editable, "Load .vstpreset...").clicked() {
+                            if let Some(f) = rfd::FileDialog::new().add_filter("VST preset", &["vstpreset"]).set_title("Load a .vstpreset").pick_file() {
+                                if let Err(e) = aplug::load_preset(fx, &f) {
+                                    msg = Some(format!("Could not load the preset: {e}"));
+                                }
+                            }
+                        }
+                        if widgets::push_button(ui, "Save .vstpreset...").clicked() {
+                            if let Some(f) = rfd::FileDialog::new().add_filter("VST preset", &["vstpreset"]).set_file_name(format!("{}.vstpreset", info.name)).set_title("Save a .vstpreset").save_file() {
+                                if let Err(e) = aplug::save_preset(fx, &f) {
+                                    msg = Some(format!("Could not save the preset: {e}"));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
             ui.separator();
 
             // ---- Parameters ----
@@ -468,6 +540,9 @@ impl FxWindow {
             let toggled = &self.toggled;
             let ofx_rows = ofx::layout(&fx.plugin, &fx.id, &|g, open| toggled.contains(&(fx.id.clone(), g.to_string())) != open);
             let warn = super::theme::get().warning_text;
+            if let Some(note) = aplug::note(&fx.id) {
+                ui.add(Label::new(RichText::new(note).color(super::theme::get().text_dim)).wrap());
+            }
             if ofx_rows.is_some() {
                 if let Some(hint) = ofx::colour_hint(&fx.plugin, &fx.id, &e) {
                     ui.horizontal_wrapped(|ui| {
@@ -603,7 +678,13 @@ impl FxWindow {
             let (t, before) = (&self.target, project.clone());
             let done = match op {
                 ChainOp::Enable(i, on) => edit::set_fx_enabled(project, t, i, on),
-                ChainOp::Remove(i) => edit::remove_fx(project, t, i),
+                ChainOp::Remove(i) => {
+                    // R34b: a removed VST3/CLAP instance leaves its host (its editor window closes).
+                    if let Some(f) = orig.get(i).filter(|f| aplug::is_ext(&f.plugin)) {
+                        aplug::close_instance(f);
+                    }
+                    edit::remove_fx(project, t, i)
+                }
                 ChainOp::Move(from, to) => edit::move_fx(project, t, from, to),
                 ChainOp::Add(fx) => edit::add_fx(project, t, fx),
             };

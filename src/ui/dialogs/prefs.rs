@@ -1,5 +1,6 @@
 //! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
-//! are live, and Audio has the preferred audio editor (R18a) and the loudness log option (R16c).
+//! are live, Audio has the preferred audio editor (R18a) and the loudness log option (R16c), and VST Effects (R34a) the
+//! VST3 and CLAP folders searched.
 use eframe::egui::{self, *};
 use crate::ui::widgets;
 use crate::settings::Prefs;
@@ -20,6 +21,7 @@ const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
 pub const AUDIO: usize = 3;
 pub const AUDIO_DEVICE: usize = 4;
+pub const VST_EFFECTS: usize = 6;
 const EDITING: usize = 7;
 pub const DISPLAY: usize = 8;
 
@@ -76,6 +78,7 @@ impl PrefsDialog {
                 PREVIEW_DEVICE => preview_device(ui, d, monitors.get_or_insert_with(crate::ui::monitors::list)),
                 AUDIO => audio(ui, d),
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
+                VST_EFFECTS => vst_effects(ui, d),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track, bottom),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
@@ -119,8 +122,6 @@ fn look_swatch(ui: &mut Ui, look: UiLook) {
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
-        // R31 built the OFX folders (Plug-In Manager › Folders); VST folders come with the VST3 host.
-        "VST Effects" => Later("R34a"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
         _ => Later("R49"), // File I/O, Deprecated Features
     }
@@ -340,6 +341,53 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
         (d.record_input, d.record_offset_ms) = (None, 0.0);
         (d.device_type, d.playback_device, d.buffer_frames) = (DeviceType::SoundMapper, None, 0);
     }
+}
+
+/// R34a: the VST3 and CLAP folders searched (the standard ones, read-only, and the user's), as VEGAS's VST Effects page.
+fn vst_effects(ui: &mut Ui, d: &mut Prefs) {
+    ui.label("Milan Pro searches these folders for VST3 and CLAP audio effects (and the OFX folders of the Plug-In Manager):");
+    ui.add_space(4.0);
+    super::field_box(ui, 4, |ui| {
+        ui.set_width(ui.available_width());
+        ui.set_height(8.0 * 24.0);
+        let standard = crate::engine::ofx::scan::audio_folders(&crate::engine::ofx::OfxPrefs::default());
+        for f in standard {
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(RichText::new(f.display().to_string()).color(theme::get().text_dim)).on_hover_text("A standard folder, always searched");
+            });
+        }
+        let mut remove = None;
+        for (i, f) in d.ofx.vst_folders.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(f.display().to_string());
+                if widgets::small_push(ui, "×").on_hover_text("Stop searching this folder").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            d.ofx.vst_folders.remove(i);
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if widgets::push_button(ui, "Add Folder...").clicked() {
+            if let Some(f) = rfd::FileDialog::new().set_title("Add a VST3 or CLAP plug-in folder").pick_folder() {
+                if !d.ofx.vst_folders.contains(&f) {
+                    d.ofx.vst_folders.push(f);
+                }
+            }
+        }
+        ui.label(RichText::new("Plug-ins are listed and rescanned in View › Window › Plug-In Manager.").color(theme::get().text_dim));
+    });
+    ui.add_space(8.0);
+    let (a, ok) = {
+        let e = crate::engine::aplug::entries();
+        (e.len(), e.iter().filter(|x| x.status == crate::engine::ofx::Status::Ok).count())
+    };
+    ui.label(format!("{a} VST3/CLAP effects found, {ok} OK. VST2 plug-ins are not supported (no licence to host them)."));
 }
 
 fn editing(ui: &mut Ui, d: &mut Prefs) {

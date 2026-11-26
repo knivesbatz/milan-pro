@@ -4,6 +4,7 @@
 //! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`), with `afx` FX chains.
 //! Render: `render` runs both into one ffmpeg encoder.
 pub mod afx;
+pub mod aplug;
 pub mod cache;
 pub mod composite;
 // shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the

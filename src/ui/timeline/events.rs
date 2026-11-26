@@ -456,7 +456,7 @@ fn fx_dot(p: &Painter, t: &Theme, ev: &Ev, icon: Icon, r: Rect) {
     if icon != Icon::TrackFx || ev.clip.fx.is_empty() {
         return;
     }
-    if ev.clip.fx.iter().any(|f| f.enabled && crate::engine::ofx::is_bypassed(&f.plugin)) {
+    if ev.clip.fx.iter().any(|f| f.enabled && (crate::engine::ofx::is_bypassed(&f.plugin) || crate::engine::aplug::is_bypassed(&f.plugin))) {
         let b = Rect::from_center_size(r.right_top() + vec2(-4.0, 4.0), vec2(9.0, 9.0));
         p.rect_filled(b, 2.0, Color32::from_rgb(200, 32, 32));
         p.text(b.center(), Align2::CENTER_CENTER, "!", FontId::proportional(8.0), Color32::WHITE);

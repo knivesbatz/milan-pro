@@ -133,6 +133,8 @@ pub struct MeridianApp {
     edit_details: ui::EditDetails,
     /// R16b: the Video Scopes window's thread and plots (its choices are in `prefs.scopes`).
     scopes: ui::Scopes,
+    /// R34b: when a VST3/CLAP plug-in last changed itself (its edits within a second are one undo step).
+    aplug_edit_at: Option<std::time::Instant>,
     /// R31: the OFX plug-ins found, their scan and the Plug-In Manager's view (its choices are in `prefs.ofx`).
     plugin_mgr: ui::PluginManager,
     /// R16c: the Loudness Meters' measuring thread (its options are in `prefs.loudness`), and Tools › Generate Loudness
@@ -280,6 +282,61 @@ impl MeridianApp {
         }
     }
 
+    /// R34b: what VST3 and CLAP effects changed themselves (a knob moved in a plug-in's own window, a program change,
+    /// a loaded preset) goes into the project: as FX automation keys at the cursor while the owning track or bus
+    /// records automation (Write Touch/Latch) and plays, else as the parameter's value. A gesture's first edit (or an
+    /// edit a second after the last) is an undo step; the plug-in's state blob rides along without one.
+    fn take_aplug_edits(&mut self) {
+        use crate::engine::aplug;
+        let edits = aplug::take_edits();
+        if edits.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let (fps, cursor, playing) = (self.project.settings.frame_rate, self.project.timeline.cursor_position, self.playing);
+        for ed in edits {
+            // Who owns it, and whether that track or bus records automation now.
+            let owner = aplug_owner(&self.project, &ed.instance);
+            let mode = owner.as_deref().and_then(|id| crate::edit::automation_of(&self.project, id)).map(|m| m.0);
+            let record = playing && mode.is_some_and(|m| m.writes());
+            if !self.project.fx_by_id_mut(&ed.instance).is_some_and(|f| f.plugin == ed.plugin) {
+                continue;
+            }
+            let begins = ed.gestures.iter().any(|g| g.1) || self.aplug_edit_at.is_none_or(|t| now.duration_since(t).as_secs_f64() > 1.0);
+            let before = (begins && !ed.values.is_empty()).then(|| self.project.clone());
+            let Some(fx) = self.project.fx_by_id_mut(&ed.instance) else { continue };
+            let mut changed = false;
+            for (key, v) in &ed.values {
+                let cur = crate::engine::plugins::eval(fx, 0.0).map_or(*v, |e| e.f(key));
+                if record && crate::engine::plugins::automatable(fx, key).is_some() {
+                    ui::set_key_at(fx.auto.entry(key.clone()).or_default(), cursor, *v, fps);
+                    changed = true;
+                } else if cur != *v || !fx.params.contains_key(key) {
+                    ui::set_fx_num(fx, key, *v, cur, None, fps);
+                    changed = true;
+                }
+            }
+            if let Some((state, cstate)) = &ed.state {
+                if fx.text.get(aplug::STATE_KEY) != Some(state) || fx.text.get(aplug::CSTATE_KEY).map_or(!cstate.is_empty(), |c| c != cstate) {
+                    fx.text.insert(aplug::STATE_KEY.into(), state.clone());
+                    if cstate.is_empty() {
+                        fx.text.remove(aplug::CSTATE_KEY);
+                    } else {
+                        fx.text.insert(aplug::CSTATE_KEY.into(), cstate.clone());
+                    }
+                    changed = true;
+                }
+            }
+            if changed {
+                if let Some(b) = before {
+                    self.history.push(b);
+                }
+                self.project.mark_modified();
+                self.aplug_edit_at = Some(now);
+            }
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
         ui::fonts::install(&cc.egui_ctx);
         ui::keymap::install(&cc.egui_ctx);
@@ -354,10 +411,10 @@ impl MeridianApp {
         let offscreen = crate::offscreen_run(launch.screenshot.is_some());
         // R31: the OFX plug-ins of the last scan at once, then the folders searched again in the background (unchanged
         // binaries keep their entries, new ones are described in a plug-in host). The harness never reads or writes the
-        // user's plug-in list: it searches only MILAN_OFX_DIR, before its screenshot.
+        // user's plug-in list: it searches only MILAN_OFX_DIR (and, R34a, MILAN_AUDIO_PLUGIN_DIR), before its screenshot.
         let harness = launch.demo || launch.screenshot.is_some();
         let mut plugin_mgr = if harness {
-            ui::PluginManager::new(None, Some(std::env::var_os("MILAN_OFX_DIR").map(std::path::PathBuf::from).into_iter().collect()))
+            ui::PluginManager::new(None, Some(["MILAN_OFX_DIR", "MILAN_AUDIO_PLUGIN_DIR"].iter().filter_map(|k| std::env::var_os(k).map(std::path::PathBuf::from)).collect()))
         } else {
             ui::PluginManager::new(crate::engine::ofx::scan::cache_path(), None)
         };
@@ -437,6 +494,7 @@ impl MeridianApp {
             edit_details: ui::EditDetails::default(),
             scopes: ui::Scopes::default(),
             plugin_mgr,
+            aplug_edit_at: None,
             loudness: ui::Loudness::default(),
             loud_log: None,
             syncing: None,
@@ -631,6 +689,13 @@ impl MeridianApp {
     }
 }
 
+/// R34b: the audio track or bus whose chain (or whose event's chain) holds FX instance `fx`, for its automation mode.
+fn aplug_owner(p: &crate::project::Project, fx: &str) -> Option<String> {
+    let tl = &p.timeline;
+    let track = tl.audio_tracks.iter().find(|t| t.fx.iter().chain(t.clips.iter().flat_map(|c| c.fx.iter())).any(|f| f.id == fx)).map(|t| t.id.clone());
+    track.or_else(|| tl.audio.buses.iter().chain(tl.audio.fx.iter()).find(|b| b.fx.iter().any(|f| f.id == fx)).map(|b| b.id.clone()))
+}
+
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
@@ -679,6 +744,7 @@ impl eframe::App for MeridianApp {
             self.message = Some(m);
         }
         self.take_ofx_edits();
+        self.take_aplug_edits();
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -1184,6 +1250,8 @@ impl eframe::App for MeridianApp {
     /// The window layout comes back at the next launch. Only the layout is written, over what is on disk, so
     /// another window's preferences (recent projects) are kept.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // R34b: plug-in editor windows close with Milan (their hosts die with it too, in the Job Object).
+        crate::engine::aplug::close_editors();
         if self.demo || self.shot.is_some() {
             return;
         }

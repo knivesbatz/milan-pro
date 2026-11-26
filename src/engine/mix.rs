@@ -595,6 +595,122 @@ pub struct Mixer {
     /// the standby takes are read into.
     heard: HashMap<String, (PathBuf, u32)>,
     sb: Vec<f32>,
+    /// R34a: plug-in delay compensation: a delay line per path (event, track output, send), and a scratch buffer; the
+    /// end of the last block (a block that does not follow it pre-rolls the plug-ins).
+    lines: HashMap<String, Line>,
+    scratch: Vec<f32>,
+    last_end: Option<i64>,
+}
+
+/// R34a: plug-in delay compensation for one plan. Every path from an event to the master is delayed so that all of
+/// them take `total` samples (the longest one's latency); the mixer runs `total` samples ahead of the timeline, so the
+/// output lands on time, sample-exact. Latencies come from the plug-ins (`afx::latency`); built-ins report none.
+#[derive(Debug, Default, PartialEq)]
+pub struct Lat {
+    pub total: usize,
+    event: HashMap<String, usize>,
+    track: HashMap<String, usize>,
+    send: HashMap<(String, String), usize>,
+}
+
+impl Lat {
+    pub fn of(plan: &AudioPlan, fx_on: bool) -> Lat {
+        let mut lat = Lat::default();
+        if !fx_on {
+            return lat;
+        }
+        let l = |fx: &[crate::project::Fx]| crate::engine::afx::latency(fx);
+        let master = l(&plan.master_fx);
+        let own: Vec<usize> = plan.buses.iter().map(|b| l(&b.fx)).collect();
+        // Downstream of bus k's output: a later bus (its own latency and its downstream) or the master.
+        let mut down = vec![master; own.len()];
+        for k in (0..own.len()).rev() {
+            down[k] = match plan.buses[k].out {
+                Some(o) if o > k => own[o] + down[o],
+                _ => master,
+            };
+        }
+        // From a signal entering bus `b` (or the master) to the output.
+        let into = |b: Option<usize>| b.map_or(master, |b| own[b] + down[b]);
+        let mut total = master;
+        let paths: Vec<(usize, usize)> = plan
+            .tracks
+            .iter()
+            .map(|tr| {
+                let max_e = tr.events.iter().map(|e| l(&e.fx)).max().unwrap_or(0);
+                let own = l(&tr.fx);
+                total = total.max(max_e + own + into(tr.out));
+                for s in &tr.sends {
+                    total = total.max(max_e + own + into(Some(s.to)));
+                }
+                (max_e, own)
+            })
+            .collect();
+        if total == 0 {
+            return lat;
+        }
+        lat.total = total;
+        for (tr, (max_e, own)) in plan.tracks.iter().zip(paths) {
+            for e in &tr.events {
+                let d = max_e - l(&e.fx);
+                if d > 0 {
+                    lat.event.insert(e.id.clone(), d);
+                }
+            }
+            let d = total - (max_e + own + into(tr.out));
+            if d > 0 {
+                lat.track.insert(tr.id.clone(), d);
+            }
+            for s in &tr.sends {
+                let d = total - (max_e + own + into(Some(s.to)));
+                if d > 0 {
+                    lat.send.insert((tr.id.clone(), s.id.clone()), d);
+                }
+            }
+        }
+        lat
+    }
+
+    fn event(&self, id: &str) -> usize {
+        self.event.get(id).copied().unwrap_or(0)
+    }
+
+    fn track(&self, id: &str) -> usize {
+        self.track.get(id).copied().unwrap_or(0)
+    }
+
+    fn send(&self, key: &(String, String)) -> usize {
+        self.send.get(key).copied().unwrap_or(0)
+    }
+}
+
+/// A stereo delay line of a fixed length (interleaved); it starts silent and again when its length changes.
+#[derive(Default)]
+struct Line {
+    buf: Vec<f32>,
+    w: usize,
+    used: u64,
+}
+
+/// `src` delayed by `d` frames through the line `key` (made when needed), in `scratch`; `src` itself when `d` is 0.
+fn delayed<'a>(lines: &mut HashMap<String, Line>, key: &str, d: usize, round: u64, src: &'a [f32], scratch: &'a mut Vec<f32>) -> &'a [f32] {
+    if d == 0 {
+        return src;
+    }
+    let line = lines.entry(key.to_string()).or_default();
+    if line.buf.len() != 2 * d {
+        (line.buf, line.w) = (vec![0.0; 2 * d], 0);
+    }
+    line.used = round;
+    scratch.clear();
+    scratch.extend_from_slice(src);
+    for fr in scratch.chunks_exact_mut(2) {
+        let old = [line.buf[line.w], line.buf[line.w + 1]];
+        (line.buf[line.w], line.buf[line.w + 1]) = (fr[0], fr[1]);
+        fr.copy_from_slice(&old);
+        line.w = (line.w + 2) % line.buf.len();
+    }
+    scratch
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -635,6 +751,9 @@ impl Mixer {
             rms: HashMap::new(),
             heard: HashMap::new(),
             sb: Vec::new(),
+            lines: HashMap::new(),
+            scratch: Vec::new(),
+            last_end: None,
         }
     }
 
@@ -799,6 +918,24 @@ impl Mixer {
     /// order, its FX, envelopes, Volume and Pan into its output; then the master FX. Event FX stop at the event's end;
     /// track and bus FX run on past it, so their tails are heard.
     pub fn block(&mut self, plan: &AudioPlan, f0: i64, out: &mut [f32]) {
+        // R34a: plug-in delay compensation. The plan's paths are delayed to the longest latency, and the mix runs that
+        // far ahead of the timeline. A block that does not follow the last one (the first, a seek) first pre-rolls the
+        // frames before it, so the plug-ins and the delay lines hold the right past when it starts.
+        let lat = Lat::of(plan, !plan.bypass_fx);
+        let n = out.len() / 2;
+        if lat.total > 0 && n > 0 && self.last_end != Some(f0) {
+            let mut scratch = vec![0.0; out.len()];
+            let blocks = lat.total.div_ceil(n).min(8) as i64;
+            for k in (1..=blocks).rev() {
+                self.block_raw(plan, f0 + lat.total as i64 - k * n as i64, &mut scratch, &lat);
+            }
+        }
+        self.block_raw(plan, f0 + lat.total as i64, out, &lat);
+        self.last_end = Some(f0 + n as i64);
+    }
+
+    /// `block` at raw position `f0` (the timeline shifted by the compensated latency), with the paths' delays.
+    fn block_raw(&mut self, plan: &AudioPlan, f0: i64, out: &mut [f32], lat: &Lat) {
         // Streams nothing used in the last block, or warmed for this one, are closed.
         let round = self.round;
         self.streams.retain(|l| l.used == round);
@@ -820,6 +957,7 @@ impl Mixer {
         let (mut tr_last, mut ev_last) = (std::mem::take(&mut self.tr_last), std::mem::take(&mut self.ev_last));
         let mut send_last = std::mem::take(&mut self.send_last);
         let heard_old = std::mem::take(&mut self.heard);
+        let (mut lines, mut scratch) = (std::mem::take(&mut self.lines), std::mem::take(&mut self.scratch));
         let mut bus_buf = std::mem::take(&mut self.bus_buf);
         bus_buf.resize_with(plan.buses.len(), Vec::new);
         for b in &mut bus_buf {
@@ -868,6 +1006,12 @@ impl Mixer {
                     let mut ch = ev_old.remove(&e.id).unwrap_or_default();
                     ch.run(&e.fx, (a - ps) as f64 / r, &mut pcm);
                     self.ev_fx.insert(e.id.clone(), ch);
+                }
+                // R34a: this event's FX are shorter than another's on the track: delayed to meet them.
+                let d = lat.event(&e.id);
+                if d > 0 {
+                    delayed(&mut lines, &e.id, d, self.round, &pcm, &mut scratch);
+                    std::mem::swap(&mut pcm, &mut scratch);
                 }
                 let (la, lb) = ((a - ps) as f64 / r, (b - ps) as f64 / r);
                 let (v0, v1) = env_gain(&e.vol_env, la, lb);
@@ -944,7 +1088,9 @@ impl Mixer {
                     }
                     None => &mut *out,
                 };
-                for (i, (o, x)) in dest.chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
+                // R34a: delayed so this path takes as long as the longest one.
+                let main_src = delayed(&mut lines, &tr.id, lat.track(&tr.id), self.round, &track, &mut scratch);
+                for (i, (o, x)) in dest.chunks_exact_mut(2).zip(main_src.chunks_exact(2)).enumerate() {
                     let s = i as f32 / n as f32;
                     let lerp = |a: f32, b: f32| a + (b - a) * s;
                     let g = fader(i) * inv;
@@ -965,9 +1111,11 @@ impl Mixer {
             for snd in tr.sends.iter().filter(|s| s.pre || !tr.muted) {
                 let key = (tr.id.clone(), snd.id.clone());
                 let l0 = send_last.remove(&key).unwrap_or(snd.level);
+                let d = lat.send(&key);
                 self.send_last.insert(key, snd.level);
                 bus_heard[snd.to] = true;
-                for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(2).zip(track.chunks_exact(2)).enumerate() {
+                let send_src = delayed(&mut lines, &format!("{}>{}", tr.id, snd.id), d, self.round, &track, &mut scratch);
+                for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(2).zip(send_src.chunks_exact(2)).enumerate() {
                     let s = i as f32 / n as f32;
                     let g = (l0 + (snd.level - l0) * s) * inv * if snd.pre { 1.0 } else { fader(i) };
                     let (l, r) = (x[0] * g, x[1] * g);
@@ -1030,6 +1178,9 @@ impl Mixer {
         if fx_on {
             self.master_fx.run(&plan.master_fx, f0 as f64 / r, out);
         }
+        // (`round` was shadowed above: the lines used in this block carry the incremented round.)
+        lines.retain(|_, l| l.used == self.round);
+        (self.lines, self.scratch) = (lines, scratch);
         (self.track, self.pcm) = (track, pcm);
     }
 }
@@ -1224,7 +1375,7 @@ fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &Ato
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::plan::{QUICKFADE, compile_audio};
     use crate::project::{Clip, Curve, EnvKind, Keyframe, Keyframes, MediaItem, MediaType, Project};
@@ -1246,6 +1397,55 @@ mod tests {
 
     fn ones() -> Mixer {
         fake(|_| 1.0)
+    }
+
+    /// R34a (for `aplug::tests`): a mixer whose events play `value(k)`.
+    pub fn fake_mixer(value: fn(i64) -> f32) -> Mixer {
+        fake(value)
+    }
+
+    /// R34a (for `aplug::tests`): `frames` frames of `plan` from `f0`.
+    pub fn mix_frames(plan: &AudioPlan, m: &mut Mixer, f0: i64, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
+        m.block(plan, f0, &mut out);
+        out
+    }
+
+    /// R34a (for `aplug::tests`): three audible tracks at unity, each with the 10 s event at 0, and the sawtooth every
+    /// event plays (sample k of the event).
+    pub fn two_tracks() -> (Project, fn(i64) -> f32) {
+        let mut p = project();
+        for t in &mut p.timeline.audio_tracks {
+            (t.volume, t.pan, t.muted) = (1.0, 0.0, false);
+        }
+        (p, |k| (k % 97) as f32 / 97.0 - 0.5)
+    }
+
+    pub fn plan_latency(plan: &AudioPlan) -> usize {
+        Lat::of(plan, true).total
+    }
+
+    /// R34a: without latent plug-ins the compensation is nothing at all (no delay lines, the same blocks as before);
+    /// the delay line itself delays sample-exactly and restarts when its length changes.
+    #[test]
+    fn pdc_is_nothing_without_latency_and_lines_delay_exactly() {
+        let p = project();
+        let plan = compile_audio(&p);
+        assert_eq!(Lat::of(&plan, true), Lat::default());
+        let mut m = ones();
+        m.block(&plan, 0, &mut [0.0; 8]);
+        assert!(m.lines.is_empty() && m.last_end == Some(4));
+        let mut lines = HashMap::new();
+        let mut scratch = Vec::new();
+        let src: Vec<f32> = (0..16).map(|k| k as f32).collect();
+        let d1 = delayed(&mut lines, "a", 3, 1, &src, &mut scratch).to_vec();
+        assert_eq!(&d1[..8], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(&d1[6..], &src[..10]);
+        let d2 = delayed(&mut lines, "a", 3, 2, &src, &mut scratch).to_vec();
+        assert_eq!(&d2[..6], &src[10..]);
+        assert!(std::ptr::eq(delayed(&mut lines, "a", 0, 3, &src, &mut scratch), src.as_slice()));
+        let d3 = delayed(&mut lines, "a", 1, 4, &src, &mut scratch).to_vec();
+        assert_eq!(&d3[..4], [0.0, 0.0, 0.0, 1.0], "a new length starts silent");
     }
 
     fn mix(p: &Project, m: &mut Mixer, f0: i64, frames: usize) -> Vec<f32> {

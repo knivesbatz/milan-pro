@@ -33,6 +33,7 @@ Every number below was measured by that run; nothing is estimated.
 - **Reverse playback** (`reverse_playback_shows_every_frame`): the same clip as a reversed event, played at 1x for 10 s against a 30 fps clock as above; a frame counts when the one on screen is exactly the source frame due.
 - **Adjust Size and Quality for Optimal Playback** (`bench_adaptive_quality` in `src/engine/mod.rs`): the four layers at Best (Full), 1920x1080, looped for 60 s through the Video Preview itself (`decode::Preview`, a 60 Hz UI loop against the wall clock), with the option off and then on.
 - **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle's invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in's own work.
+- **VST3 block** (`bench_vst3_block_overhead` in `src/engine/aplug/tests.rs`, R34a): one 1024-frame stereo block through the test module's gain effect in `milan-plugin-host.exe` (the block to shared memory, the process request, the result back), 500 blocks after a warm-up, against a built-in audio plug-in at a plain gain (the compressor at 1:1 with output gain) in the same chain. The overhead is the difference: what hosting an audio plug-in costs per block.
 
 ## Playback, Preview (960x540)
 
@@ -98,6 +99,18 @@ Every number below was measured by that run; nothing is estimated.
 
 With the option on, the preview steps down one rung (Full, Half, Quarter, then Draft) when more than 2 % of the frames in 2 s drop, and back up after 10 s without a drop; a step up that drops again doubles the wait before the next try (up to 160 s). Every change restarts the decoders at the new size, and on GOP-250 media that costs a stall of about 1-3 s, which the totals above include. The render never uses these settings.
 
+## VST3 plug-in host, one 1024-frame stereo block
+
+Measured by running `bench_vst3_block_overhead` alone with the R34a changes (the other tables are from the earlier full run).
+
+| Chain | Per block |
+|---|---|
+| VST3 test gain through the host | 0.034 ms |
+| Built-in plug-in (compressor at 1:1) | 0.022 ms |
+| Overhead of hosting | 0.012 ms |
+
+A 1024-frame block at 48 kHz lasts 21.3 ms; the host round trip takes 0.2 % of it.
+
 ## OFX plug-in host round trip (1920x1080, one frame)
 
 Measured by running `bench_ofx_roundtrip_1080p` alone at commit ad217d7 plus the R33b/R33c changes (the other tables are from the earlier full run).
@@ -119,3 +132,4 @@ Measured by running `bench_ofx_roundtrip_1080p` alone at commit ad217d7 plus the
 | Random seeks frame-exact on long-GOP media (R20) | 200 of 200 on the source and 200 of 200 on its proxy | pass |
 | Reverse playback at 1x shows at least 95 % of frames (R20) | 100.0 % | pass |
 | OFX host round trip at 1080p under 10 ms overhead per frame (R33b) | 6.48 ms | pass |
+| VST3 process overhead for a 1024-frame stereo block under 0.2 ms over the built-in gain (R34a) | 0.012 ms | pass |

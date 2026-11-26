@@ -1,0 +1,22 @@
+# A tiny VST3 module for Milan Pro's plug-in host tests (not part of the main build). Built by the ignored tests in
+# src/engine/aplug (they run `cargo build --release` here) into target/vst3-test-plugin, and placed as a
+# `MilanTest.vst3` bundle. Written with the same `vst3` bindings the host uses (coupler-rs, MIT OR Apache-2.0).
+[package]
+name = "milan-vst3-test"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+vst3 = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
+# Its own workspace: not a member of Milan Pro's package.
+[workspace]

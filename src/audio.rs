@@ -300,7 +300,7 @@ impl MonState {
         let n = (inp.len() / 2).max(1) as f32;
         for (p, ch) in self.plan.paths.iter().zip(&mut self.chains) {
             tmp.copy_from_slice(inp);
-            ch.run_with(&p.fx, &p.vals, tmp);
+            ch.run_with(&p.fx, &p.vals, 0.0, tmp);
             let (mut pk, mut sq) = ([0.0f32; 2], [0.0f32; 2]);
             for (o, x) in out.chunks_exact_mut(2).zip(tmp.chunks_exact(2)) {
                 let y = [x[0] * p.m[0][0] + x[1] * p.m[0][1], x[0] * p.m[1][0] + x[1] * p.m[1][1]];
