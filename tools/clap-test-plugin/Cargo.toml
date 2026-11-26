@@ -1,0 +1,19 @@
+# A tiny CLAP module for Milan Pro's plug-in host tests (not part of the main build). Built by the ignored tests in
+# src/engine/aplug (they run `cargo build --release` here) into target/clap-test-plugin and placed as
+# `MilanTestGain.clap`. Written with the same `clap-sys` bindings the host uses (MIT OR Apache-2.0).
+[package]
+name = "milan-clap-test"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+clap-sys = "0.6"
+
+# Its own workspace: not a member of Milan Pro's package.
+[workspace]
