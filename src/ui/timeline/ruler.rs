@@ -517,8 +517,8 @@ pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64, ripple: bool) {
     let p = p.with_clip_rect(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(ruler.min.y, g.lanes.max.y)).intersect(p.clip_rect()));
     let col = |x0: f32, c: Color32| p.rect_filled(Rect::from_min_max(pos2(x0, ruler.min.y), pos2(x0 + 1.0, g.lanes.max.y)), 0.0, c);
     let rb = ruler.max.y;
-    // VP16: black line plus a 1 px shadow to its right; white 9×12 flag with two dark ticks, tip on the ruler
-    // bottom. Classic 2006: the same flag over an electric-blue line.
+    // An electric-blue line with a 1 px dark outline to its right; a white 9×12 flag with two dark ticks, tip on the
+    // ruler bottom.
     col(x, line);
     col(x + 1.0, t.playhead_outline);
     let x0 = x - 4.0;

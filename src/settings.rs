@@ -958,8 +958,9 @@ mod tests {
     }
 
     /// Preferences 0.8.0 saved in each of its looks (tests/fixtures, written by 0.8.0's own `Prefs`) load without
-    /// error; the window layouts, toolbars and keys of the look the app draws (saved as Classic 2006, else as VEGAS 23,
-    /// the same layout structure) carry over by slot, VEGAS 16's do not, and the file saved again has no look in it.
+    /// error; the window layouts, toolbars and keys of the look the app draws (saved under 0.8.0's default look, else
+    /// VEGAS 23, the same layout structure) carry over by slot, VEGAS 16's do not, and the file saved again has no look
+    /// in it.
     #[test]
     fn old_prefs_carry_layouts_over() {
         use crate::ui::dock::{Area, Dock, Layout, Panel};
@@ -973,7 +974,7 @@ mod tests {
             p
         };
 
-        // Saved in Classic 2006: its own last layout and slot 3; slot 5 from the VEGAS 23 look (no Classic one there);
+        // Saved in 0.8.0's default look: its own last layout and slot 3; slot 5 from the VEGAS 23 look (no Classic one there);
         // its main toolbar; the VEGAS 23 keys it used. VEGAS 16's layout, toolbar and keys are dropped.
         let text = include_str!("../tests/fixtures/prefs-0.8.0-classic2006.json");
         let p = load(text);
