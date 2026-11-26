@@ -132,7 +132,16 @@ impl Log for FileLogger {
     fn enabled(&self, m: &Metadata) -> bool {
         let level = self.level.load(Ordering::Relaxed);
         let own = m.target().starts_with("milan_pro") || m.target().starts_with("milan_plugin_host");
-        let cap = if own || level >= LevelFilter::Trace as usize { level } else { level.min(LevelFilter::Warn as usize) };
+        // The GPU stack warns every frame about the driver ("Unrecognized present mode", "Suboptimal present"), which
+        // would turn the 2 MB files over in minutes: errors only, unless everything is asked for.
+        let chatty = ["wgpu", "naga", "egui_wgpu"].iter().any(|c| m.target().starts_with(c));
+        let cap = if own || level >= LevelFilter::Trace as usize {
+            level
+        } else if chatty {
+            level.min(LevelFilter::Error as usize)
+        } else {
+            level.min(LevelFilter::Warn as usize)
+        };
         m.level() as usize <= cap
     }
 
@@ -466,6 +475,9 @@ mod tests {
         set_level(LevelFilter::Debug);
         assert!(!log::logger().enabled(&Metadata::builder().level(Level::Info).target("ureq::x").build()));
         assert!(log::logger().enabled(&Metadata::builder().level(Level::Warn).target("ureq::x").build()));
+        // The GPU stack's per-frame driver warnings stay out; its errors get in.
+        assert!(!log::logger().enabled(&Metadata::builder().level(Level::Warn).target("wgpu_hal::vulkan::conv").build()));
+        assert!(log::logger().enabled(&Metadata::builder().level(Level::Error).target("wgpu_core::device").build()));
         // A crash report carries the version, the panic text, the project and the log tail.
         set_project("Show.mnle at C:/x (3 events)".into(), "3 events".into());
         set_privacy(true);
