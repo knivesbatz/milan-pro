@@ -64,7 +64,7 @@ impl Panel {
         match self {
             Panel::Explorer => "Explorer",
             Panel::ProjectMedia => "Project Media",
-            Panel::MediaGenerators if look == UiLook::Vegas23 => "Media Generator",
+            Panel::MediaGenerators if look.v23() => "Media Generator",
             Panel::MediaGenerators => "Media Generators",
             Panel::Transitions => "Transitions",
             Panel::VideoFx => "Video FX",
@@ -86,7 +86,7 @@ impl Panel {
 
     /// Color Grading and Project Notes are VP23 windows.
     pub fn in_look(self, look: UiLook) -> bool {
-        !matches!(self, Panel::ColorGrading | Panel::ProjectNotes) || look == UiLook::Vegas23
+        !matches!(self, Panel::ColorGrading | Panel::ProjectNotes) || look.v23()
     }
 }
 
@@ -272,8 +272,8 @@ impl Dock {
         let (left, active, mid_w) = match t.look() {
             // Overlays (Milan Pro's own) right after Media Generators.
             UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays], 0, 835.0),
-            // Hub tabs dropped (no online service); Project Media active on first launch [I].
-            UiLook::Vegas23 => (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0),
+            // Hub tabs dropped (no online service); Project Media active on first launch [I]. Classic 2006 keeps it.
+            UiLook::Vegas23 | UiLook::Classic2006 => (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0),
         };
         Self {
             groups: vec![
@@ -329,7 +329,7 @@ impl Dock {
             Builtin::ColorCorrection => {
                 // Video Scopes (539 px) between the group and Video Preview. VP23 brings its Color Grading window to
                 // the front [I].
-                let front = if t.look() == UiLook::Vegas23 { ColorGrading } else { ProjectMedia };
+                let front = if t.look().v23() { ColorGrading } else { ProjectMedia };
                 let active = left.tabs.iter().position(|&p| p == front).unwrap_or(0);
                 d.groups = vec![Group { active, ..left }, col(vec![VideoScopes], 539.0), col(vec![VideoPreview], 539.0), col(vec![MasterBus], 127.0)];
                 d.height = Some(438.0);
@@ -577,7 +577,7 @@ impl Dock {
     /// The areas a window dragged to the main window's edge docks in: VP23's four, VP16's one.
     fn edge_areas(&self, look: UiLook) -> Vec<Area> {
         match look {
-            UiLook::Vegas23 => Area::ALL.to_vec(),
+            UiLook::Vegas23 | UiLook::Classic2006 => Area::ALL.to_vec(),
             UiLook::Vegas16 => vec![if self.timeline_top() { Area::Bottom } else { Area::Top }],
         }
     }
@@ -934,7 +934,7 @@ impl Dock {
                 action = Some(FloatAction::Dock(p, Drop::Float));
                 ui.close_menu();
             }
-            if look == UiLook::Vegas23 {
+            if look.v23() {
                 for a in areas {
                     if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
                         action = Some(FloatAction::Dock(p, Drop::Area(a)));
@@ -1016,16 +1016,27 @@ impl Dock {
             top += 2.0;
         }
         let bar = Rect::from_min_max(pos2(col.min.x, top), pos2(col.max.x, top + t.m.dock_toolbar_h));
-        p.rect_filled(bar, 0.0, t.toolbar_bg);
-        hline(&p, col.x_range(), bar.max.y, if v16 { t.dock_divider } else { t.frame });
+        if t.classic() {
+            // Metal toolbar with a grip at its left end, the body in a sunken 3D frame.
+            super::widgets::metal_bar(&p, bar, &t.metal);
+            super::widgets::grip(&p, bar, &t.metal);
+            let body = Rect::from_min_max(pos2(col.min.x, bar.max.y), pos2(col.max.x, bottom));
+            super::widgets::sunken(&p, body, t.panel_bg, &t.metal);
+        } else {
+            p.rect_filled(bar, 0.0, t.toolbar_bg);
+            hline(&p, col.x_range(), bar.max.y, if v16 { t.dock_divider } else { t.frame });
+            let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
+            p.rect_filled(body, 0.0, t.panel_bg);
+        }
         let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
-        p.rect_filled(body, 0.0, t.panel_bg);
+        let bar = if t.classic() { bar.with_min_x(bar.min.x + 8.0) } else { bar };
 
         let mut bar_ui = ui.new_child(
             UiBuilder::new().id_salt(("dock_bar", panel)).max_rect(bar.shrink2(vec2(2.0, 0.0))).layout(eframe::egui::Layout::left_to_right(Align::Center)),
         );
         bar_ui.set_clip_rect(bar.intersect(ui.clip_rect()));
         bar_ui.spacing_mut().item_spacing.x = 0.0;
+        let body = if t.classic() { body.shrink(2.0) } else { body };
         let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(eframe::egui::Layout::top_down(Align::Min)));
         body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         content(panel, &mut bar_ui, &mut body_ui);
@@ -1039,11 +1050,17 @@ impl Dock {
         let p = ui.painter().with_clip_rect(clip);
         let b = &t.bevel;
         let single = self.groups[g].tabs.len() == 1;
+        let classic = t.classic();
         if v16 {
             // Right of the last tab: two edge rows over the frame colour (#202020 for a single-window group).
             p.rect_filled(strip, 0.0, if single { t.tab_strip_single_bg } else { t.frame });
             hline(&p, strip.x_range(), strip.min.y, b.strip_1);
             hline(&p, strip.x_range(), strip.min.y + 1.0, b.strip_2);
+        } else if classic {
+            // Darker metal behind the tabs; the content's 3D frame edge runs along the strip.
+            super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
+            let y = if self.tabs_top { strip.max.y - 1.0 } else { strip.min.y };
+            hline(&p, strip.x_range(), y, if self.tabs_top { t.metal.shadow } else { t.metal.light });
         } else {
             p.rect_filled(strip, 0.0, t.tab_strip_bg);
         }
@@ -1059,16 +1076,26 @@ impl Dock {
             .iter()
             .enumerate()
             .map(|(i, &panel)| {
-                let font = if i == active && !v16 { t.bold(t.font.dock_tab) } else { t.font(t.font.dock_tab) };
+                let font = if i == active && !v16 && !classic { t.bold(t.font.dock_tab) } else { t.font(t.font.dock_tab) };
                 p.layout_no_wrap(panel.title(look).to_owned(), font, t.tab_text)
             })
             .collect();
         // VP16 tabs reserve room for â–¡ Ã— even when inactive: 8 + label + 38 (measured [L]: label + 44 at GDI widths);
-        // an inactive VP16 tab is followed by a 1 px separator.
+        // an inactive VP16 tab is followed by a 1 px separator. Classic 2006: 8 + label + 8, the active tab 2 px wider
+        // each side (Windows tab control); its â–¡ Ã— live on the active tab too (+ 34).
         let widths: Vec<f32> = galleys
             .iter()
             .enumerate()
-            .map(|(i, gl)| if v16 { 8.0 + gl.size().x + 38.0 + if i == active { 0.0 } else { 1.0 } } else { 9.0 + gl.size().x + 28.0 }.round())
+            .map(|(i, gl)| {
+                if v16 {
+                    8.0 + gl.size().x + 38.0 + if i == active { 0.0 } else { 1.0 }
+                } else if classic {
+                    8.0 + gl.size().x + 8.0 + if i == active { 38.0 } else { 0.0 }
+                } else {
+                    9.0 + gl.size().x + 28.0
+                }
+                .round()
+            })
             .collect();
         // Overflow (Â§4.4): â—‚ â–¸ at the right end scroll the tabs; a tab activated elsewhere is scrolled into view.
         let overflow = widths.iter().sum::<f32>() > strip.width();
@@ -1108,6 +1135,8 @@ impl Dock {
                     hline(&p, r.x_range(), r.min.y + 1.0, b.tab_top_2);
                     vline(&p, r.max.x, strip.y_range(), t.tab_separator);
                 }
+            } else if classic {
+                classic_tab(&p, t, r, is_active, self.tabs_top);
             }
             let color = if hovered && !is_active {
                 t.tab_text_hover
@@ -1116,18 +1145,19 @@ impl Dock {
             } else {
                 t.tab_text
             };
-            let tx = r.min.x + if v16 { 8.0 } else { 9.0 };
-            // VP23 labels sit 2 px off centre, away from the content (measured [M]).
-            let shift = if v16 { 0.0 } else if self.tabs_top { -2.0 } else { 2.0 };
+            let tx = r.min.x + if v16 || classic { 8.0 } else { 9.0 };
+            // VP23 labels sit 2 px off centre, away from the content (measured [M]); classic inactive tabs 1 px lower
+            // (they stand back from the active one).
+            let shift = if v16 { 0.0 } else if classic { if is_active { 0.0 } else if self.tabs_top { 1.0 } else { -1.0 } } else if self.tabs_top { -2.0 } else { 2.0 };
             let ty = (r.center().y - galley.size().y * 0.5).round() - shift;
-            if !v16 && is_active {
+            if !v16 && !classic && is_active {
                 // 1 px line on the content-facing edge, across the label plus its 9 px padding.
                 let line = vec2(galley.size().x + 18.0, t.m.tab_active_line_w);
                 let y = if self.tabs_top { r.max.y - line.y } else { r.min.y };
                 p.rect_filled(Rect::from_min_size(pos2(r.min.x, y), line), 0.0, t.tab_active_line);
             }
             p.galley(pos2(tx, ty), galley, color);
-            if v16 && is_active {
+            if (v16 || classic) && is_active {
                 // â–¡ maximise in dock and Ã— close, each in a 13 px cell (Â§4.4).
                 for (k, icon) in [Icon::DockMaximize, Icon::DockClose].into_iter().enumerate() {
                     let cell = Rect::from_min_size(pos2(r.max.x - 34.0 + 17.0 * k as f32, r.min.y), vec2(13.0, r.height()));
@@ -1160,7 +1190,7 @@ impl Dock {
                     ui.close_menu();
                 }
                 // VP23 docks on all four sides (Â§4.3), also by dragging the tab to an edge of the main window.
-                if look == UiLook::Vegas23 {
+                if look.v23() {
                     for a in Area::ALL.into_iter().filter(|&a| a != area) {
                         if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
                             action = Some(TabAction::ToArea(panel, a));
@@ -1251,23 +1281,49 @@ fn screen_rect(ctx: &Context, r: Rect) -> Rect {
     r.translate(origin) * ctx.pixels_per_point()
 }
 
+/// Classic 2006 tab (Windows tab control, tabs hanging under the content when `tabs_top` is off): a metal face with a
+/// 3D edge on three sides, open towards the content; the active tab joins the content and stands 2 px taller.
+fn classic_tab(p: &Painter, t: &Theme, r: Rect, active: bool, tabs_top: bool) {
+    let m = &t.metal;
+    let r = if active { r } else if tabs_top { r.with_min_y(r.min.y + 2.0) } else { r.with_max_y(r.max.y - 2.0) };
+    let tint = if active { Color32::WHITE } else { Color32::from_rgb(0xD2, 0xD5, 0xDA) };
+    super::widgets::metal_tinted(p, r, m, tint);
+    let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
+    line(r.min, pos2(r.min.x + 1.0, r.max.y), m.light);
+    line(pos2(r.max.x - 1.0, r.min.y), r.max, m.dark);
+    line(pos2(r.max.x - 2.0, r.min.y + 1.0), pos2(r.max.x - 1.0, r.max.y - 1.0), m.shadow);
+    if tabs_top {
+        line(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0), m.light);
+    } else {
+        line(pos2(r.min.x, r.max.y - 1.0), r.max, m.dark);
+        line(pos2(r.min.x + 1.0, r.max.y - 2.0), pos2(r.max.x - 1.0, r.max.y - 1.0), m.shadow);
+    }
+}
+
 /// A floating window's tab strip: its one tab, drawn active (the native title bar has the close button).
 fn float_tab(ui: &mut Ui, t: &Theme, panel: Panel, strip: Rect, tabs_top: bool) -> Response {
     let v16 = t.look() == UiLook::Vegas16;
+    let classic = t.classic();
     let p = ui.painter_at(strip);
-    p.rect_filled(strip, 0.0, if v16 { t.tab_strip_single_bg } else { t.tab_strip_bg });
-    let font = if v16 { t.font(t.font.dock_tab) } else { t.bold(t.font.dock_tab) };
+    if classic {
+        super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
+    } else {
+        p.rect_filled(strip, 0.0, if v16 { t.tab_strip_single_bg } else { t.tab_strip_bg });
+    }
+    let font = if v16 || classic { t.font(t.font.dock_tab) } else { t.bold(t.font.dock_tab) };
     let galley = p.layout_no_wrap(panel.title(t.look()).to_owned(), font, t.tab_text_active);
-    let r = Rect::from_min_size(strip.min, vec2(galley.size().x + if v16 { 16.0 } else { 18.0 }, strip.height()));
+    let r = Rect::from_min_size(strip.min, vec2(galley.size().x + if v16 || classic { 16.0 } else { 18.0 }, strip.height()));
     if v16 {
         p.rect_filled(r, 0.0, t.tab_active_bg);
         vline(&p, r.max.x - 1.0, strip.y_range(), t.line_dark);
+    } else if classic {
+        classic_tab(&p, t, r, true, tabs_top);
     } else {
         let y = if tabs_top { r.max.y - t.m.tab_active_line_w } else { r.min.y };
         p.rect_filled(Rect::from_min_size(pos2(r.min.x, y), vec2(r.width(), t.m.tab_active_line_w)), 0.0, t.tab_active_line);
     }
-    let shift = if v16 { 0.0 } else if tabs_top { -2.0 } else { 2.0 };
-    let pos = pos2(r.min.x + if v16 { 8.0 } else { 9.0 }, (r.center().y - galley.size().y * 0.5).round() - shift);
+    let shift = if v16 || classic { 0.0 } else if tabs_top { -2.0 } else { 2.0 };
+    let pos = pos2(r.min.x + if v16 || classic { 8.0 } else { 9.0 }, (r.center().y - galley.size().y * 0.5).round() - shift);
     p.galley(pos, galley, t.tab_text_active);
     ui.interact(r, ui.id().with(("float_tab", panel)), Sense::click_and_drag())
 }

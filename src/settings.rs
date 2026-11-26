@@ -204,9 +204,15 @@ impl EnvView {
     }
 }
 
-/// Key of a saved layout: `slot` is "last" or a user slot number;VP23 Dark and White share one.
+/// Key of a saved layout: `slot` is "last" or a user slot number; VP23 Dark and White share one, Classic 2006 (its
+/// own metrics) has its own.
 pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
-    format!("{}:{slot}", if look == UiLook::Vegas16 { "vp16" } else { "vp23" })
+    let k = match look {
+        UiLook::Vegas16 => "vp16",
+        UiLook::Vegas23 => "vp23",
+        UiLook::Classic2006 => "c2006",
+    };
+    format!("{k}:{slot}")
 }
 
 /// The layouts to save: those on `disk` (another window may have saved some), with this window's `changed` keys
@@ -307,7 +313,7 @@ impl Default for Prefs {
 impl Prefs {
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
     pub fn float_dock(&self, look: UiLook) -> bool {
-        self.float_dock.unwrap_or(look == UiLook::Vegas23)
+        self.float_dock.unwrap_or(look.v23())
     }
 
     /// R9: the output device these preferences choose.
@@ -453,7 +459,7 @@ impl SettingsDialog {
 
     pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History) {
         let Some((d, buses)) = &mut self.draft else { return };
-        let v23 = theme::get().look() == UiLook::Vegas23;
+        let v23 = theme::get().look().v23();
         let tab = &mut self.tab;
         let changed = *d != project.settings || *buses != project.timeline.audio.buses.len();
         let (hit, close) = dialogs::modal(ctx, "project_properties", "Project Properties", egui::vec2(427.0, 696.0), |ui| {
@@ -697,7 +703,11 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
+        // New installs (no look chosen) get Classic 2006; preferences saved by older builds keep their VEGAS look.
+        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::CLASSIC2006, true, 4, true, true, 5.0));
+        let old = serde_json::from_str::<Prefs>(r#"{"look":{"look":"Vegas16","variant":"Dark"}}"#).unwrap();
+        assert_eq!(old.look, LookChoice::VEGAS16);
+        assert_eq!((layout_key(UiLook::Classic2006, "last"), layout_key(UiLook::Vegas16, 1)), ("c2006:last".to_string(), "vp16:1".to_string()));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping, d.quickfade), (true, false, crate::edit::RippleMode::Affected, false, true));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
@@ -712,7 +722,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
         // R14: old preferences dock floating windows as each look's install does, and preview externally on the first
         // secondary display at 1:1, with frames in the Video Preview window too and the output rotation applied.
-        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23));
+        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23) && d.float_dock(UiLook::Classic2006));
         assert!(d.ext_display.is_none() && !d.ext_fit && d.ext_in_window && d.ext_rotate);
         let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);

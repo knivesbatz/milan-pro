@@ -412,7 +412,7 @@ impl MeridianApp {
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
             hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes)
-                | if p.ofx_envelopes && theme::get().look() == UiLook::Vegas23 { crate::settings::OFX_SHOWN } else { 0 },
+                | if p.ofx_envelopes && theme::get().look().v23() { crate::settings::OFX_SHOWN } else { 0 },
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
@@ -1449,7 +1449,7 @@ impl MeridianApp {
             }
             NextFxEnvelope | PrevFxEnvelope => {
                 // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
-                let ofx = self.prefs.ofx_envelopes && theme::get().look() == UiLook::Vegas23;
+                let ofx = self.prefs.ofx_envelopes && theme::get().look().v23();
                 let all = self.sel.tracks.last().map_or(Vec::new(), |t| edit::fx_envelopes(&self.project, t, ofx));
                 let n = all.len();
                 if n == 0 {
@@ -2558,6 +2558,8 @@ impl MeridianApp {
     pub(super) fn open_from_env(&mut self, ctx: &egui::Context) {
         let Ok(what) = std::env::var("MILAN_DIALOG") else { return };
         match what.as_str() {
+            // The Edit menu dropped open (look screenshots).
+            "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),

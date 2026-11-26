@@ -36,6 +36,7 @@ pub fn areas(t: &Theme, full: Rect, docks: [f32; 4], track_w: f32) -> Areas {
     let m = &t.m;
     let g = m.outer_margin;
     let v16 = t.look() == UiLook::Vegas16;
+    let classic = t.classic();
     let (menu, toolbar, dock_top, status, transport_bottom);
     if v16 {
         // menu 20 · 1 px line · 2 px gap · 2 px bevel · toolbar 31 · 1 px line · 2 px gap (§4.1, measured [L]).
@@ -45,6 +46,14 @@ pub fn areas(t: &Theme, full: Rect, docks: [f32; 4], track_w: f32) -> Areas {
         // Bottom: frame row · 2 edge rows · status 17 · 1 px edge.
         status = row(full.max.y - 1.0 - m.status_h, m.status_h, 0.0, 0.0);
         transport_bottom = status.min.y - 3.0;
+    } else if classic {
+        // Classic 2006: menu row 20 · 1 px shadow · 2 px raised bevel · toolbar 26 · 1 px shadow · 2 px gap; the status
+        // bar stands on a 1 px edge with a 2 px gap above it (CLASSIC_2006_SPEC.md §4).
+        menu = row(full.min.y, m.menu_bar_h, 0.0, 0.0);
+        toolbar = row(menu.max.y + 3.0, m.main_toolbar_h, 0.0, 0.0);
+        dock_top = toolbar.max.y + 3.0;
+        status = row(full.max.y - 1.0 - m.status_h, m.status_h, 0.0, 0.0);
+        transport_bottom = status.min.y - m.status_gap - 1.0;
     } else {
         menu = row(full.min.y, m.title_bar_h, 0.0, 0.0);
         toolbar = row(menu.max.y, m.main_toolbar_h, 0.0, 0.0);
@@ -53,12 +62,14 @@ pub fn areas(t: &Theme, full: Rect, docks: [f32; 4], track_w: f32) -> Areas {
         status = row(full.max.y - 2.0 - m.status_h, m.status_h, 0.0, 0.0);
         transport_bottom = status.min.y - m.status_gap;
     }
-    // VP16 transport block: 1 px bevel · 30 · 1 px edge; VP23: 32, with a 1 px frame line above.
-    let edges = if v16 { 1.0 } else { 0.0 };
+    // VP16 transport block: 1 px bevel · 30 · 1 px edge; VP23: 32, with a 1 px frame line above; Classic: a 1 px
+    // light edge above its metal bar.
+    let edges = if v16 || classic { 1.0 } else { 0.0 };
     let sw = m.splitter_w;
     let [top, bottom, left, right] = docks;
-    // VP16: 2 edge rows + 7 px splitter under the top tab strips; VP23: the tab strip touches the timeline.
-    let top_gap = if v16 { 2.0 + sw } else { 0.0 };
+    // VP16: 2 edge rows + 7 px splitter under the top tab strips; Classic: its 6 px dotted splitter; VP23: the tab
+    // strip touches the timeline.
+    let top_gap = if v16 { 2.0 + sw } else if classic { sw } else { 0.0 };
     // Leave at least 120 px for the timeline when the window is small: the top and bottom areas shrink alike.
     let gaps = if top > 0.0 { top_gap } else { 0.0 } + if bottom > 0.0 { sw } else { 0.0 };
     let room = (transport_bottom - dock_top - gaps - edges - m.transport_h - 1.0 - 120.0).max(60.0);
@@ -67,7 +78,7 @@ pub fn areas(t: &Theme, full: Rect, docks: [f32; 4], track_w: f32) -> Areas {
     let mut timeline_top = dock_top;
     if top > 0.0 {
         dock[0] = row(dock_top, (top * k).floor(), g, g);
-        (split[0], timeline_top) = if v16 { (row(dock[0].max.y, top_gap, g, g), dock[0].max.y + top_gap) } else { (row(dock[0].max.y - 4.0, 4.0, g, g), dock[0].max.y) };
+        (split[0], timeline_top) = if v16 || classic { (row(dock[0].max.y, top_gap, g, g), dock[0].max.y + top_gap) } else { (row(dock[0].max.y - 4.0, 4.0, g, g), dock[0].max.y) };
     }
     let mut mid_bottom = transport_bottom;
     if bottom > 0.0 {
@@ -104,8 +115,33 @@ fn hline(p: &Painter, x: Rangef, y: f32, c: Color32) {
     p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
 }
 
-/// Bevel and edge lines between the bands (VP16); VP23 bands are flat on the frame colour.
+/// Bevel and edge lines between the bands (VP16); VP23 bands are flat on the frame colour; Classic 2006 bands are
+/// brushed metal with 3D edges and dotted splitters.
 pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
+    if t.classic() {
+        let m = &t.metal;
+        let all = full.x_range();
+        // Menu row: metal, shadow line under it.
+        super::widgets::metal(p, a.menu, m);
+        hline(p, all, a.menu.max.y, m.shadow);
+        // Main toolbar: raised 2 px bevel over the body, shadow line under it.
+        hline(p, all, a.toolbar.min.y - 2.0, m.light);
+        hline(p, all, a.toolbar.min.y - 1.0, m.face);
+        super::widgets::metal(p, a.toolbar, m);
+        hline(p, all, a.toolbar.max.y, m.shadow);
+        // Transport bar: light edge above, metal bar.
+        super::widgets::metal_bar(p, a.transport, m);
+        // Status bar: light edge above, metal; the panes are sunken by `draw_status_bar`.
+        hline(p, all, a.status.min.y - 1.0, m.light);
+        super::widgets::metal(p, a.status, m);
+        // Dotted splitters between the docking areas and the timeline.
+        for (k, s) in a.split.iter().enumerate() {
+            if s.is_positive() {
+                super::widgets::dotted_splitter(p, *s, k < 2, m);
+            }
+        }
+        return;
+    }
     p.rect_filled(a.menu, 0.0, t.menu_bar_bg);
     p.rect_filled(a.toolbar, 0.0, t.toolbar_bg);
     p.rect_filled(a.status, 0.0, t.status_bg);
@@ -137,7 +173,8 @@ pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
     hline(p, all, a.status.max.y, b.band_1);
 }
 
-/// Popup style for menus: native-light in VP16, dark with an accent hover in VP23 (§5.1).
+/// Popup style for menus: native-light in VP16, dark with an accent hover in VP23 (§5.1), white with a 3D grey border
+/// and the #316AC5 highlight bar in Classic 2006.
 pub fn menu_style(base: &Style, t: &Theme) -> Style {
     let mut s = base.clone();
     let v = &mut s.visuals;
@@ -147,6 +184,7 @@ pub fn menu_style(base: &Style, t: &Theme) -> Style {
     v.panel_fill = t.menu_popup_bg;
     v.window_stroke = Stroke::new(1.0_f32, t.menu_popup_border);
     v.menu_corner_radius = CornerRadius::same(t.m.widget_radius);
+    v.popup_shadow = Shadow::NONE;
     let hover_text = if t.look() == UiLook::Vegas16 { t.menu_popup_text } else { t.text_bright };
     let w = &mut v.widgets;
     w.noninteractive.bg_stroke = Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.4));
@@ -161,9 +199,16 @@ pub fn menu_style(base: &Style, t: &Theme) -> Style {
     }
     v.selection.bg_fill = t.menu_popup_hover;
     v.selection.stroke = Stroke::new(1.0_f32, hover_text);
+    if t.classic() {
+        // Shortcut text and separators in black / grey, as Windows draws them.
+        w.noninteractive.bg_stroke = Stroke::new(1.0_f32, t.menu_popup_text_disabled);
+        for st in [&mut w.hovered, &mut w.active, &mut w.open] {
+            st.bg_stroke = Stroke::NONE;
+        }
+    }
     s.spacing.interact_size.y = t.m.popup_row_h;
     s.spacing.item_spacing.y = 0.0;
-    s.spacing.menu_margin = Margin::same(2);
+    s.spacing.menu_margin = Margin::same(if t.classic() { 3 } else { 2 });
     // Popups size to their rows (egui's default is 400 px wide).
     s.spacing.menu_width = 160.0;
     s
@@ -178,10 +223,25 @@ pub fn with_menu_style<R>(ctx: &Context, t: &Theme, f: impl FnOnce() -> R) -> R 
     r
 }
 
-/// VP16: native white menu row; labels 12 px black, hover #E5F3FF with a #CCE8FF border.
+/// VP16: native white menu row; labels 12 px black, hover #E5F3FF with a #CCE8FF border. Classic 2006: the same row on
+/// metal, Tahoma labels, a raised bevel on hover.
 pub fn menu_row<R>(ui: &mut Ui, rect: Rect, f: impl FnOnce(&mut Ui) -> R) -> R {
     let mut child = ui.new_child(UiBuilder::new().max_rect(rect).layout(Layout::left_to_right(Align::Center)));
     f(&mut child)
+}
+
+/// The classic 3D border of a Classic 2006 popup (menus, drop-downs): egui paints the fill and a 1 px `shadow` line;
+/// this adds the light inner top-left and dark outer bottom-right rows over it.
+pub fn classic_popup_border(p: &Painter, r: Rect, t: &Theme) {
+    if !t.classic() {
+        return;
+    }
+    let m = &t.metal;
+    let r = Rect::from_min_max(r.min.round(), r.max.round());
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.max.x - 1.0, r.min.y + 2.0)), 0.0, m.light);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.min.x + 2.0, r.max.y - 1.0)), 0.0, m.light);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, m.dark);
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, m.dark);
 }
 
 #[derive(Clone, Copy)]
@@ -311,6 +371,15 @@ mod tests {
         assert_eq!((a.dock[0].min.x, a.timeline.min.y, a.timeline.max.y), (5.0, 606.0, 1020.0));
         assert_eq!((a.transport.min.y, a.transport.max.y, a.status.min.y, a.status.max.y), (1021.0, 1053.0, 1058.0, 1078.0));
         assert_eq!((a.rate.max.x, a.transport.min.x), (255.0, 260.0));
+
+        // Classic 2006: menu row 0–20, toolbar 23–49 (bevel 21–22), dock from 52, a 6 px dotted splitter under it,
+        // transport 28 on a 1 px edge, status 20 on a 1 px edge with a 2 px gap above (CLASSIC_2006_SPEC.md §4).
+        let t = Theme::new(LookChoice::CLASSIC2006);
+        let a = areas(&t, full, [t.m.dock_h, 0.0, 0.0, 0.0], t.m.track_list_w);
+        assert_eq!((a.menu.max.y, a.toolbar.min.y, a.toolbar.max.y, a.dock[0].min.y, a.dock[0].max.y), (20.0, 23.0, 49.0, 52.0, 586.0));
+        assert_eq!((a.split[0].min.y, a.split[0].height(), a.timeline.min.y, a.dock[0].min.x), (586.0, 6.0, 592.0, 2.0));
+        assert_eq!((a.status.min.y, a.status.max.y, a.transport.max.y, a.transport.height()), (1059.0, 1079.0, 1055.0, 28.0));
+        assert_eq!(a.timeline.max.y, a.transport.min.y - 1.0);
     }
 
     /// R13: the timeline above a bottom docking area (Timeline Top, VP16 Classic), a right area beside it, and docks

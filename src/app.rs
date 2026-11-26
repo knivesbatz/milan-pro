@@ -278,7 +278,7 @@ impl MeridianApp {
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
         let look = theme::get().choice;
-        let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        let welcome = (look.look.v23() && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
         std::thread::spawn(|| {
             crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT);
             crate::engine::render::clean_temp(&std::env::temp_dir());
@@ -391,7 +391,7 @@ impl MeridianApp {
             customize_keys: None,
             customize_bar: None,
             layouts_changed: Default::default(),
-            decorated: look.look == UiLook::Vegas16,
+            decorated: look.look != UiLook::Vegas23,
             demo: launch.demo,
             devices: launch.screenshot.is_none(),
             shot: launch.screenshot.map(Shot::new),
@@ -637,10 +637,11 @@ impl eframe::App for MeridianApp {
         let title = format!("{}{} - Milan Pro", self.project.name, if self.project.modified { " *" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         let t = theme::get();
-        let v16 = t.look() == UiLook::Vegas16;
-        if self.decorated != v16 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(v16));
-            self.decorated = v16;
+        // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.
+        let native = t.look() != UiLook::Vegas23;
+        if self.decorated != native {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(native));
+            self.decorated = native;
         }
 
         let mut drag = self.file_drag(ctx);
@@ -653,10 +654,11 @@ impl eframe::App for MeridianApp {
             self.dock.bounds = egui::Rect::from_min_max(egui::pos2(full.min.x, a.toolbar.max.y), egui::pos2(full.max.x, a.status.min.y));
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
-            // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
+            // Menu: own row (VP16 white, Classic 2006 metal) or inline in the custom title bar (VP23); popups get the
+            // menu style.
             ui::menus::publish_state(ctx, self.cmd_state());
             chrome::with_menu_style(ctx, &t, || {
-                if v16 { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
+                if native { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
             });
 
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -922,7 +924,7 @@ impl eframe::App for MeridianApp {
                     s.job.cancel();
                 }
             }
-            if !v16 {
+            if !native {
                 chrome::resize_edges(ui, full);
             }
         });

@@ -97,7 +97,7 @@ fn shown_of(region: [f32; 4], rot: u16) -> Rect {
 
 /// Dock toolbar row. Returns a status message (snapshot copied / saved / failed).
 pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut PreviewView, action: &mut Option<MenuAction>) -> Option<String> {
-    let v23 = theme::get().look() == UiLook::Vegas23;
+    let v23 = theme::get().look().v23();
     let mut msg = None;
     if tool_button(ui, Icon::Properties, "Project Video Properties", true, false).clicked() {
         *action = Some(MenuAction::Properties);
@@ -217,7 +217,7 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     let p = ui.painter().clone();
     p.rect_filled(rect, 0.0, t.preview_bg);
     let line_h = t.font.ui + 4.0;
-    let v23 = t.look() == UiLook::Vegas23;
+    let v23 = t.look().v23();
     // VP16: 2×2 labelled block; VP23: one centred row of icon + value pairs.
     let status_h = match (view.show_status, v23) {
         (false, _) => 0.0,

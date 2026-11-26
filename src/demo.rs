@@ -1,5 +1,6 @@
 //! Screenshot + demo harness, driven by environment variables:
-//! - `MILAN_LOOK` = vegas16 | vegas23 | vegas23-white: look for this run (not persisted).
+//! - `MILAN_LOOK` = classic2006 | vegas16 | vegas23 | vegas23-white: look for this run (not persisted).
+//! - `MILAN_DIALOG=menu-edit`: the Edit menu dropped open (see `open_from_env` for the dialogs).
 //! - `MILAN_DEMO=1`: demo project on generated media (cached in %TEMP%\milan-demo); no autosave or prefs writes.
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).

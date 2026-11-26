@@ -1,5 +1,7 @@
 //! Original vector icons (spec §8), drawn with egui::Painter on a 16×16 grid.
-//! VP16 = coloured, slightly raised (1 px dark shade lower-right); VP23 = flat monochrome lines.
+//! VP16 = coloured, slightly raised (1 px dark shade lower-right); VP23 = flat monochrome lines; Classic 2006 = the
+//! coloured shapes as 2006 pixel art: 1 px strokes snapped to the pixel grid, a 1 px dark outline round every fill,
+//! colours quantised to a 24-colour period palette (CLASSIC_2006_SPEC.md §7).
 //! No bitmaps: shapes and meaning match VEGAS, proportions are our own.
 use eframe::egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2};
 use super::fonts;
@@ -135,15 +137,39 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, look: UiLook, tint:
     let s = side / 16.0;
     let o = (rect.center() - vec2(side, side) * 0.5).round();
     let v16 = look == UiLook::Vegas16;
-    let stroke = if v16 { 1.5 } else { 1.25 };
+    let c06 = look == UiLook::Classic2006;
+    let stroke = if c06 { 1.0 } else if v16 { 1.5 } else { 1.25 };
     let mirror = matches!(icon, Icon::Redo | Icon::GoToEnd | Icon::NextFrame | Icon::TrimEnd | Icon::Forward);
-    let pen = Pen { p: painter, o, s, w: stroke * s, force: tint, strength: t.icon_color_strength, mirror, t: &t, v16 };
+    // Classic 2006 draws the coloured (VP16) shapes, in its own pixel-art rendering.
+    let pen = Pen { p: painter, o, s, w: stroke * s, force: tint, strength: t.icon_color_strength, mirror, t: &t, v16: v16 || c06, c06 };
     // VP16 raised look: the same shape in a dark shade 1 px down-right, then the icon on top.
     if v16 && tint.is_none() && t.icon_shadow.a() > 0 && !matches!(icon, Icon::Logo | Icon::FaderThumb) {
         let shadow = Pen { o: o + vec2(1.0, 1.0), force: Some(t.icon_shadow.gamma_multiply(0.8)), ..pen };
         draw(&shadow, icon);
     }
     draw(&pen, icon);
+}
+
+/// Classic 2006 icon palette (CLASSIC_2006_SPEC.md §7): the 16 VGA colours less the garish ones, plus the Windows
+/// 2000/XP icon tones (folder yellows, document cream, steel blues, leaf greens, two more greys). Every icon colour is
+/// snapped to its nearest member.
+const PALETTE_2006: [u32; 24] = [
+    0x000000, 0x404040, 0x808080, 0xA0A0A0, 0xC0C0C0, 0xE0E0E0, 0xFFFFFF, 0x000080, 0x0000FF, 0x3366CC, 0x6699FF, 0x008080,
+    0x00A0C0, 0x008000, 0x339933, 0x99CC66, 0x800000, 0xFF0000, 0xCC6666, 0x808000, 0xFFCC33, 0xCC9933, 0x800080, 0xF0E0C0,
+];
+
+fn quantize_2006(c: Color32) -> Color32 {
+    let (r, g, b) = (c.r() as i32, c.g() as i32, c.b() as i32);
+    let best = PALETTE_2006
+        .iter()
+        .min_by_key(|&&v| {
+            let (pr, pg, pb) = ((v >> 16) as i32 & 255, (v >> 8) as i32 & 255, v as i32 & 255);
+            // Weighted RGB distance.
+            3 * (r - pr).pow(2) + 4 * (g - pg).pow(2) + 2 * (b - pb).pow(2)
+        })
+        .copied()
+        .unwrap_or(0);
+    Color32::from_rgba_premultiplied((best >> 16) as u8, (best >> 8) as u8, best as u8, c.a())
 }
 
 #[derive(Clone, Copy)]
@@ -156,20 +182,40 @@ struct Pen<'a> {
     strength: f32,
     mirror: bool,
     t: &'a Theme,
+    /// Coloured shapes (VP16 and Classic 2006) rather than VP23's monochrome lines.
     v16: bool,
+    /// Classic 2006 rendering: pixel-snapped 1 px strokes, outlined fills, period palette.
+    c06: bool,
 }
 
 type P = (f32, f32);
+
+/// Classic outline round every filled shape.
+const OUTLINE_2006: Color32 = Color32::from_rgb(0x20, 0x20, 0x20);
 
 impl Pen<'_> {
     fn at(&self, (x, y): P) -> Pos2 {
         let x = if self.mirror { 16.0 - x } else { x };
         self.o + vec2(x, y) * self.s
     }
-    /// Look colour: forced tint, else VP16 colours toned down by "Icon color strength".
+    /// A stroke vertex: on pixel centres in Classic 2006, so 1 px lines stay crisp.
+    fn at_s(&self, p: P) -> Pos2 {
+        let q = self.at(p);
+        if self.c06 { q.floor() + vec2(0.5, 0.5) } else { q }
+    }
+    /// A fill vertex: on pixel edges in Classic 2006.
+    fn at_f(&self, p: P) -> Pos2 {
+        let q = self.at(p);
+        if self.c06 { q.round() } else { q }
+    }
+    /// Look colour: forced tint, else VP16 colours toned down by "Icon color strength"; Classic 2006 snaps the
+    /// colour to its palette.
     fn c(&self, c: Color32) -> Color32 {
         if let Some(f) = self.force {
             return f;
+        }
+        if self.c06 {
+            return quantize_2006(c);
         }
         if self.strength >= 1.0 {
             return c;
@@ -184,46 +230,91 @@ impl Pen<'_> {
     fn ink(&self) -> Color32 {
         self.c(self.t.icon)
     }
+    /// White "paper" of pages, sheets and pointers: the VP16 icon white, white in Classic 2006 (whose ink is black).
+    fn paper(&self) -> Color32 {
+        if self.c06 { self.c(Color32::WHITE) } else { self.t.icon }
+    }
     /// The surface the icon sits on (for hollow cut-outs).
     fn bg(&self) -> Color32 {
+        if self.c06 {
+            return self.force.map_or(self.t.metal.face, |f| f);
+        }
         self.force.map_or(self.t.toolbar_bg, |_| self.c(self.t.toolbar_bg))
+    }
+    /// Classic 2006 stroke width: whole pixels.
+    fn sw(&self, k: f32) -> f32 {
+        if self.c06 { (self.w * k).round().max(1.0) } else { self.w * k }
+    }
+    /// Classic 2006 outline stroke of a fill (none when tinted: a disabled icon is one flat colour).
+    fn outline(&self) -> Option<Stroke> {
+        (self.c06 && self.force.is_none()).then(|| Stroke::new(1.0_f32, OUTLINE_2006))
     }
     fn line(&self, pts: &[P], c: Color32) {
         self.line_w(pts, c, 1.0);
     }
     fn line_w(&self, pts: &[P], c: Color32, k: f32) {
-        let pts: Vec<Pos2> = pts.iter().map(|p| self.at(*p)).collect();
-        self.p.add(Shape::line(pts, Stroke::new(self.w * k, self.c(c))));
+        let pts: Vec<Pos2> = pts.iter().map(|p| self.at_s(*p)).collect();
+        self.p.add(Shape::line(pts, Stroke::new(self.sw(k), self.c(c))));
     }
     fn closed(&self, pts: &[P], c: Color32) {
-        let pts: Vec<Pos2> = pts.iter().map(|p| self.at(*p)).collect();
-        self.p.add(Shape::closed_line(pts, Stroke::new(self.w, self.c(c))));
+        let pts: Vec<Pos2> = pts.iter().map(|p| self.at_s(*p)).collect();
+        self.p.add(Shape::closed_line(pts, Stroke::new(self.sw(1.0), self.c(c))));
     }
     fn poly(&self, pts: &[P], c: Color32) {
-        let pts: Vec<Pos2> = pts.iter().map(|p| self.at(*p)).collect();
+        let pts: Vec<Pos2> = pts.iter().map(|p| self.at_f(*p)).collect();
+        if let Some(o) = self.outline() {
+            let edge: Vec<Pos2> = pts.iter().map(|q| *q + vec2(0.5, 0.5) - (*q - self.at_f((8.0, 8.0))).normalized() * 0.5).collect();
+            self.p.add(Shape::convex_polygon(pts, self.c(c), Stroke::NONE));
+            self.p.add(Shape::closed_line(edge, o));
+            return;
+        }
         self.p.add(Shape::convex_polygon(pts, self.c(c), Stroke::NONE));
     }
     fn r(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect::from_two_pos(self.at((x, y)), self.at((x + w, y + h)))
+        Rect::from_two_pos(self.at_f((x, y)), self.at_f((x + w, y + h)))
     }
     fn fill(&self, x: f32, y: f32, w: f32, h: f32, c: Color32) {
-        self.p.rect_filled(self.r(x, y, w, h), 0.0, self.c(c));
+        let r = self.r(x, y, w, h);
+        self.p.rect_filled(r, 0.0, self.c(c));
+        if let Some(o) = self.outline() {
+            if r.width() >= 3.0 && r.height() >= 3.0 {
+                self.p.rect_stroke(r, 0.0, o, StrokeKind::Inside);
+            }
+        }
     }
     fn fill_round(&self, x: f32, y: f32, w: f32, h: f32, rad: f32, c: Color32) {
+        let rad = if self.c06 { 0.0 } else { rad };
         self.p.rect_filled(self.r(x, y, w, h), CornerRadius::same((rad * self.s) as u8), self.c(c));
+        if let Some(o) = self.outline() {
+            self.p.rect_stroke(self.r(x, y, w, h), 0.0, o, StrokeKind::Inside);
+        }
     }
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color32) {
+        if self.c06 {
+            let r = Rect::from_two_pos(self.at_s((x, y)), self.at_s((x + w, y + h)));
+            self.p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, self.c(c)), StrokeKind::Middle);
+            return;
+        }
         self.p.rect_stroke(self.r(x, y, w, h), 0.0, Stroke::new(self.w, self.c(c)), StrokeKind::Middle);
     }
     fn rect_round(&self, x: f32, y: f32, w: f32, h: f32, rad: f32, c: Color32) {
+        if self.c06 {
+            self.rect(x, y, w, h, c);
+            return;
+        }
         let cr = CornerRadius::same((rad * self.s) as u8);
         self.p.rect_stroke(self.r(x, y, w, h), cr, Stroke::new(self.w, self.c(c)), StrokeKind::Middle);
     }
     fn circle(&self, c: P, r: f32, col: Color32) {
-        self.p.circle_stroke(self.at(c), r * self.s, Stroke::new(self.w, self.c(col)));
+        self.p.circle_stroke(self.at_s(c), r * self.s, Stroke::new(self.sw(1.0), self.c(col)));
     }
     fn dot(&self, c: P, r: f32, col: Color32) {
-        self.p.circle_filled(self.at(c), r * self.s, self.c(col));
+        self.p.circle_filled(self.at_s(c), r * self.s, self.c(col));
+        if let Some(o) = self.outline() {
+            if r >= 2.0 {
+                self.p.circle_stroke(self.at_s(c), r * self.s - 0.5, o);
+            }
+        }
     }
     /// Arc from `a0` to `a1` degrees (0 = right, 90 = down).
     fn arc(&self, c: P, r: f32, a0: f32, a1: f32, col: Color32, k: f32) {
@@ -237,7 +328,9 @@ impl Pen<'_> {
         self.line_w(&pts, col, k);
     }
     fn text(&self, c: P, s: &str, size: f32, family: &str, col: Color32) {
-        let fam = if family.is_empty() { FontFamily::Proportional } else { FontFamily::Name(family.into()) };
+        // Classic 2006 letters in Tahoma Bold.
+        let family = if self.c06 { fonts::TAHOMA_BOLD } else { family };
+        let fam = if family.is_empty() || !fonts::installed() { FontFamily::Proportional } else { FontFamily::Name(family.into()) };
         self.p.text(self.at(c), Align2::CENTER_CENTER, s, FontId::new(size * self.s, fam), self.c(col));
     }
     /// Classic arrow pointer with its tip at (x, y), `k` = size factor (1 = 13 px tall).
@@ -257,7 +350,7 @@ impl Pen<'_> {
     }
     fn page(&self, x: f32, y: f32, w: f32, h: f32, filled: bool) {
         if filled {
-            self.fill(x, y, w, h, self.t.icon);
+            self.fill(x, y, w, h, self.paper());
             self.rect(x, y, w, h, hex(0x5A5A5A));
         } else {
             self.fill(x, y, w, h, self.bg());
@@ -323,7 +416,7 @@ impl Pen<'_> {
     fn sheet(&self, x: f32, y: f32, w: f32, h: f32) {
         let pts = [(x, y), (x + w - 3.0, y), (x + w, y + 3.0), (x + w, y + h), (x, y + h)];
         if self.v16 {
-            self.poly(&pts, self.t.icon);
+            self.poly(&pts, self.paper());
             self.poly(&[(x + w - 3.0, y), (x + w, y + 3.0), (x + w - 3.0, y + 3.0)], hex(0x9A9A9A));
         } else {
             self.closed(&pts, self.ink());
@@ -343,7 +436,7 @@ fn draw(p: &Pen, icon: Icon) {
         New => {
             let page = [(3.0, 1.0), (10.0, 1.0), (13.0, 4.0), (13.0, 15.0), (3.0, 15.0)];
             if p.v16 {
-                p.poly(&page, t.icon);
+                p.poly(&page, p.paper());
                 p.poly(&[(10.0, 1.0), (13.0, 4.0), (10.0, 4.0)], hex(0x9A9A9A));
             } else {
                 // Solid page, the folded corner cut out (dark2026).
@@ -445,12 +538,12 @@ fn draw(p: &Pen, icon: Icon) {
             p.arrow_head_k((1.5, 5.0), (-1.0, 0.0), ink, if p.v16 { 1.3 } else { 1.1 });
         }
         Tutorials => {
-            p.fill_round(4.0, 7.0, 7.0, 6.5, 2.0, t.icon);
-            p.fill_round(5.0, 1.5, 2.2, 7.0, 1.0, t.icon);
+            p.fill_round(4.0, 7.0, 7.0, 6.5, 2.0, p.paper());
+            p.fill_round(5.0, 1.5, 2.2, 7.0, 1.0, p.paper());
             p.help_badge();
         }
         WhatsThis => {
-            p.pointer(2.0, 1.0, 1.0, t.icon);
+            p.pointer(2.0, 1.0, 1.0, p.paper());
             p.help_badge();
         }
         Record => {
@@ -507,19 +600,19 @@ fn draw(p: &Pen, icon: Icon) {
             p.line(&[(10.6, 10.6), (14.5, 14.5)], ink);
         }
         NormalEdit => {
-            p.pointer(2.0, 1.0, 0.95, t.icon);
+            p.pointer(2.0, 1.0, 0.95, p.paper());
             p.line(&[(11.0, 10.0), (10.0, 10.0), (10.0, 14.5), (11.0, 14.5)], ink);
             p.line(&[(14.0, 10.0), (15.0, 10.0), (15.0, 14.5), (14.0, 14.5)], ink);
         }
         EnvelopeEdit => {
-            p.pointer(1.5, 0.5, 0.85, t.icon);
+            p.pointer(1.5, 0.5, 0.85, p.paper());
             let c = p.c16(hex(0x3C78C8));
             p.line(&[(7.5, 14.0), (11.0, 10.0), (15.0, 12.5)], c);
             p.fill(10.0, 9.0, 2.0, 2.0, ink);
             p.fill(14.0, 11.5, 2.0, 2.0, ink);
         }
         SelectionEdit => {
-            p.pointer(1.5, 0.5, 0.85, t.icon);
+            p.pointer(1.5, 0.5, 0.85, p.paper());
             for (a, b) in [((8.0, 9.0), (10.0, 9.0)), ((12.0, 9.0), (14.5, 9.0)), ((14.5, 11.0), (14.5, 12.5)), ((8.0, 14.5), (10.0, 14.5)), ((12.0, 14.5), (14.5, 14.5)), ((8.0, 11.0), (8.0, 12.5))] {
                 p.line(&[a, b], ink);
             }
@@ -641,7 +734,7 @@ fn draw(p: &Pen, icon: Icon) {
             // Two grouped boxes (one solid, one dotted) and a pointer over them (c_transport, dark2026).
             p.fill(1.0, 2.0, 6.0, 6.0, p.c16(hex(0x5DB0E6)));
             p.dashed_rect(8.5, 2.0, 6.0, 6.0, 1.0, 1.0, ink);
-            p.pointer(8.0, 6.5, 0.7, t.icon);
+            p.pointer(8.0, 6.5, 0.7, p.paper());
         }
         ColorGrading => {
             p.dot((8.0, 4.5), 2.7, hex(0xDC5050));
@@ -690,6 +783,11 @@ fn draw(p: &Pen, icon: Icon) {
                     p.fill(x, 7.0, 2.0, 2.0, ink);
                 }
             }
+        }
+        Mute | Solo if p.c06 => {
+            // Classic 2006: a bold black letter on the (bevelled) button; Mute's letter is struck through when the
+            // button is drawn tinted, so the glyph stays one colour.
+            p.text((8.0, 8.5), if icon == Mute { "M" } else { "S" }, t.font.mute_solo + 1.0, fonts::TAHOMA_BOLD, ink);
         }
         Mute | Solo => {
             let size = t.font.mute_solo;
@@ -758,6 +856,13 @@ fn draw(p: &Pen, icon: Icon) {
             p.line(&[(4.5, 4.0), (8.0, 7.0), (11.5, 4.0)], ink);
             p.line(&[(4.5, 8.0), (8.0, 11.0), (11.5, 8.0)], ink);
         }
+        FaderThumb if p.c06 => {
+            // Chrome handle with a centre line (the track sliders paint theirs with `widgets::thumb`).
+            p.fill(3.0, 1.0, 10.0, 14.0, t.metal.face);
+            p.line(&[(4.0, 1.5), (12.0, 1.5)], t.metal.light);
+            p.line(&[(3.5, 1.5), (3.5, 14.5)], t.metal.light);
+            p.fill(7.5, 4.0, 1.0, 8.0, t.metal.dark);
+        }
         FaderThumb => {
             let (x, w) = if p.v16 { (0.0, 16.0) } else { (2.0, 12.0) };
             p.fill(x, 2.0, w, 12.0, t.fader_thumb);
@@ -765,6 +870,8 @@ fn draw(p: &Pen, icon: Icon) {
             p.fill(8.5, 5.0, 1.0, 6.0, t.fader_thumb_bar);
         }
         PanThumb => p.poly(&[(3.0, 4.0), (13.0, 4.0), (8.0, 12.0)], t.fader_thumb),
+        // The time-display / rate thumb and the fx letters keep their look-neutral drawing; the Classic 2006 outline
+        // pass handles the rest.
         Downmix => {
             let a = p.c16(hex(0xF0C800));
             p.line(&[(8.0, 2.0), (8.0, 14.0)], ink);
@@ -809,7 +916,7 @@ fn draw(p: &Pen, icon: Icon) {
         }
         AutoPreview => {
             // Pointer with a green play disc at its upper right.
-            p.pointer(1.0, 3.0, 0.9, t.icon);
+            p.pointer(1.0, 3.0, 0.9, p.paper());
             p.dot((11.0, 5.5), 4.5, hex(0x1E1E1E));
             p.dot((11.0, 5.5), 3.8, hex(0x3CC850));
             p.poly(&[(9.8, 3.6), (9.8, 7.4), (13.0, 5.5)], hex(0x1E1E1E));
@@ -963,7 +1070,7 @@ mod tests {
         super::super::fonts::install(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             let painter = ctx.layer_painter(LayerId::background());
-            for look in [UiLook::Vegas16, UiLook::Vegas23] {
+            for look in [UiLook::Vegas16, UiLook::Vegas23, UiLook::Classic2006] {
                 for (i, &icon) in Icon::ALL.iter().enumerate() {
                     let r = Rect::from_min_size(pos2(i as f32 * 20.0, 0.0), vec2(16.0, 16.0));
                     paint_icon(&painter, r, icon, look, None);

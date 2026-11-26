@@ -41,8 +41,12 @@ fn h_parts(g: &Geo, total: f64) -> HParts {
     let plus = cell(minus.min.x - 19.0, 19.0);
     let right = cell(plus.min.x - 16.0, 16.0);
     let left = cell(r.min.x, 16.0);
-    // VP16: 15 px thumb under a 1 px edge (native y 554–569); VP23: inset 2 px.
-    let (top, bottom) = if theme::get().look() == UiLook::Vegas16 { (1.0, 0.0) } else { (2.0, 2.0) };
+    // VP16: 15 px thumb under a 1 px edge (native y 554–569); Classic 2006: the full 16 px; VP23: inset 2 px.
+    let (top, bottom) = match theme::get().look() {
+        UiLook::Vegas16 => (1.0, 0.0),
+        UiLook::Classic2006 => (0.0, 0.0),
+        UiLook::Vegas23 => (2.0, 2.0),
+    };
     let track = Rect::from_min_max(pos2(left.max.x, r.min.y + top), pos2(right.min.x, r.max.y - bottom));
     let view = g.lanes.width() as f64 / g.pps;
     let tw = track.width() as f64;
@@ -177,6 +181,10 @@ pub(super) fn paint(p: &Painter, g: &Geo, content: f32, project: &Project, scrol
     let v16 = t.look() == UiLook::Vegas16;
     let h = h_parts(g, h_total(g, project));
     let ink = t.scroll_arrow;
+    if t.classic() {
+        paint_classic(p, &t, g, &h, &v_parts(g, content, scroll_y));
+        return;
+    }
     p.rect_filled(g.hscroll, 0.0, t.scroll_track);
     if v16 {
         p.rect_filled(Rect::from_x_y_ranges(g.hscroll.x_range(), Rangef::new(g.hscroll.min.y, g.hscroll.min.y + 1.0)), 0.0, Color32::from_gray(0x3E));
@@ -215,4 +223,59 @@ pub(super) fn paint(p: &Painter, g: &Geo, content: f32, project: &Project, scrol
     p.line_segment([c - vec2(0.0, 4.0), c + vec2(0.0, 4.0)], s);
     let c = v.minus.center().round();
     p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], s);
+}
+
+/// Classic 2006 scrollbars (Windows 2000 / Vegas 6): flat grey tracks, raised chrome arrow buttons with black
+/// triangles, a chrome thumb with two grip lines, chrome + / − / magnifier buttons.
+fn paint_classic(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: &VParts) {
+    use crate::ui::widgets::{Chrome, arrow, chrome_button};
+    let (m, ink) = (&t.metal, t.scroll_arrow);
+    let btn = |r: Rect| chrome_button(p, r, Chrome::Raised, m);
+    let plus = |r: Rect| {
+        let c = r.center().floor();
+        p.rect_filled(Rect::from_min_size(pos2(c.x - 3.0, c.y), vec2(7.0, 1.0)), 0.0, ink);
+        p.rect_filled(Rect::from_min_size(pos2(c.x, c.y - 3.0), vec2(1.0, 7.0)), 0.0, ink);
+    };
+    let minus = |r: Rect| {
+        let c = r.center().floor();
+        p.rect_filled(Rect::from_min_size(pos2(c.x - 3.0, c.y), vec2(7.0, 1.0)), 0.0, ink);
+    };
+    // Horizontal bar.
+    p.rect_filled(g.hscroll, 0.0, t.scroll_track);
+    btn(h.left);
+    arrow(p, h.left, (-1.0, 0.0), ink);
+    btn(h.right);
+    arrow(p, h.right, (1.0, 0.0), ink);
+    btn(h.thumb);
+    if h.thumb.width() >= 14.0 {
+        let c = h.thumb.center().floor();
+        for dx in [-2.0, 1.0] {
+            p.rect_filled(Rect::from_min_size(pos2(c.x + dx, h.thumb.min.y + 4.0), vec2(1.0, h.thumb.height() - 8.0)), 0.0, m.shadow);
+            p.rect_filled(Rect::from_min_size(pos2(c.x + dx + 1.0, h.thumb.min.y + 4.0), vec2(1.0, h.thumb.height() - 8.0)), 0.0, m.light);
+        }
+    }
+    btn(h.plus);
+    plus(h.plus);
+    btn(h.minus);
+    minus(h.minus);
+    btn(h.zoom);
+    paint_icon(p, h.zoom.shrink(2.0), Icon::Search, t.look(), Some(ink));
+
+    // Vertical bar.
+    crate::ui::widgets::metal(p, g.vscroll, m);
+    p.rect_filled(Rect::from_min_max(pos2(g.vscroll.min.x, g.lanes.min.y), pos2(g.vscroll.max.x, g.lanes.max.y)), 0.0, t.scroll_track);
+    btn(v.corner);
+    paint_icon(p, v.corner.shrink(2.0), Icon::InsertMarker, t.look(), None);
+    btn(v.thumb);
+    if v.thumb.height() >= 14.0 {
+        let c = v.thumb.center().floor();
+        for dy in [-2.0, 1.0] {
+            p.rect_filled(Rect::from_min_size(pos2(v.thumb.min.x + 4.0, c.y + dy), vec2(v.thumb.width() - 8.0, 1.0)), 0.0, m.shadow);
+            p.rect_filled(Rect::from_min_size(pos2(v.thumb.min.x + 4.0, c.y + dy + 1.0), vec2(v.thumb.width() - 8.0, 1.0)), 0.0, m.light);
+        }
+    }
+    btn(v.plus);
+    plus(v.plus);
+    btn(v.minus);
+    minus(v.minus);
 }

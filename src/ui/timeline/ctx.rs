@@ -757,7 +757,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
     if i >= project.timeline.tracks(v).len() {
         return;
     }
-    let v23 = theme::get().look() == UiLook::Vegas23;
+    let v23 = theme::get().look().v23();
     let rename = |ui: &mut Ui, project: &Project, st: &mut TlState| {
         if entry(ui, "&Rename", "F2", true, Mark::None) {
             st.rename = Some((Rename::Track(v, i), project.timeline.tracks(v)[i].name.clone()));

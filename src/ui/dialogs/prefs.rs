@@ -389,9 +389,10 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
     // Milan Pro: which VEGAS generation the interface follows.
     super::group(ui, "Interface Look");
     ui.horizontal(|ui| {
-        for (look, label) in [(UiLook::Vegas16, "VEGAS 16"), (UiLook::Vegas23, "VEGAS 23")] {
+        for (look, label) in [(UiLook::Classic2006, "Classic 2006"), (UiLook::Vegas16, "VEGAS 16"), (UiLook::Vegas23, "VEGAS 23")] {
             if ui.radio(d.look.look == look, label).clicked() {
-                d.look = if look == UiLook::Vegas16 { LookChoice::VEGAS16 } else { LookChoice { look, variant: d.look.variant } };
+                // Only VEGAS 23 has interface types.
+                d.look = if look == UiLook::Vegas23 { LookChoice { look, variant: d.look.variant } } else { LookChoice { look, variant: Variant::Dark } };
             }
         }
     });
@@ -403,7 +404,7 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
         (Some(Variant::White), "White", d.look.look == UiLook::Vegas23),
     ] {
         let on = variant == Some(d.look.variant);
-        let why = if variant.is_some() { Fixed("the VEGAS 16 look has the Dark type only") } else { Later("R49") };
+        let why = if variant.is_some() { Fixed("only the VEGAS 23 look has a White type") } else { Later("R49") };
         if ui.add_enabled(enabled, RadioButton::new(on, label)).on_disabled_hover_text(why.text()).clicked() {
             if let Some(v) = variant {
                 d.look.variant = v;

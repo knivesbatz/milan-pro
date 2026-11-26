@@ -276,7 +276,7 @@ pub fn button(ui: &mut Ui, label: &str, enabled: bool, default: bool) -> Respons
     let t = theme::get();
     let d = t.dialog();
     let mut b = Button::new(RichText::new(label).color(if enabled { d.text } else { d.text_disabled })).min_size(BUTTON);
-    if default && t.look() == UiLook::Vegas23 {
+    if default && t.look().v23() {
         b = b.fill(d.accent);
     } else if default && enabled {
         b = b.stroke(Stroke::new(1.0_f32, d.accent));

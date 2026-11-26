@@ -181,7 +181,7 @@ pub struct CmdState {
 
 impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
-        let v23 = self.look == UiLook::Vegas23;
+        let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
@@ -472,7 +472,7 @@ fn label_job(ui: &Ui, label: &str, color: Color32, gutter: f32) -> LayoutJob {
 fn row_colors(enabled: bool) -> (Color32, Color32) {
     let t = theme::get();
     let text = if enabled { t.menu_popup_text } else { t.menu_popup_text_disabled };
-    let short = if !enabled { t.menu_popup_text_disabled } else if t.look() == UiLook::Vegas16 { t.menu_popup_text } else { t.text_dim };
+    let short = if !enabled { t.menu_popup_text_disabled } else if t.look() != UiLook::Vegas23 { t.menu_popup_text } else { t.text_dim };
     (text, short)
 }
 
@@ -606,7 +606,7 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
         Sub(l, items) => sub(ui, l, true, |ui| show(ui, items)),
         Inline(items) => show(ui, items),
         V16(i) if look == UiLook::Vegas16 => show_item(ui, i, look),
-        V23(i) if look == UiLook::Vegas23 => show_item(ui, i, look),
+        V23(i) if look.v23() => show_item(ui, i, look),
         V16(_) | V23(_) => {}
         Recent => {
             let st = state(ui.ctx());
@@ -1248,7 +1248,7 @@ pub fn named_commands(look: UiLook) -> Vec<(String, Command)> {
                 Sub(l, items) => walk(items, &format!("{path}.{}", clean(l)), look, out),
                 Inline(items) => walk(items, path, look, out),
                 V16(i) if look == UiLook::Vegas16 => walk(std::slice::from_ref(*i), path, look, out),
-                V23(i) if look == UiLook::Vegas23 => walk(std::slice::from_ref(*i), path, look, out),
+                V23(i) if look.v23() => walk(std::slice::from_ref(*i), path, look, out),
                 _ => {}
             }
         }
@@ -1340,30 +1340,49 @@ pub fn draw_menu_bar(ui: &mut Ui) {
     }
 
     egui::menu::bar(ui, |ui| {
-        // Bar labels: native white row in VP16, dark title-bar row in VP23 (§5.1).
+        // Bar labels: native white row in VP16, dark title-bar row in VP23 (§5.1), metal row with a raised bevel on
+        // hover and a sunken one while open in Classic 2006.
         let v = ui.visuals_mut();
         v.override_text_color = Some(t.menu_text);
         v.widgets.hovered.weak_bg_fill = t.menu_bar_hover;
         v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, t.menu_bar_hover_border);
         v.widgets.open.weak_bg_fill = t.menu_bar_open;
         v.widgets.active.weak_bg_fill = t.menu_bar_open;
+        if t.classic() {
+            v.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+            v.widgets.hovered.bg_stroke = Stroke::NONE;
+            v.widgets.open.weak_bg_fill = Color32::TRANSPARENT;
+            v.widgets.active.weak_bg_fill = Color32::TRANSPARENT;
+        }
         // VP23 labels sit ~2 px further apart (light2026: File 39, Edit 73, View 109, Insert 150).
         ui.spacing_mut().button_padding = vec2(if t.look() == UiLook::Vegas16 { 7.0 } else { 8.0 }, 1.0);
         ui.spacing_mut().item_spacing.x = 0.0;
+        if t.classic() {
+            ui.add_space(4.0);
+        }
         for (k, (label, items)) in MENUS.iter().enumerate() {
             let id = bar_id().with(*label);
+            let open = bar.as_ref().is_some_and(|r| r.id == id);
             let mut b = Button::new(label_job(ui, label, t.menu_text, 0.0));
-            if bar.as_ref().is_some_and(|r| r.id == id) {
+            if open && !t.classic() {
                 b = b.fill(t.menu_bar_open).stroke(Stroke::new(1.0_f32, t.menu_bar_hover_border));
+            } else if t.classic() {
+                b = b.fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
             }
             let mut resp = ui.add(b);
             resp.id = id; // a fixed id, so Alt+letter can open the menu and `draw_menu_bar` can tell which is open
+            if t.classic() && (open || resp.hovered()) {
+                // Behind the label (the bevel's inside is the metal row itself): raised on hover, sunken while open.
+                let r = Rect::from_x_y_ranges(resp.rect.x_range(), Rangef::new(resp.rect.min.y - 1.0, resp.rect.max.y + 1.0));
+                super::widgets::edge(ui.painter(), r, !open, &t.metal);
+            }
             if want == Some(k) {
                 **bar = Some(MenuRoot::new(resp.rect.left_bottom(), id));
             }
             bar.bar_menu(&resp, |ui| {
                 ui.set_min_width(220.0);
                 show(ui, items);
+                chrome::classic_popup_border(ui.painter(), ui.min_rect().expand(3.0), &t);
             });
         }
     });
@@ -1743,7 +1762,9 @@ mod tests {
         for c in [SmartSplit, OpenInAudioEditor, OpenCopyInAudioEditor, CdTrack] {
             assert!(unfinished(c).is_none() && !off.enabled(c) && on.enabled(c), "{c:?}");
         }
-        assert!(!CmdState { look: UiLook::Vegas16, ..on.clone() }.enabled(SmartSplit) && !CmdState::default().enabled(EventLength));
+        assert!(!CmdState { look: UiLook::Vegas16, ..on.clone() }.enabled(SmartSplit) && !CmdState { look: UiLook::Vegas16, ..CmdState::default() }.enabled(EventLength));
+        // Classic 2006 follows the VEGAS 23 command set.
+        assert!(CmdState { look: UiLook::Classic2006, ..on.clone() }.enabled(SmartSplit));
         for c in [InsertCommand, CdIndex, RebuildPeaks, ContextMenu] {
             assert!(unfinished(c).is_none() && off.enabled(c), "{c:?}");
         }
@@ -1962,7 +1983,7 @@ mod tests {
 
     #[test]
     fn user_layout_slots_follow_the_saved_ones() {
-        let mut st = CmdState::default();
+        let mut st = CmdState { look: UiLook::Vegas16, ..CmdState::default() };
         assert!(!st.enabled(LayoutUser(3)) && st.enabled(SaveLayoutUser(3)) && st.enabled(SaveLayout) && st.enabled(SaveLayoutAs));
         st.layouts[3] = Some("Edit".into());
         assert!(st.enabled(LayoutUser(3)) && !st.enabled(LayoutUser(4)) && !st.enabled(LayoutUser(10)));

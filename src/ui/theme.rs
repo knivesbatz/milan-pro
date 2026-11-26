@@ -1,15 +1,33 @@
-//! Look switch ("VEGAS 16" / "VEGAS 23" / "VEGAS 23 White"): colour tokens, metrics and font
-//! sizes from docs/VEGAS_UI_SPEC.md §1.3, §2, §3 and §4, mapped onto egui::Visuals (§2.6).
-//! Drawing code reads `theme::get()` and never hard-codes colours.
+//! Look switch ("Classic 2006" / "VEGAS 16" / "VEGAS 23" / "VEGAS 23 White"): colour tokens, metrics and font
+//! sizes from docs/VEGAS_UI_SPEC.md §1.3, §2, §3 and §4 and docs/CLASSIC_2006_SPEC.md, mapped onto egui::Visuals
+//! (§2.6). Drawing code reads `theme::get()` and never hard-codes colours.
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 use std::sync::{LazyLock, RwLock};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum UiLook {
-    #[default]
     Vegas16,
     Vegas23,
+    /// 2005–2007 NLE chrome (CLASSIC_2006_SPEC.md) on the VEGAS 23 layout: the default for new installs.
+    #[default]
+    Classic2006,
+}
+
+impl UiLook {
+    /// Follows the VEGAS 23 layout, docking areas, menus, toolbars and keys (Classic 2006 only changes the drawing).
+    pub fn v23(self) -> bool {
+        matches!(self, UiLook::Vegas23 | UiLook::Classic2006)
+    }
+
+    pub fn classic(self) -> bool {
+        self == UiLook::Classic2006
+    }
+
+    /// The VEGAS look whose layout, menus, toolbar sets and keys this look follows.
+    pub fn base(self) -> UiLook {
+        if self.v23() { UiLook::Vegas23 } else { UiLook::Vegas16 }
+    }
 }
 
 /// Interface type within a look. Only VP23 White is measured besides Dark (§2.3).
@@ -31,19 +49,44 @@ impl LookChoice {
     pub const VEGAS16: Self = Self { look: UiLook::Vegas16, variant: Variant::Dark };
     pub const VEGAS23: Self = Self { look: UiLook::Vegas23, variant: Variant::Dark };
     pub const VEGAS23_WHITE: Self = Self { look: UiLook::Vegas23, variant: Variant::White };
+    pub const CLASSIC2006: Self = Self { look: UiLook::Classic2006, variant: Variant::Dark };
     /// Menu order and labels for View > Interface.
-    pub const ALL: [(Self, &'static str); 3] =
-        [(Self::VEGAS16, "VEGAS 16"), (Self::VEGAS23, "VEGAS 23"), (Self::VEGAS23_WHITE, "VEGAS 23 White")];
+    pub const ALL: [(Self, &'static str); 4] =
+        [(Self::CLASSIC2006, "Classic 2006"), (Self::VEGAS16, "VEGAS 16"), (Self::VEGAS23, "VEGAS 23"), (Self::VEGAS23_WHITE, "VEGAS 23 White")];
 
-    /// `MILAN_LOOK` values: vegas16 | vegas23 | vegas23-white.
+    /// `MILAN_LOOK` values: classic2006 | vegas16 | vegas23 | vegas23-white.
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "classic2006" | "classic" | "2006" | "c2006" => Some(Self::CLASSIC2006),
             "vegas16" | "16" => Some(Self::VEGAS16),
             "vegas23" | "23" => Some(Self::VEGAS23),
             "vegas23-white" | "vegas23white" | "23-white" => Some(Self::VEGAS23_WHITE),
             _ => None,
         }
     }
+}
+
+/// Classic 2006 brushed-metal and 3D-bevel colours (CLASSIC_2006_SPEC.md §2); the VEGAS looks fill them with their
+/// flat toolbar colour and never paint them.
+#[derive(Clone, Copy, Debug)]
+pub struct Metal {
+    /// Vertical gradient of every bar: top, middle (45 %), bottom.
+    pub hi: Color32,
+    pub mid: Color32,
+    pub lo: Color32,
+    /// Classic 3D edges: outer light / inner face on the top-left, inner shadow / outer dark on the bottom-right.
+    pub light: Color32,
+    pub face: Color32,
+    pub shadow: Color32,
+    pub dark: Color32,
+    /// Opacity of the brushed streak texture over the gradient (0 = plain gradient).
+    pub streak: f32,
+    /// Blue-grey tint of the track headers (gradient multiplied by it).
+    pub header_tint: Color32,
+    /// Specular line under a raised button's top edge.
+    pub specular: Color32,
+    /// Fill of a pressed-in (active) button, over the sunken face.
+    pub pressed: Color32,
 }
 
 /// Snap-indicator colour per snap target type (§2.1 snap table; VP23 reuses it).
@@ -321,6 +364,9 @@ pub struct Theme {
 
     /// Default track colour palette, assigned to tracks in order, then repeating.
     pub track_colors: [Color32; 8],
+
+    /// Classic 2006 metal and bevel colours (flat stand-ins in the VEGAS looks).
+    pub metal: Metal,
 }
 
 const fn hex(v: u32) -> Color32 {
@@ -339,6 +385,7 @@ impl Theme {
             (UiLook::Vegas16, _) => Self::vegas16_dark(),
             (UiLook::Vegas23, Variant::Dark) => Self::vegas23_dark(),
             (UiLook::Vegas23, Variant::White) => Self::vegas23_white(),
+            (UiLook::Classic2006, _) => Self::classic2006(),
         }
     }
 
@@ -346,21 +393,38 @@ impl Theme {
         self.choice.look
     }
 
+    /// Classic 2006: the drawing switch (the layout switch is `look().v23()`).
+    pub fn classic(&self) -> bool {
+        self.look().classic()
+    }
+
     /// Track colour for the n-th track (video tracks first, then audio).
     pub fn track_color(&self, n: usize) -> Color32 {
         self.track_colors[n % self.track_colors.len()]
     }
 
+    /// The look's text face: Tahoma in Classic 2006 (Segoe UI falls in when it is missing), Segoe UI otherwise.
+    pub fn family(&self) -> FontFamily {
+        if self.classic() && super::fonts::installed() { FontFamily::Name(super::fonts::TAHOMA.into()) } else { FontFamily::Proportional }
+    }
+
     pub fn font(&self, size: f32) -> FontId {
-        FontId::proportional(size)
+        FontId::new(size, self.family())
     }
 
     pub fn semibold(&self, size: f32) -> FontId {
+        if self.classic() {
+            return self.bold(size);
+        }
         FontId::new(size, FontFamily::Name(super::fonts::SEMIBOLD.into()))
     }
 
     pub fn bold(&self, size: f32) -> FontId {
-        FontId::new(size, FontFamily::Name(super::fonts::BOLD.into()))
+        if !super::fonts::installed() {
+            return FontId::proportional(size);
+        }
+        let fam = if self.classic() { super::fonts::TAHOMA_BOLD } else { super::fonts::BOLD };
+        FontId::new(size, FontFamily::Name(fam.into()))
     }
 
     /// §2.1, measured from a local VP15 install (VP16 kept the VP15 interface).
@@ -593,6 +657,7 @@ impl Theme {
                 hex(0x415E81),
                 hex(0x59A869),
             ],
+            metal: FLAT_METAL,
         }
     }
 
@@ -816,6 +881,263 @@ impl Theme {
                 hex(0xC878DC),
                 hex(0x783CF0),
             ],
+            metal: FLAT_METAL,
+        }
+    }
+
+    /// CLASSIC_2006_SPEC.md: 2005–2007 NLE chrome (Vegas 6/7 proportions and track headers, Windows 2000/XP classic
+    /// controls and menus, brushed-steel bars) on the VEGAS 23 layout. Native title bar, in-window menu row.
+    pub fn classic2006() -> Self {
+        let m = Metrics {
+            title_bar_h: 0.0,
+            menu_bar_h: 20.0,
+            main_toolbar_h: 26.0,
+            main_toolbar_bevel: 2.0,
+            dock_toolbar_h: 26.0,
+            tab_strip_h: 21.0,
+            tab_active_line_w: 0.0,
+            splitter_w: 6.0,
+            outer_margin: 2.0,
+            dock_frac: 0.50,
+            dock_h: 534.0,
+            master_bus_w: 120.0,
+            track_list_w: 250.0,
+            timeline_gap: 6.0,
+            color_strip_w: 20.0,
+            time_display_h: 40.0,
+            band_h: 42.0, // loop 6 · markers 14 · ruler 18 · lines
+            loop_bar_h: 6.0,
+            marker_bar_h: 14.0,
+            ruler_h: 18.0,
+            video_track_h: 56.0,
+            audio_track_h: 56.0,
+            event_header_h: 16.0,
+            transport_h: 28.0,
+            status_h: 20.0,
+            status_gap: 2.0,
+            scrollbar_w: 16.0,
+            hscroll_h: 16.0,
+            button: 22.0,
+            button_pitch: 23.0,
+            icon: 16.0,
+            icon_stroke: 1.0,
+            toggle_w: 22.0,
+            toggle_h: 20.0,
+            widget_radius: 0,
+            popup_row_h: 19.0,
+            popup_gutter: 24.0,
+        };
+        // Tahoma 8 pt = 11 px; 7 pt badges and meter labels; 15 pt bold time display.
+        let font = FontSizes {
+            ui: 11.0,
+            menu: 11.0,
+            dock_tab: 11.0,
+            label: 11.0,
+            track_number: 11.0,
+            track_number_bold: true,
+            mute_solo: 9.0,
+            event_name: 11.0,
+            ruler: 10.0,
+            time_display: 20.0,
+            time_display_semibold: true,
+            transport_time: 11.0,
+            status: 11.0,
+            meter: 8.0,
+        };
+        let metal = Metal {
+            hi: hex(0xE4E6E9),
+            mid: hex(0xB9BDC3),
+            lo: hex(0x8F949B),
+            light: hex(0xFFFFFF),
+            face: hex(0xD4D6DA),
+            shadow: hex(0x6E737A),
+            dark: hex(0x2E3136),
+            streak: 1.0,
+            header_tint: hex(0xC4D0DC),
+            specular: hexa(0xFFFFFF, 0.55),
+            pressed: hexa(0x00AEEF, 0.35),
+        };
+        let (black, white, grey, dim) = (hex(0x000000), hex(0xFFFFFF), hex(0x808080), hex(0x5C6168));
+        let accent = hex(0x0096E0);
+        Self {
+            choice: LookChoice::CLASSIC2006,
+            dark_mode: false,
+            m,
+            font,
+
+            title_bg: metal.mid,
+            menu_bar_bg: metal.mid,
+            menu_bar_bottom: metal.lo,
+            menu_bar_line: metal.shadow,
+            menu_text: black,
+            menu_bar_hover: metal.hi,
+            menu_bar_hover_border: metal.shadow,
+            menu_bar_open: metal.face,
+            // Windows XP (Luna) menus: white, 3D grey border, #316AC5 highlight bar.
+            menu_popup_bg: white,
+            menu_popup_border: grey,
+            menu_popup_hover: hex(0x316AC5),
+            menu_popup_text: black,
+            menu_popup_text_disabled: grey,
+            caption_hover: metal.hi,
+            caption_close_hover: hex(0xC42B1C),
+
+            frame: hex(0x5C6168),
+            toolbar_bg: metal.mid,
+            bevel_hi_1: metal.light,
+            bevel_hi_2: metal.face,
+            dock_bevel_1: metal.light,
+            dock_bevel_2: metal.face,
+            line_dark: metal.shadow,
+            dock_divider: metal.shadow,
+            panel_bg: hex(0xC9CCD1),
+            band_bg: hex(0xAEB3BA),
+            lane_bg: hex(0x3C4047),
+            empty_lane_bg: hex(0x2F3339),
+
+            tab_strip_bg: hex(0x9EA3AA),
+            tab_strip_single_bg: hex(0x9EA3AA),
+            tab_active_bg: metal.face,
+            tab_separator: metal.shadow,
+            tab_text: hex(0x2B2E33),
+            tab_text_active: black,
+            tab_text_hover: black,
+            tab_active_line: metal.light,
+
+            text: black,
+            text_secondary: hex(0x1E2226),
+            text_label: hex(0x2B2E33),
+            text_value: black,
+            text_bright: white,
+            text_dim: dim,
+            text_disabled: grey,
+            icon: hex(0x0A0A0A),
+            icon_shadow: Color32::TRANSPARENT,
+            icon_disabled: grey,
+            icon_color_strength: 1.0,
+            input_bg: white,
+            input_placeholder: grey,
+            tooltip_bg: hex(0xFFFFE1),
+            tooltip_text: black,
+            tooltip_border: black,
+
+            button_active_bg: hex(0x9CD3F0),
+            button_hover_bg: metal.hi,
+            button_group_sep: metal.shadow,
+            accent,
+
+            track_header_bg: hex(0x9AA6B3),
+            track_header_sel_bg: hex(0xB4CFE4),
+            track_header_sel_top: hex(0xDCEAF5),
+            track_header_sel_bottom: hex(0x6E8CA6),
+            track_header_top: metal.light,
+            track_separator: hex(0x4A4E55),
+            track_separator_2: hex(0x7A7F86),
+            strip_divider: metal.dark,
+            mute_badge: hex(0xD04040),
+            solo_badge: hex(0xE0C040),
+
+            // Black LCD well with cyan digits (Vegas 5–7 time display).
+            time_display_bg: hex(0x14181E),
+            time_display_text: hex(0x5CE0FF),
+            ruler_text: black,
+            ruler_major_tick: black,
+            ruler_minor_tick: hex(0x3C4047),
+            ruler_minor_shadow: Color32::TRANSPARENT,
+            band_separator: metal.shadow,
+            grid_line: hex(0x50555C),
+            scroll_track: hex(0xA9AEB5),
+            scroll_thumb: metal.face,
+            scroll_arrow: black,
+            native_scroll_bg: hex(0xD4D0C8),
+
+            loop_sel_line: accent,
+            loop_sel_edge: hex(0x005A90),
+            loop_flag: hex(0xFFD800),
+            loop_flag_shade: hex(0xB09400),
+            loop_bar_off: hex(0x8E939A),
+            loop_bar_on: accent,
+            selection_overlay: hexa(0x00AEEF, 0.18),
+            length_tag_bg: white,
+            length_tag_text: black,
+            marker_flag: hex(0xE08A2A),
+            marker_text: white,
+            region_flag: hex(0x3C9A50),
+            region_flag_hi: hex(0x6FBF80),
+            region_edge: hex(0x2E7A40),
+            region_text: white,
+            region_line: hex(0x3C9A50),
+
+            playhead_line: hex(0x00C8FF),
+            playhead_line_inverted: hex(0x00C8FF),
+            playhead_outline: hex(0x00304A),
+            playhead_head: white,
+
+            event_selected_border: hex(0x00C8FF),
+            event_selected_border_ripple: hex(0xE03030),
+            event_label_bg: hexa(0x000000, 0.68),
+            event_label_border: metal.dark,
+            event_chip_bg: hexa(0x000000, 0.60),
+            event_text: white,
+            fade_curve: hex(0x0000C8),
+            fade_curve_selected: white,
+            fade_curve_in_xfade: hex(0x0000C8),
+            fade_region_tint: hexa(0x000000, 0.30),
+            fade_handle: hex(0x0050FF),
+            fade_handle_2: hex(0x0030A0),
+            snap_line: hex(0x00C8FF),
+            snap: SNAP16,
+            bevel: BEVEL16,
+            checker_a: hex(0x9A9A9A),
+            checker_b: hex(0xC8C8C8),
+
+            envelope_volume: hex(0x0000C8),
+            envelope_composite: hex(0x0000C8),
+            envelope_pan: hex(0xC00000),
+            envelope_mute: hex(0x00C8FF),
+            envelope_point: white,
+
+            workspace_bg: hex(0xECECEC),
+            workspace_grid: hex(0xC8C8C8),
+            workspace_frame: hex(0x505050),
+            kf_ruler: hex(0xAEB3BA),
+            kf_lane: hex(0xC9CCD1),
+            kf_lane_alt: hex(0xBEC2C7),
+            kf_row_sel: hex(0xB4CFE4),
+
+            meter_bg: hex(0x14181E),
+            meter_unlit: 0.0,
+            meter_green: hex(0x00E020),
+            meter_yellow: hex(0xF0E000),
+            meter_red: hex(0xFF2020),
+            meter_label: black,
+            fader_track: metal.shadow,
+            fader_thumb: metal.face,
+            fader_thumb_bar: metal.dark,
+
+            warning_text: hex(0xA00000),
+            preview_bg: hex(0x3C4047),
+            preview_frame: black,
+            preset_tile_selected: hex(0xB4CFE4),
+            status_bg: metal.mid,
+            status_edge_1: metal.shadow,
+            status_edge_2: metal.light,
+            logo_bg: hex(0x1C3A5E),
+            logo_border: hex(0x5CA8E0),
+            logo_text: white,
+
+            // Vegas 6 event pastels [I]: steel blue, rose, sage, sand, lavender, teal, clay, blue-grey.
+            track_colors: [
+                hex(0x6E8EC8),
+                hex(0xC86E6E),
+                hex(0x78B478),
+                hex(0xC8B46E),
+                hex(0x9678C8),
+                hex(0x6EB4B4),
+                hex(0xC8966E),
+                hex(0x8CA0B4),
+            ],
+            metal,
         }
     }
 
@@ -897,7 +1219,7 @@ impl Theme {
         v.window_fill = self.panel_bg;
         v.faint_bg_color = self.band_bg;
         v.extreme_bg_color = match self.look() {
-            UiLook::Vegas16 => self.input_bg,
+            UiLook::Vegas16 | UiLook::Classic2006 => self.input_bg,
             UiLook::Vegas23 => self.scroll_track,
         };
         v.code_bg_color = self.input_bg;
@@ -907,7 +1229,7 @@ impl Theme {
         v.window_stroke = Stroke::new(1.0_f32, self.frame);
         v.window_shadow = Shadow::NONE;
         v.popup_shadow = match self.look() {
-            UiLook::Vegas16 => Shadow::NONE,
+            UiLook::Vegas16 | UiLook::Classic2006 => Shadow::NONE,
             UiLook::Vegas23 => Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(90) },
         };
         let r = CornerRadius::same(self.m.widget_radius);
@@ -942,19 +1264,36 @@ impl Theme {
             s.expansion = 0.0;
         }
         w.noninteractive.corner_radius = CornerRadius::ZERO;
+        if self.classic() {
+            // Windows-classic controls: 3D grey faces with a shadow outline, black ink, a blue selection.
+            let m = &self.metal;
+            w.inactive.bg_fill = m.face;
+            w.inactive.weak_bg_fill = m.face;
+            w.inactive.bg_stroke = Stroke::new(1.0_f32, m.shadow);
+            w.hovered.bg_fill = m.hi;
+            w.hovered.weak_bg_fill = m.hi;
+            w.hovered.bg_stroke = Stroke::new(1.0_f32, m.shadow);
+            w.hovered.fg_stroke = Stroke::new(1.0_f32, self.text);
+            w.active.fg_stroke = Stroke::new(1.0_f32, self.text);
+            w.open.bg_stroke = Stroke::new(1.0_f32, m.shadow);
+            w.noninteractive.bg_stroke = Stroke::new(1.0_f32, m.shadow);
+            v.selection.stroke = Stroke::new(1.0_f32, self.text_bright);
+            v.window_stroke = Stroke::new(1.0_f32, m.shadow);
+        }
         v
     }
 
     /// Visuals, spacing and per-look text sizes on the whole context.
     pub fn apply(&self, ctx: &egui::Context) {
         let f = self.font;
+        let fam = self.family();
         ctx.style_mut(|s| {
             s.visuals = self.visuals();
             s.text_styles = [
-                (TextStyle::Small, FontId::proportional(10.0)),
-                (TextStyle::Body, FontId::proportional(f.ui)),
-                (TextStyle::Button, FontId::proportional(f.ui)),
-                (TextStyle::Heading, FontId::proportional(f.ui + 2.0)),
+                (TextStyle::Small, FontId::new(if self.classic() { 9.0 } else { 10.0 }, fam.clone())),
+                (TextStyle::Body, FontId::new(f.ui, fam.clone())),
+                (TextStyle::Button, FontId::new(f.ui, fam.clone())),
+                (TextStyle::Heading, FontId::new(f.ui + 2.0, fam.clone())),
                 (TextStyle::Monospace, FontId::monospace(f.ui)),
             ]
             .into();
@@ -1001,6 +1340,21 @@ const BEVEL16: Bevels16 = Bevels16 {
     transport_top: hex(0x6F6F6F),
 };
 
+/// The VEGAS looks never paint metal: flat stand-ins the size of their toolbar colour.
+const FLAT_METAL: Metal = Metal {
+    hi: hex(0x464646),
+    mid: hex(0x464646),
+    lo: hex(0x464646),
+    light: hex(0x5C5C5C),
+    face: hex(0x464646),
+    shadow: hex(0x333333),
+    dark: hex(0x232323),
+    streak: 0.0,
+    header_tint: hex(0xFFFFFF),
+    specular: Color32::TRANSPARENT,
+    pressed: Color32::TRANSPARENT,
+};
+
 const SNAP16: SnapColors = SnapColors {
     cursor: hex(0xFFE864),
     envelope_point: hex(0xC85AFA),
@@ -1043,6 +1397,26 @@ pub struct DialogColors {
 impl Theme {
     pub fn dialog(&self) -> DialogColors {
         match self.look() {
+            // Windows 2000/XP-classic property sheet: #D4D0C8 face, white fields, #808080 / white etched rules.
+            UiLook::Classic2006 => DialogColors {
+                body: hex(0xD4D0C8),
+                page: hex(0xD4D0C8),
+                field: hex(0xFFFFFF),
+                field_border: hex(0x808080),
+                title_bg: hex(0xFFFFFF),
+                title_text: hex(0x000000),
+                border: hex(0x808080),
+                text: hex(0x000000),
+                text_disabled: hex(0x808080),
+                button: hex(0xD4D0C8),
+                button_border: hex(0x404040),
+                button_hover: hex(0xE4E2DC),
+                button_hover_border: hex(0x000000),
+                tab_border: hex(0x808080),
+                etch: (hex(0x808080), hex(0xFFFFFF)),
+                accent: hex(0x316AC5),
+                accent_text: hex(0xFFFFFF),
+            },
             UiLook::Vegas16 => DialogColors {
                 body: hex(0xF0F0F0),
                 page: hex(0xF9F9F9),
@@ -1085,6 +1459,7 @@ impl Theme {
     }
 }
 
+/// Before `set` (the app sets the chosen look at startup): the VEGAS 16 theme, which the unit tests draw with.
 static CURRENT: LazyLock<RwLock<Theme>> = LazyLock::new(|| RwLock::new(Theme::vegas16_dark()));
 /// Track colours edited in Preferences › Display; replaces the look's palette when set.
 static PALETTE: RwLock<Option<[Color32; 8]>> = RwLock::new(None);
@@ -1118,11 +1493,33 @@ mod tests {
     fn look_parse_and_spec_values() {
         assert_eq!(LookChoice::parse("VEGAS23-white"), Some(LookChoice::VEGAS23_WHITE));
         assert_eq!(LookChoice::parse("vegas16"), Some(LookChoice::VEGAS16));
+        assert_eq!(LookChoice::parse("classic2006"), Some(LookChoice::CLASSIC2006));
         assert_eq!(LookChoice::parse("nope"), None);
         let (a, b, w) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23), Theme::vegas23_white());
         assert_eq!((a.frame, a.toolbar_bg, a.m.splitter_w), (hex(0x232323), hex(0x464646), 7.0));
         assert_eq!((b.frame, b.toolbar_bg, b.m.splitter_w), (hex(0x141414), hex(0x282828), 5.0));
         assert_eq!((w.frame, w.panel_bg, w.text), (hex(0xB4B4B4), hex(0xC8C8C8), hex(0x1E1E1E)));
         assert_eq!(w.accent, hex(0x3C8CDC)); // unlisted White tokens stay Dark
+    }
+
+    /// Three looks: Classic 2006 is the default for new installs, follows the VEGAS 23 layout family, keeps the VEGAS
+    /// looks' tokens untouched, and old preferences naming a VEGAS look still load.
+    #[test]
+    fn classic_2006_is_default_and_follows_vp23() {
+        assert_eq!(LookChoice::default(), LookChoice::CLASSIC2006);
+        assert_eq!(UiLook::default(), UiLook::Classic2006);
+        assert_eq!(LookChoice::ALL.len(), 3 + 1);
+        assert!(UiLook::Classic2006.v23() && UiLook::Vegas23.v23() && !UiLook::Vegas16.v23());
+        assert_eq!((UiLook::Classic2006.base(), UiLook::Vegas16.base()), (UiLook::Vegas23, UiLook::Vegas16));
+        let c = Theme::new(LookChoice::CLASSIC2006);
+        assert!(c.classic() && !c.dark_mode && c.m.title_bar_h == 0.0 && c.m.menu_bar_h > 0.0, "native title bar, in-window menu");
+        assert_eq!((c.font.ui, c.m.icon_stroke, c.m.widget_radius, c.metal.streak), (11.0, 1.0, 0, 1.0));
+        assert_eq!((c.menu_popup_bg, c.menu_popup_hover, c.text), (hex(0xFFFFFF), hex(0x316AC5), hex(0x000000)));
+        assert_eq!(Theme::new(LookChoice::VEGAS23).toolbar_bg, hex(0x282828));
+        assert_eq!(Theme::new(LookChoice::VEGAS16).metal.streak, 0.0);
+        let old: LookChoice = serde_json::from_str(r#"{"look":"Vegas16","variant":"Dark"}"#).unwrap();
+        assert_eq!(old, LookChoice::VEGAS16);
+        let v23: LookChoice = serde_json::from_str(r#"{"look":"Vegas23","variant":"White"}"#).unwrap();
+        assert_eq!(v23, LookChoice::VEGAS23_WHITE);
     }
 }

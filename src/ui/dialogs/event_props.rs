@@ -118,7 +118,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         } else {
             ui.add_enabled(on, Checkbox::new(&mut d.invert, "Invert phase"));
             ui.add_enabled(on, Checkbox::new(&mut d.normalize, "Normalize"));
-            if crate::ui::theme::get().look() == crate::ui::theme::UiLook::Vegas23 {
+            if crate::ui::theme::get().look().v23() {
                 ui.add_enabled(on, Checkbox::new(&mut d.auto_normalize, "Auto normalize"));
             }
         }
