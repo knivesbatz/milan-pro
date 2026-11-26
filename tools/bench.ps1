@@ -86,7 +86,7 @@ L '|---|---|'
 L "| CPU | $($cpu.Name.Trim()), $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads |"
 L "| RAM | $ram GB |"
 $adapter = Rows 'adapter' | Select-Object -First 1
-$gpuNote = if ($adapter) { "compositing on $($adapter.name -replace '_', ' ') through Vulkan (R21a)" } else { 'no Vulkan adapter: compositing on the CPU' }
+$gpuNote = if ($adapter) { "compositing on $($adapter.adapter -replace '_', ' ') through Vulkan (R21a)" } else { 'no Vulkan adapter: compositing on the CPU' }
 L "| GPU | $gpus ($gpuNote) |"
 L "| OS | $($os.Caption) $($os.Version) |"
 L "| Power plan | $power |"
@@ -110,7 +110,7 @@ L '- **Seeks** (`seeks_are_frame_exact_on_long_gop`): a 20 s 1920x1080 30 fps H.
 L '- **Scrub drag** (`scrub_drag_follows_the_cursor`): the same clip, the cursor dragged at 2x for 3 s backwards and forwards through `VideoEngine` as the Video Preview drives it (60 Hz); at every UI frame, how far the frame on screen (read from its burnt-in number) is from the cursor.'
 L '- **Reverse playback** (`reverse_playback_shows_every_frame`): the same clip as a reversed event, played at 1x for 10 s against a 30 fps clock as above; a frame counts when the one on screen is exactly the source frame due.'
 L '- **Adjust Size and Quality for Optimal Playback** (`bench_adaptive_quality` in `src/engine/mod.rs`): the four layers at Best (Full), 1920x1080, looped for 60 s through the Video Preview itself (`decode::Preview`, a 60 Hz UI loop against the wall clock), with the option off and then on.'
-L '- **GPU compositor** (`bench_compose` in `src/engine/gpu/mod.rs`, R21a-c): four decoded layers composed into one frame, on the CPU and on the GPU, median of 30 after a warm-up: four full 1920x1080 frames at Level 50 % (the playback benches' project), four 1920x1080 picture-in-pictures at 45 % turned 15 degrees, and four full 3840x2160 frames (a 4K project at Best (Full)). *As the preview gets it*: the frame stays on the GPU (R21c); *read back*: its pixels copied to the CPU too, as a render needs them. The GPU times include uploading the decoded pictures (32 MB a frame at 1080p full, 133 MB at 4K).
+L '- **GPU compositor** (`bench_compose` in `src/engine/gpu/mod.rs`, R21a-c): four decoded layers composed into one frame, on the CPU and on the GPU, median of 30 after a warm-up: four full 1920x1080 frames at Level 50 % (the project of the playback benches), four 1920x1080 picture-in-pictures at 45 % turned 15 degrees, and four full 3840x2160 frames (a 4K project at Best (Full)). *As the preview gets it*: the frame stays on the GPU (R21c); *read back*: its pixels copied to the CPU too, as a render needs them. The GPU times include uploading the decoded pictures (32 MB a frame at 1080p full, 133 MB at 4K).
 - **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle''s invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in''s own work.'
 L ''
 

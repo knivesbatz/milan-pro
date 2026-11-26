@@ -71,7 +71,8 @@ struct OutTex {
     tex: wgpu::Texture,
     /// The render target (raw bytes).
     target: wgpu::TextureView,
-    /// What the UI samples.
+    /// What the UI samples (feature `wgpu`).
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     sample: wgpu::TextureView,
     format: Intermediate,
     w: u32,
@@ -99,13 +100,18 @@ impl Output {
     }
 
     /// Registered with the UI's painter as an egui texture (`register`); None when the UI does not paint through
-    /// this device.
+    /// this device (or paints through OpenGL, feature `glow`).
     pub fn register(&self) -> Option<TextureId> {
-        let t = self.tex.as_ref()?;
-        let g = self.g.upgrade().filter(|g| g.shared)?;
-        let ui = lock(&STATE).ui.clone()?;
-        let mut r = ui.renderer.write();
-        Some(r.register_native_texture(&g.device, &t.sample, wgpu::FilterMode::Linear))
+        #[cfg(feature = "wgpu")]
+        {
+            let t = self.tex.as_ref()?;
+            let g = self.g.upgrade().filter(|g| g.shared)?;
+            let ui = lock(&STATE).ui.clone()?;
+            let mut r = ui.renderer.write();
+            Some(r.register_native_texture(&g.device, &t.sample, wgpu::FilterMode::Linear))
+        }
+        #[cfg(not(feature = "wgpu"))]
+        None
     }
 }
 
@@ -119,16 +125,24 @@ impl Drop for Output {
 
 /// `Output::register`'s texture freed again, once the frame it showed is gone.
 pub fn unregister(id: TextureId) {
+    #[cfg(feature = "wgpu")]
     if let Some(ui) = lock(&STATE).ui.clone() {
         ui.renderer.write().free_texture(&id);
     }
+    #[cfg(not(feature = "wgpu"))]
+    let _ = id;
 }
 
 /// The UI's painter (feature `wgpu`): where `Output::register` lands.
+#[cfg(feature = "wgpu")]
 #[derive(Clone)]
 struct Ui {
     renderer: Arc<eframe::egui::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
 }
+
+#[cfg(not(feature = "wgpu"))]
+#[derive(Clone)]
+struct Ui;
 
 pub(super) struct Tex {
     tex: wgpu::Texture,
@@ -937,7 +951,8 @@ struct State {
     adapters: Option<Vec<String>>,
     /// The compositor on the UI's own device (`attach`), when the UI paints through wgpu on Vulkan.
     shared: Option<Arc<GpuCompositor>>,
-    /// The UI's painter, for `Output::register`.
+    /// The UI's painter, for `Output::register` (feature `wgpu`).
+    #[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
     ui: Option<Ui>,
     gpu: Option<Arc<GpuCompositor>>,
     why: String,
@@ -952,6 +967,7 @@ fn automatic<'a>(adapters: impl Iterator<Item = &'a wgpu::Adapter> + Clone) -> O
     [DiscreteGpu, IntegratedGpu, VirtualGpu].into_iter().find_map(|t| adapters.clone().find(|a| a.get_info().device_type == t))
 }
 
+#[cfg_attr(not(feature = "wgpu"), allow(dead_code))]
 fn vulkan(a: &&wgpu::Adapter) -> bool {
     a.get_info().backend == wgpu::Backend::Vulkan
 }
@@ -1080,8 +1096,13 @@ fn detect(choice: &str) -> (Vec<String>, Result<Arc<GpuCompositor>, String>) {
 /// The GPU compositor to use now, if any.
 pub fn current() -> Option<Arc<GpuCompositor>> {
     #[cfg(test)]
-    if std::env::var_os("MILAN_TEST_GPU").is_some() {
-        return test_gpu();
+    {
+        if let Some(forced) = lock(&FORCED).clone() {
+            return forced;
+        }
+        if std::env::var_os("MILAN_TEST_GPU").is_some() {
+            return test_gpu();
+        }
     }
     lock(&STATE).gpu.clone().filter(|g| !g.broken())
 }
@@ -1122,11 +1143,18 @@ pub fn test_gpu() -> Option<Arc<GpuCompositor>> {
     G.get_or_init(|| detect("").1.ok()).clone()
 }
 
-/// Tests: compose on `g` (None: the CPU) whatever the preference says, from now on in this process.
+/// Tests: compose on `g` (None: the CPU) whatever the preference or `MILAN_TEST_GPU` says, until `unforce`.
+#[cfg(test)]
+static FORCED: Mutex<Option<Option<Arc<GpuCompositor>>>> = Mutex::new(None);
+
 #[cfg(test)]
 pub fn force_for_tests(g: Option<Arc<GpuCompositor>>) {
-    let mut s = lock(&STATE);
-    (s.choice, s.gpu) = (Some("forced".into()), g);
+    *lock(&FORCED) = Some(g);
+}
+
+#[cfg(test)]
+pub fn unforce() {
+    *lock(&FORCED) = None;
 }
 
 /// Benches: the CPU, then the GPU when there is one (its name with `_` for spaces, for `tools/bench.ps1`).
@@ -1134,7 +1162,7 @@ pub fn force_for_tests(g: Option<Arc<GpuCompositor>>) {
 pub fn compositors() -> Vec<(&'static str, Arc<dyn Compositor>)> {
     let g = test_gpu();
     match &g {
-        Some(g) => println!("BENCH adapter name={}", g.name.replace(' ', "_")),
+        Some(g) => println!("BENCH adapter adapter={}", g.name.replace(' ', "_")),
         None => println!("SKIPPED the GPU runs: no Vulkan graphics adapter"),
     }
     let cpu: Arc<dyn Compositor> = Arc::new(composite::CpuCompositor);
@@ -1467,6 +1495,7 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
         assert!(want.gpu().is_none() && img.pixels == want.pixels, "the GPU frame read back is the CPU frame");
         // The frame through `Picture`'s pixels (the scopes, a snapshot) is the same readback.
         assert_eq!(pic.size, [320, 180]);
+        unforce();
     }
 
     /// R21c: the `Rgba16Float` intermediate (R40b's): a frame held in linear float reads back within 1 in 255 of the
