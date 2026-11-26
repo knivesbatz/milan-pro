@@ -149,7 +149,7 @@ impl Shot {
         Self { path, start: None, quiet_since: None, requested: false }
     }
 
-    /// Call once per frame. `busy`: preview frames or waveforms still loading.
+    /// Call once per frame. `busy`: preview frames or waveforms still loading (or the harness dialog not open yet).
     pub fn tick(&mut self, ctx: &egui::Context, busy: bool) {
         ctx.request_repaint();
         let now = ctx.input(|i| i.time);

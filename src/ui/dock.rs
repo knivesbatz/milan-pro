@@ -884,11 +884,20 @@ impl Dock {
             // The builder stays as the window opened: egui moves a window whose builder changes.
             let pts = monitors::to_points(r0, ctx.zoom_factor() * scale);
             let b = ViewportBuilder::default().with_title(p.title(t.look())).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false).with_icon(crate::icon());
-            let b = if offscreen {
-                crate::offscreen(b)
-            } else {
-                b.with_position(pts.min).with_taskbar(false).with_window_level(if active { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal })
-            };
+            let fill = if t.classic() { t.metal.mid } else { t.frame };
+            if offscreen {
+                // The harness: eframe cannot shoot an immediate viewport, so the window is drawn in the main one at
+                // its place (its own frame and caption, no OS window), where the screenshot has it.
+                let fr = self.floating[k].rect();
+                let r = Rect::from_min_size(fr.min, fr.size().max(MIN_FLOAT));
+                let mut act = None;
+                Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).title_bar(false).frame(Frame::NONE.fill(fill)).fixed_rect(r).show(ctx, |ui| {
+                    act = self.float_ui(ui, &t, k, true, allow_dock, &mut content);
+                });
+                actions.extend(act);
+                continue;
+            }
+            let b = b.with_position(pts.min).with_taskbar(false).with_window_level(if active { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
             let act = ctx.show_viewport_immediate(float_id(p), b, |vctx, class| {
                 let mut act = None;
                 let mut draw = |ui: &mut Ui| act = self.float_ui(ui, &t, k, offscreen || class == ViewportClass::Embedded, allow_dock, &mut content);
@@ -896,7 +905,6 @@ impl Dock {
                     // A backend without native windows (tests): an egui window instead.
                     Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).show(vctx, |ui| draw(ui));
                 } else {
-                    let fill = if t.classic() { t.metal.mid } else { t.frame };
                     CentralPanel::default().frame(Frame::NONE.fill(fill)).show(vctx, |ui| draw(ui));
                 }
                 if class != ViewportClass::Embedded && vctx.input(|i| i.viewport().close_requested()) {
@@ -922,11 +930,20 @@ impl Dock {
         let p = self.floating[k].panel;
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
+        let mut action = None;
         let inner = if t.classic() {
-            // Classic tool window: a raised 3D frame round the window's contents (the OS draws its caption).
-            super::widgets::bevel(ui.painter(), full, true, &t.metal);
-            ui.painter().rect_stroke(full.shrink(2.0), 0.0, Stroke::new(1.0_f32, t.metal.face), StrokeKind::Inside);
-            full.shrink(3.0)
+            // Classic tool window: the raised 3D frame and the Windows 2000 caption with its bevelled × (the OS
+            // caption above it stays; this one closes the window and moves it too).
+            let title = p.title(t.look());
+            if super::dialogs::classic_caption(ui, full, &title, &format!("float_cap_{title}"), false) {
+                action = Some(FloatAction::Close(p));
+            }
+            let cap = Rect::from_min_max(full.min + vec2(3.0, 3.0), pos2(full.max.x - 24.0, full.min.y + 21.0));
+            let drag = ui.interact(cap, Id::new(("float_cap_drag", p)), Sense::drag());
+            if drag.drag_started_by(PointerButton::Primary) && !fixed {
+                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+            }
+            Rect::from_min_max(full.min + vec2(3.0, super::dialogs::title_h()), full.max - vec2(3.0, 3.0))
         } else {
             full
         };
@@ -936,7 +953,6 @@ impl Dock {
             // The tab moves the window, as its title bar does (the OS's own move; docking is checked when it ends).
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        let mut action = None;
         let look = t.look();
         let areas = self.edge_areas(look);
         super::menus::context(&tab, |ui| {

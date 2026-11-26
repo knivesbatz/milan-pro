@@ -115,6 +115,9 @@ pub struct MeridianApp {
     /// R9: audio devices may be opened (not in the screenshot harness, which never plays or records).
     devices: bool,
     shot: Option<Shot>,
+    /// `MILAN_DIALOG` still to open: the screenshot harness opens it once its window has its 1920×1080 size, so the
+    /// dialog centres as in a live session (an Area keeps the place it was first laid out at).
+    env_dialog: bool,
     // Dock window state.
     media_view: ui::MediaView,
     explorer: ui::Explorer,
@@ -396,6 +399,7 @@ impl MeridianApp {
             decorated: look.look != UiLook::Vegas23,
             demo: launch.demo,
             devices: launch.screenshot.is_none(),
+            env_dialog: launch.screenshot.is_some(),
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
@@ -476,7 +480,9 @@ impl MeridianApp {
             }
         }
         app.sync_sel();
-        app.open_from_env(&cc.egui_ctx);
+        if !app.env_dialog {
+            app.open_from_env(&cc.egui_ctx);
+        }
         app
     }
 
@@ -564,6 +570,16 @@ impl MeridianApp {
         let (offscreen, want, project, preview) = (self.offscreen, m.rect, &self.project, &mut self.preview);
         let (fit, rotate, mute) = (self.prefs.ext_fit, self.prefs.ext_rotate, self.mute_video);
         let id = egui::ViewportId::from_hash_of(("milan_external_preview", &m.name));
+        if offscreen {
+            // The harness: eframe cannot shoot an immediate viewport, so the picture is drawn in the main window
+            // (640×360 at the lower right) for the screenshot.
+            let r = egui::Rect::from_min_size(ctx.screen_rect().right_bottom() - egui::vec2(700.0, 460.0), egui::vec2(640.0, 360.0));
+            egui::Window::new("Video Preview (External Monitor)").id(egui::Id::new(id)).title_bar(false).frame(egui::Frame::NONE).fixed_rect(r).show(ctx, |ui| {
+                ui::draw_external(ui, project, preview, fit, rotate, mute);
+            });
+            self.preview.visible = true;
+            return;
+        }
         let close = ctx.show_viewport_immediate(id, b, |vctx, class| {
             if class == egui::ViewportClass::Embedded {
                 return true; // no native windows to show it in
@@ -592,6 +608,10 @@ impl MeridianApp {
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
+            self.env_dialog = false;
+            self.open_from_env(ctx);
+        }
         // Playback clock: audio is master while it plays (it wraps loops itself), frame dt otherwise
         if self.playing {
             let now = ctx.input(|i| i.time);
@@ -1131,7 +1151,7 @@ impl eframe::App for MeridianApp {
         let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
         if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
-            shot.tick(ctx, busy);
+            shot.tick(ctx, busy || self.env_dialog);
         }
     }
 
