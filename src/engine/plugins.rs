@@ -54,9 +54,40 @@ pub struct Preset {
     pub text: &'static [(&'static str, &'static str)],
 }
 
+/// R21b: how the GPU compositor runs a plug-in (`engine/gpu/fx.rs`); None: the CPU code runs it (the picture it is
+/// on, or the frame, is then made on the CPU and uploaded).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuPort {
+    /// A `vfx::ColorOp` (`vfx::color_op_for`): a per-channel LUT, a colour matrix and a mix.
+    ColorOp,
+    /// Color Grading: `vfx::Grade::steps` (LUTs and colour ops).
+    Grade,
+    Blur,
+    Sharpen,
+    Vignette,
+    Mirror,
+    Crop,
+    Border,
+    ChromaKey,
+    Dissolve,
+    FadeToColor,
+    LinearWipe,
+    Iris,
+    ClockWipe,
+    Push,
+    Slide,
+    Zoom,
+    Solid,
+    Gradient,
+    Checkerboard,
+    Noise,
+}
+
 #[derive(Debug)]
 pub struct PluginInfo {
     pub id: &'static str,
+    /// R21b: the GPU compositor's port of this plug-in, if any.
+    pub gpu: Option<GpuPort>,
     /// The VEGAS name without "VEGAS ".
     pub name: &'static str,
     pub kind: PluginKind,
@@ -98,6 +129,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // ---- Video FX ----
     PluginInfo {
         id: "milan.fx.brightness_contrast",
+        gpu: Some(GpuPort::ColorOp),
         name: "Brightness and Contrast",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -108,6 +140,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.levels",
+        gpu: Some(GpuPort::ColorOp),
         name: "Levels",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -128,6 +161,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.invert",
+        gpu: Some(GpuPort::ColorOp),
         name: "Invert",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -138,6 +172,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.black_white",
+        gpu: Some(GpuPort::ColorOp),
         name: "Black and White",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -148,6 +183,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.sepia",
+        gpu: Some(GpuPort::ColorOp),
         name: "Sepia",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -158,6 +194,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.hsl",
+        gpu: Some(GpuPort::ColorOp),
         name: "HSL Adjust",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -168,6 +205,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.color_corrector",
+        gpu: Some(GpuPort::ColorOp),
         name: "Color Corrector",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -178,6 +216,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.gaussian_blur",
+        gpu: Some(GpuPort::Blur),
         name: "Gaussian Blur",
         kind: PluginKind::VideoFx,
         group: "Blur",
@@ -194,6 +233,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.sharpen",
+        gpu: Some(GpuPort::Sharpen),
         name: "Sharpen",
         kind: PluginKind::VideoFx,
         group: "Blur",
@@ -204,6 +244,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.vignette",
+        gpu: Some(GpuPort::Vignette),
         name: "Vignette",
         kind: PluginKind::VideoFx,
         group: "Stylize",
@@ -214,6 +255,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.mirror",
+        gpu: Some(GpuPort::Mirror),
         name: "Mirror",
         kind: PluginKind::VideoFx,
         group: "Stylize",
@@ -224,6 +266,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.crop",
+        gpu: Some(GpuPort::Crop),
         name: "Crop",
         kind: PluginKind::VideoFx,
         group: "Utility",
@@ -240,6 +283,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.border",
+        gpu: Some(GpuPort::Border),
         name: "Border",
         kind: PluginKind::VideoFx,
         group: "Utility",
@@ -250,6 +294,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.chroma_key",
+        gpu: Some(GpuPort::ChromaKey),
         name: "Chroma Keyer",
         kind: PluginKind::VideoFx,
         group: "Key",
@@ -273,6 +318,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.exposure",
+        gpu: Some(GpuPort::ColorOp),
         name: "Exposure",
         kind: PluginKind::VideoFx,
         group: "Adjust",
@@ -283,6 +329,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.cookie_cutter",
+        gpu: None,
         name: "Cookie Cutter",
         kind: PluginKind::VideoFx,
         group: "Key",
@@ -302,6 +349,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.fx.bezier_mask",
+        gpu: None,
         name: "Bezier Masking",
         kind: PluginKind::VideoFx,
         group: "Key",
@@ -334,6 +382,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: GRADING,
+        gpu: Some(GpuPort::Grade),
         name: "Color Grading",
         kind: PluginKind::VideoFx,
         group: "Color Grading",
@@ -372,6 +421,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // ---- Transitions ----
     PluginInfo {
         id: "milan.tr.dissolve",
+        gpu: Some(GpuPort::Dissolve),
         name: "Dissolve",
         kind: PluginKind::Transition,
         group: "Dissolve",
@@ -382,6 +432,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.fade_to_color",
+        gpu: Some(GpuPort::FadeToColor),
         name: "Fade to Color",
         kind: PluginKind::Transition,
         group: "Dissolve",
@@ -396,6 +447,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.linear_wipe",
+        gpu: Some(GpuPort::LinearWipe),
         name: "Linear Wipe",
         kind: PluginKind::Transition,
         group: "Wipe",
@@ -412,6 +464,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.push",
+        gpu: Some(GpuPort::Push),
         name: "Push",
         kind: PluginKind::Transition,
         group: "Push",
@@ -422,6 +475,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.slide",
+        gpu: Some(GpuPort::Slide),
         name: "Slide",
         kind: PluginKind::Transition,
         group: "Push",
@@ -432,6 +486,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.iris",
+        gpu: Some(GpuPort::Iris),
         name: "Iris",
         kind: PluginKind::Transition,
         group: "Wipe",
@@ -442,6 +497,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.clock_wipe",
+        gpu: Some(GpuPort::ClockWipe),
         name: "Clock Wipe",
         kind: PluginKind::Transition,
         group: "Wipe",
@@ -452,6 +508,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.tr.zoom",
+        gpu: Some(GpuPort::Zoom),
         name: "Zoom",
         kind: PluginKind::Transition,
         group: "Zoom",
@@ -463,6 +520,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // ---- Generators ----
     PluginInfo {
         id: "milan.gen.solid",
+        gpu: Some(GpuPort::Solid),
         name: "Solid Color",
         kind: PluginKind::Generator,
         group: "Color",
@@ -479,6 +537,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.gen.gradient",
+        gpu: Some(GpuPort::Gradient),
         name: "Color Gradient",
         kind: PluginKind::Generator,
         group: "Color",
@@ -493,6 +552,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.gen.checkerboard",
+        gpu: Some(GpuPort::Checkerboard),
         name: "Checkerboard",
         kind: PluginKind::Generator,
         group: "Pattern",
@@ -503,6 +563,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.gen.noise",
+        gpu: Some(GpuPort::Noise),
         name: "Noise Texture",
         kind: PluginKind::Generator,
         group: "Pattern",
@@ -520,6 +581,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.gen.text",
+        gpu: None,
         name: "Titles & Text",
         kind: PluginKind::Generator,
         group: "Text",
@@ -553,6 +615,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // R18a: VEGAS's Credit Roll and Test Pattern.
     PluginInfo {
         id: "milan.gen.credits",
+        gpu: None,
         name: "Credit Roll",
         kind: PluginKind::Generator,
         group: "Text",
@@ -574,6 +637,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.gen.test_pattern",
+        gpu: None,
         name: "Test Pattern",
         kind: PluginKind::Generator,
         group: "Pattern",
@@ -585,6 +649,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // ---- Compositors (the Custom compositing mode; the layer above is the map) ----
     PluginInfo {
         id: "milan.comp.bump_map",
+        gpu: None,
         name: "Bump Map",
         kind: PluginKind::Compositor,
         group: "Compositors",
@@ -595,6 +660,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.comp.displacement",
+        gpu: None,
         name: "Displacement Map",
         kind: PluginKind::Compositor,
         group: "Compositors",
@@ -605,6 +671,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.comp.height_map",
+        gpu: None,
         name: "Height Map",
         kind: PluginKind::Compositor,
         group: "Compositors",
@@ -618,6 +685,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     // read out. Replace them if they are measured.
     PluginInfo {
         id: "milan.afx.gate",
+        gpu: None,
         name: "Track Noise Gate",
         kind: PluginKind::AudioFx,
         group: "Audio",
@@ -628,6 +696,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.afx.eq",
+        gpu: None,
         name: "Track EQ",
         kind: PluginKind::AudioFx,
         group: "Audio",
@@ -659,6 +728,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.afx.compressor",
+        gpu: None,
         name: "Track Compressor",
         kind: PluginKind::AudioFx,
         group: "Audio",
@@ -681,6 +751,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.afx.reverb",
+        gpu: None,
         name: "Reverb",
         kind: PluginKind::AudioFx,
         group: "Audio",
@@ -697,6 +768,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.afx.delay",
+        gpu: None,
         name: "Simple Delay",
         kind: PluginKind::AudioFx,
         group: "Audio",
@@ -712,6 +784,7 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
     PluginInfo {
         id: "milan.afx.limiter",
+        gpu: None,
         name: "Limiter",
         kind: PluginKind::AudioFx,
         group: "Audio",

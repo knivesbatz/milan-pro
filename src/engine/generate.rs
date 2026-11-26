@@ -91,9 +91,14 @@ fn stop_at(st: &[(f32, [f32; 4])], s: f32) -> [f32; 4] {
     std::array::from_fn(|c| a[c] + (b[c] - a[c]) * t)
 }
 
-fn gradient(e: &FxEval, w: usize, h: usize) -> ColorImage {
+/// A gradient's 256 colours along it, premultiplied (R21b: the GPU reads the same table).
+pub(crate) fn gradient_lut(e: &FxEval) -> [Color32; 256] {
     let st = stops(e.t("stops"));
-    let lut: [Color32; 256] = std::array::from_fn(|i| premul(stop_at(&st, i as f32 / 255.0)));
+    std::array::from_fn(|i| premul(stop_at(&st, i as f32 / 255.0)))
+}
+
+fn gradient(e: &FxEval, w: usize, h: usize) -> ColorImage {
+    let lut = gradient_lut(e);
     // Pixel centres: the first and last pixels sit exactly on the end stops.
     let (cx, cy) = ((w - 1) as f32 / 2.0, (h - 1) as f32 / 2.0);
     let (sn, cs) = e.f("angle").to_radians().sin_cos();

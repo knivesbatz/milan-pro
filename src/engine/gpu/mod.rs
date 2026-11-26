@@ -2,13 +2,16 @@
 //! `composite::compose` gives, within 2 in 255 per channel (bit-exact on every plan tried so far): draws (affine,
 //! bilinear or nearest), opacity, Source Alpha and the integer blend modes use the CPU's own integer maths (the passes in
 //! `composite.wgsl` work on `Rgba8Uint` textures), and the float blend modes (any mode over a transparent backdrop, Hard
-//! Light to Luminosity, Cut, Multiply (Mask)) replay the CPU's f32 operations in order, with division and square root
-//! corrected to the rounded result. The CPU compositor stays the reference, and does what the GPU does not yet:
-//! - per piece, made by the CPU code and uploaded: decoding, resampling, event FX, masks, nested timelines,
-//!   transitions with a kind (`composite::transition_image`), and a whole track with track FX, 3D Track Motion or
-//!   2D Shadow / Glow (`composite::layer_image`); R21b moves FX, transitions and generators here;
-//! - per layer, read back and done on the CPU: Adjustment Tracks / Events and Custom compositors; after the frame: the
-//!   Video Output FX and the bus's Fade to Color (`composite::finish`), and motion blur's mean (`Worker::frame`);
+//! Light to Luminosity, Cut, Multiply (Mask)) replay the CPU's f32 operations in order through `math.wgsl`, with
+//! division and square root corrected to the rounded result. R21b: the video FX, transitions and generators with a
+//! `GpuPort` (`engine/plugins.rs`) run here too (`fx.rs`, `fx.wgsl`), as event FX, track FX, Adjustment FX and Video
+//! Output FX, with resampling, the flicker filter and the bus's Fade to Color. The CPU compositor stays the reference,
+//! and does what the GPU does not:
+//! - per piece, made by the CPU code and uploaded: decoding; an event with a mask, a nested timeline, or an FX without
+//!   a port (Cookie Cutter, Bezier Masking, OFX); a whole track with such a track FX, 3D Track Motion or 2D Shadow /
+//!   Glow (`composite::layer_image`); a transition without a port, or over such events (`composite::transition_image`);
+//! - per layer, read back and done on the CPU: an Adjustment FX without a port and Custom compositors; after the
+//!   frame: a Video Output FX without a port (`composite::finish`), and motion blur's mean (`Worker::frame`);
 //! - per frame: a frame or picture larger than the device's textures, or any GPU error;
 //! - always: no Vulkan adapter, Preferences › Video › GPU acceleration Off, or a lost device.
 //!
@@ -22,8 +25,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use wgpu::util::DeviceExt;
 use crate::engine::composite::{self, Affine, Compositor, Sources};
-use crate::engine::plan::{FramePlan, Item, TrackPlan};
+use crate::engine::plan::{EventPlan, FramePlan, Item, SrcAt, TrackPlan};
+use crate::engine::plugins::FxEval;
 use crate::project::Composite;
+
+pub mod fx;
 
 /// Preferences › Video › GPU acceleration: this value turns it off ("" is automatic, anything else an adapter's name).
 pub const OFF: &str = "Off";
@@ -36,11 +42,11 @@ const POOL_BYTES: usize = 256 << 20;
 /// R21c: frames read back from the GPU into `ColorImage`s so far (a zero-copy preview adds none).
 pub static READBACKS: AtomicU64 = AtomicU64::new(0);
 
-struct Tex {
+pub(super) struct Tex {
     tex: wgpu::Texture,
     view: wgpu::TextureView,
-    w: u32,
-    h: u32,
+    pub(super) w: u32,
+    pub(super) h: u32,
     /// Written from the CPU (`queue.write_texture`): such a write lands before the frame's passes run, so this
     /// texture is reused only after the frame.
     cpu: bool,
@@ -56,6 +62,8 @@ pub struct GpuCompositor {
     draw: wgpu::RenderPipeline,
     blend: wgpu::RenderPipeline,
     fade: wgpu::RenderPipeline,
+    /// R21b: the FX, transitions and generators.
+    fx: fx::Pipes,
     /// Bound where a pass reads no source / no rows.
     none: Tex,
     no_rows: wgpu::Buffer,
@@ -63,6 +71,11 @@ pub struct GpuCompositor {
     /// A validation error, a panic inside wgpu or a lost device: the CPU composes from then on.
     broken: Arc<AtomicBool>,
     pool: Mutex<Vec<Tex>>,
+    /// Held while a frame records one step (a pass, a clear, an upload) and while it creates that step's buffers and
+    /// bind group. Two threads composing at once (a render beside the preview) and recording freely lose draws now
+    /// and then on wgpu 24's Vulkan backend (the parity tests run in parallel reproduce it: a layer comes out
+    /// transparent); one step at a time, never. The steps are short, and decoding happens between them, unlocked.
+    record: Mutex<()>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -108,7 +121,9 @@ impl GpuCompositor {
             let b = broken.clone();
             device.set_device_lost_callback(move |_, _| b.store(true, Relaxed));
         }
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("composite.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()) });
+        let math = include_str!("math.wgsl");
+        let composite_src = format!("{math}\n{}", include_str!("composite.wgsl"));
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("composite.wgsl"), source: wgpu::ShaderSource::Wgsl(composite_src.into()) });
         let stage = wgpu::ShaderStages::FRAGMENT;
         let tex = |binding| wgpu::BindGroupLayoutEntry { binding, visibility: stage, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
         let buf = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: stage, ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: false, min_binding_size: None }, count: None };
@@ -117,13 +132,13 @@ impl GpuCompositor {
             entries: &[tex(0), tex(1), buf(2, wgpu::BufferBindingType::Uniform), buf(3, wgpu::BufferBindingType::Storage { read_only: true })],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-        let pipe = |fs: &str| {
+        let pipe = |module: &wgpu::ShaderModule, fs: &str| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fs),
                 layout: Some(&pl),
-                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
+                vertex: wgpu::VertexState { module, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module,
                     entry_point: Some(fs),
                     targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                     compilation_options: Default::default(),
@@ -135,15 +150,24 @@ impl GpuCompositor {
                 cache: None,
             })
         };
-        let (draw, blend, fade) = (pipe("fs_draw"), pipe("fs_blend"), pipe("fs_fade"));
+        let (draw, blend, fade) = (pipe(&shader, "fs_draw"), pipe(&shader, "fs_blend"), pipe(&shader, "fs_fade"));
+        let fx = fx::Pipes::new(&device, &layout, math, &pipe);
         let none = new_tex(&device, 1, 1, false);
+        // Cleared once, so no frame's submission has to zero it.
+        {
+            let mut enc = device.create_command_encoder(&Default::default());
+            let ops = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            let at = wgpu::RenderPassColorAttachment { view: &none.view, resolve_target: None, ops };
+            drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(at)], ..Default::default() }));
+            queue.submit([enc.finish()]);
+        }
         let no_rows = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 8, usage: wgpu::BufferUsages::STORAGE, mapped_at_creation: false });
         let max = device.limits().max_texture_dimension_2d;
         device.poll(wgpu::Maintain::Wait);
         if broken.load(Relaxed) {
             return Err(format!("{name} could not build the compositor's shaders"));
         }
-        Ok(GpuCompositor { device, queue, name, shared, layout, draw, blend, fade, none, no_rows, max, broken, pool: Mutex::new(Vec::new()) })
+        Ok(GpuCompositor { device, queue, name, shared, layout, draw, blend, fade, fx, none, no_rows, max, broken, pool: Mutex::new(Vec::new()), record: Mutex::new(()) })
     }
 
     pub fn broken(&self) -> bool {
@@ -193,9 +217,7 @@ impl Compositor for GpuCompositor {
             self.broken.store(true, Relaxed);
             None
         });
-        let mut img = img.filter(|_| !self.broken())?;
-        composite::finish(&mut img, fp, k);
-        Some(img)
+        img.filter(|_| !self.broken())
     }
 }
 
@@ -207,7 +229,7 @@ fn new_tex(device: &wgpu::Device, w: u32, h: u32, cpu: bool) -> Tex {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     let view = tex.create_view(&Default::default());
@@ -215,12 +237,12 @@ fn new_tex(device: &wgpu::Device, w: u32, h: u32, cpu: bool) -> Tex {
 }
 
 /// One frame being composed: its passes are recorded into `enc`, submitted at a readback.
-struct Frame<'a> {
-    g: &'a GpuCompositor,
+pub(super) struct Frame<'a> {
+    pub(super) g: &'a GpuCompositor,
     enc: wgpu::CommandEncoder,
     w: u32,
     h: u32,
-    /// Frame-sized targets free for later passes (the GPU runs a frame's passes in order).
+    /// Targets free for later passes (the GPU runs a frame's passes in order), of any size.
     spare: Vec<Tex>,
     /// Textures written from the CPU, back to the pool after the frame.
     written: Vec<Tex>,
@@ -230,7 +252,8 @@ struct Frame<'a> {
 
 impl Frame<'_> {
     fn frame(&mut self, fp: &FramePlan, src: &mut dyn Sources) -> Option<ColorImage> {
-        let mut acc = self.clear(if fp.alpha { Color32::TRANSPARENT } else { Color32::BLACK });
+        let (w, h) = (self.w, self.h);
+        let mut acc = self.clear(w, h, if fp.alpha { Color32::TRANSPARENT } else { Color32::BLACK });
         let mut group: Option<Tex> = None;
         // As `composite::compose`: a compositing parent's children first, then the parent, then the group through
         // Parent Motion with the Parent Composite Mode.
@@ -238,7 +261,7 @@ impl Frame<'_> {
             if l.child {
                 let g = match group.take() {
                     Some(g) => g,
-                    None => self.clear(Color32::TRANSPARENT),
+                    None => self.clear(w, h, Color32::TRANSPARENT),
                 };
                 group = Some(self.layer_onto(g, src, l, true)?);
                 continue;
@@ -252,15 +275,15 @@ impl Frame<'_> {
             };
             let mut g = match group.take() {
                 Some(g) => g,
-                None => self.clear(Color32::TRANSPARENT),
+                None => self.clear(w, h, Color32::TRANSPARENT),
             };
             if !l.items.is_empty() || !l.adjust.is_empty() {
                 g = self.layer_onto(g, src, l, true)?;
             }
             if composite::whole_pixel(motion) != Some((0, 0)) {
-                let (w, h) = (self.w as f64, self.h as f64);
-                let blank = self.clear(Color32::TRANSPARENT);
-                let moved = self.draw(blank, &g, Affine::scale(1.0 / w, 1.0 / h).then(motion).then(Affine::scale(w, h)), 1.0);
+                let (wf, hf) = (w as f64, h as f64);
+                let blank = self.clear(w, h, Color32::TRANSPARENT);
+                let moved = self.draw(blank, &g, Affine::scale(1.0 / wf, 1.0 / hf).then(motion).then(Affine::scale(wf, hf)), 1.0);
                 self.give(g);
                 g = moved;
             }
@@ -269,24 +292,63 @@ impl Frame<'_> {
         if let Some(g) = group {
             acc = self.blend(acc, g, Composite::SourceAlpha, 1.0, false)?;
         }
-        let img = self.read(&acc);
+        // `composite::finish`: the Video Output FX (here when every one has a port), then the bus's Fade to Color.
+        if fp.out_fx.iter().all(fx::ported) {
+            if let Some(out) = self.fx_chain(&acc, &fp.out_fx) {
+                self.give(acc);
+                acc = self.opaque(&out);
+                self.give(out);
+            }
+            if let Some((c, t)) = fp.fade {
+                acc = self.fade(acc, c, t);
+            }
+            let img = self.read(&acc);
+            self.give(acc);
+            return img;
+        }
+        let mut img = self.read(&acc)?;
         self.give(acc);
-        img
+        composite::finish(&mut img, fp, self.k);
+        Some(img)
+    }
+
+    /// `composite::fade_to` on `t`.
+    fn fade(&mut self, t: Tex, c: [u8; 3], how_far: f32) -> Tex {
+        let p = params([0; 4], [0; 4], [0; 4], [c[0] as u32, c[1] as u32, c[2] as u32, 0], [0.0, how_far, 0.0, 0.0]);
+        let pipe = &self.g.fade;
+        let out = self.pass(pipe, &t, None, &p, &[]);
+        self.give(t);
+        out
     }
 
     /// `composite::layer_onto`.
     fn layer_onto(&mut self, mut dst: Tex, src: &mut dyn Sources, l: &TrackPlan, group: bool) -> Option<Tex> {
         let k = self.k;
+        // R18b: an Adjustment Track's or Adjustment Event's FX change what is below first (`composite::adjust`).
         for (fx, a) in &l.adjust {
-            dst = self.on_cpu(dst, |img| composite::adjust(img, fx, *a, k))?;
+            if fx.iter().all(fx::ported) {
+                if let Some(out) = self.fx_chain(&dst, fx) {
+                    let mixed = if *a >= 1.0 { out } else {
+                        let m = self.lerp(&dst, &out, *a);
+                        self.give(out);
+                        m
+                    };
+                    self.give(dst);
+                    dst = mixed;
+                }
+            } else {
+                dst = self.on_cpu(dst, |img| composite::adjust(img, fx, *a, k))?;
+            }
         }
         if l.items.is_empty() {
             return Some(dst);
         }
-        if !l.fx.is_empty() || l.persp.is_some() || l.shadow.is_some() || l.glow.is_some() || l.mode == Composite::Custom {
-            // shortcut: track FX, 3D Track Motion, 2D Shadow / Glow and Custom compositors make the whole track on the
-            // CPU (exact, but no faster than the CPU path); R21b moves them to the GPU.
-            let layer = composite::layer_image(src, l, [self.w as usize, self.h as usize], self.bilinear, k);
+        let (w, h) = (self.w, self.h);
+        let fx_here = l.fx.iter().all(fx::ported);
+        if !fx_here || l.persp.is_some() || l.shadow.is_some() || l.glow.is_some() || l.mode == Composite::Custom {
+            // shortcut: a track FX without a port, 3D Track Motion, 2D Shadow / Glow and Custom compositors make the
+            // whole track on the CPU (exact, but no faster than the CPU path).
+            let layer = composite::layer_image(src, l, [w as usize, h as usize], self.bilinear, k);
             if l.mode == Composite::Custom {
                 return self.on_cpu(dst, |d| composite::blend(d, &layer, l.mode, l.opacity, l.compositor.as_ref(), group, k));
             }
@@ -294,30 +356,109 @@ impl Frame<'_> {
             return self.blend(dst, t, l.mode, l.opacity, group);
         }
         let draws: usize = l.items.iter().map(|i| composite::events(i).len()).sum();
-        if l.fade.is_none() && matches!(l.mode, Composite::SourceAlpha | Composite::ThreeD) && (l.opacity >= 1.0 || draws <= 1) {
-            return self.draw_items(dst, src, l, l.opacity);
+        if l.fx.is_empty() && l.fade.is_none() && matches!(l.mode, Composite::SourceAlpha | Composite::ThreeD) && (l.opacity >= 1.0 || draws <= 1) {
+            return self.draw_items(dst, src, l, l.opacity, true);
         }
-        let blank = self.clear(Color32::TRANSPARENT);
-        let mut layer = self.draw_items(blank, src, l, 1.0)?;
+        // `composite::layer_image`: the events, the track FX on the track's own frame then Track Motion, Fade to Color.
+        let blank = self.clear(w, h, Color32::TRANSPARENT);
+        let mut layer = self.draw_items(blank, src, l, 1.0, l.fx.is_empty())?;
+        if let Some(out) = self.fx_chain(&layer, &l.fx) {
+            self.give(layer);
+            let blank = self.clear(w, h, Color32::TRANSPARENT);
+            layer = self.draw(blank, &out, Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(composite::layer_to_out(l, w as usize, h as usize)), 1.0);
+            self.give(out);
+        }
         if let Some((c, t)) = l.fade {
-            let p = params([0; 4], [0; 4], [0; 4], [c[0] as u32, c[1] as u32, c[2] as u32, 0], [0.0, t, 0.0, 0.0]);
-            let pipe = &self.g.fade;
-            layer = self.pass(pipe, layer, None, p, &[]);
+            layer = self.fade(layer, c, t);
         }
         self.blend(dst, layer, l.mode, l.opacity, group)
     }
 
-    /// `composite::draw_items` with Track Motion (tracks without it are made on the CPU).
-    fn draw_items(&mut self, mut dst: Tex, src: &mut dyn Sources, l: &TrackPlan, gain: f32) -> Option<Tex> {
+    /// Every step of `e`'s picture has a port here: no nested timeline (composed by the CPU code), no masks
+    /// (rasterised there), no FX without a port.
+    fn event_here(e: &EventPlan) -> bool {
+        e.src.nested.is_none() && e.masks.is_empty() && e.fx.iter().all(fx::ported)
+    }
+
+    /// `composite::event_image` on the GPU: the source (a ported generator made here, else fetched and uploaded),
+    /// resampling, the flicker filter, the event FX. Err: the device cannot hold it (the frame goes to the CPU);
+    /// Ok(None): nothing to draw.
+    fn event_tex(&mut self, src: &mut dyn Sources, e: &EventPlan, to_out: Affine) -> Result<Option<Tex>, ()> {
+        if !Self::event_here(e) {
+            let Some(img) = composite::event_image(src, e, to_out, self.bilinear, self.k) else { return Ok(None) };
+            return self.upload(&img).map(Some).ok_or(());
+        }
+        let (dw, dh) = composite::decode_size(e, to_out);
+        let mut t = match &e.src.generator {
+            Some((g, time)) if fx::ported(g) => self.generate(g, dw, dh, *time),
+            _ => {
+                let Some(img) = src.get(&e.src, dw, dh) else { return Ok(None) };
+                self.upload(&img).ok_or(())?
+            }
+        };
+        if let Some((n, w)) = e.next {
+            if let Some(b) = src.get(&SrcAt { m: e.src.m.clone(), sf: Some(n), generator: None, nested: None }, dw, dh) {
+                if b.size == [t.w as usize, t.h as usize] {
+                    let bt = self.upload(&b).ok_or(())?;
+                    let mixed = self.resample(&t, &bt, w);
+                    self.give(t);
+                    self.give(bt);
+                    t = mixed;
+                }
+            }
+        }
+        if e.flicker && t.h >= 2 {
+            let f = self.flicker(&t);
+            self.give(t);
+            t = f;
+        }
+        if let Some(out) = self.fx_chain(&t, &e.fx) {
+            self.give(t);
+            t = out;
+        }
+        Ok(Some(t))
+    }
+
+    /// `composite::transition_image`: both sides as whole frames without Track Motion, mixed; None: the CPU composes.
+    fn transition_tex(&mut self, src: &mut dyn Sources, a: Option<&EventPlan>, b: Option<&EventPlan>, p: f32, kind: &FxEval, to_out: Affine) -> Option<Tex> {
+        let (w, h) = (self.w, self.h);
+        if !fx::ported(kind) || !a.into_iter().chain(b).all(Self::event_here) {
+            let img = composite::transition_image(src, a, b, p, kind, to_out, [w as usize, h as usize], self.bilinear, self.k);
+            return self.upload(&img);
+        }
+        let frame = Affine::scale(w as f64, h as f64);
+        let mut side = |f: &mut Self, e: Option<&EventPlan>| -> Option<Tex> {
+            let mut t = f.clear(w, h, Color32::TRANSPARENT);
+            if let Some(e) = e {
+                if let Some(img) = f.event_tex(src, e, to_out).ok()? {
+                    t = f.draw(t, &img, composite::event_to_size([img.w as usize, img.h as usize], e, frame), e.alpha);
+                    f.give(img);
+                }
+            }
+            Some(t)
+        };
+        if p <= 0.0 {
+            return side(self, a);
+        }
+        if p >= 1.0 {
+            return side(self, b);
+        }
+        let ta = side(self, a)?;
+        let tb = side(self, b)?;
+        Some(self.transition(ta, tb, kind, p))
+    }
+
+    /// `composite::draw_items`: each item's picture drawn at `gain`, through Track Motion when `with_motion`.
+    fn draw_items(&mut self, mut dst: Tex, src: &mut dyn Sources, l: &TrackPlan, gain: f32, with_motion: bool) -> Option<Tex> {
         let (w, h) = (self.w as usize, self.h as usize);
         let to_out = composite::layer_to_out(l, w, h);
+        let place_out = if with_motion { to_out } else { Affine::scale(w as f64, h as f64) };
         for item in &l.items {
             match item {
                 Item::Mix { a, b, p, kind: Some(kind) } => {
-                    // shortcut: a transition's two sides are drawn and mixed on the CPU; R21b moves transitions.
-                    let img = composite::transition_image(src, a.as_ref(), b.as_ref(), *p, kind, to_out, [w, h], self.bilinear, self.k);
-                    let t = self.upload(&img)?;
-                    dst = self.draw(dst, &t, Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(to_out), gain);
+                    let t = self.transition_tex(src, a.as_ref(), b.as_ref(), *p, kind, to_out)?;
+                    let m = if with_motion { Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(to_out) } else { Affine::translate(0.0, 0.0) };
+                    dst = self.draw(dst, &t, m, gain);
                     self.give(t);
                 }
                 _ => {
@@ -330,9 +471,8 @@ impl Frame<'_> {
                         if alpha <= 0.0 {
                             continue;
                         }
-                        let Some(img) = composite::event_image(src, e, to_out, self.bilinear, self.k) else { continue };
-                        let t = self.upload(&img)?;
-                        dst = self.draw(dst, &t, composite::event_to(&img, e, to_out), alpha);
+                        let Some(t) = self.event_tex(src, e, to_out).ok()? else { continue };
+                        dst = self.draw(dst, &t, composite::event_to_size([t.w as usize, t.h as usize], e, place_out), alpha);
                         self.give(t);
                     }
                 }
@@ -341,10 +481,15 @@ impl Frame<'_> {
         Some(dst)
     }
 
-    /// `composite::draw`: `s` through `m` at `alpha` onto `dst`.
+    /// `composite::draw`: `s` through `m` at `alpha` onto `dst`, at the frame's quality.
     fn draw(&mut self, dst: Tex, s: &Tex, m: Affine, alpha: f32) -> Tex {
+        self.draw_with(dst, s, m, alpha, self.bilinear)
+    }
+
+    /// `composite::draw`, bilinear or nearest as asked.
+    pub(super) fn draw_with(&mut self, dst: Tex, s: &Tex, m: Affine, alpha: f32, bilinear: bool) -> Tex {
         let a8 = (alpha.clamp(0.0, 1.0) * 255.0).round() as u32;
-        let (size, out) = ([s.w as usize, s.h as usize], [self.w as usize, self.h as usize]);
+        let (size, out) = ([s.w as usize, s.h as usize], [dst.w as usize, dst.h as usize]);
         let Some(inv) = m.inverse() else { return dst };
         if a8 == 0 || s.w == 0 || s.h == 0 {
             return dst;
@@ -367,11 +512,13 @@ impl Frame<'_> {
                         [i32_of((u0 * composite::ONE).floor() as i64), i32_of((v0 * composite::ONE).floor() as i64)]
                     })
                     .collect();
-                (params([x0, y0, x1, y1].map(|v| v as u32), uv, [0, 0, 0, self.bilinear as u32], [a8, 0, 0, 0], [0.0; 4]), rows)
+                (params([x0, y0, x1, y1].map(|v| v as u32), uv, [0, 0, 0, bilinear as u32], [a8, 0, 0, 0], [0.0; 4]), rows)
             }
         };
         let pipe = &self.g.draw;
-        self.pass(pipe, dst, Some(s), p, &rows)
+        let out = self.pass(pipe, &dst, Some(s), &p, bytemuck::cast_slice(&rows));
+        self.give(dst);
+        out
     }
 
     /// `composite::blend` of `layer` onto `dst` (Custom on the CPU).
@@ -384,23 +531,28 @@ impl Frame<'_> {
         let o8 = (opacity.clamp(0.0, 1.0) * 255.0).round() as u32;
         let p = params([0; 4], [0; 4], [0; 4], [o8, mode as u32, group as u32, 0], [o8 as f32 / 255.0, 0.0, 0.0, 0.0]);
         let pipe = &self.g.blend;
-        let out = self.pass(pipe, dst, Some(&layer), p, &[]);
+        let out = self.pass(pipe, &dst, Some(&layer), &p, &[]);
+        self.give(dst);
         self.give(layer);
         Some(out)
     }
 
-    /// A frame-sized render target.
-    fn target(&mut self) -> Tex {
-        self.spare.pop().unwrap_or_else(|| self.g.texture(self.w, self.h, false))
+    /// A `w` x `h` render target.
+    fn target(&mut self, w: u32, h: u32) -> Tex {
+        match self.spare.iter().position(|t| (t.w, t.h) == (w, h)) {
+            Some(i) => self.spare.swap_remove(i),
+            None => self.g.texture(w, h, false),
+        }
     }
 
-    fn give(&mut self, t: Tex) {
+    pub(super) fn give(&mut self, t: Tex) {
         if t.cpu { self.written.push(t) } else { self.spare.push(t) }
     }
 
-    /// A frame-sized target filled with `c`.
-    fn clear(&mut self, c: Color32) -> Tex {
-        let t = self.target();
+    /// A `w` x `h` target filled with `c`.
+    pub(super) fn clear(&mut self, w: u32, h: u32, c: Color32) -> Tex {
+        let _step = lock(&self.g.record);
+        let t = self.target(w, h);
         let [r, g, b, a] = c.to_array().map(f64::from);
         let ops = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }), store: wgpu::StoreOp::Store };
         let at = wgpu::RenderPassColorAttachment { view: &t.view, resolve_target: None, ops };
@@ -408,22 +560,28 @@ impl Frame<'_> {
         t
     }
 
-    /// One pass of `pipe` into a new target, reading `dst` and `src`; `dst` goes back to the frame.
-    fn pass(&mut self, pipe: &wgpu::RenderPipeline, dst: Tex, src: Option<&Tex>, p: [u32; 20], rows: &[[i32; 2]]) -> Tex {
+    fn bind(&self, layout: &wgpu::BindGroupLayout, dst: &Tex, src: Option<&Tex>, uniform: &[u32], data: &[u32], out: Option<&Tex>) -> wgpu::BindGroup {
         let g = self.g;
-        let out = self.target();
-        let uniform = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&p), usage: wgpu::BufferUsages::UNIFORM });
-        let rows = (!rows.is_empty()).then(|| g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(rows), usage: wgpu::BufferUsages::STORAGE }));
-        let bind = g.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &g.layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dst.view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&src.unwrap_or(&g.none).view) },
-                wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: rows.as_ref().unwrap_or(&g.no_rows).as_entire_binding() },
-            ],
-        });
+        let uniform = g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(uniform), usage: wgpu::BufferUsages::UNIFORM });
+        let data = (!data.is_empty()).then(|| g.device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(data), usage: wgpu::BufferUsages::STORAGE }));
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&dst.view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&src.unwrap_or(&g.none).view) },
+            wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: data.as_ref().unwrap_or(&g.no_rows).as_entire_binding() },
+        ];
+        if let Some(out) = out {
+            entries.push(wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&out.view) });
+        }
+        g.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout, entries: &entries })
+    }
+
+    /// One pass of `pipe` into a new target of `dst`'s size, reading `dst` and `src` with `uniform` and `data`
+    /// (a storage buffer). `dst` is left as it was.
+    pub(super) fn pass(&mut self, pipe: &wgpu::RenderPipeline, dst: &Tex, src: Option<&Tex>, uniform: &[u32], data: &[u32]) -> Tex {
+        let _step = lock(&self.g.record);
+        let out = self.target(dst.w, dst.h);
+        let bind = self.bind(&self.g.layout, dst, src, uniform, data, None);
         {
             let ops = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
             let at = wgpu::RenderPassColorAttachment { view: &out.view, resolve_target: None, ops };
@@ -432,7 +590,22 @@ impl Frame<'_> {
             rp.set_bind_group(0, &bind, &[]);
             rp.draw(0..3, 0..1);
         }
-        self.give(dst);
+        out
+    }
+
+    /// `cs_box` (fx.wgsl) over `t`: one invocation per line along the axis `u` names.
+    pub(super) fn box_pass(&mut self, t: &Tex, u: &fx::U) -> Tex {
+        let _step = lock(&self.g.record);
+        let out = self.target(t.w, t.h);
+        let along_x = u.i[1] == 0;
+        let lines = if along_x { t.h } else { t.w };
+        let bind = self.bind(&self.g.fx.box_layout, t, None, &u.words(), &[], Some(&out));
+        {
+            let mut cp = self.enc.begin_compute_pass(&Default::default());
+            cp.set_pipeline(&self.g.fx.box_blur);
+            cp.set_bind_group(0, &bind, &[]);
+            cp.dispatch_workgroups(lines.div_ceil(64), 1, 1);
+        }
         out
     }
 
@@ -442,6 +615,7 @@ impl Frame<'_> {
         if w == 0 || h == 0 || w.max(h) > self.g.max {
             return None;
         }
+        let _step = lock(&self.g.record);
         let t = self.g.texture(w, h, true);
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: None };
         self.g.queue.write_texture(t.tex.as_image_copy(), bytemuck::cast_slice(&img.pixels), layout, t.tex.size());
@@ -449,7 +623,7 @@ impl Frame<'_> {
     }
 
     /// Run the recorded passes and read `t` back.
-    fn read(&mut self, t: &Tex) -> Option<ColorImage> {
+    pub(super) fn read(&mut self, t: &Tex) -> Option<ColorImage> {
         let g = self.g;
         READBACKS.fetch_add(1, Relaxed);
         let row = (t.w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -484,7 +658,7 @@ impl Frame<'_> {
         self.upload(&img)
     }
 
-    fn done(self) {
+    pub(super) fn done(self) {
         self.g.give_back(self.spare.into_iter().chain(self.written));
     }
 }
@@ -738,6 +912,10 @@ pub(crate) mod tests {
     pub(crate) struct Noise(HashMap<(Arc<str>, u32, u32), Arc<ColorImage>>);
     impl Sources for Noise {
         fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
+            // Generated media render as the worker renders them (`Live::fetch`).
+            if let Some((e, t)) = &s.generator {
+                return Some(Arc::new(crate::engine::generate::render(e, w, h, *t)));
+            }
             let id = s.m.id.clone();
             let img = self.0.entry((id.clone(), w, h)).or_insert_with(|| {
                 let seed = hash(id.bytes().fold(7, |a, b| a.wrapping_mul(31) ^ b as u32));
@@ -767,6 +945,14 @@ pub(crate) mod tests {
         let cpu = composite::compose(fp, &mut src, w, h, bilinear, 3);
         let gpu = g.compose(fp, &mut src, w, h, bilinear, 3).unwrap_or_else(|| panic!("{what}: the GPU did not compose it"));
         let d = diff(&cpu, &gpu);
+        if d.0 > within {
+            // The pair, for a look: %TEMP%\milan-agent\r21\fail\<what>-{cpu,gpu}.png.
+            let dir = std::env::temp_dir().join("milan-agent").join("r21").join("fail");
+            std::fs::create_dir_all(&dir).unwrap();
+            let name = what.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+            crate::demo::save_png(&dir.join(format!("{name}-cpu.png")), &cpu).unwrap();
+            crate::demo::save_png(&dir.join(format!("{name}-gpu.png")), &gpu).unwrap();
+        }
         assert!(d.0 <= within, "{what}: the GPU frame differs from the CPU's by up to {} ({} channels)\n{fp:?}", d.0, d.1);
         d
     }
@@ -916,7 +1102,7 @@ pub(crate) mod tests {
     #[test]
     fn gpu_float_ops_round_as_the_cpu() {
         let Some(g) = gpu_or_skip("gpu_float_ops_round_as_the_cpu") else { return };
-        let src = format!("{}\n{}", include_str!("composite.wgsl"), r#"
+        let src = format!("{}\n{}\n{}", include_str!("math.wgsl"), include_str!("composite.wgsl"), r#"
 fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; return x ^ (x >> 16u); }
 @fragment fn fs_probe(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     let q = vec2<u32>(pos.xy);
@@ -945,8 +1131,8 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
         for op in 0..4u32 {
             let enc = g.device.create_command_encoder(&Default::default());
             let mut f = Frame { g: &g, enc, w: 256, h: 256, spare: Vec::new(), written: Vec::new(), bilinear: true, k: 1 };
-            let t = f.clear(Color32::TRANSPARENT);
-            let out = f.pass(&pipe, t, None, params([0; 4], [0; 4], [0; 4], [0, op, 0, 0], [0.0; 4]), &[]);
+            let t = f.clear(256, 256, Color32::TRANSPARENT);
+            let out = f.pass(&pipe, &t, None, &params([0; 4], [0; 4], [0; 4], [0, op, 0, 0], [0.0; 4]), &[]);
             let img = f.read(&out).unwrap();
             f.done();
             let mut bad = 0;

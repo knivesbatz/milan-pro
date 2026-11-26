@@ -1,6 +1,6 @@
-// R21a: the GPU compositor's passes (`engine/gpu/mod.rs`). Each pass draws the whole frame into a new Rgba8Uint
-// target from `dst` (copied where the pass changes nothing), with the CPU compositor's own integer maths
-// (`engine/composite.rs`): draws, opacity and the integer blend modes are bit-exact, the float modes round within 2.
+// R21a: the GPU compositor's passes (`engine/gpu/mod.rs`; math.wgsl comes first). Each pass draws the whole frame
+// into a new Rgba8Uint target from `dst` (copied where the pass changes nothing), with the CPU compositor's own
+// integer maths (`engine/composite.rs`) and its f32 maths through math.wgsl's emulation, so every mode is bit-exact.
 
 struct P {
     // The pixels the pass may change: x0, y0, x1, y1.
@@ -9,7 +9,7 @@ struct P {
     uv: vec4<i32>,
     // draw: whole-pixel offset (ox, oy), whole-pixel (1) or stepped (0), bilinear (1) or nearest (0).
     off: vec4<i32>,
-    // draw: alpha (0..255); blend: opacity (0..255), mode (`Composite as u32`), group (1); fade: r, g, b.
+    // draw: alpha (0..255); blend: opacity (0..255), mode (`Composite as u32`), group (1); fade: r, g, b. w is 0.
     k: vec4<u32>,
     // blend: opacity (0..1); fade: y = how far (0..1).
     f: vec4<f32>,
@@ -20,6 +20,11 @@ struct P {
 @group(0) @binding(2) var<uniform> p: P;
 // draw: each row's 16.16 source position at x0 (from the CPU, in f64 as `composite::draw` computes it).
 @group(0) @binding(3) var<storage, read> rows: array<vec2<i32>>;
+
+// math.wgsl's `rd`: a zero the compiler cannot see through.
+fn zero() -> u32 {
+    return p.k.w;
+}
 
 const SOURCE_ALPHA: u32 = 0u;
 const ADD: u32 = 1u;
@@ -43,36 +48,6 @@ const HUE: u32 = 19u;
 const SATURATION: u32 = 20u;
 const COLOR: u32 = 21u;
 const LUMINOSITY: u32 = 22u;
-
-@vertex
-fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    // One triangle over the whole target.
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-// round(x * y / 255), `composite::mul255`.
-fn m1(x: u32, y: u32) -> u32 {
-    let t = x * y + 128u;
-    return (t + (t >> 8u)) >> 8u;
-}
-
-fn m4(x: vec4<u32>, y: u32) -> vec4<u32> {
-    return vec4<u32>(m1(x.r, y), m1(x.g, y), m1(x.b, y), m1(x.a, y));
-}
-
-// `composite::over`: premultiplied source-over of `s` scaled by `a8`.
-fn over(d: vec4<u32>, s0: vec4<u32>, a8: u32) -> vec4<u32> {
-    var s = s0;
-    if a8 != 255u {
-        s = m4(s0, a8);
-    }
-    if s.a == 255u {
-        return s;
-    }
-    return min(s + m4(d, 255u - s.a), vec4<u32>(255u));
-}
 
 fn texel(x: i32, y: i32) -> vec4<u32> {
     return textureLoad(src, vec2<i32>(x, y), 0);
@@ -143,67 +118,6 @@ fn channel(mode: u32, cd: u32, cs: u32) -> u32 {
         case DIFFERENCE: { return select(cs - cd, cd - cs, cd > cs); }
         default: { return cs; }
     }
-}
-
-// The float modes in the CPU's f32 maths, rounded as it rounds. A GPU compiler may fuse a multiply into an add and
-// reassociate sums; the CPU does neither. So every float result goes through `rd` (an xor with a uniform zero the
-// compiler cannot see through), which pins each operation as written, and division and square root take one
-// correction step from the GPU's approximations to the correctly rounded result (the residual exact by Dekker's
-// product: a driver may lower `fma` unfused).
-fn rd(x: f32) -> f32 {
-    return bitcast<f32>(bitcast<u32>(x) ^ p.k.w);
-}
-
-fn add(a: f32, b: f32) -> f32 {
-    return rd(a + b);
-}
-
-fn sub(a: f32, b: f32) -> f32 {
-    return rd(a - b);
-}
-
-fn mul(a: f32, b: f32) -> f32 {
-    return rd(a * b);
-}
-
-// x = hi + lo exactly, each with at most 12 significant bits (Veltkamp).
-fn split(x: f32) -> vec2<f32> {
-    let c = mul(4097.0, x);
-    let hi = sub(c, sub(c, x));
-    return vec2<f32>(hi, sub(x, hi));
-}
-
-// a - x * y exactly, for x * y within a factor of 2 of a (a correction step's residual).
-fn residual(a: f32, x: f32, y: f32) -> f32 {
-    let pr = mul(x, y);
-    let xs = split(x);
-    let ys = split(y);
-    let err = add(add(add(sub(mul(xs.x, ys.x), pr), mul(xs.x, ys.y)), mul(xs.y, ys.x)), mul(xs.y, ys.y));
-    return sub(sub(a, pr), err);
-}
-
-fn div(a: f32, b: f32) -> f32 {
-    let q = rd(a / b);
-    if b == 0.0 || q == 0.0 {
-        return q;
-    }
-    return add(q, rd(residual(a, q, b) / b));
-}
-
-fn root(x: f32) -> f32 {
-    let s = rd(sqrt(x));
-    if s == 0.0 {
-        return s;
-    }
-    return add(s, rd(residual(x, s, s) / mul(2.0, s)));
-}
-
-fn mul3(v: vec3<f32>, s: f32) -> vec3<f32> {
-    return vec3<f32>(mul(v.r, s), mul(v.g, s), mul(v.b, s));
-}
-
-fn add3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(add(a.r, b.r), add(a.g, b.g), add(a.b, b.b));
 }
 
 fn hard_light(b: f32, s: f32) -> f32 {
@@ -337,18 +251,6 @@ fn unit(v: vec4<u32>) -> vec4<f32> {
     return vec4<f32>(div(f.r, 255.0), div(f.g, 255.0), div(f.b, 255.0), div(f.a, 255.0));
 }
 
-// Rust's `f32::round` of a non-negative value: to the nearest integer, a half up (WGSL's `round` takes a half to the
-// even integer, and `floor(x + 0.5)` is wrong just under a half, where the sum rounds up to the integer).
-fn round_half_up(x: vec4<f32>) -> vec4<f32> {
-    return select(round(x), floor(x) + 1.0, fract(x) == vec4<f32>(0.5));
-}
-
-// 0..1 to 0..255, rounded as the CPU's `(v.clamp(0, 1) * 255).round()`.
-fn quantize(c: vec4<f32>) -> vec4<u32> {
-    let v = clamp(c, vec4<f32>(0.0), vec4<f32>(1.0));
-    return vec4<u32>(round_half_up(vec4<f32>(mul(v.r, 255.0), mul(v.g, 255.0), mul(v.b, 255.0), mul(v.a, 255.0))));
-}
-
 // `composite::blend_px`: the W3C general formula, any backdrop alpha.
 fn blend_px(d: vec4<u32>, s: vec4<u32>, mode: u32, o: f32, group: bool) -> vec4<u32> {
     let dp = unit(d);
@@ -409,16 +311,6 @@ fn fs_blend(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
 @fragment
 fn fs_fade(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     let d = textureLoad(dst, vec2<i32>(pos.xy), 0);
-    let t = p.f.y;
     let c = vec4<u32>(m1(p.k.x, d.a), m1(p.k.y, d.a), m1(p.k.z, d.a), d.a);
-    if t <= 0.0 {
-        return d;
-    }
-    if t >= 1.0 {
-        return c;
-    }
-    let x = vec4<f32>(d);
-    let to = vec4<f32>(c) - x;
-    let v = vec4<f32>(add(x.r, mul(to.r, t)), add(x.g, mul(to.g, t)), add(x.b, mul(to.b, t)), add(x.a, mul(to.a, t)));
-    return vec4<u32>(round_half_up(v));
+    return lerp_px(d, c, p.f.y);
 }

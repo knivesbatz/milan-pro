@@ -415,7 +415,7 @@ pub(crate) fn layer_to_out(l: &TrackPlan, w: usize, h: usize) -> Affine {
 }
 
 /// Decode size for an event: the smallest of full, 1/2, 1/4, 1/8 of the source covering its size on screen.
-fn decode_size(e: &EventPlan, to_out: Affine) -> (u32, u32) {
+pub(crate) fn decode_size(e: &EventPlan, to_out: Affine) -> (u32, u32) {
     let (sw, sh) = (e.src.m.w.max(2), e.src.m.h.max(2));
     let m = e.place.then(to_out);
     let need = m.a.hypot(m.c).max(m.b.hypot(m.d) * sw as f64 / sh as f64);
@@ -481,7 +481,12 @@ pub(crate) fn event_image(src: &mut dyn Sources, e: &EventPlan, to_out: Affine, 
 
 /// Where `event_image`'s picture `img` lands: its pixels to the event's place, then to `place_out`.
 pub(crate) fn event_to(img: &ColorImage, e: &EventPlan, place_out: Affine) -> Affine {
-    Affine::scale(1.0 / img.size[0] as f64, 1.0 / img.size[1] as f64).then(e.place).then(place_out)
+    event_to_size(img.size, e, place_out)
+}
+
+/// `event_to` for a picture `w` x `h` (R21b: one on the GPU).
+pub(crate) fn event_to_size([w, h]: [usize; 2], e: &EventPlan, place_out: Affine) -> Affine {
+    Affine::scale(1.0 / w as f64, 1.0 / h as f64).then(e.place).then(place_out)
 }
 
 /// One event's source, through its event FX (on a copy), drawn at `alpha`. `to_out` (with Track Motion) sets the
