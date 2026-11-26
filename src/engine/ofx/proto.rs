@@ -331,6 +331,40 @@ pub struct PluginDesc {
     pub context: String,
     #[serde(default)]
     pub params: Vec<ParamDesc>,
+    /// A1-A5: an AE-format effect (`aex:` id): what its PiPL and its setup in the host said. None for OFX.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aex: Option<AexInfo>,
+}
+
+/// What is known about an AE-format effect (`docs/AE_PREMIERE_PLUGINS.md` §4.1, §4.7).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AexInfo {
+    /// The stable id (`AE_Effect_Match_Name`).
+    pub match_name: String,
+    /// The exported entry point the PiPL names.
+    pub entry: String,
+    /// Which effect PiPL of the file (0-based, in resource order).
+    pub pipl: u32,
+    /// The API version it was built for, and its own packed version.
+    pub spec: (u16, u16),
+    pub version: u32,
+    /// Its flags: from the PiPL, then as its global setup set them.
+    pub out_flags: u32,
+    pub out_flags2: u32,
+    /// Why Milan does not load it ("" when it may): Adobe's own effects.
+    pub blocked: String,
+    /// Why it cannot run (audio, no entry point, its setup failed...): "" when it can.
+    pub unsupported: String,
+    /// Went through global and parameter setup in a plug-in host (A2); false: known from its PiPL only.
+    pub described: bool,
+    /// The capability line: what it uses that Milan gives only in part.
+    pub caps: Vec<String>,
+    /// Suites it asked for that Milan does not serve ("name v1"), and utility callbacks it called that Milan does not
+    /// serve: the single most useful compatibility datum (plan §4.7).
+    pub refused: Vec<String>,
+    /// Its own message from setup, verbatim.
+    pub message: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

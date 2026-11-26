@@ -2721,6 +2721,11 @@ impl MeridianApp {
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
             "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
+            // A1 review: the Plug-In Manager with its Folders popup open (the AE-format switch and notice).
+            "plugin-manager-aex" => {
+                self.dock.open(crate::ui::dock::Panel::PluginManager);
+                self.plugin_mgr.folders_open = true;
+            }
             // R34a review: the FX window on the first audio track with the first VST3 effect of MILAN_AUDIO_PLUGIN_DIR
             // (the test module's "Milan Test Gain") after the default chain; "fx-vst3-ui" also opens its editor
             // (off-screen in the harness).

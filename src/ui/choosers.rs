@@ -184,7 +184,7 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
             let (id, name) = (c.plugins[i].id, c.plugins[i].name);
             let sel = c.plugin == Some(i);
             // R33a: OFX plug-ins under a folder per grouping ("Spektrafilm"), after the built-ins.
-            let ext = id.starts_with(ofx::PREFIX);
+            let ext = ofx::is_hosted(id);
             if v16 && ext && folder != Some(c.plugins[i].group) {
                 folder = Some(c.plugins[i].group);
                 widgets::tree_row(ui, 1, Some(true), Some(Icon::Folder), c.plugins[i].group, false);
@@ -228,7 +228,9 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
         p.rect_filled(strip, 0.0, t.toolbar_bg);
     }
     if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)) {
-        let text = if info.id.starts_with(ofx::PREFIX) {
+        let text = if info.id.starts_with(crate::engine::aex::PREFIX) {
+            format!("{}, Grouping: {}, {}", info.name, info.group, crate::engine::aex::KIND)
+        } else if info.id.starts_with(ofx::PREFIX) {
             let v = info.id.rsplit_once('@').map_or("", |v| v.1);
             format!("{}{}, Grouping: {}, OFX plug-in version {v}", info.name, if info.desc.is_empty() { String::new() } else { format!(": {}", info.desc) }, info.group)
         } else {
@@ -307,7 +309,7 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
 
 fn thumb_image(info: &'static PluginInfo, preset: &Tile, p: f32) -> ColorImage {
     // An OFX plug-in's tile is the sample as it is: tiles are drawn on the UI thread, plug-ins run in their host.
-    if info.id.starts_with(ofx::PREFIX) {
+    if ofx::is_hosted(info.id) {
         return thumbs::sample();
     }
     match preset {

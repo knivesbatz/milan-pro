@@ -27,6 +27,12 @@ pub use scan::{OfxPrefs, ScanCache};
 
 pub const PREFIX: &str = "ofx:";
 
+/// An id this registry runs: an OFX plug-in, or (A1-A5) an AE-format effect (`engine::aex`), which goes through the same
+/// host process, protocol and parameter mapping.
+pub fn is_hosted(id: &str) -> bool {
+    id.starts_with(PREFIX) || id.starts_with(super::aex::PREFIX)
+}
+
 /// One OFX plug-in Milan Pro can run.
 #[derive(Debug)]
 pub struct Plugin {
@@ -44,6 +50,8 @@ pub enum Status {
     Ok,
     Failed(String),
     Disabled,
+    /// A1: never loaded, and why (Adobe's own AE-format effects).
+    Blocked(String),
 }
 
 impl Status {
@@ -52,6 +60,7 @@ impl Status {
             Status::Ok => "OK",
             Status::Failed(_) => "Failed",
             Status::Disabled => "Disabled",
+            Status::Blocked(_) => "Blocked",
         }
     }
 }
@@ -64,7 +73,7 @@ pub struct Entry {
     pub name: String,
     pub group: String,
     pub version: String,
-    /// "OFX", "OFX Transition" or "OFX Generator".
+    /// "OFX", "OFX Transition", "OFX Generator" or (A1) "AE-format effect".
     pub kind: &'static str,
     pub binary: PathBuf,
     pub status: Status,
@@ -119,6 +128,9 @@ fn kind_of(d: &PluginDesc) -> PluginKind {
 }
 
 pub fn id_of(d: &PluginDesc) -> String {
+    if d.aex.is_some() {
+        return super::aex::id_of(d);
+    }
     format!("{PREFIX}{}@{}", d.id, d.major)
 }
 
@@ -146,12 +158,24 @@ pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
     let mut r = Registry::default();
     for b in &cache.binaries {
         let file = b.path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+        let aex = scan::kind_of(&b.path) == "aex";
         for (i, e) in &b.errors {
-            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), kind: "OFX", binary: b.path.clone(), status: Status::Failed(e.clone()) });
+            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), kind: if aex { super::aex::KIND } else { "OFX" }, binary: b.path.clone(), status: Status::Failed(e.clone()) });
         }
         for d in &b.plugins {
             let id = id_of(d);
-            let status = if disabled.contains(&id) {
+            let status = if let Some(a) = &d.aex {
+                // A1: Adobe's own effects are blocked whatever the user chose; an effect that cannot run says why.
+                if !a.blocked.is_empty() {
+                    Status::Blocked(a.blocked.clone())
+                } else if disabled.contains(&id) {
+                    Status::Disabled
+                } else if !a.unsupported.is_empty() {
+                    Status::Failed(a.unsupported.clone())
+                } else {
+                    Status::Ok
+                }
+            } else if disabled.contains(&id) {
                 Status::Disabled
             } else if let Some(why) = unsupported(d) {
                 Status::Failed(why)
@@ -168,6 +192,7 @@ pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
             }
             let name = if d.label.is_empty() { d.id.clone() } else { d.label.clone() };
             let kind = match kind_of(d) {
+                _ if d.aex.is_some() => super::aex::KIND,
                 PluginKind::Transition => "OFX Transition",
                 PluginKind::Generator => "OFX Generator",
                 _ => "OFX",
@@ -191,7 +216,7 @@ pub fn generation() -> u64 {
 
 
 pub fn find(id: &str) -> Option<Arc<Plugin>> {
-    if !id.starts_with(PREFIX) {
+    if !is_hosted(id) {
         return None;
     }
     reg().usable.get(id).cloned()
@@ -281,11 +306,14 @@ pub fn hints_changed() -> Option<BTreeSet<String>> {
 
 /// The name of OFX plug-in `id` when it cannot run: "Name (off)", "Name (failed)", "identifier (missing)".
 pub fn label(id: &str) -> Option<String> {
-    let rest = id.strip_prefix(PREFIX)?;
+    let aex = id.strip_prefix(super::aex::PREFIX);
+    let rest = id.strip_prefix(PREFIX).or(aex)?;
     let r = reg();
     Some(match r.entries.iter().find(|e| e.id == id) {
         Some(e) if e.status == Status::Disabled => format!("{} (off)", e.name),
+        Some(e) if matches!(e.status, Status::Blocked(_)) => format!("{} (blocked)", e.name),
         Some(e) => format!("{} (failed)", e.name),
+        None if aex.is_some() => format!("{rest} (missing)"),
         None => format!("{} (missing)", rest.rsplit_once('@').map_or(rest, |x| x.0)),
     })
 }
@@ -293,15 +321,18 @@ pub fn label(id: &str) -> Option<String> {
 /// An instance of OFX plug-in `id` would be bypassed now (failed, crashed, turned off, unsupported or missing): the
 /// timeline badge. Cheap enough for every event on every frame.
 pub fn is_bypassed(id: &str) -> bool {
-    id.starts_with(PREFIX) && (!reg().usable.contains_key(id) || lock(&FAILED).contains_key(id))
+    is_hosted(id) && (!reg().usable.contains_key(id) || lock(&FAILED).contains_key(id))
 }
 
 const KEPT: &str = "It is bypassed; its settings are kept in the project.";
 
 /// Why an instance of `id` does not run (the FX window says it); None when it runs or is not an OFX plug-in.
 pub fn bypassed_because(id: &str) -> Option<String> {
-    if !id.starts_with(PREFIX) {
+    if !is_hosted(id) {
         return None;
+    }
+    if let Some(why) = super::aex::bypassed_because(id) {
+        return why;
     }
     let r = reg();
     let entry = r.entries.iter().find(|e| e.id == id);
@@ -325,7 +356,8 @@ pub fn bypassed_because(id: &str) -> Option<String> {
 }
 
 fn fail(p: &Plugin, why: String) {
-    let msg = format!("The OFX plug-in {} failed and is bypassed: {why}. Its settings are kept; Rescan in the Plug-In Manager tries it again.", p.info.name);
+    let what = if p.desc.aex.is_some() { "AE-format effect" } else { "OFX plug-in" };
+    let msg = format!("The {what} {} failed and is bypassed: {why}. Its settings are kept; Rescan in the Plug-In Manager tries it again.", p.info.name);
     log::warn!("ofx: {} ({}): {why}", p.info.id, p.binary.display());
     lock(&FAILED).insert(p.info.id.to_string(), why);
     lock(&EVENTS).push(msg);
@@ -350,7 +382,7 @@ fn leak_info(d: &PluginDesc) -> &'static PluginInfo {
             gpu: None,
             name: leak(if d.label.is_empty() { &d.id } else { &d.label }),
             kind: kind_of(d),
-            group: leak(if d.group.is_empty() { "OFX" } else { &d.group }),
+            group: leak(if !d.group.is_empty() { &d.group } else if d.aex.is_some() { "AE-format" } else { "OFX" }),
             category: "Third Party",
             desc: leak(d.description.lines().next().unwrap_or_default()),
             params: Box::leak(specs(d).into_boxed_slice()),
@@ -620,7 +652,7 @@ pub fn colour_hint(plugin: &str, instance: &str, e: &FxEval) -> Option<String> {
 /// time in frames, the height its pictures have at full quality (for the render scale), the frame rate and pixel aspect.
 /// `restored`: Milan holds values for it already (`restored`), so they win over the plug-in's own starting values.
 pub fn add_frame_vals(e: &mut FxEval, instance: &str, restored: bool, t: f64, full_h: f64, fps: f64, par: f64) {
-    if !e.id.starts_with(PREFIX) {
+    if !is_hosted(e.id) {
         return;
     }
     e.vals.push(("ofx.inst", Val::T(instance.to_string())));

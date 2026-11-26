@@ -1,0 +1,18 @@
+# Milan Pro's own AE-format effect plug-in for the AE-format host tests (not part of the main build), written against
+# Milan's own declarations (src/bin/milan-plugin-host/aex/abi.rs) with no Adobe SDK material. Its PiPL resources are
+# written by Milan's own PiPL writer (src/engine/aex/pipl.rs) into a .res that build.rs links. Built by the ignored
+# tests in src/engine/aex (they run `cargo build --release` here) into target/aex-test-plugin, then copied as .aex.
+[package]
+name = "milan-aex-test"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# Its own workspace: not a member of Milan Pro's package.
+[workspace]
