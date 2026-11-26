@@ -54,12 +54,16 @@ impl Splash {
                 let p = ui.painter();
                 let tex = widgets::brand_tex(ui.ctx(), Brand::Splash);
                 p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
-                // A thin cyan progress bar in a dark groove along the bottom of the art.
+                // The version at the right of the art's legal line, and a thin Luna-blue progress bar in a white
+                // XP groove along the bottom of the brushed-aluminium footer.
+                let ink = Color32::from_rgb(0x2A, 0x32, 0x42);
+                let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
+                p.text(pos2(r.max.x - 24.0, r.min.y + 276.0), Align2::RIGHT_TOP, version, FontId::proportional(11.0), ink);
                 let bar = Rect::from_min_max(pos2(r.min.x + 24.0, r.max.y - 20.0), pos2(r.max.x - 24.0, r.max.y - 14.0));
-                p.rect_filled(bar, 0.0, Color32::from_black_alpha(170));
-                p.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0x3A, 0x44, 0x52)), StrokeKind::Inside);
+                p.rect_filled(bar, 0.0, Color32::WHITE);
+                p.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0x7F, 0x9D, 0xB9)), StrokeKind::Inside);
                 let fill = bar.shrink(1.0);
-                p.rect_filled(fill.with_max_x(fill.min.x + fill.width() * f), 0.0, Color32::from_rgb(0x3C, 0xE6, 0xFF));
+                p.rect_filled(fill.with_max_x(fill.min.x + fill.width() * f), 0.0, Color32::from_rgb(0x31, 0x6A, 0xC5));
             });
         });
         true

@@ -1,24 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <title>Milan Pro</title>
+  <!-- Milan Pro: vector approximation of the rendered mark (tools/brand); blue film reel, orange play wedge. -->
   <defs>
-    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3C4658"/><stop offset="0.55" stop-color="#1B212C"/><stop offset="1" stop-color="#07090F"/></linearGradient>
-    <linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="0" y1="66" x2="0" y2="180"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.1" stop-color="#E2E8EE"/><stop offset="0.4" stop-color="#9AA6B4"/><stop offset="0.49" stop-color="#4A5562"/><stop offset="0.51" stop-color="#222A34"/><stop offset="0.56" stop-color="#4E6278"/><stop offset="0.8" stop-color="#9FB8CC"/><stop offset="1" stop-color="#DCE8F2"/></linearGradient>
-    <radialGradient id="glint"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.35" stop-color="#3CE6FF" stop-opacity="0.8"/><stop offset="1" stop-color="#3CE6FF" stop-opacity="0"/></radialGradient>
-    <radialGradient id="top"><stop offset="0" stop-color="#8A9AB2" stop-opacity="0.45"/><stop offset="1" stop-color="#8A9AB2" stop-opacity="0"/></radialGradient>
-    <pattern id="grid" width="21.33" height="21.33" patternUnits="userSpaceOnUse"><path d="M21.33 0V21.33H0" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="0.6"/></pattern>
+    <linearGradient id="flange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#a9c8ff"/><stop offset=".35" stop-color="#4f86ee"/><stop offset="1" stop-color="#1a49b8"/>
+    </linearGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3f72d8"/><stop offset="1" stop-color="#0f2f86"/>
+    </linearGradient>
+    <linearGradient id="hub" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset=".5" stop-color="#c3cad4"/><stop offset="1" stop-color="#7a8494"/>
+    </linearGradient>
+    <linearGradient id="wedge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffdc90"/><stop offset=".45" stop-color="#ffa424"/><stop offset="1" stop-color="#d86000"/>
+    </linearGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3d7be0"/><stop offset="1" stop-color="#e9f2ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/><feOffset dx="8" dy="8"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".6"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#plate)" stroke="#2EB8F0" stroke-width="2"/>
-  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#grid)"/>
-  <ellipse cx="128" cy="30" rx="166" ry="100" fill="url(#top)"/>
-  <g fill="none" stroke="#3CE6FF" stroke-opacity="0.5" stroke-width="1" stroke-linejoin="round">
-    <path d="M20,77 V41 L41,20 H87"/><path d="M236,179 V215 L215,236 H169"/><path d="M169,20 H200 L215,36"/><path d="M41,236 H72 L87,220"/>
+  <g filter="url(#shadow)">
+    <g transform="translate(14 150) rotate(-14)">
+      <rect x="0" y="0" width="96" height="34" rx="3" fill="#24201c" stroke="#0b0907" stroke-width="2"/>
+      <rect x="8" y="9" width="22" height="16" fill="url(#frame)"/><rect x="36" y="9" width="22" height="16" fill="url(#frame)"/>
+      <rect x="64" y="9" width="22" height="16" fill="url(#frame)"/>
+    </g>
+    <ellipse cx="140" cy="104" rx="84" ry="98" transform="rotate(14 140 104)" fill="url(#back)" stroke="#0b2468" stroke-width="4"/>
+    <ellipse cx="118" cy="110" rx="84" ry="98" transform="rotate(14 118 110)" fill="url(#flange)" stroke="#0c2a78" stroke-width="5"/>
+    <g fill="#2a221c" stroke="#0c2a78" stroke-width="2">
+      <ellipse cx="126" cy="54" rx="20" ry="24"/><ellipse cx="72" cy="96" rx="19" ry="23"/>
+      <ellipse cx="166" cy="104" rx="19" ry="23"/><ellipse cx="88" cy="160" rx="19" ry="23"/>
+      <ellipse cx="146" cy="164" rx="19" ry="23"/>
+    </g>
+    <ellipse cx="118" cy="110" rx="22" ry="25" fill="url(#hub)" stroke="#4a5260" stroke-width="3"/>
+    <ellipse cx="118" cy="110" rx="6" ry="7" fill="#4a5260"/>
+    <path d="M136 132 L136 238 L232 186 Z" fill="url(#wedge)" stroke="#8a3c00" stroke-width="5" stroke-linejoin="round"/>
+    <ellipse cx="74" cy="58" rx="16" ry="9" transform="rotate(-40 74 58)" fill="#ffffff" opacity=".55"/>
   </g>
-  <circle cx="128" cy="128" r="80" fill="none" stroke="#3CE6FF" stroke-opacity="0.35" stroke-width="15"/>
-  <circle cx="128" cy="128" r="80" fill="none" stroke="#C8F6FF" stroke-width="5"/>
-  <path d="M58,66 H90 V180 H58 Z M166,66 H198 V180 H166 Z M58,66 L93.39,66 L128,114.45 L128,164 Z M198,66 L162.61,66 L128,114.45 L128,164 Z" fill="#070A10" opacity="0.6" transform="translate(2.5 4)"/>
-  <path d="M58,66 H90 V180 H58 Z M166,66 H198 V180 H166 Z M58,66 L93.39,66 L128,114.45 L128,164 Z M198,66 L162.61,66 L128,114.45 L128,164 Z" fill="url(#chrome)" stroke="#070A10" stroke-width="2.8" stroke-linejoin="miter"/>
-  <polygon points="58,66 93.39,66 128,114.45 128,164 198,66 162.61,66 128,114.45 128,164" fill="none"/>
-  <circle cx="182" cy="68" r="20" fill="url(#glint)"/>
-  <ellipse cx="182" cy="68" rx="40" ry="2.2" fill="#D8F6FF" opacity="0.8"/>
-  <circle cx="198" cy="76" r="3.5" fill="#FF8A1F" opacity="0.9"/>
 </svg>

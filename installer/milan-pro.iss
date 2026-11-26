@@ -30,7 +30,7 @@ OutputBaseFilename=MilanPro-{#AppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-; Brand: tools/make-icons.py makes these; image areas at 100/125/150/175/200% DPI, Setup picks the closest.
+; Brand: tools/brand/compose.py makes these; image areas at 100/125/150/175/200% DPI, Setup picks the closest.
 SetupIconFile=..\assets\brand\milan-pro.ico
 WizardImageFile=..\assets\brand\installer\wizard-202x386.png,..\assets\brand\installer\wizard-269x515.png,..\assets\brand\installer\wizard-336x643.png,..\assets\brand\installer\wizard-403x772.png,..\assets\brand\installer\wizard-430x824.png
 WizardSmallImageFile=..\assets\brand\installer\wizard-small-58.png,..\assets\brand\installer\wizard-small-77.png,..\assets\brand\installer\wizard-small-97.png,..\assets\brand\installer\wizard-small-116.png,..\assets\brand\installer\wizard-small-124.png
