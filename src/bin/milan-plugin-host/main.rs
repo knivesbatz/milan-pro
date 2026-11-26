@@ -1,4 +1,5 @@
-//! milan-plugin-host.exe: runs OFX plug-ins (R32, R33a, R33b) and VST3 and CLAP audio effects (R34a, R34b, R35) for
+//! milan-plugin-host.exe: runs OFX plug-ins (R32, R33a, R33b), AE-format effects (A2-A5, `aex`) and VST3 and CLAP audio
+//! effects (R34a, R34b, R35) for
 //! Milan Pro in a process of their own, so a plug-in that crashes or hangs never takes the editor down. Milan starts it with `--pipe <name>`; the host serves that named pipe
 //! (requests in `proto.rs`, one reply each) and maps the frames Milan puts in shared memory. It has no window and no
 //! console, and shows no error dialogs: a crash ends the process silently and Milan reports it.
@@ -9,6 +10,7 @@
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 compile_error!("milan-plugin-host hosts 64-bit Windows OFX plug-ins (its variadic parameter functions rely on the Win64 ABI)");
 
+mod aex;
 mod clap;
 mod dmo;
 mod editor;
@@ -34,6 +36,8 @@ fn main() {
     let Some(mut pipe) = serve(&name) else { std::process::exit(3) };
     let mut host = host::Host::new();
     let mut audio = Audio::None;
+    // A2: the AE-format effect file this host runs, when it was given one.
+    let mut aexm: Option<aex::Module> = None;
     // Audio blocks travel in shared memory Milan names with each request (mapped once per name).
     let mut shm: Option<(String, host::Shm)> = None;
     loop {
@@ -55,11 +59,34 @@ fn main() {
                     }
                     Err(e) => Reply::Error(e),
                 },
+                Some("aex") => match aex::Module::load(&binary) {
+                    Ok(m) => {
+                        let n = m.count();
+                        aexm = Some(m);
+                        Reply::Loaded(n)
+                    }
+                    Err(e) => Reply::Error(e),
+                },
                 _ => host.load(&binary),
             },
-            Req::Describe { index } => host.describe(index),
-            Req::Render(r) => host.render(&r),
-            Req::Button(r, name) => host.button(&r, &name),
+            Req::Describe { index } => match &mut aexm {
+                Some(m) => m.describe(index),
+                None => host.describe(index),
+            },
+            Req::Render(r) => match &mut aexm {
+                Some(m) => m.render(&r, &mut pipe),
+                None => host.render(&r),
+            },
+            // An AE-format effect has no push buttons; making the instance waits for its first frame.
+            Req::Button(r, name) => match &aexm {
+                Some(_) => Reply::Rendered(Default::default()),
+                None => host.button(&r, &name),
+            },
+            Req::AexFlatten { index, instance } => match &mut aexm {
+                Some(m) => m.flatten(index, &instance),
+                None => Reply::Error("no AE-format effect is loaded".into()),
+            },
+            Req::Frame(_) => Reply::Error("no frame was asked for".into()),
             Req::Panic => panic!("asked to panic"),
             Req::GpuCheck => host::gpu_check(),
             Req::AScan => match &mut audio {
@@ -112,6 +139,9 @@ fn main() {
             Req::DmoProbe => Reply::Rendered(proto::Outcome { messages: dmo::probe(), ..Default::default() }),
             Req::Quit => {
                 host.shutdown();
+                if let Some(m) = &mut aexm {
+                    m.shutdown();
+                }
                 match &mut audio {
                     Audio::Vst3(m) => m.shutdown(),
                     Audio::Clap(m) => m.shutdown(),

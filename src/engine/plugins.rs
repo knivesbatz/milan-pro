@@ -816,6 +816,7 @@ pub fn new_fx(info: &PluginInfo, preset: Option<&Preset>) -> Fx {
         params: preset.map_or(&[][..], |p| p.vals).iter().map(|&(k, v)| (k.to_string(), key(v))).collect(),
         text: preset.map_or(&[][..], |p| p.text).iter().map(|&(k, v)| (k.to_string(), v.to_string())).collect(),
         auto: Default::default(),
+        blob: Default::default(),
     }
 }
 

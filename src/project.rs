@@ -1167,6 +1167,10 @@ pub struct Fx {
     /// and timeline time. They play over `params` unless the track's automation is Off.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub auto: BTreeMap<String, Keyframes<f32>>,
+    /// A4: an AE-format effect's saved data, base64 by key ("seq": its flattened sequence data), written when the
+    /// project is saved. Untrusted when loaded: it goes only to the isolated plug-in host.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blob: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1327,6 +1331,8 @@ impl Project {
     /// being written over is kept first as `<name>.mnle.bak` (as VEGAS keeps `.veg.bak`), and the file carries this
     /// build's `FORMAT_VERSION`. On error, name, path and modified are left unchanged.
     pub fn save(&mut self, path: &PathBuf) -> anyhow::Result<()> {
+        // A4: AE-format effects running in a plug-in host flatten their sequence data into the project first.
+        crate::engine::aex::flatten_into(self);
         // The project is named after its file, so titles and autosave backups are per-project.
         let name = file_stem(path).unwrap_or_else(|| self.name.clone());
         let old_name = std::mem::replace(&mut self.name, name);
@@ -2348,6 +2354,7 @@ mod tests {
             params: BTreeMap::from([("amount".to_string(), keys(0.25))]),
             text: BTreeMap::from([("text".to_string(), "Hello".to_string())]),
             auto: BTreeMap::from([("gain".to_string(), keys(-3.0))]),
+            blob: BTreeMap::from([("seq".to_string(), "AQID".to_string())]),
         };
         let env = |kind| Envelope { kind, points: keys(-6.0) };
         let mut c = Clip::new("c", 1.0, 4.0);

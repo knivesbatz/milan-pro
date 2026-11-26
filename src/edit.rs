@@ -3699,7 +3699,7 @@ pub fn set_fx_list(p: &mut Project, target: &FxTarget, list: Vec<Fx>) -> bool {
 /// A transition's settings as a plug-in instance (each value one key at 0), for the FX window.
 pub fn fx_of_transition(tr: &Transition) -> Fx {
     let key = |v| Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] };
-    Fx { id: "transition".into(), plugin: tr.plugin.clone(), enabled: true, params: tr.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: Default::default(), auto: Default::default() }
+    Fx { id: "transition".into(), plugin: tr.plugin.clone(), enabled: true, params: tr.params.iter().map(|(k, &v)| (k.clone(), key(v))).collect(), text: Default::default(), auto: Default::default(), blob: Default::default() }
 }
 
 /// A plug-in instance as a transition (transitions are not keyframed: each value at 0).
@@ -4192,7 +4192,7 @@ mod tests {
         let mut c = Clip::from_media(&m, 0.0);
         c.looping = false;
         assert_eq!(media_limit(&p, &c), Some(8.0));
-        m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() });
+        m.generator = Some(Fx { id: "f".into(), plugin: "milan.gen.solid".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default(), blob: Default::default() });
         p.media_pool[0] = m;
         assert_eq!(media_limit(&p, &c), None);
     }
@@ -4309,7 +4309,7 @@ mod tests {
     fn attribute_paste_copies_only_what_is_chosen() {
         let mut p = Project::new("t");
         let mut src = Clip::new("src", 0.0, 4.0);
-        src.fx = vec![Fx { id: "fx1".into(), plugin: "milan.fx.invert".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() }];
+        src.fx = vec![Fx { id: "fx1".into(), plugin: "milan.fx.invert".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default(), blob: Default::default() }];
         (src.fade_in, src.fade_out, src.gain_db, src.rate) = (1.0, 1.0, -6.0, 2.0);
         src.pan_crop = Keyframes { keys: vec![Keyframe { t: 0.0, v: PanCrop { w: 0.5, ..Default::default() }, curve: Curve::Linear }] };
         let mut dst = Clip::new("dst", 10.0, 4.0);
@@ -6267,7 +6267,7 @@ mod tests {
         assert_eq!(p.timeline.audio.fx.len(), MAX_FX_CHAINS);
         // Bus FX are edited as a chain.
         let t = FxTarget::Bus(f2.clone());
-        assert!(fx_is_audio(&p, &t) && add_fx(&mut p, &t, Fx { id: "x".into(), plugin: "milan.afx.eq".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default() }));
+        assert!(fx_is_audio(&p, &t) && add_fx(&mut p, &t, Fx { id: "x".into(), plugin: "milan.afx.eq".into(), enabled: true, params: Default::default(), text: Default::default(), auto: Default::default(), blob: Default::default() }));
         assert_eq!(fx_list(&p, &t).unwrap().0.len(), 1);
         // Pan Type on the tracks given.
         let all: Vec<String> = p.timeline.audio_tracks.iter().map(|t| t.id.clone()).collect();

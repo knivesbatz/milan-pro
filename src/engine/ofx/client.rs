@@ -11,6 +11,8 @@ use super::proto::{self, Reply, Req};
 
 /// Loading a binary (its DLL load and every plug-in's load action): generous, a first load may be scanned by antivirus.
 pub const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
+/// A4: flattening an AE-format instance's sequence data before a save.
+pub const FLATTEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// One plug-in's describe and describeInContext: 2 s, longer in a compatibility probe.
 pub static DESCRIBE_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2_000);
 
@@ -81,6 +83,8 @@ pub struct Conn {
     pipe: File,
     watch: Arc<Mutex<Watch>>,
     pub shm: Option<Shm>,
+    /// A4: AE-format instances (FX ids) this host has rendered: it holds their sequence data.
+    pub sent: std::collections::HashSet<String>,
 }
 
 impl Conn {
@@ -145,7 +149,7 @@ impl Conn {
                 }
             })
             .map_err(|e| Fail::Io(format!("cannot start the plug-in watchdog: {e}")))?;
-        let mut c = Conn { child, pipe, watch, shm: None };
+        let mut c = Conn { child, pipe, watch, shm: None, sent: Default::default() };
         match c.request(&Req::Load { binary: binary.to_path_buf() }, Some(LOAD_TIMEOUT))? {
             Reply::Loaded(n) => Ok((c, n)),
             Reply::Error(e) => Err(Fail::Io(e)),

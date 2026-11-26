@@ -13,10 +13,13 @@
 pub mod pipl;
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use super::ofx::proto::{AexInfo, PluginDesc};
+use std::sync::{LazyLock, Mutex};
+use super::ofx::client::{Conn, describe_timeout, lock};
+use super::ofx::proto::{AexInfo, PluginDesc, Reply, Req};
 use super::ofx::scan::Binary;
+use crate::project::{Fx, Project};
 
 pub const PREFIX: &str = "aex:";
 /// The plug-in kind as the Plug-In Manager labels it (plan §2.5).
@@ -254,9 +257,106 @@ pub fn read_static(path: &Path) -> Binary {
 }
 
 /// Describe the effects of `path`: the PiPLs (in Milan, as data), then each effect Milan may run through global and
-/// parameter setup in a plug-in host of its own (A2).
+/// parameter setup in a plug-in host of its own (A2). Blocked and unsupported effects are never loaded. A crash or a
+/// hang in an effect's setup costs that effect only (a new host describes the rest), recorded as why it cannot run.
 pub fn describe_binary(path: &Path) -> Binary {
-    read_static(path)
+    let mut out = read_static(path);
+    let runnable: Vec<usize> = (0..out.plugins.len()).filter(|&i| out.plugins[i].aex.as_ref().is_some_and(|a| a.blocked.is_empty() && a.unsupported.is_empty())).collect();
+    let mut conn: Option<Conn> = None;
+    for i in runnable {
+        let index = out.plugins[i].aex.as_ref().map_or(0, |a| a.pipl);
+        if conn.is_none() {
+            match Conn::start(path) {
+                Ok((c, _)) => conn = Some(c),
+                Err(e) => {
+                    set_unsupported(&mut out.plugins[i], format!("it could not be loaded: {e}"));
+                    continue;
+                }
+            }
+        }
+        let c = conn.as_mut().expect("started");
+        match c.request(&Req::Describe { index }, Some(describe_timeout())) {
+            Ok(Reply::Described(d)) => {
+                let mut d = *d;
+                if let Some(a) = d.aex.as_mut() {
+                    // Its flags as its global setup set them decide, as they do for its PiPL.
+                    a.unsupported = unsupported(a.out_flags, a.out_flags2).unwrap_or_default();
+                }
+                out.plugins[i] = d;
+            }
+            Ok(Reply::Error(e)) => set_unsupported(&mut out.plugins[i], e),
+            Ok(r) => set_unsupported(&mut out.plugins[i], format!("unexpected reply {r:?}")),
+            Err(e) => {
+                set_unsupported(&mut out.plugins[i], format!("its setup: {e}"));
+                // A crashed or killed host: the rest are described in a new one.
+                conn = None;
+            }
+        }
+    }
+    if let Some(c) = conn {
+        c.quit();
+    }
+    out
+}
+
+fn set_unsupported(d: &mut PluginDesc, why: String) {
+    if let Some(a) = d.aex.as_mut() {
+        a.unsupported = why;
+    }
+}
+
+/// What the FX window says about an AE-format effect besides its controls (plan §4.6): its custom controls are not
+/// shown; it works in 8 bits. None for other plug-ins.
+pub fn fx_note(id: &str) -> Option<String> {
+    let p = super::ofx::find(id)?;
+    let a = p.desc.aex.as_ref()?;
+    let mut v = vec![format!("{KIND}: 8-bit only (a float project is quantised through it); generic controls.")];
+    if a.out_flags & flags::CUSTOM_UI != 0 {
+        v.push("This plug-in has custom controls that Milan Pro cannot show.".into());
+    }
+    Some(v.join(" "))
+}
+
+// ---------------------------------------------------------------- sequence data (A4)
+
+/// Per instance (FX id): its saved data (`Fx.blob`), sent to a host that does not have the instance yet.
+static BLOBS: LazyLock<Mutex<HashMap<String, BTreeMap<String, String>>>> = LazyLock::new(Default::default);
+
+/// What `fx` holds for its plug-in host, noted where its frames are planned.
+pub fn note_blob(fx: &Fx) {
+    if fx.plugin.starts_with(PREFIX) && !fx.blob.is_empty() {
+        let mut b = lock(&BLOBS);
+        if b.get(&fx.id) != Some(&fx.blob) {
+            b.insert(fx.id.clone(), fx.blob.clone());
+        }
+    }
+}
+
+/// The saved data of instance `instance`.
+pub fn blob_for(instance: &str) -> BTreeMap<String, String> {
+    lock(&BLOBS).get(instance).cloned().unwrap_or_default()
+}
+
+/// Before a save: every AE-format instance a plug-in host is running flattens its sequence data into its `Fx.blob`
+/// (plan §4.2). An instance no host runs keeps what it had.
+pub fn flatten_into(p: &mut Project) {
+    let mut each = |fx: &mut Fx| {
+        if !fx.plugin.starts_with(PREFIX) {
+            return;
+        }
+        if let Some(b) = super::ofx::flatten(fx) {
+            fx.blob = b;
+            lock(&BLOBS).insert(fx.id.clone(), fx.blob.clone());
+        }
+    };
+    let tl = &mut p.timeline;
+    for t in &mut tl.video_tracks {
+        t.fx.iter_mut().for_each(&mut each);
+        for c in &mut t.clips {
+            c.fx.iter_mut().for_each(&mut each);
+        }
+    }
+    tl.master.video_fx.iter_mut().for_each(&mut each);
 }
 
 /// The id of an AE-format effect.

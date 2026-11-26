@@ -717,9 +717,39 @@ fn runnable(e: &FxEval, kind: PluginKind, size: [usize; 2]) -> Option<Arc<Plugin
 /// Run OFX effect `e` on `img` in place. A plug-in that is unknown, turned off or failed leaves it unchanged; one that
 /// fails now is bypassed from here on, with a message (`take_events`).
 pub fn apply(img: &mut ColorImage, e: &FxEval) {
+    apply_with(img, e, &mut |_, _| None);
+}
+
+/// A5: `apply`, with `fetch` answering an AE-format effect that checks out its input (or a layer set to this event)
+/// at another time: (layer parameter, frames from this one) to that source frame (None: transparent).
+pub fn apply_with(img: &mut ColorImage, e: &FxEval, fetch: &mut dyn FnMut(i32, f64) -> Option<Arc<ColorImage>>) {
     let Some(p) = runnable(e, PluginKind::VideoFx, img.size) else { return };
-    if let Err(why) = render(&p, request(&p, e, img.size), img, None, true) {
+    if let Err(why) = render_with(&p, request(&p, e, img.size), img, None, true, fetch) {
         fail(&p, why);
+    }
+}
+
+/// A4: instance `fx` of an AE-format effect, flattened by the host running it (None when no host runs it, it failed,
+/// or it is not an AE-format effect: the FX keeps what it had).
+pub fn flatten(fx: &Fx) -> Option<std::collections::BTreeMap<String, String>> {
+    let p = find(&fx.plugin)?;
+    p.desc.aex.as_ref()?;
+    let slot = lock(&HOSTS).get(&p.binary).cloned()?;
+    let mut g = lock(&slot);
+    let conn = g.as_mut()?;
+    if !conn.sent.contains(&fx.id) {
+        return None;
+    }
+    match conn.request(&Req::AexFlatten { index: p.desc.index, instance: fx.id.clone() }, Some(client::FLATTEN_TIMEOUT)) {
+        Ok(Reply::Rendered(o)) => o.blob,
+        Ok(Reply::Error(e)) => {
+            log::warn!("aex: {} could not flatten: {e}", fx.plugin);
+            None
+        }
+        _ => {
+            *g = None;
+            None
+        }
     }
 }
 
@@ -954,14 +984,27 @@ fn with_host(binary: &Path, f: impl FnOnce(&mut Conn) -> Result<Reply, client::F
 
 /// One frame through `p`'s host: `img` is the first input when `source` (a filter's Source, a transition's
 /// SourceFrom), `second` a transition's SourceTo; the output replaces `img`.
-fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+fn render(p: &Plugin, r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+    render_with(p, r, img, second, source, &mut |_, _| None)
+}
+
+/// `render`; an AE-format effect's checkouts of other frames (`Reply::NeedFrame`) are answered by `fetch`, into the
+/// shared memory after the output.
+fn render_with(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool, fetch: &mut dyn FnMut(i32, f64) -> Option<Arc<ColorImage>>) -> Result<(), String> {
     let depth = r.depth;
     let n = img.size[0] * img.size[1] * bpp(depth);
     r.inputs = source as u32 + second.is_some() as u32;
     let out = r.inputs as usize * n;
     let instance = r.instance.clone();
+    let aex = p.desc.aex.is_some();
+    let size = img.size;
     let o = with_host(&p.binary, |conn| {
-        let need = (out + n) as u64;
+        // A4: an AE-format instance this host has not run yet gets its saved sequence data.
+        if aex && !conn.sent.contains(&r.instance) {
+            r.blob = super::aex::blob_for(&r.instance);
+        }
+        // A5: room for a checked-out frame after the output.
+        let need = (out + n + if aex { n } else { 0 }) as u64;
         if conn.shm.as_ref().is_none_or(|s| s.size < need) {
             conn.shm = None;
             // Grown in 16 MB steps, so a slightly larger frame does not remap every time.
@@ -975,7 +1018,18 @@ fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&Color
             put(b, depth, &mut shm.bytes()[n..2 * n]);
         }
         (r.shm, r.shm_size, r.out) = (shm.name.clone(), shm.size, out as u64);
-        let reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
+        let key = r.instance.clone();
+        let mut reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
+        while let Reply::NeedFrame { layer, offset } = reply {
+            let got = fetch(layer, offset).filter(|f| f.size == size);
+            if let Some(f) = &got {
+                put(f, depth, &mut conn.shm.as_mut().expect("made").bytes()[out + n..out + 2 * n]);
+            }
+            reply = conn.request(&Req::Frame(got.is_some()), Some(client::render_timeout()))?;
+        }
+        if aex && matches!(reply, Reply::Rendered(_) | Reply::Error(_)) {
+            conn.sent.insert(key);
+        }
         if matches!(reply, Reply::Rendered(_)) {
             take(&conn.shm.as_mut().expect("made").bytes()[out..out + n], depth, img);
         }

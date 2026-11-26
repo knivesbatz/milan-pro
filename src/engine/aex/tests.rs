@@ -1,5 +1,9 @@
 use super::*;
 use crate::engine::ofx::{self, ScanCache, Status, scan};
+use crate::engine::plugins::{self, FxEval};
+use crate::engine::vfx;
+use crate::project::{Curve, Keyframe, Keyframes};
+use eframe::egui::{Color32, ColorImage};
 use std::sync::OnceLock;
 
 fn temp(name: &str) -> PathBuf {
@@ -76,7 +80,8 @@ fn adobe_match_names_are_blocked() {
     std::fs::write(d.join("mixed.aex"), &dll).unwrap();
     std::fs::write(d.join("x86.aex"), pipl::tests_support::fake_dll_for(0x14c, &[effect("Old", "VEND Old", 0)])).unwrap();
     std::fs::write(d.join("junk.aex"), b"MZ not really").unwrap();
-    let cache = scan::scan_all(&[], &[d.clone()], &ScanCache::default(), false, &scan::describe_binary);
+    // Classification only: nothing is loaded (`read_static`).
+    let cache = scan::scan_all(&[], &[d.clone()], &ScanCache::default(), false, &|p| read_static(p));
     let prefs = ofx::OfxPrefs { disabled: ["aex:ADBE Blur".to_string()].into(), ..Default::default() };
     ofx::set_registry(&cache, &prefs);
     let es: Vec<ofx::Entry> = ofx::entries().into_iter().filter(|e| e.kind == KIND && e.binary.starts_with(&d)).collect();
@@ -167,3 +172,216 @@ fn pipl_of_open_source_plugins_parses() {
         }
     }
 }
+
+/// A4 acceptance: a project that uses an AE-format effect nobody has keeps its parameters and its saved sequence data
+/// through save and load, shows it as missing and bypassed, and an old project's FX (no "blob") load with none.
+#[test]
+
+// ---- A2-A5 through the plug-in host (`cargo build --release` first), `--ignored --test-threads=1`.
+
+const INVERT: &str = "aex:MLNT Test Invert";
+const GAIN: &str = "aex:MLNT Test Gain";
+const CRASH: &str = "aex:MLNT Test Crash";
+const CRASH_SETUP: &str = "aex:MLNT Test Crash Setup";
+const HANG: &str = "aex:MLNT Test Hang";
+const PARAMS: &str = "aex:MLNT Test Params";
+const MARKER: &str = "aex:MLNT Test Marker";
+const COUNTER: &str = "aex:MLNT Test Counter";
+const CALLBACKS: &str = "aex:MLNT Test Callbacks";
+const PREVIOUS: &str = "aex:MLNT Test Previous Frame";
+const SUPERVISOR: &str = "aex:MLNT Test Supervisor";
+const LAYER: &str = "aex:MLNT Test Layer";
+const ECHO: &str = "aex:MLNT Test Echo";
+
+fn registered() -> ScanCache {
+    assert!(ofx::client::host_exe().is_some(), "build milan-plugin-host first: cargo build --release");
+    let cache = scan::scan_all(&[], &[test_plugin_dir()], &ScanCache::default(), false, &scan::describe_binary);
+    ofx::set_registry(&cache, &Default::default());
+    cache
+}
+
+fn picture() -> ColorImage {
+    let (w, h) = (64usize, 36usize);
+    let pixels = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let a = if y < 4 { 64 + x as u8 * 2 } else { 255 };
+            let c = |v: usize| ((v % 256) as u32 * a as u32 / 255) as u8;
+            Color32::from_rgba_premultiplied(c(x * 4), c(y * 7), c(x + y * 3), a)
+        })
+        .collect();
+    ColorImage { size: [w, h], pixels }
+}
+
+fn opaque(seed: usize) -> ColorImage {
+    let (w, h) = (40usize, 24usize);
+    ColorImage { size: [w, h], pixels: (0..w * h).map(|i| Color32::from_rgb(((i * 7 + seed * 31) % 256) as u8, ((i * 3 + seed) % 256) as u8, ((i / w * 11 + seed * 5) % 256) as u8)).collect() }
+}
+
+fn new_fx(id: &str) -> Fx {
+    plugins::new_fx(plugins::find(id).unwrap_or_else(|| panic!("{id} registered: {:?}", ofx::entries().iter().find(|e| e.id == id))), None)
+}
+
+fn eval_at(fx: &Fx, t: f64, full_h: f64) -> FxEval {
+    let mut e = plugins::eval(fx, t).expect("evaluates");
+    ofx::add_frame_vals(&mut e, &fx.id, ofx::restored(fx), t, full_h, 30.0, 1.0);
+    e
+}
+
+fn run(fx: &Fx, img: &ColorImage, t: f64) -> ColorImage {
+    let mut out = img.clone();
+    vfx::apply(&mut out, &eval_at(fx, t, img.size[1] as f64), 1);
+    out
+}
+
+fn max_diff(a: &ColorImage, b: &ColorImage) -> u8 {
+    a.pixels.iter().zip(&b.pixels).flat_map(|(p, q)| (0..4).map(move |i| p.to_array()[i].abs_diff(q.to_array()[i]))).max().unwrap_or(0)
+}
+
+/// A2 acceptance: the test plug-in is described through the plug-in host: every parameter type maps into Milan's
+/// controls (groups, percent sliders, integer and fixed sliders, angles in degrees, checkboxes, colours, points in
+/// percent, popups without their separators, layer parameters, hidden and greyed ones; buttons not shown), the effects
+/// are offered in the Video FX chooser, and the suites it asked for that Milan does not serve are noted.
+#[test]
+#[ignore]
+fn aex_test_plugin_describes() {
+    let cache = registered();
+    let b = &cache.binaries[0];
+    assert!(b.errors.is_empty(), "{:?}", b.errors);
+    assert_eq!(b.plugins.len(), 13);
+    let d = b.plugins.iter().find(|d| ofx::id_of(d) == PARAMS).unwrap();
+    let a = d.aex.as_ref().unwrap();
+    assert!(a.described && a.unsupported.is_empty(), "{a:?}");
+    let got: Vec<(&str, &str, &str)> = d.params.iter().map(|p| (p.name.as_str(), p.kind.as_str(), p.parent.as_str())).collect();
+    assert_eq!(
+        got,
+        [("p10", "Group", ""), ("p1", "Double", "p10"), ("p2", "Integer", "p10"), ("p3", "Double", ""), ("p4", "Double", ""), ("p5", "Boolean", ""), ("p6", "RGB", ""), ("p7", "Double2D", ""), ("p8", "Choice", ""), ("p12", "Choice", ""), ("p13", "Double", ""), ("p14", "Double", "")]
+    );
+    let p = |n: &str| d.params.iter().find(|p| p.name == n).unwrap();
+    assert_eq!((p("p1").label.as_str(), p("p1").default.as_slice(), p("p1").max), ("Amount (%)", &[50.0][..], 100.0));
+    assert_eq!((p("p3").default[0], p("p4").default[0], p("p4").label.as_str()), (1.5, 30.0, "Angle (°)"));
+    assert_eq!(p("p6").default, [1.0, 128.0 / 255.0, 0.0]);
+    assert_eq!(p("p7").default, [50.0, 25.0]);
+    assert_eq!((p("p8").options.clone(), p("p8").default.clone()), (vec!["One".to_string(), "Two".into(), "Three".into()], vec![2.0]));
+    assert_eq!(p("p12").options, ["None", "This event"]);
+    assert!(p("p13").secret && !p("p14").enabled && p("p5").default == [1.0]);
+    assert!(a.refused.iter().any(|r| r == "PF Made Up Suite v2"), "the unserved suite is noted: {:?}", a.refused);
+    assert!(a.caps.iter().any(|c| c.contains("custom controls")));
+    let info = plugins::find(PARAMS).unwrap();
+    let keys: Vec<&str> = info.params.iter().map(|s| s.key).collect();
+    assert_eq!(keys, ["p1", "p2", "p3", "p4", "p5", "p6", "p7.x", "p7.y", "p8", "p12", "p13", "p14"]);
+    assert_eq!((info.group, info.category), ("Milan Test", "Third Party"));
+    assert!(plugins::catalog(plugins::PluginKind::VideoFx).any(|i| i.id == INVERT), "offered in the Video FX chooser");
+    assert!(fx_note(PARAMS).unwrap().contains("custom controls"));
+    let rows = ofx::layout(PARAMS, "x", &|_, open| open).unwrap();
+    assert!(rows.iter().any(|r| matches!(r, ofx::Row::Group { label, .. } if label == "Levels")));
+    // It renders (a copy of its input, with every parameter type set).
+    let src = picture();
+    assert_eq!(max_diff(&run(&new_fx(PARAMS), &src, 0.0), &src), 0, "{:?}", ofx::failure(PARAMS));
+    ofx::close_hosts();
+}
+
+/// A2 acceptance: an effect that crashes in its global setup costs that effect only: it is listed as failed with why,
+/// the others of the same file are described (in a new host) and run.
+#[test]
+#[ignore]
+fn a_plugin_that_crashes_in_global_setup_is_contained() {
+    registered();
+    let e = ofx::entries().into_iter().find(|e| e.id == CRASH_SETUP).unwrap();
+    assert!(matches!(&e.status, Status::Failed(w) if w.contains("crashed")), "{:?}", e.status);
+    assert!(plugins::find(CRASH_SETUP).is_none());
+    let es = ofx::entries();
+    assert_eq!(es.iter().filter(|e| e.kind == KIND && e.status == Status::Ok).count(), 12, "{es:?}");
+    let img = picture();
+    let out = run(&new_fx(INVERT), &img, 0.0);
+    assert!(ofx::failure(INVERT).is_none() && out != img);
+    ofx::close_hosts();
+}
+
+/// A3 acceptance: the test plug-in's Callbacks effect uses every tier-a callback and suite (utils copy and world,
+/// fill matte, colour parameter, iterate, world transform blend, handles, ANSI maths and sprintf, world suite,
+/// iterate_generic, abort and progress, a refused suite); its picture equals the Rust reference of the same steps.
+#[test]
+#[ignore]
+
+/// A4 acceptance: the AE-format invert equals the built-in invert within 1 LSB through shared memory, half-transparent
+/// rows included.
+#[test]
+#[ignore]
+
+/// A4 acceptance: a keyframed parameter is sent at the frame's time (gain 1 at 0 s to 3 at 2 s: 2 at 1 s).
+#[test]
+#[ignore]
+
+/// A4 acceptance: the Marker effect paints its world's row 0 red at the left and green at the right and its last row
+/// blue at the left: Milan shows red top-left, green top-right, blue bottom-left (rows and channels the right way).
+#[test]
+#[ignore]
+
+/// A4 acceptance: the Counter keeps a count in sequence data that holds a pointer; saving the project flattens it into
+/// `Fx.blob`, and after the project is loaded in a new plug-in host the count goes on from there (resetup).
+#[test]
+#[ignore]
+
+/// A4: an effect that crashes or hangs in its render is contained: bypassed with a message, the chain goes on.
+#[test]
+#[ignore]
+
+/// A5 acceptance: a layer parameter set to None checks out transparent; set to this event, the event's own picture.
+#[test]
+#[ignore]
+
+/// A5 acceptance: a supervised checkbox, turned off, greys its sibling (UPDATE_PARAMS_UI, PF_UpdateParamUI) and sets
+/// its value (USER_CHANGED_PARAM with CHANGED_VALUE), which comes back to Milan as an edit of the project.
+#[test]
+#[ignore]
+
+/// A5 acceptance: an effect that checks out its input one frame earlier gets that frame from Milan (a nested request
+/// over the pipe answered from shared memory), and its output is it.
+#[test]
+#[ignore]
+
+/// A5 acceptance: ten checkouts in one render (nine of them nested requests to Milan) finish well inside the render
+/// time-out, in order, and the effect gets each frame.
+#[test]
+#[ignore]
+
+/// A4 and A5 acceptance, needs ffmpeg: a render runs AE-format effects as the preview does (invert on the event, gain
+/// on the track), and an event effect that checks out the previous frame gets the event's previous source frame
+/// through the compositor.
+#[test]
+#[ignore]
+
+// ---- Open-source plug-ins (docs/AE_PREMIERE_PLUGINS.md §3.2) in MILAN_AEX_TEST_DIR. None was available when this
+// was written: these tests are unverified, and so is the ABI against third-party binaries (`docs/compat/aex.csv`).
+
+fn open_source_dir() -> PathBuf {
+    std::env::var_os("MILAN_AEX_TEST_DIR").map(PathBuf::from).expect("set MILAN_AEX_TEST_DIR to a folder of open-source .aex plug-ins (docs/AE_PREMIERE_PLUGINS.md §3.2)")
+}
+
+/// A2: every open-source plug-in found goes through global and parameter setup; prints its parameters (compare names
+/// and counts with its source: ntsc-rs, the `after-effects` crate examples `simplest` and `paramarama`) and the
+/// suites it asked for that Milan does not serve.
+#[test]
+#[ignore]
+fn open_source_plugins_describe() {
+    let cache = scan::scan_all(&[], &[open_source_dir()], &ScanCache::default(), false, &scan::describe_binary);
+    assert!(!cache.binaries.is_empty());
+    for b in &cache.binaries {
+        assert!(b.errors.is_empty(), "{}: {:?}", b.path.display(), b.errors);
+        for d in &b.plugins {
+            let a = d.aex.as_ref().unwrap();
+            println!("{}: {} ({}): {} parameters {:?}; refused {:?}; {}", b.path.display(), d.label, a.match_name, d.params.len(), d.params.iter().map(|p| &p.label).collect::<Vec<_>>(), a.refused, a.unsupported);
+            assert!(a.described && a.unsupported.is_empty(), "{a:?}");
+        }
+    }
+}
+
+/// A4: the test that proves the ABI against a third-party binary: ntsc-rs as an AE-format effect and as an OFX plug-in
+/// (MILAN_OFX_TEST_DIR), default settings, the same picture, within 2 in 255.
+#[test]
+#[ignore]
+
+/// A5: the `after-effects` crate examples `checkout` and `supervisor`, built by their authors' instructions, render.
+#[test]
+#[ignore]

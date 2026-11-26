@@ -1114,7 +1114,7 @@ pub fn log(s: String) {
 /// `fmt` with its printf arguments, read from the variadic slots `a` (Win64: one 8-byte slot each, a double as its
 /// bits). Flags and widths are dropped; a precision applies to floats and strings; when the slots run out the rest of
 /// the format is kept as it is.
-unsafe fn format_c(fmt: &[u8], a: &[u64]) -> String {
+pub(crate) unsafe fn format_c(fmt: &[u8], a: &[u64]) -> String {
     let (mut out, mut i, mut next) = (Vec::new(), 0, 0);
     // A width or precision: digits, or `*` (a slot). None when the slots ran out.
     let number = |i: &mut usize, next: &mut usize| -> Option<Option<usize>> {
