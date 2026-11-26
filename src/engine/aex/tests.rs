@@ -454,27 +454,164 @@ fn aex_crash_and_hang_are_contained() {
 /// A5 acceptance: a layer parameter set to None checks out transparent; set to this event, the event's own picture.
 #[test]
 #[ignore]
+fn layer_param_none_is_transparent() {
+    registered();
+    let src = opaque(1);
+    let mut fx = new_fx(LAYER);
+    assert_eq!(run(&fx, &src, 0.0).pixels.iter().filter(|p| **p != Color32::TRANSPARENT).count(), 0, "None: {:?}", ofx::failure(LAYER));
+    fx.params.insert("p1".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.0, curve: Curve::Linear }] });
+    assert_eq!(max_diff(&run(&fx, &src, 0.0), &src), 0, "this event");
+    ofx::close_hosts();
+}
 
 /// A5 acceptance: a supervised checkbox, turned off, greys its sibling (UPDATE_PARAMS_UI, PF_UpdateParamUI) and sets
 /// its value (USER_CHANGED_PARAM with CHANGED_VALUE), which comes back to Milan as an edit of the project.
 #[test]
 #[ignore]
+fn supervised_param_disables_its_sibling() {
+    registered();
+    let src = opaque(2);
+    let mut fx = new_fx(SUPERVISOR);
+    let _ = ofx::take_edits();
+    run(&fx, &src, 0.0);
+    assert!(ofx::failure(SUPERVISOR).is_none(), "{:?}", ofx::failure(SUPERVISOR));
+    assert!(ofx::state(&fx.id).unwrap()["p2"].enabled);
+    fx.params.insert("p1".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.0, curve: Curve::Linear }] });
+    run(&fx, &src, 0.0);
+    assert!(!ofx::state(&fx.id).unwrap()["p2"].enabled, "greyed");
+    let edits = ofx::take_edits();
+    let e = edits.iter().find(|e| e.instance == fx.id).expect("an edit");
+    assert_eq!(e.edits, [("p2".to_string(), ofx::proto::PVal::N(vec![0.25]))]);
+    assert!(ofx::apply_edits(&mut fx, &e.edits, e.initial));
+    assert_eq!(fx.params["p2"].keys[0].v, 0.25);
+    let rows = ofx::layout(SUPERVISOR, &fx.id, &|_, o| o).unwrap();
+    assert!(rows.iter().any(|r| matches!(r, ofx::Row::Param { label, enabled: false, .. } if label == "Amount")));
+    ofx::close_hosts();
+}
 
 /// A5 acceptance: an effect that checks out its input one frame earlier gets that frame from Milan (a nested request
 /// over the pipe answered from shared memory), and its output is it.
 #[test]
 #[ignore]
+fn checkout_at_other_time_returns_that_frame() {
+    registered();
+    let (now, before) = (opaque(5), std::sync::Arc::new(opaque(4)));
+    let mut asked = Vec::new();
+    let mut out = now.clone();
+    ofx::apply_with(&mut out, &eval_at(&new_fx(PREVIOUS), 1.0, 24.0), &mut |layer, offset| {
+        asked.push((layer, offset));
+        Some(before.clone())
+    });
+    assert!(ofx::failure(PREVIOUS).is_none(), "{:?}", ofx::failure(PREVIOUS));
+    assert_eq!(asked, [(0, -1.0)]);
+    assert_eq!(max_diff(&out, &before), 0);
+    // With nothing to give, a transparent frame.
+    let mut out = now.clone();
+    ofx::apply_with(&mut out, &eval_at(&new_fx(PREVIOUS), 1.0, 24.0), &mut |_, _| None);
+    assert!(out.pixels.iter().all(|p| *p == Color32::TRANSPARENT));
+    ofx::close_hosts();
+}
 
 /// A5 acceptance: ten checkouts in one render (nine of them nested requests to Milan) finish well inside the render
 /// time-out, in order, and the effect gets each frame.
 #[test]
 #[ignore]
+fn echo_style_plugin_does_not_deadlock() {
+    registered();
+    let src = opaque(0);
+    let frames: Vec<std::sync::Arc<ColorImage>> = (0..10).map(|k| std::sync::Arc::new(opaque(k + 10))).collect();
+    let mut asked = Vec::new();
+    let t = std::time::Instant::now();
+    let mut out = src.clone();
+    ofx::apply_with(&mut out, &eval_at(&new_fx(ECHO), 2.0, 24.0), &mut |_, offset| {
+        asked.push(offset);
+        Some(frames[(-offset) as usize].clone())
+    });
+    assert!(ofx::failure(ECHO).is_none(), "{:?}", ofx::failure(ECHO));
+    assert_eq!(asked, (1..10).map(|k| -(k as f64)).collect::<Vec<_>>());
+    assert_eq!(max_diff(&out, &frames[9]), 0);
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "{:?}", t.elapsed());
+    ofx::close_hosts();
+}
 
 /// A4 and A5 acceptance, needs ffmpeg: a render runs AE-format effects as the preview does (invert on the event, gain
 /// on the track), and an event effect that checks out the previous frame gets the event's previous source frame
 /// through the compositor.
 #[test]
 #[ignore]
+fn render_matches_preview_with_aex_plugins() {
+    use crate::engine::{plan, worker::Worker};
+    use crate::project::{Clip, Project};
+    registered();
+    let dir = temp("render");
+    let src = dir.join("color.mp4");
+    let ok = crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x406080:s=320x240:r=30:d=1", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"]).arg(&src).status().unwrap().success();
+    assert!(ok);
+    let m = crate::media::probe_media(&src).unwrap();
+    let mut p = Project::new("aex");
+    (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+    let mut c = Clip::from_media(&m, 0.0);
+    (c.duration, c.out_point) = (1.0, c.in_point + 1.0);
+    c.fx.push(new_fx(INVERT));
+    p.timeline.video_tracks[0].clips.push(c);
+    let mut gain = new_fx(GAIN);
+    gain.params.insert("p1".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.5, curve: Curve::Linear }] });
+    p.timeline.video_tracks[0].fx.push(gain);
+    p.media_pool = vec![m.clone()];
+    let t = crate::render::BUILTIN.iter().find(|t| t.name == "FFV1 MKV archive").unwrap();
+    let out = dir.join("out.mkv");
+    let job = crate::engine::render::start(&p, t, out.clone(), (0.0, 1.0), Default::default(), eframe::egui::Context::default());
+    while job.status() == crate::render::Status::Running {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(job.status(), crate::render::Status::Done);
+    let mut wk = Worker::for_render();
+    wk.set_plan(std::sync::Arc::new(plan::compile(&p)));
+    for k in [0i64, 15] {
+        let (want, err) = wk.frame(k, 320, 240, p.settings.render_quality, None);
+        assert!(err.is_none(), "{err:?}");
+        let mut cmd = crate::proc::ffmpeg();
+        cmd.args(["-v", "error", "-i"]).arg(&out).args(["-vf", &format!("select=eq(n\\,{k}),format=rgba"), "-frames:v", "1", "-f", "rawvideo", "-"]);
+        let got = crate::proc::output(&mut cmd).unwrap().stdout;
+        let want: &[u8] = bytemuck::cast_slice(&want.pixels);
+        assert_eq!(got.len(), want.len());
+        let diff = got.iter().zip(want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+        assert!(diff <= 1, "frame {k}: the render differs from the preview by {diff}");
+        let mid = &want[(120 * 320 + 160) * 4..][..4];
+        let expect = [255u8, (0x9F as f32 * 1.5).round() as u8, (0x7F as f32 * 1.5).round() as u8];
+        assert!(mid[..3].iter().zip(expect).all(|(a, b)| a.abs_diff(b) <= 4), "{mid:?} vs {expect:?}");
+    }
+    assert!(ofx::failure(INVERT).is_none() && ofx::failure(GAIN).is_none());
+    drop(wk);
+    // The previous frame through the compositor: a source whose frames differ, Previous Frame on its event.
+    let moving = dir.join("moving.mp4");
+    let ok = crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=160x120:r=30:d=1", "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"]).arg(&moving).status().unwrap().success();
+    assert!(ok);
+    let mm = crate::media::probe_media(&moving).unwrap();
+    let mut q = Project::new("prev");
+    (q.settings.width, q.settings.height, q.settings.frame_rate) = (160, 120, 30.0);
+    let mut c = Clip::from_media(&mm, 0.0);
+    (c.duration, c.out_point) = (1.0, c.in_point + 1.0);
+    q.timeline.video_tracks[0].clips.push(c);
+    q.media_pool = vec![mm];
+    let plain = q.clone();
+    q.timeline.video_tracks[0].clips[0].fx.push(new_fx(PREVIOUS));
+    let (mut a, mut b) = (Worker::for_render(), Worker::for_render());
+    a.set_plan(std::sync::Arc::new(plan::compile(&q)));
+    b.set_plan(std::sync::Arc::new(plan::compile(&plain)));
+    let d = |x: &[Color32], y: &[Color32]| x.iter().zip(y).flat_map(|(p, q)| (0..4).map(move |i| p.to_array()[i].abs_diff(q.to_array()[i]))).max().unwrap();
+    for k in [5i64, 12] {
+        let (with, _) = a.frame(k, 160, 120, q.settings.render_quality, None);
+        let (prev, _) = b.frame(k - 1, 160, 120, q.settings.render_quality, None);
+        let (now, _) = b.frame(k, 160, 120, q.settings.render_quality, None);
+        assert!(ofx::failure(PREVIOUS).is_none(), "{:?}", ofx::failure(PREVIOUS));
+        assert!(d(&with.pixels, &prev.pixels) <= 1, "frame {k} shows frame {}", k - 1);
+        assert!(d(&now.pixels, &prev.pixels) > 8, "the frames differ");
+    }
+    drop((a, b));
+    ofx::close_hosts();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
 
 // ---- Open-source plug-ins (docs/AE_PREMIERE_PLUGINS.md §3.2) in MILAN_AEX_TEST_DIR. None was available when this
 // was written: these tests are unverified, and so is the ABI against third-party binaries (`docs/compat/aex.csv`).
@@ -522,3 +659,14 @@ fn ntsc_rs_aex_matches_ntsc_rs_ofx() {
 /// A5: the `after-effects` crate examples `checkout` and `supervisor`, built by their authors' instructions, render.
 #[test]
 #[ignore]
+fn crate_examples_checkout_and_supervisor_render() {
+    let cache = scan::scan_all(&[], &[open_source_dir()], &ScanCache::default(), false, &scan::describe_binary);
+    ofx::set_registry(&cache, &Default::default());
+    for want in ["checkout", "supervisor"] {
+        let d = cache.binaries.iter().filter(|b| b.path.to_string_lossy().to_lowercase().contains(want)).flat_map(|b| &b.plugins).next().unwrap_or_else(|| panic!("no {want} example"));
+        let id = ofx::id_of(d);
+        run(&new_fx(&id), &picture(), 0.0);
+        assert!(ofx::failure(&id).is_none(), "{want}: {:?}", ofx::failure(&id));
+    }
+    ofx::close_hosts();
+}

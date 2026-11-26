@@ -474,7 +474,18 @@ pub(crate) fn event_image(src: &mut dyn Sources, e: &EventPlan, to_out: Affine, 
         reduce_flicker(Arc::make_mut(&mut img), k);
     }
     for f in &e.fx {
-        vfx::apply(Arc::make_mut(&mut img), f, k);
+        if f.id.starts_with(crate::engine::aex::PREFIX) {
+            // A5: an AE-format effect may check out this event's source at other times (its raw source: the chain
+            // before it is not run again, shortcut).
+            let (m, sf, generator, size) = (e.src.m.clone(), e.src.sf, e.src.generator.clone(), img.size);
+            let mut fetch = |_layer: i32, offset: f64| {
+                let at = SrcAt { m: m.clone(), sf: sf.map(|s| (s + offset.round() as i64).max(0)), generator: generator.clone(), nested: None };
+                src.get(&at, dw, dh).filter(|i| i.size == size)
+            };
+            crate::engine::ofx::apply_with(Arc::make_mut(&mut img), f, &mut fetch);
+        } else {
+            vfx::apply(Arc::make_mut(&mut img), f, k);
+        }
     }
     raster::apply(Arc::make_mut(&mut img), &e.masks, k);
     Some(img)
