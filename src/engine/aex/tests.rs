@@ -176,6 +176,25 @@ fn pipl_of_open_source_plugins_parses() {
 /// A4 acceptance: a project that uses an AE-format effect nobody has keeps its parameters and its saved sequence data
 /// through save and load, shows it as missing and bypassed, and an old project's FX (no "blob") load with none.
 #[test]
+fn a_project_with_a_missing_aex_plugin_keeps_its_parameters() {
+    let mut fx = plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None);
+    fx.plugin = "aex:VEND Gone Effect".into();
+    fx.params.insert("p3".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.5, curve: Curve::Linear }] });
+    fx.blob.insert("seq".into(), "AQID".into());
+    let json = serde_json::to_string(&fx).unwrap();
+    let back: Fx = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, fx, "parameters and blob survive");
+    assert!(ofx::is_bypassed(&fx.plugin));
+    assert!(ofx::bypassed_because(&fx.plugin).unwrap().contains("not installed"));
+    assert_eq!(ofx::label(&fx.plugin).as_deref(), Some("VEND Gone Effect (missing)"));
+    assert!(plugins::eval(&fx, 0.0).is_none(), "nothing runs it");
+    // An FX from before A4 has no blob, and an empty blob is not written.
+    let mut old: serde_json::Value = serde_json::to_value(&back).unwrap();
+    old.as_object_mut().unwrap().remove("blob");
+    let old: Fx = serde_json::from_value(old).unwrap();
+    assert!(old.blob.is_empty());
+    assert!(!serde_json::to_string(&old).unwrap().contains("blob"));
+}
 
 // ---- A2-A5 through the plug-in host (`cargo build --release` first), `--ignored --test-threads=1`.
 
@@ -328,24 +347,109 @@ fn aex_callbacks_match_a_rust_reference() {
 /// rows included.
 #[test]
 #[ignore]
+fn aex_invert_matches_the_builtin_invert() {
+    registered();
+    let src = picture();
+    let mut builtin = src.clone();
+    vfx::apply(&mut builtin, &plugins::eval(&plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None), 0.0).unwrap(), 1);
+    let out = run(&new_fx(INVERT), &src, 0.0);
+    assert!(ofx::failure(INVERT).is_none(), "{:?}", ofx::failure(INVERT));
+    assert!(max_diff(&out, &builtin) <= 1, "{}", max_diff(&out, &builtin));
+    ofx::close_hosts();
+}
 
 /// A4 acceptance: a keyframed parameter is sent at the frame's time (gain 1 at 0 s to 3 at 2 s: 2 at 1 s).
 #[test]
 #[ignore]
+fn aex_gain_is_keyframed_at_t() {
+    registered();
+    let mut fx = new_fx(GAIN);
+    fx.params.insert("p1".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.0, curve: Curve::Linear }, Keyframe { t: 2.0, v: 3.0, curve: Curve::Linear }] });
+    for (t, want) in [(0.0, 50), (1.0, 100), (2.0, 150)] {
+        let out = run(&fx, &ColorImage::new([8, 8], Color32::from_gray(50)), t);
+        assert_eq!(out.pixels[0].to_array(), [want, want, want, 255], "t = {t}: {:?}", ofx::failure(GAIN));
+    }
+    ofx::close_hosts();
+}
 
 /// A4 acceptance: the Marker effect paints its world's row 0 red at the left and green at the right and its last row
 /// blue at the left: Milan shows red top-left, green top-right, blue bottom-left (rows and channels the right way).
 #[test]
 #[ignore]
+fn row_order_and_channel_order_marker() {
+    registered();
+    let out = run(&new_fx(MARKER), &ColorImage::new([8, 6], Color32::TRANSPARENT), 0.0);
+    assert!(ofx::failure(MARKER).is_none(), "{:?}", ofx::failure(MARKER));
+    assert_eq!(out.pixels[0].to_array(), [255, 0, 0, 255]);
+    assert_eq!(out.pixels[7].to_array(), [0, 255, 0, 255]);
+    assert_eq!(out.pixels[5 * 8].to_array(), [0, 0, 255, 255]);
+    assert_eq!(out.pixels[9].to_array(), [0, 0, 0, 0]);
+    ofx::close_hosts();
+}
 
 /// A4 acceptance: the Counter keeps a count in sequence data that holds a pointer; saving the project flattens it into
 /// `Fx.blob`, and after the project is loaded in a new plug-in host the count goes on from there (resetup).
 #[test]
 #[ignore]
+fn sequence_data_survives_save_and_load() {
+    use crate::project::{Clip, Project};
+    registered();
+    let fx = new_fx(COUNTER);
+    let img = ColorImage::new([4, 4], Color32::BLACK);
+    for k in 1..=3u8 {
+        let out = run(&fx, &img, k as f64 / 30.0);
+        assert_eq!(out.pixels[0].r(), k, "frame {k}: {:?}", ofx::failure(COUNTER));
+    }
+    let dir = temp("seq");
+    let path = dir.join("Counter.mnle");
+    let mut p = Project::new("Counter");
+    let mut c = Clip::new("c", 0.0, 1.0);
+    c.fx.push(fx.clone());
+    p.timeline.video_tracks[0].clips.push(c);
+    p.save(&path).unwrap();
+    let saved = p.timeline.video_tracks[0].clips[0].fx[0].clone();
+    assert!(saved.blob.contains_key("seq"), "flattened on save");
+    // The flat bytes are the plug-in's own (magic "FLAT", count 3).
+    let flat = ofx::proto::unb64(&saved.blob["seq"]);
+    assert_eq!((&flat[..4], flat[4]), (&0x464C4154u32.to_le_bytes()[..], 3));
+    // The instance keeps running after the flatten (resetup): the next frame is 4.
+    assert_eq!(run(&fx, &img, 0.2).pixels[0].r(), 4);
+    let loaded = crate::project::Project::load(&path).unwrap();
+    let back = loaded.timeline.video_tracks[0].clips[0].fx[0].clone();
+    assert_eq!(back.blob, saved.blob);
+    ofx::close_hosts();
+    lock(&BLOBS).clear();
+    note_blob(&back);
+    assert_eq!(run(&back, &img, 0.0).pixels[0].r(), 4, "a new host resets up from the saved count (3), then counts");
+    // An instance with nothing saved starts from 0.
+    assert_eq!(run(&new_fx(COUNTER), &img, 0.0).pixels[0].r(), 1);
+    ofx::close_hosts();
+    std::fs::remove_dir_all(&dir).unwrap();
+}
 
 /// A4: an effect that crashes or hangs in its render is contained: bypassed with a message, the chain goes on.
 #[test]
 #[ignore]
+fn aex_crash_and_hang_are_contained() {
+    registered();
+    ofx::client::RENDER_TIMEOUT_MS.store(3000, std::sync::atomic::Ordering::Relaxed);
+    let _ = ofx::take_events();
+    let src = picture();
+    let expect = run(&new_fx(INVERT), &src, 0.0);
+    for (bad, word) in [(CRASH, "crashed"), (HANG, "did not answer")] {
+        let mut img = src.clone();
+        for fx in [new_fx(bad), new_fx(INVERT)] {
+            vfx::apply(&mut img, &eval_at(&fx, 0.0, 36.0), 1);
+        }
+        assert!(max_diff(&img, &expect) <= 1, "{bad} is bypassed, the invert still runs");
+        assert!(ofx::failure(bad).unwrap().contains(word));
+        assert!(ofx::take_events().iter().any(|m| m.contains("AE-format effect") && m.contains("bypassed")));
+        assert!(ofx::bypassed_because(bad).unwrap().contains("kept"));
+    }
+    ofx::client::RENDER_TIMEOUT_MS.store(30_000, std::sync::atomic::Ordering::Relaxed);
+    ofx::clear_failures();
+    ofx::close_hosts();
+}
 
 /// A5 acceptance: a layer parameter set to None checks out transparent; set to this event, the event's own picture.
 #[test]
@@ -401,6 +505,19 @@ fn open_source_plugins_describe() {
 /// (MILAN_OFX_TEST_DIR), default settings, the same picture, within 2 in 255.
 #[test]
 #[ignore]
+fn ntsc_rs_aex_matches_ntsc_rs_ofx() {
+    let ofx_dir = std::env::var_os("MILAN_OFX_TEST_DIR").map(PathBuf::from).expect("set MILAN_OFX_TEST_DIR to ntsc-rs's OFX bundle folder");
+    let cache = scan::scan_all(&[ofx_dir], &[open_source_dir()], &ScanCache::default(), false, &scan::describe_binary);
+    ofx::set_registry(&cache, &Default::default());
+    let all: Vec<&PluginDesc> = cache.binaries.iter().flat_map(|b| &b.plugins).filter(|d| d.label.to_lowercase().contains("ntsc")).collect();
+    let ae = all.iter().find(|d| d.aex.is_some()).expect("ntsc-rs .aex");
+    let ofx_d = all.iter().find(|d| d.aex.is_none()).expect("ntsc-rs OFX");
+    let src = picture();
+    let a = run(&new_fx(&ofx::id_of(ae)), &src, 0.0);
+    let o = run(&new_fx(&ofx::id_of(ofx_d)), &src, 0.0);
+    assert!(max_diff(&a, &o) <= 2, "{}", max_diff(&a, &o));
+    ofx::close_hosts();
+}
 
 /// A5: the `after-effects` crate examples `checkout` and `supervisor`, built by their authors' instructions, render.
 #[test]

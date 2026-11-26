@@ -566,6 +566,10 @@ impl FxWindow {
                     let color = if note.starts_with("Error") { warn } else { super::theme::get().text_dim };
                     ui.add(Label::new(RichText::new(note).color(color)).wrap());
                 }
+                // A4: an AE-format effect says what Milan Pro gives it (8-bit, generic controls).
+                if let Some(note) = crate::engine::aex::fx_note(&fx.plugin) {
+                    ui.add(Label::new(RichText::new(note).color(super::theme::get().text_dim)).wrap());
+                }
             }
             let (mut pressed, mut toggle) = (None, None);
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

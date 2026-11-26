@@ -2768,6 +2768,20 @@ impl MeridianApp {
                     }
                 }
             }
+            // A4 review: the FX window on the focus video event with the AE-format test plug-in's "Test Params" (from
+            // MILAN_AEX_DIR): its generic controls, groups, hidden and greyed parameters, and the 8-bit / custom
+            // controls note.
+            "fx-aex" => {
+                if let Some(id) = self.focus_clip(true) {
+                    let target = edit::FxTarget::Event(id);
+                    let aex: Vec<_> = crate::engine::plugins::catalog(crate::engine::plugins::PluginKind::VideoFx).filter(|i| i.id.starts_with(crate::engine::aex::PREFIX)).collect();
+                    if let Some(info) = aex.iter().find(|i| i.name.contains("Params")).or(aex.first()) {
+                        edit::add_fx(&mut self.project, &target, crate::engine::plugins::new_fx(info, None));
+                    }
+                    self.project.modified = false;
+                    self.open_fx(target);
+                }
+            }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
             // R23: the Selectively Prerender Video dialog; "preview-bars": the loop region built as a Dynamic RAM
             // Preview and the section after it prerendered (into %TEMP%\milan-demo\prerender), for the ruler's bars.
