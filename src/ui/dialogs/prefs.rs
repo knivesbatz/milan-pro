@@ -291,9 +291,33 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
             ui.label(RichText::new(line).size(11.0));
         }
     });
+    // R23: the caches.
+    ui.add_space(6.0);
+    super::row(ui, "Dynamic RAM Preview max (MB):", 230.0, true, |ui| {
+        widgets::spin(ui, &mut d.ram_preview_mb, 16.0, |s| s.range(16..=65536)).on_hover_text("How much memory Build Dynamic RAM Preview (Shift+B) may fill with frames of the loop region")
+    });
+    super::row(ui, "Disk cache for decoded HEVC, AV1 and 4K frames (MB):", 230.0, true, |ui| {
+        widgets::spin(ui, &mut d.disk_cache_mb, 256.0, |s| s.range(0..=1_048_576)).on_hover_text("Milan Pro's own (not in VEGAS), off at 0: decoded frames of heavy sources are kept on disk, so seeking back to them needs no decode");
+        if widgets::push_button(ui, "Clear").on_hover_text("Delete the cached frames").clicked() {
+            crate::engine::diskcache::clear();
+        }
+    });
+    ui.label("Prerendered files folder:");
+    ui.horizontal(|ui| {
+        let mut path = d.prerender_folder.clone().unwrap_or_else(crate::engine::prerender::default_folder).display().to_string();
+        if widgets::edit(ui, TextEdit::singleline(&mut path).desired_width(300.0)).on_hover_text("Selectively Prerender Video writes each project's files to a folder of its own in here").changed() {
+            d.prerender_folder = (!path.trim().is_empty()).then(|| path.trim().into());
+        }
+        if widgets::push_button(ui, "Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_title("Prerendered files folder").pick_folder() {
+                d.prerender_folder = Some(p);
+            }
+        }
+    });
     if default_all(ui) {
         (d.auto_proxy, d.extra_blend_modes, d.gpu) = (false, false, String::new());
         (d.hw_decode, d.hw_encode) = (String::new(), String::new());
+        (d.ram_preview_mb, d.disk_cache_mb, d.prerender_folder) = (200, 0, None);
     }
 }
 

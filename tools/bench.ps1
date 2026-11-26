@@ -38,7 +38,10 @@ $tests = @(
     'engine::worker::tests::reverse_playback_shows_every_frame',
     'engine::ofx::tests::bench_ofx_roundtrip_1080p',
     'engine::aplug::tests::bench_vst3_block_overhead',
-    'engine::gpu::tests::bench_compose'
+    'engine::gpu::tests::bench_compose',
+    'engine::worker::tests::bench_ram_preview',
+    'engine::worker::tests::bench_disk_cache',
+    'engine::hw::tests::hw_capability_table'
 )
 # Each BENCH line: "BENCH <name> key=value ...".
 $bench = @()
@@ -113,6 +116,9 @@ L '- **Reverse playback** (`reverse_playback_shows_every_frame`): the same clip 
 L '- **Adjust Size and Quality for Optimal Playback** (`bench_adaptive_quality` in `src/engine/mod.rs`): the four layers at Best (Full), 1920x1080, looped for 60 s through the Video Preview itself (`decode::Preview`, a 60 Hz UI loop against the wall clock), with the option off and then on.'
 L '- **GPU compositor** (`bench_compose` in `src/engine/gpu/mod.rs`, R21a-c): four decoded layers composed into one frame, on the CPU and on the GPU, median of 30 after a warm-up: four full 1920x1080 frames at Level 50 % (the project of the playback benches), four 1920x1080 picture-in-pictures at 45 % turned 15 degrees, and four full 3840x2160 frames (a 4K project at Best (Full)). *As the preview gets it*: the frame stays on the GPU (R21c); *read back*: its pixels copied to the CPU too, as a render needs them. The GPU times include uploading the decoded pictures (32 MB a frame at 1080p full, 133 MB at 4K).
 - **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle''s invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in''s own work.
+- **Dynamic RAM Preview** (`bench_ram_preview` in `src/engine/worker.rs`, R23): Build Dynamic RAM Preview over the first 8 s (240 frames) of the four-layer project at Preview (960x540), then that range played against the 29.97 fps clock as above with every decoder closed, so each frame comes from the RAM preview.
+- **Disk frame cache** (`bench_disk_cache`, R23): 30 paused seeks (as dragging the cursor makes them) into a 10 s 1920x1080 HEVC clip (libx265 `ultrafast`, GOP 250) at 960x540 Good, with the cache off, with it filling, and again with every frame cached; the cache holds raw RGBA frames under `%LOCALAPPDATA%\MilanPro\framecache` (off by default; Preferences > Video).
+- **Hardware acceleration** (`hw_capability_table` in `src/engine/hw.rs`, R22): the capability probe Milan Pro runs at startup: each FFmpeg hardware decoder path (d3d11va, cuda, qsv) on a 5 s 1080p H.264, HEVC and AV1 clip against the 2-thread software decoder (the better of two runs each, ffmpeg start-up included; the hardware path downloads its frames to system memory as playback needs them), and each hardware encoder on the same 150 generated frames. Automatic decode acceleration uses a path only where it measured faster than software.
 - **VST3 block** (`bench_vst3_block_overhead` in `src/engine/aplug/tests.rs`, R34a): one 1024-frame stereo block through the test module''s gain effect in `milan-plugin-host.exe` (the block to shared memory, the process request, the result back), 500 blocks after a warm-up, against a built-in audio plug-in at a plain gain (the compressor at 1:1 with output gain) in the same chain. The overhead is the difference: what hosting an audio plug-in costs per block.'
 L ''
 
@@ -205,6 +211,43 @@ foreach ($kind in @(@('full', '1920x1080, four full frames'), @('pip', '1920x108
     L "| $($kind[1]) | $($c.ms) ms | $gpuMs | $gpuRb |"
 }
 L ''
+L '## Dynamic RAM Preview (4 layers, Preview 960x540, R23)'
+L ''
+$ram = Rows 'ram' | Select-Object -First 1
+L '| Frames built | Memory | Build time | Build rate | Playback fps | Dropped | Late layer frames |'
+L '|---|---|---|---|---|---|---|'
+L "| $($ram.frames) | $($ram.mb) MB | $($ram.build_s) s | $($ram.build_fps) frames/s | $($ram.fps) | $($ram.drop_pct) % | $($ram.late_layer_frames) |"
+L ''
+L '## Disk frame cache (1080p HEVC GOP 250, 30 paused seeks at 960x540 Good, R23)'
+L ''
+L '| Pass | p50 | p95 | max |'
+L '|---|---|---|---|'
+foreach ($r in Rows 'diskcache') { L "| $(switch ($r.pass) { 'off' { 'Cache off (decoded)' } 'filling' { 'Cache filling (decoded and written)' } default { 'Cached (read from disk)' } }) | $($r.p50_ms) ms | $($r.p95_ms) ms | $($r.max_ms) ms |" }
+L ''
+L '## Hardware acceleration (R22: the startup probe on this machine)'
+L ''
+L '| Decoder path | H.264 | HEVC | AV1 |'
+L '|---|---|---|---|'
+foreach ($h in @('d3d11va', 'cuda', 'qsv')) {
+    $cells = foreach ($c in @('h264', 'hevc', 'av1')) {
+        $d = Rows 'hwdecode' | Where-Object { $_.hwaccel -eq $h -and $_.codec -eq $c } | Select-Object -First 1
+        if (-not $d) { 'not tested' } elseif ($d.ok -eq 'true') { "$($d.ms) ms (software $($d.software_ms) ms)" } else { 'failed' }
+    }
+    L "| $h | $($cells -join ' | ') |"
+}
+L ''
+L '| Encoder | H.264 | HEVC | AV1 |'
+L '|---|---|---|---|'
+foreach ($dev in @(@('nvenc', 'NVIDIA NVENC'), @('qsv', 'Intel Quick Sync Video'), @('amf', 'AMD AMF'), @('mf', 'Windows Media Foundation'))) {
+    $cells = foreach ($c in @('h264', 'hevc', 'av1')) {
+        $e = Rows 'hwencode' | Where-Object { $_.encoder -eq "$($c)_$($dev[0])" } | Select-Object -First 1
+        if (-not $e) { 'not built in' } elseif ($e.ok -eq 'true') { "$($e.ms) ms" } else { 'failed' }
+    }
+    L "| $($dev[1]) | $($cells -join ' | ') |"
+}
+L ''
+L 'Times are for 150 frames of 1920x1080, ffmpeg start-up included. A failed cell means the device is not on this computer (NVIDIA, Intel) or its driver refused the codec.'
+L ''
 L '## Gates (`docs/FEATURE_PLAN.md` 1.9)'
 L ''
 $four = Rows 'playback' | Where-Object { $_.layers -eq '4' } | Select-Object -First 1
@@ -219,6 +262,10 @@ L "| Random seeks frame-exact on long-GOP media (R20) | 200 of 200 on the source
 L "| Reverse playback at 1x shows at least 95 % of frames (R20) | $($rv.pct) % | $(Gate ([double]$rv.pct -ge 95)) |"
 L "| OFX host round trip at 1080p under 10 ms overhead per frame (R33b) | $($ofx.float_overhead_ms) ms | $(Gate ([double]$ofx.float_overhead_ms -lt 10)) |"
 L "| VST3 process overhead for a 1024-frame stereo block under 0.2 ms over the built-in gain (R34a) | $($vst.overhead_ms) ms | $(Gate ([double]$vst.overhead_ms -lt 0.2)) |"
+L "| RAM preview playback of 4 layers at 29.97 fps, under 1 % dropped (R23) | $($ram.drop_pct) % at $($ram.fps) fps | $(Gate ([double]$ram.drop_pct -lt 1)) |"
+$dcOff = Rows 'diskcache' | Where-Object { $_.pass -eq 'off' } | Select-Object -First 1
+$dcOn = Rows 'diskcache' | Where-Object { $_.pass -eq 'cached' } | Select-Object -First 1
+L "| Disk-cached HEVC seeks faster than decoding (R23) | p50 $($dcOn.p50_ms) ms cached, $($dcOff.p50_ms) ms decoded | $(Gate ([double]$dcOn.p50_ms -lt [double]$dcOff.p50_ms)) |"
 if ($cg) { L "| 4-layer 1080p compose on the GPU under 4 ms (R21a) | $($cg.ms) ms, four full frames (picture-in-pictures: $((Rows 'compose' | Where-Object { $_.kind -eq 'pip' -and $_.compositor -eq 'gpu' } | Select-Object -First 1).ms) ms) | $(Gate ([double]$cg.ms -lt 4)) |" } else { L '| 4-layer 1080p compose on the GPU under 4 ms (R21a) | no Vulkan adapter | skipped |' }
 [IO.File]::WriteAllText($Out, $md.ToString(), (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Wrote $Out"

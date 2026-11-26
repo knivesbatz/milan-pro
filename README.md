@@ -12,7 +12,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
-- Real-time multi-layer preview with persistent decoders, frame caches and video proxies
+- Real-time multi-layer preview with persistent decoders, frame caches and video proxies; Build Dynamic RAM Preview (Shift+B), Selectively Prerender Video (Shift+M) with Clean Up, and an optional disk cache for decoded HEVC/AV1/4K frames
 - Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
 - Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster

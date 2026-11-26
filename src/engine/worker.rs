@@ -10,11 +10,12 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::decode::Quality;
 use crate::engine::cache::ByteLru;
 use crate::engine::composite::{self, Sources};
-use crate::engine::{generate, lut};
+use crate::engine::diskcache::{self, DiskCache};
+use crate::engine::{caches, generate, lut, prerender};
 use crate::engine::picture::Picture;
 use crate::engine::plan::{self, SrcAt, VideoPlan};
 use crate::engine::vdecode::{DecoderPool, Pull};
-use crate::engine::{Played, Shown, Stats, VCmd};
+use crate::engine::{Played, RamStatus, Shown, Stats, VCmd};
 use crate::project::Project;
 
 /// (media, source frame or -1 for a still, decode width, scaler, read from the proxy, frame grid bits)
@@ -48,11 +49,20 @@ impl Stills {
     }
 }
 
+/// R23: one frame of the Dynamic RAM Preview: what it showed (`plan::frame_key`), at what size and quality.
+struct RamFrame {
+    key: u64,
+    w: u32,
+    h: u32,
+    q: Quality,
+    img: Arc<Picture>,
+}
+
 pub struct Worker {
     plan: Arc<VideoPlan>,
     pool: DecoderPool,
     sources: ByteLru<SrcKey, Arc<ColorImage>>,
-    /// A light Dynamic RAM Preview: frames keyed by what they show, so edits need no invalidation.
+    /// Frames keyed by what they show, so edits need no invalidation (the cache playback fills by itself).
     composites: ByteLru<(u64, u32, u32, Quality), Arc<Picture>>,
     failed: HashMap<Arc<str>, (String, Instant)>,
     /// Each layer's picture in the last composed frame.
@@ -61,6 +71,21 @@ pub struct Worker {
     k: usize,
     /// Modified time of each media file when last drawn: a file rewritten on disk is decoded again.
     mtimes: HashMap<Arc<str>, Option<SystemTime>>,
+    /// R23: the Dynamic RAM Preview (Shift+B): frames pinned until an edit changes them or the next build; an edit
+    /// drops only the frames it changed (`revalidate`). Only the timeline's own worker owns one (`ram_owner`).
+    ram: HashMap<i64, RamFrame>,
+    ram_bytes: usize,
+    ram_owner: bool,
+    ram_full: bool,
+    building: bool,
+    /// R23: the project's prerendered sections and whether each still matches the plan, and the registry generation
+    /// they were read at (None: not read for this plan yet).
+    pre: Vec<(prerender::Entry, bool)>,
+    pre_gen: Option<u64>,
+    /// R23: the disk cache for decoded frames of heavy sources (Preferences › Video; None while it is off).
+    disk: Option<DiskCache>,
+    /// This worker serves a render: no RAM preview, no disk cache (every frame is new), prerendered sections yes.
+    render: bool,
 }
 
 fn src_key(pool: &DecoderPool, s: &SrcAt, w: u32, q: Quality) -> SrcKey {
@@ -85,6 +110,8 @@ struct Live<'a> {
     failed: &'a mut HashMap<Arc<str>, (String, Instant)>,
     held: &'a HashMap<HeldKey, Arc<ColorImage>>,
     stills: &'a mut Stills,
+    /// R23: the disk frame cache, read and written for paused frames of heavy sources.
+    disk: Option<&'a mut DiskCache>,
     /// This frame's layers, to hold in the next one.
     shown: HashMap<HeldKey, Arc<ColorImage>>,
     /// Layers drawn so far in this frame per (media, width, height).
@@ -120,14 +147,29 @@ impl Live<'_> {
                 return None;
             }
             (None, None) => crate::decode::still(&s.m.path, w, h, self.q.scaler()).map(Arc::new),
-            (None, Some(sf)) => match self.pool.frame(&s.m, sf, w, h, self.q, self.deadline) {
-                Pull::Exact(img) => Ok(img),
-                Pull::Held(img) => {
-                    self.exact = false;
-                    return img;
+            (None, Some(sf)) => {
+                // R23: a paused frame of a heavy source (a seek, a RAM preview build) comes from the disk cache when
+                // it is there, and goes into it once decoded; playback never waits on the disk.
+                let heavy = self.deadline.is_none() && s.m.proxy_for(self.q).is_none() && crate::engine::hw::heavy(s.m.codec.as_deref(), s.m.w);
+                let dkey = self.disk.as_ref().filter(|_| heavy).map(|_| diskcache::key(&key.0, key.1, w, h, key.3, key.4, key.5));
+                if let Some(img) = dkey.and_then(|k| self.disk.as_mut()?.get(k)) {
+                    self.sources.insert(key, img.clone(), w as usize * h as usize * 4);
+                    return Some(img);
                 }
-                Pull::Err(e) => Err(e),
-            },
+                match self.pool.frame(&s.m, sf, w, h, self.q, self.deadline) {
+                    Pull::Exact(img) => {
+                        if let (Some(k), Some(d)) = (dkey, self.disk.as_mut()) {
+                            d.put(k, img.clone());
+                        }
+                        Ok(img)
+                    }
+                    Pull::Held(img) => {
+                        self.exact = false;
+                        return img;
+                    }
+                    Pull::Err(e) => Err(e),
+                }
+            }
         };
         match got {
             Ok(img) => {
@@ -173,6 +215,15 @@ impl Worker {
             stills: Stills { tx, rx, pending: HashSet::new() },
             k: composite::stripes(),
             mtimes: HashMap::new(),
+            ram: HashMap::new(),
+            ram_bytes: 0,
+            ram_owner: false,
+            ram_full: false,
+            building: false,
+            pre: Vec::new(),
+            pre_gen: None,
+            disk: None,
+            render: false,
         };
         w.pool.set_rate(w.plan.fps, &w.plan.fps_str);
         w
@@ -180,7 +231,7 @@ impl Worker {
 
     /// For a render: every frame is new, so there is no composite cache (sources stay cached for stills).
     pub fn for_render() -> Self {
-        Self { composites: ByteLru::new(0), ..Self::new() }
+        Self { composites: ByteLru::new(0), render: true, ..Self::new() }
     }
 
     pub fn set_plan(&mut self, p: Arc<VideoPlan>) {
@@ -191,6 +242,136 @@ impl Worker {
         }
         self.pool.set_rate(p.fps, &p.fps_str);
         self.plan = p;
+        self.revalidate();
+    }
+
+    /// R23: after an edit, the RAM preview keeps the frames the plan still composes the same way and drops the rest,
+    /// and the prerendered sections are checked against the plan again; the ruler's bars follow.
+    fn revalidate(&mut self) {
+        if !self.ram.is_empty() {
+            let plan = &self.plan;
+            self.ram.retain(|n, r| plan::frame_key(plan, *n) == r.key);
+            self.ram_bytes = self.ram.values().map(|r| r.img.bytes()).sum();
+        }
+        self.pre_gen = None;
+        self.sync_prerender();
+    }
+
+    /// R23: the prerendered sections, read again when the registry or the plan changed, each checked against the
+    /// plan without proxies (what they were rendered from); then the bars are published.
+    fn sync_prerender(&mut self) {
+        let generation = prerender::generation();
+        if self.pre_gen == Some(generation) {
+            return;
+        }
+        self.pre_gen = Some(generation);
+        let entries = prerender::entries();
+        self.pre = if entries.is_empty() {
+            Vec::new()
+        } else {
+            let canonical = (*self.plan).clone().without_proxies();
+            entries.into_iter().map(|e| (e.valid(&canonical), e)).map(|(ok, e)| (e, ok)).collect()
+        };
+        self.publish_bars();
+    }
+
+    /// R23: the ruler's bars: this worker's RAM preview (when it owns one) and the active prerendered sections.
+    fn publish_bars(&mut self) {
+        let fps = self.plan.fps;
+        let ram = self.ram_owner.then(|| {
+            let mut frames: Vec<i64> = self.ram.keys().copied().collect();
+            frames.sort_unstable();
+            let mut v: Vec<(i64, i64)> = Vec::new();
+            for n in frames {
+                match v.last_mut() {
+                    Some(r) if r.1 == n => r.1 = n + 1,
+                    _ => v.push((n, n + 1)),
+                }
+            }
+            v.into_iter().map(|(a, b)| (a as f64 / fps, b as f64 / fps)).collect()
+        });
+        let pre = self.pre.iter().filter(|(_, ok)| *ok).map(|(e, _)| e.span()).collect();
+        if !self.render {
+            crate::engine::set_bars(ram, pre);
+        }
+        if self.ram_owner {
+            crate::engine::set_ram_status(RamStatus { building: None, frames: self.ram.len() as i64, bytes: self.ram_bytes, full: self.ram_full });
+        }
+    }
+
+    /// R23: the disk frame cache follows Preferences › Video (opened when a size is set, closed at 0).
+    fn sync_disk(&mut self) {
+        let want = if self.render { 0 } else { caches::disk_bytes() };
+        match (&mut self.disk, want) {
+            (Some(_), 0) => self.disk = None,
+            (Some(d), n) => d.set_cap(n),
+            (None, 0) => {}
+            (None, n) => self.disk = caches::disk_dir().map(|dir| DiskCache::open(dir, n)),
+        }
+    }
+
+    /// R23: frame `n` of a prerendered section that is still valid: read from its file through the decoder pool at
+    /// `w` x `h` (None: not prerendered, or the file could not give the frame, which composes it as usual).
+    fn from_prerender(&mut self, n: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> Option<Arc<Picture>> {
+        self.sync_prerender();
+        let e = self.pre.iter().find(|(e, ok)| *ok && (e.a..e.b).contains(&n))?.0.clone();
+        let m = e.media_ref();
+        match self.pool.frame(&m, n - e.a, w, h, q, deadline) {
+            Pull::Exact(img) | Pull::Held(Some(img)) => Some(Arc::new(Picture::cpu(img))),
+            _ => None,
+        }
+    }
+
+    /// R23: Build Dynamic RAM Preview: frames `a..b` composed now (waiting for every decoder) and pinned, up to the
+    /// cap in Preferences › Video; `Cancel` stops it, a new plan applies as it goes (and drops frames it changed), and
+    /// any other command arriving is handed back to run after.
+    pub fn build(&mut self, a: i64, b: i64, w: u32, h: u32, q: Quality, rx: &Receiver<VCmd>) -> Option<VCmd> {
+        self.ram_owner = true;
+        self.ram.clear();
+        (self.ram_bytes, self.ram_full, self.building) = (0, false, true);
+        let cap = caches::ram_bytes();
+        let mut pending = None;
+        for n in a..b {
+            for c in rx.try_iter() {
+                match c {
+                    VCmd::Plan(p) => self.set_plan(p),
+                    VCmd::Cancel => {
+                        self.building = false;
+                        self.publish_bars();
+                        return pending;
+                    }
+                    c => pending = Some(c),
+                }
+            }
+            crate::engine::set_ram_status(RamStatus { building: Some((n - a, b - a)), frames: self.ram.len() as i64, bytes: self.ram_bytes, full: false });
+            let key = plan::frame_key(&self.plan, n);
+            let (img, _) = self.frame(n, w, h, q, None);
+            if self.ram_bytes + img.bytes() > cap {
+                self.ram_full = true;
+                break;
+            }
+            self.ram_bytes += img.bytes();
+            self.ram.insert(n, RamFrame { key, w, h, q, img });
+        }
+        self.building = false;
+        self.publish_bars();
+        pending
+    }
+
+    /// R23: Clear Dynamic RAM Preview.
+    pub fn clear_ram(&mut self) {
+        self.ram_owner = true;
+        self.ram.clear();
+        (self.ram_bytes, self.ram_full) = (0, false);
+        self.publish_bars();
+    }
+
+    /// R23: the RAM preview's frames, for tests.
+    #[cfg(test)]
+    pub fn ram_frames(&self) -> Vec<i64> {
+        let mut v: Vec<i64> = self.ram.keys().copied().collect();
+        v.sort_unstable();
+        v
     }
 
     /// Finished background still decodes into the source cache.
@@ -272,16 +453,20 @@ impl Worker {
         self.check_files(&fp, w, h);
         // Motion blur / supersampling: the frame is the mean of sub-frames, so all of them name the picture.
         let subs: Vec<plan::FramePlan> = fp.samples.iter().map(|s| plan::frame_plan_at(&self.plan, n, s.0)).collect();
-        let mut fk = fp.key();
-        for s in &subs {
-            let mut hs = DefaultHasher::new();
-            (fk, s.key()).hash(&mut hs);
-            fk = hs.finish();
+        let fk = plan::key_with_subs(&self.plan, n, &fp);
+        // R23: the Dynamic RAM Preview first (its frames stay while the plan composes them the same way), then the
+        // composite cache, then a prerendered section's file.
+        if let Some(r) = self.ram.get(&n).filter(|r| r.key == fk && (r.w, r.h, r.q) == (w, h, q)) {
+            return (r.img.clone(), None);
         }
         let key = (fk, w, h, q);
         if let Some(img) = self.composites.get(&key) {
             return (img, None);
         }
+        if let Some(img) = self.from_prerender(n, w, h, q, deadline) {
+            return (img, None);
+        }
+        self.sync_disk();
         if deadline.is_none() {
             // A frame that waits for its decoders: spawn them all before the first blocking read.
             self.warm(&fp, w, h, q, false);
@@ -292,6 +477,7 @@ impl Worker {
             failed: &mut self.failed,
             held: &self.held,
             stills: &mut self.stills,
+            disk: self.disk.as_mut(),
             shown: HashMap::new(),
             drawn: HashMap::new(),
             q,
@@ -324,10 +510,27 @@ impl Worker {
         // A LUT that cannot load draws ungraded: say so in the preview, and fail a render like a missing file.
         err = err.or_else(|| fp.fx().into_iter().find_map(lut::error));
         self.held = shown;
-        if exact && err.is_none() {
+        // A frame built for the RAM preview is pinned there, not cached twice.
+        if exact && err.is_none() && !self.building {
             self.composites.insert(key, img.clone(), img.bytes());
         }
         (img, err)
+    }
+
+    /// R23: a prerendered section starting within `ahead` frames of `n` opens its stream now; the frame after one ends
+    /// warms its sources, which the section left idle.
+    fn warm_prerender(&mut self, n: i64, ahead: i64, w: u32, h: u32, q: Quality) {
+        self.sync_prerender();
+        let soon: Vec<prerender::Entry> = self.pre.iter().filter(|(e, ok)| *ok && ((n + 1..=n + ahead).contains(&e.a) || (n + 1..=n + ahead).contains(&e.b))).map(|(e, _)| e.clone()).collect();
+        for e in soon {
+            if (n + 1..=n + ahead).contains(&e.a) {
+                self.pool.prewarm(&e.media_ref(), 0, w, h, q, true);
+            }
+            if (n + 1..=n + ahead).contains(&e.b) {
+                let fp = plan::frame_plan(&self.plan, e.b);
+                self.warm(&fp, w, h, q, true);
+            }
+        }
     }
 
     /// Stream frames from `from_n` until the receiver goes away or another command arrives (returned).
@@ -384,6 +587,7 @@ impl Worker {
                 for s in std::iter::once(n).chain(starts) {
                     self.warm_back(s, w, h, q);
                 }
+                self.warm_prerender(n, (1.5 * fps) as i64, w, h, q);
                 let secs = since.elapsed().as_secs_f64().max(1e-3);
                 stats.fps_x100.store((frames as f64 / secs * 100.0) as u32, Relaxed);
                 stats.dropped.store(self.pool.dropped, Relaxed);
@@ -406,10 +610,11 @@ impl Worker {
         }
     }
 
-    /// (hits, lookups) of the source and composite caches so far.
+    /// (hits, lookups) of the source, composite and disk caches so far.
     fn lookups(&self) -> (u64, u64) {
         let (s, c) = (&self.sources, &self.composites);
-        (s.hits + c.hits, s.hits + s.misses + c.hits + c.misses)
+        let (dh, dm) = self.disk.as_ref().map_or((0, 0), |d| (d.hits, d.misses));
+        (s.hits + c.hits + dh, s.hits + s.misses + c.hits + c.misses + dh + dm)
     }
 
     pub fn prune(&mut self) {
@@ -432,13 +637,23 @@ pub fn run(rx: Receiver<VCmd>, latest: Arc<Mutex<Option<Shown>>>, clock: Arc<Ato
                 Err(RecvTimeoutError::Disconnected) => return,
             },
         };
-        // Plans apply in order; of the rest only the newest matters (scrubbing queues many Shows).
-        let mut pending = None;
+        // Plans apply in order; of the rest only the newest matters (scrubbing queues many Shows). R23: a Build runs
+        // first (it hands back a Show or Play that arrived while it ran), and Clear is never dropped.
+        let (mut pending, mut build) = (None, None);
         for c in std::iter::once(first).chain(rx.try_iter()) {
             match c {
                 VCmd::Plan(p) => wk.set_plan(p),
+                VCmd::ClearRam => wk.clear_ram(),
+                VCmd::Cancel => {}
+                c @ VCmd::Build { .. } => build = Some(c),
                 c => pending = Some(c),
             }
+        }
+        if let Some(VCmd::Build { a, b, w, h, q }) = build {
+            if let Some(c) = wk.build(a, b, w, h, q, &rx) {
+                pending = Some(c);
+            }
+            ctx.request_repaint();
         }
         match pending {
             Some(VCmd::Show { seq, n, w, h, q }) => {
@@ -606,6 +821,7 @@ pub(crate) mod tests {
             failed: &mut failed,
             held: &held,
             stills: &mut stills,
+            disk: None,
             shown: HashMap::new(),
             drawn: HashMap::new(),
             q: Quality::Good,
@@ -982,6 +1198,11 @@ pub(crate) mod tests {
     fn play_project(p: &Project) -> Played {
         let mut wk = Worker::new();
         wk.set_plan(Arc::new(plan::compile(p)));
+        play_worker(wk)
+    }
+
+    /// `wk` (its plan set) played at Preview (960×540) against a 29.97 fps clock.
+    fn play_worker(mut wk: Worker) -> Played {
         let (tx, frames) = mpsc::sync_channel(4);
         let (_cmd_tx, cmd_rx) = mpsc::channel();
         let (clock, stats) = (Arc::new(AtomicI64::new(0)), Arc::new(Stats::default()));
@@ -1099,5 +1320,271 @@ pub(crate) mod tests {
             }
         }
         use_proxy(&p.media_pool[0], false);
+    }
+
+    /// R23, no ffmpeg: a RAM preview of two generated events builds frame by frame; a change to the second event
+    /// drops only its frames (the first event's stay, as the ruler's bar shows); frames come back from it whatever
+    /// the deadline; the cap stops a build; Clear empties it.
+    #[test]
+    fn ram_preview_keeps_the_frames_an_edit_did_not_touch() {
+        use crate::engine::plugins::{find, new_fx};
+        let mut p = generated(red());
+        p.settings.frame_rate = 30.0;
+        let mut c = p.timeline.video_tracks[0].clips[0].clone();
+        (c.id, c.position, c.duration) = ("b".into(), 2.0, 2.0);
+        p.timeline.video_tracks[0].clips[0].duration = 2.0;
+        p.timeline.video_tracks[0].clips.push(c);
+        let (_tx, rx) = mpsc::channel();
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert!(wk.build(0, 120, 64, 36, Quality::Good, &rx).is_none());
+        assert_eq!(wk.ram_frames(), (0..120).collect::<Vec<i64>>());
+        let bars = crate::engine::preview_bars();
+        assert_eq!(bars.ram, [(0.0, 4.0)]);
+        let st = crate::engine::ram_status();
+        assert!(st.building.is_none() && st.frames == 120 && !st.full && st.bytes == 120 * 64 * 36 * 4, "{st:?}");
+        // Playing or paused, a frame inside comes from the RAM preview itself (the same picture, not a copy).
+        let held = wk.frame(30, 64, 36, Quality::Good, Some(Instant::now())).0;
+        assert!(Arc::ptr_eq(&held, &wk.frame(30, 64, 36, Quality::Good, None).0));
+        // Another size or quality is not it.
+        assert!(!Arc::ptr_eq(&held, &wk.frame(30, 64, 36, Quality::Best, None).0));
+        // An edit on the second event: its 60 frames go, the first event's 60 stay.
+        p.timeline.video_tracks[0].clips[1].fx.push(new_fx(find("milan.fx.invert").unwrap(), None));
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert_eq!(wk.ram_frames(), (0..60).collect::<Vec<i64>>());
+        assert_eq!(crate::engine::preview_bars().ram, [(0.0, 2.0)]);
+        assert!(Arc::ptr_eq(&held, &wk.frame(30, 64, 36, Quality::Good, None).0), "an untouched frame is still the built one");
+        // The cap: a build stops when the next frame would pass it, and says so.
+        crate::engine::caches::set_ram(10 * 64 * 36 * 4);
+        assert!(wk.build(0, 120, 64, 36, Quality::Good, &rx).is_none());
+        assert_eq!(wk.ram_frames().len(), 10);
+        assert!(crate::engine::ram_status().full);
+        assert!(crate::engine::ram_status_text().is_some_and(|t| t.contains("limit")));
+        crate::engine::caches::set_ram(200 << 20);
+        // Cancel mid-build keeps what was built; Clear empties it.
+        let (tx, rx) = mpsc::channel();
+        tx.send(VCmd::Cancel).unwrap();
+        assert!(wk.build(0, 120, 64, 36, Quality::Good, &rx).is_none());
+        assert!(wk.ram_frames().is_empty());
+        assert!(wk.build(0, 30, 64, 36, Quality::Good, &rx).is_none());
+        assert_eq!(wk.ram_frames().len(), 30);
+        wk.clear_ram();
+        assert!(wk.ram_frames().is_empty() && crate::engine::preview_bars().ram.is_empty());
+    }
+
+    /// R23, no ffmpeg: which frames Selectively Prerender Video renders: those that are more than one plain event.
+    #[test]
+    fn prerender_sections_are_the_frames_with_work() {
+        use crate::engine::plugins::{find, new_fx};
+        let mut p = generated(red());
+        p.settings.frame_rate = 30.0;
+        let mut c = p.timeline.video_tracks[0].clips[0].clone();
+        (c.id, c.position, c.duration) = ("b".into(), 2.0, 2.0);
+        p.timeline.video_tracks[0].clips[0].duration = 2.0;
+        p.timeline.video_tracks[0].clips.push(c);
+        // Generated media always needs the compositor (there is no file to play).
+        let vp = plan::compile(&p);
+        assert_eq!(plan::work_sections(&vp, 0, 150), [(0, 120)]);
+        // A file-backed event: plain unless something is done to it.
+        let m = crate::project::MediaItem { id: "v".into(), path: "v.mp4".into(), media_type: crate::project::MediaType::Video, duration: 10.0, width: Some(64), height: Some(36), frame_rate: Some(30.0), ..Default::default() };
+        let mut q = Project::new("v");
+        q.settings.frame_rate = 30.0;
+        let mut a = Clip::from_media(&m, 0.0);
+        a.duration = 2.0;
+        let mut b = Clip::from_media(&m, 2.0);
+        (b.id, b.duration) = ("b".into(), 2.0);
+        b.fx.push(new_fx(find("milan.fx.invert").unwrap(), None));
+        q.timeline.video_tracks[0].clips = vec![a, b];
+        q.media_pool.push(m);
+        let vq = plan::compile(&q);
+        assert_eq!(plan::work_sections(&vq, 0, 150), [(60, 120)]);
+        let h = plan::range_hash(&vq, 60, 120);
+        q.timeline.video_tracks[0].clips[0].fade_in = 0.5;
+        let vq2 = plan::compile(&q);
+        assert_eq!(plan::work_sections(&vq2, 0, 150), [(0, 15), (60, 120)]);
+        assert_eq!(plan::range_hash(&vq2, 60, 120), h, "an edit outside the section keeps its hash");
+        q.timeline.video_tracks[0].clips[1].fx[0].enabled = false;
+        assert_ne!(plan::range_hash(&plan::compile(&q), 60, 120), h, "an edit inside changes it");
+    }
+
+    /// Needs ffmpeg. R23: a RAM preview of 2 s of the bench clip plays with no decoder at all.
+    #[test]
+    #[ignore]
+    fn ram_preview_plays_with_no_decoder() {
+        let p = bench_project(1, 12);
+        let (_tx, rx) = mpsc::channel();
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert!(wk.build(0, 60, 320, 180, Quality::Preview, &rx).is_none());
+        assert_eq!(wk.ram_frames().len(), 60);
+        wk.pool = DecoderPool::default();
+        wk.pool.set_rate(wk.plan.fps, &wk.plan.fps_str);
+        for n in 0..60 {
+            let (img, err) = wk.frame(n, 320, 180, Quality::Preview, Some(Instant::now() + Duration::from_millis(1)));
+            assert!(err.is_none() && img.size == [320, 180]);
+        }
+        assert_eq!(wk.pool.live(), 0, "playback inside the RAM preview opened no decoder");
+    }
+
+    /// Needs ffmpeg. R23: the section of a project with work (an inverted event) prerenders to a file; playback and a
+    /// render take the section's frames from it (the source file is renamed away: the frames inside still come, those
+    /// outside fail), an edit inside the section makes it inactive, and Clean Up deletes only the project's files.
+    #[test]
+    #[ignore]
+    fn prerendered_sections_serve_playback_and_render_until_edited() {
+        use crate::engine::plugins::{find, new_fx};
+        use crate::engine::prerender;
+        let dir = std::env::temp_dir().join("milan-agent").join(format!("prerender-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.mp4");
+        assert!(crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=4", "-pix_fmt", "yuv420p", "-g", "15"]).arg(&src).status().unwrap().success());
+        let m = crate::media::probe_media(&src).unwrap();
+        let mut p = Project::new("pre");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 180, 30.0);
+        let mut a = Clip::from_media(&m, 0.0);
+        a.duration = 2.0;
+        let mut b = Clip::from_media(&m, 2.0);
+        (b.id, b.in_point, b.duration) = ("b".into(), 2.0, 2.0);
+        b.fx.push(new_fx(find("milan.fx.invert").unwrap(), None));
+        p.timeline.video_tracks[0].clips = vec![a, b];
+        p.media_pool.push(m);
+        let folder = dir.join("pre-folder");
+        prerender::sync_to(folder.clone());
+        let vp = prerender::canonical(&p);
+        assert_eq!(plan::work_sections(&vp, 0, 120), [(60, 120)]);
+        // Render the section as the dialog does.
+        let t = crate::render::Template { audio: None, ..crate::render::BUILTIN.iter().find(|t| t.name == prerender::DEFAULT_TEMPLATE).unwrap().clone() };
+        let hash = plan::range_hash(&vp, 60, 120);
+        let file = folder.join(format!("{hash:016x}.{}", t.ext()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let job = crate::engine::render::start(&p, &t, file.clone(), (2.0, 4.0), crate::render::Opts { stretch: false, rotate: false, markers: false, loudness_log: None, quickfade: false }, egui::Context::default());
+        while job.status() == crate::render::Status::Running {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(job.status(), crate::render::Status::Done);
+        prerender::add(prerender::Entry { file: file.clone(), a: 60, b: 120, fps: vp.fps, fps_str: vp.fps_str.clone(), w: 320, h: 180, hash, template: t.name.clone(), codec: "prores".into(), made: String::new() });
+        // Reference frames, composed from the source.
+        let mut reference = Worker::new();
+        reference.set_plan(Arc::new(plan::compile(&p)));
+        let want: Vec<Arc<ColorImage>> = [30i64, 75, 119].iter().map(|&n| reference.frame(n, 320, 180, Quality::Good, None).0.image()).collect();
+        drop(reference);
+        let gone = dir.join("gone.mp4");
+        std::fs::rename(&src, &gone).unwrap();
+        let close = |a: &ColorImage, b: &ColorImage| a.pixels.iter().zip(&b.pixels).map(|(x, y)| x.r().abs_diff(y.r()) as u64 + x.g().abs_diff(y.g()) as u64 + x.b().abs_diff(y.b()) as u64).sum::<u64>() as f64 / (3 * a.pixels.len()) as f64;
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert_eq!(crate::engine::preview_bars().prerendered, [(2.0, 4.0)]);
+        let (img, err) = wk.frame(75, 320, 180, Quality::Good, None);
+        assert!(err.is_none(), "{err:?}");
+        assert!(close(&img, &want[1]) < 3.0, "the prerendered frame is the composed one (ProRes round trip)");
+        assert!(wk.frame(30, 320, 180, Quality::Good, None).1.is_some(), "outside the section the source is needed, and it is gone");
+        // Playing through the section: every frame from the file.
+        for n in 60..120 {
+            let (img, err) = wk.frame(n, 320, 180, Quality::Good, Some(Instant::now() + Duration::from_millis(200)));
+            assert!(err.is_none() && img.size == [320, 180], "frame {n}: {err:?}");
+        }
+        assert!(close(&wk.frame(119, 320, 180, Quality::Good, None).0, &want[2]) < 3.0);
+        // A render takes the section from the file too.
+        let mut rw = Worker::for_render();
+        rw.set_plan(Arc::new(plan::compile(&p).without_proxies()));
+        assert!(rw.frame(75, 320, 180, Quality::Good, None).1.is_none());
+        // An edit inside the section: inactive, so the frames need the source again.
+        p.timeline.video_tracks[0].clips[1].fx[0].enabled = false;
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert!(crate::engine::preview_bars().prerendered.is_empty());
+        assert!(wk.frame(75, 320, 180, Quality::Good, None).1.is_some());
+        assert_eq!(prerender::inactive(&p).len(), 1);
+        // Undo the edit: active again.
+        p.timeline.video_tracks[0].clips[1].fx[0].enabled = true;
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        assert_eq!(crate::engine::preview_bars().prerendered, [(2.0, 4.0)]);
+        // Clean Up deletes the project's file and nothing else in the folder.
+        std::fs::write(folder.join("other.txt"), "x").unwrap();
+        drop(wk);
+        drop(rw);
+        assert_eq!(prerender::remove(&[file.clone()]), 1);
+        assert!(!file.exists() && folder.join("other.txt").exists() && prerender::entries().is_empty());
+        prerender::sync_to(dir.join("none"));
+        std::fs::rename(&gone, &src).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg; CPU heavy. R23: Build Dynamic RAM Preview over 8 s of the 4-layer bench project at Preview, then
+    /// its playback against the 29.97 fps clock with no decoder running. `cargo test --release -- --ignored --nocapture bench_ram_preview`
+    #[test]
+    #[ignore]
+    fn bench_ram_preview() {
+        let p = bench_project(4, 12);
+        let (_tx, rx) = mpsc::channel();
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        // 240 frames of 960x540 are 500 MB: over VEGAS's default cap of 200 MB, raised for the measurement.
+        crate::engine::caches::set_ram(1 << 30);
+        let t = Instant::now();
+        assert!(wk.build(0, 240, 960, 540, Quality::Preview, &rx).is_none());
+        crate::engine::caches::set_ram(200 << 20);
+        let build_s = t.elapsed().as_secs_f64();
+        let frames = wk.ram_frames().len();
+        let mb = crate::engine::ram_status().bytes >> 20;
+        wk.pool = DecoderPool::default();
+        wk.pool.set_rate(wk.plan.fps, &wk.plan.fps_str);
+        let r = play_worker(wk);
+        println!("bench_ram_preview: built {frames} frames ({mb} MB) in {build_s:.2} s ({:.1} frames/s); playback {r}", frames as f64 / build_s);
+        println!("BENCH ram frames={frames} mb={mb} build_s={build_s:.2} build_fps={:.1} {}", frames as f64 / build_s, r.fields());
+        assert_eq!(frames, 240);
+        assert!(r.fps >= 29.5 && r.drop_pct() < 1.0, "{r}");
+    }
+
+    /// Needs ffmpeg. R23: paused seeks into a 1080p HEVC clip (GOP 250, 10 s, made with libx265) at 960x540 Good: cold,
+    /// with the disk frame cache filling, and again from the cache. `cargo test --release -- --ignored --nocapture bench_disk_cache`
+    #[test]
+    #[ignore]
+    fn bench_disk_cache() {
+        let path = bench_dir().join("hevc-10.mp4");
+        if !path.exists() {
+            let ok = crate::proc::ffmpeg()
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=10", "-c:v", "libx265", "-preset", "ultrafast", "-g", "250", "-pix_fmt", "yuv420p", "-tag:v", "hvc1"])
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+        let m = crate::media::probe_media(&path).unwrap();
+        assert_eq!(m.codec.as_deref(), Some("hevc"));
+        let mut p = Project::new("hevc");
+        p.settings.frame_rate = 30.0;
+        p.timeline.video_tracks[0].clips.push(Clip::from_media(&m, 0.0));
+        p.media_pool.push(m);
+        let dir = std::env::temp_dir().join("milan-agent").join(format!("diskcache-bench-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let seeks: Vec<i64> = (0..30).map(|k| (k * 97 + 13) % 300).collect();
+        let run = |name: &str| {
+            let mut wk = Worker::new();
+            wk.set_plan(Arc::new(plan::compile(&p)));
+            wk.pool.seeking = true;
+            let mut times = Vec::new();
+            for &n in &seeks {
+                let t = Instant::now();
+                let (_, err) = wk.frame(n, 960, 540, Quality::Good, None);
+                assert!(err.is_none(), "{err:?}");
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            let [p50, p95, max] = percentiles(&mut times);
+            println!("bench_disk_cache {name}: p50 {p50:.1} ms, p95 {p95:.1} ms, max {max:.1} ms");
+            println!("BENCH diskcache pass={name} p50_ms={p50:.1} p95_ms={p95:.1} max_ms={max:.1}");
+            (wk, p50)
+        };
+        crate::engine::caches::set_disk(Some(dir.clone()), 0);
+        let (_, cold) = run("off");
+        crate::engine::caches::set_disk(Some(dir.clone()), 2 << 30);
+        let (wk, _) = run("filling");
+        drop(wk);
+        let (wk, warm) = run("cached");
+        drop(wk);
+        crate::engine::caches::set_disk(None, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(warm < cold, "cached seeks ({warm:.1} ms) are faster than decoding ({cold:.1} ms)");
     }
 }

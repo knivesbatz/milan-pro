@@ -246,6 +246,9 @@ pub struct MeridianApp {
     /// R30: Export > Archive Project and Import > Media from Project, open.
     archive: Option<crate::ui::dialogs::ArchiveDlg>,
     media_from: Option<crate::ui::dialogs::MediaFromProject>,
+    /// R23: Selectively Prerender Video and Clean Up Prerendered Video, open.
+    prerender: Option<crate::ui::dialogs::PrerenderDlg>,
+    clean_prerender: Option<crate::ui::dialogs::CleanPrerender>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -571,6 +574,8 @@ impl MeridianApp {
             slideshow: None,
             archive: None,
             media_from: None,
+            prerender: None,
+            clean_prerender: None,
             audio_transition: None,
         };
         if !launch.demo {
@@ -1044,7 +1049,7 @@ impl eframe::App for MeridianApp {
                 },
             );
             // Last, so hovered-command hints from every bar this frame are shown.
-            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
+            let msg = self.message.clone().or_else(crate::engine::ram_status_text).or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
             // A render's progress first, then the video proxies'.
             let (rendering, proxies) = (self.queue.status(), self.proxies.status());
             let syncing = self.syncing.as_ref().map(|s| format!("Synchronizing audio: {:.0}%", s.job.progress() * 100.0));
@@ -1257,12 +1262,16 @@ impl eframe::App for MeridianApp {
         self.thumbs.set_paused(self.playing);
         self.waves.set_paused(self.playing);
 
+        // R23: the prerendered sections of this project (its folder under Preferences › Video's).
+        crate::engine::prerender::sync(&self.project, self.prefs.prerender_folder.as_deref());
         // After the timeline and the play edges, so this frame's cursor/clip edits are what gets requested.
         self.preview.update(ctx, &self.project);
         // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
         let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
         if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
+            // R23: a RAM preview build or a prerender in progress.
+            let busy = busy || crate::engine::ram_status().building.is_some() || self.prerender.as_ref().is_some_and(|d| d.running());
             shot.tick(ctx, busy || self.env_dialog);
         }
     }

@@ -631,12 +631,15 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         });
     });
     widgets::checkbox(ui, &mut d.adjust_media, "Adjust source media to better match project or render settings");
+    // R23: VEGAS keeps the folder per project; Milan Pro gives each project a folder of its own inside Preferences ›
+    // Video's prerendered files folder, so the project file never names a folder of this computer.
+    let why = crate::ui::menus::Fixed("a folder of this project's own inside the prerendered files folder of Preferences > Video");
     ui.add_enabled_ui(false, |ui| {
-        ui.label("Prerendered files folder:").on_disabled_hover_text(Later("R23").text());
+        ui.label("Prerendered files folder:").on_disabled_hover_text(why.text());
         ui.horizontal(|ui| {
-            widgets::edit(ui, egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0))
-                .on_disabled_hover_text(Later("R23").text());
-            widgets::push_button(ui, "Browse...").on_disabled_hover_text(Later("R23").text());
+            let mut folder = crate::engine::prerender::folder().map(|f| f.display().to_string()).unwrap_or_default();
+            widgets::edit(ui, egui::TextEdit::singleline(&mut folder).desired_width(310.0)).on_disabled_hover_text(why.text());
+            widgets::push_button(ui, "Browse...").on_disabled_hover_text(why.text());
         });
         widgets::checkbox(ui, &mut false, "Start all new projects with these settings").on_disabled_hover_text(Later("R49").text());
     });

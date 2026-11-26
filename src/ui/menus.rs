@@ -266,6 +266,9 @@ impl CmdState {
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
             RenderToNewTrack | RenderQueue | BatchRender | RenderAudioTracks | ExternalMonitor => true,
+            // R23: a prerender needs frames; the RAM preview and the clean-up work on any project.
+            Prerender => self.any_tracks,
+            RamPreview | CleanPrerender | ClearRamPreview => true,
             Loudness(_) | GenerateLoudnessLog | RebuildNestedAudio => true,
             NestedCreate => self.n_sel > 0,
             Synchronize(_) => self.n_sel >= 2,
@@ -424,7 +427,6 @@ pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
-        Prerender | RamPreview => Later("R23"),
         Help | WhatsThis => Later("R53"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
         SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => ALWAYS_ON,
@@ -1027,9 +1029,9 @@ pub const TOOLS: &[M] = &[
     C("Render &Queue...", RenderQueue),
     C("Preview on E&xternal Monitor", ExternalMonitor),
     C("&Selectively Prerender Video...", Prerender),
-    X("Clean &Up Prerendered Video...", Later("R23")),
+    C("Clean &Up Prerendered Video...", CleanPrerender),
     C("Build Dynamic RAM Previe&w", RamPreview),
-    V23(&X("Clear Dynamic RAM Preview", Later("R23"))),
+    V23(&C("Clear Dynamic RAM Preview", ClearRamPreview)),
     S,
     X("&Lay Out Audio CD from Events", NotPlanned("R59")),
     Sub("&Burn Disc", &[

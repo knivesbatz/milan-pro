@@ -60,6 +60,8 @@ impl MeridianApp {
             || self.audio_transition.is_some()
             || self.archive.is_some()
             || self.media_from.is_some()
+            || self.prerender.is_some()
+            || self.clean_prerender.is_some()
             || self.overlays.modal()
     }
 
@@ -852,6 +854,21 @@ impl MeridianApp {
             }
             RenderAs => self.render.open(&self.project),
             RenderToNewTrack => self.render.open_new_track(&self.project),
+            // R23: VEGAS builds the RAM preview over the loop region, or from the cursor on; Shift+M and Clean Up.
+            RamPreview => {
+                self.playing = false;
+                let tl = &self.project.timeline;
+                let end = crate::render::content_end(&self.project);
+                let lp = tl.loop_region.filter(|(a, b)| b > a).unwrap_or((tl.cursor_position, end));
+                if lp.1 > lp.0 {
+                    self.preview.build_ram_preview(&self.project, lp);
+                } else {
+                    self.message = Some("Nothing to build: the timeline is empty past the cursor.".into());
+                }
+            }
+            ClearRamPreview => self.preview.clear_ram_preview(),
+            Prerender => self.prerender = Some(dialogs::PrerenderDlg::new(&self.project, &self.prefs)),
+            CleanPrerender => self.clean_prerender = Some(dialogs::CleanPrerender::new(&self.project)),
             RenderQueue => self.queue_win.open = true,
             BatchRender => self.batch = Some(ui::render_queue::BatchRender::new(&self.project)),
             RenderAudioTracks => self.render_tracks = Some(ui::render_queue::RenderTracks::new(&self.project)),
@@ -1284,8 +1301,9 @@ impl MeridianApp {
                     _ => ui::Cmd::NextFrame,
                 };
                 if c == Stop {
-                    // Esc also leaves edge-trimming mode.
+                    // Esc also leaves edge-trimming mode, and stops a Dynamic RAM Preview build (R23).
                     (self.shuttle, self.sel.edge) = (0.0, None);
+                    self.preview.cancel_build();
                 }
                 let mut pb = Playback { playing: &mut self.playing, looping: &mut self.looping, play_start: self.play_start };
                 ui::run_cmd(cmd, &mut self.project, &mut pb);
@@ -2212,6 +2230,17 @@ impl MeridianApp {
         if self.archive.as_mut().is_some_and(|d| d.show(ctx, &self.project)) {
             self.archive = None;
         }
+        // R23: Selectively Prerender Video and Clean Up Prerendered Video.
+        if self.prerender.as_mut().is_some_and(|d| d.show(ctx, &self.project, &mut self.prefs)) {
+            self.prerender = None;
+            self.save_prefs();
+        }
+        if let Some(r) = self.clean_prerender.as_mut().and_then(|d| d.show(ctx, &self.project)) {
+            self.clean_prerender = None;
+            if let Some(n) = r {
+                self.message = Some(format!("Deleted {n} prerendered file(s)."));
+            }
+        }
         if let Some(items) = self.media_from.as_mut().and_then(|d| d.show(ctx, &self.project.media_pool)) {
             self.media_from = None;
             if !items.is_empty() {
@@ -2686,6 +2715,21 @@ impl MeridianApp {
                 }
             }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
+            // R23: the Selectively Prerender Video dialog; "preview-bars": the loop region built as a Dynamic RAM
+            // Preview and the section after it prerendered (into %TEMP%\milan-demo\prerender), for the ruler's bars.
+            "prerender" => self.exec(ctx, Prerender),
+            "preview-bars" => {
+                self.prefs.prerender_folder = Some(crate::demo::media_dir().join("prerender"));
+                crate::engine::prerender::sync(&self.project, self.prefs.prerender_folder.as_deref());
+                self.exec(ctx, RamPreview);
+                let lp = self.project.timeline.loop_region;
+                self.project.timeline.loop_region = lp.map(|(_, b)| (b, b + 2.0));
+                let mut d = dialogs::PrerenderDlg::new(&self.project, &self.prefs);
+                d.start_now(ctx, &self.project, &mut self.prefs);
+                self.prerender = Some(d);
+                self.project.timeline.loop_region = lp;
+                self.project.modified = false;
+            }
             // R21a: GPU acceleration of video processing.
             "prefs-video" => self.open_prefs(Some(dialogs::prefs::VIDEO)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),

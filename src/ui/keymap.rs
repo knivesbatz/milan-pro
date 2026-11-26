@@ -24,7 +24,7 @@ pub enum Command {
     EventLock,
     // Playback
     PlayStop, PlayPause, PlayFromStart, PlayAnyWindow, Stop, Loop, Record, Arm, ShuttleReverse, ShuttlePause,
-    ShuttleForward, PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor,
+    ShuttleForward, PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor, CleanPrerender, ClearRamPreview,
     // Cursor
     GoToStart, GoToEnd, SelOrViewStart, SelOrViewEnd, PrevFrame, NextFrame, PixelLeft, PixelRight, GridLeft,
     GridRight, PrevMarker, NextMarker, SelectToNextMarker, PrevEditPoint, NextEditPoint, SelEventStart, SelEventEnd,
@@ -225,6 +225,8 @@ pub const TABLE: &[Row] = &[
     (DimMaster, "Dim master", &["Ctrl+Shift+F12"], None),
     (Prerender, "Selectively Prerender Video", &["Shift+M"], None),
     (RamPreview, "Build Dynamic RAM Preview", &["Shift+B"], None),
+    (CleanPrerender, "Clean Up Prerendered Video", &[], None),
+    (ClearRamPreview, "Clear Dynamic RAM Preview", &[], None),
     (ExternalMonitor, "Preview on External Monitor", &["Alt+Shift+4"], None),
     // Cursor
     (GoToStart, "Go to Project Start", &["Ctrl+Home", "W"], None),
