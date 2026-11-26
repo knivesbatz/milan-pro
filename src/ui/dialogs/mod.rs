@@ -36,7 +36,7 @@ pub use command_props::CommandProps;
 pub use customize_keys::CustomizeKeys;
 pub use customize_toolbar::CustomizeToolbar;
 pub use default_track::DefaultTrackProps;
-pub use diagnostics::{CrashChoice, DiagAction, Diagnostics, crash_offer_window, issue_url, open_url};
+pub use diagnostics::{CrashChoice, DOCS_URL, DiagAction, Diagnostics, MANUAL_URL, crash_offer_window, issue_url, open_url};
 pub use event_props::EventProps;
 pub use goto::{TimeEntry, TimeMode};
 pub use media_from_project::MediaFromProject;

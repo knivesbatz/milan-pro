@@ -1,6 +1,6 @@
 # Milan Pro: implementation plan
 
-Status: plan only. Nothing here is built yet; `src/engine/` does not exist (checked 2026-11-11).
+Status: the original implementation plan (written 2026-11-11, before `src/engine/` existed). Batches 1-18 below are built; what the code does today, and where it departs from this plan, is in `docs/ARCHITECTURE.md`, and what is still open is tracked batch by batch in `docs/REMAINING.md` (section 5), which is the roadmap. Keep reading this file for the design reasoning and the batch rules; do not read it as a status report.
 Sources: the engine verdict (design A plus grafts from B and C), the three feature designs (editing, video plug-ins, audio/other) and the three code maps. Where those documents disagreed, section 0 says which way this plan goes.
 
 User priorities, in order: editing functionality > VEGAS workflow familiarity > preview performance > compatibility > plugins > media formats > reliability > modern UI > open source.

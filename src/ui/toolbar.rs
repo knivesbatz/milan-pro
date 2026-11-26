@@ -7,7 +7,7 @@ use super::EditTool;
 use super::dock::Panel;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{Later, NotPlanned, Why, send};
+use super::menus::{Fixed, NotPlanned, Why, send};
 use super::theme::{self, UiLook};
 use super::transport::Playback;
 
@@ -233,8 +233,8 @@ pub const BUTTONS: &[Btn] = &[
     b("Paste", Icon::Paste, "Paste", Command::Paste),
     b("Undo", Icon::Undo, "Undo", Command::Undo),
     b("Redo", Icon::Redo, "Redo", Command::Redo),
-    Btn { id: "Tutorials", icon: Icon::Tutorials, name: "Interactive Tutorials", cmd: None, look: Some(UiLook::Vegas16), inert: Some(Later("R53")) },
-    Btn { look: Some(UiLook::Vegas16), inert: Some(Later("R53")), ..b("WhatsThis", Icon::WhatsThis, "What's This? Help", Command::WhatsThis) },
+    Btn { id: "Tutorials", icon: Icon::Tutorials, name: "Interactive Tutorials", cmd: None, look: Some(UiLook::Vegas16), inert: Some(Fixed("no interactive tutorials in Milan Pro: the documentation opens from Help > Contents and Index")) },
+    Btn { look: Some(UiLook::Vegas16), inert: Some(Fixed("hover text does its job: every control says what it does, and why, when it is greyed")), ..b("WhatsThis", Icon::WhatsThis, "What's This? Help", Command::WhatsThis) },
     play("Record", Icon::Record, "Record"),
     play("Loop", Icon::Loop, "Loop Playback"),
     play("PlayFromStart", Icon::PlayFromStart, "Play From Start"),

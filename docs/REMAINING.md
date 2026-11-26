@@ -35,9 +35,9 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 242 |
-| PARTIAL | 114 |
-| MISSING | 64 |
+| DONE | 319 |
+| PARTIAL | 79 |
+| MISSING | 22 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
@@ -48,7 +48,7 @@ What matters most:
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
-- **Documentation gaps:** no REFERENCE_ANALYSIS, ARCHITECTURE, CONTRIBUTING, issue templates, compatibility matrix, format report or licence review. `docs/FEATURE_PLAN.md` line 3 still says "plan only. Nothing here is built yet", which is stale.
+- **Documentation (R52-R54, R56):** [REFERENCE_ANALYSIS.md](REFERENCE_ANALYSIS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md), [LICENSES.md](LICENSES.md), `CONTRIBUTING.md`, the Code of Conduct, issue forms and the changelog are written. Still open: the compatibility matrix (R55) and the format report (R37).
 - **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
 ---
@@ -74,15 +74,15 @@ What matters most:
 |---|---|---|---|
 | 2.1 | Public GitHub repository | DONE | knivesbatz/milan-pro; `src/updater.rs:17` |
 | 2.2 | Distinctive name, checked | DONE | "Milan Pro". The name check is not recorded in docs (R53 notes it). |
-| 2.3 | Professional README | PARTIAL | `README.md` is 61 lines: no screenshots, no feature status table, no system requirements, no links to docs. → R53 |
-| 2.4 | Project overview and feature roadmap | PARTIAL | The README roadmap has 3 bullets. This file becomes the roadmap. → R53 |
+| 2.3 | Professional README | DONE | (R53) `README.md`: a harness screenshot, a feature status table for 0.8.0, system requirements, every document linked, the roadmap. |
+| 2.4 | Project overview and feature roadmap | DONE | (R53) README "Roadmap" lists the open batches and links section 5 of this file, which is the roadmap. |
 | 2.5 | Installation instructions | DONE | `README.md` "Install (Windows)" |
-| 2.6 | Developer documentation | PARTIAL | The README has a 3-line build section. Missing: tests (including `--ignored` ffmpeg tests), the screenshot harness (`MILAN_SCREENSHOT`, `MILAN_DEMO`), the release process. → R53 |
-| 2.7 | Architecture documentation | PARTIAL | `FEATURE_PLAN.md` section 1 is the engine design, but its header says "plan only". There is no `ARCHITECTURE.md`. → R53 |
+| 2.6 | Developer documentation | DONE | (R53) [`docs/DEVELOPING.md`](DEVELOPING.md): toolchain, FFmpeg, tests including `--ignored`, the harness variables, benches, licences, adding commands/dialogs/plug-ins, conventions, releases and versioning. |
+| 2.7 | Architecture documentation | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md): modules, threads, data flow, the plug-in host IPC, theming, reliability and file formats, the harness, the test strategy and decision records; `FEATURE_PLAN.md`'s header fixed. |
 | 2.8 | Contribution guidelines | DONE | (R54) [`CONTRIBUTING.md`](../CONTRIBUTING.md): reporting, build, batch rules, `shortcut:` convention, tests, branches and commits, what may go into the repository, the AE-format "no Adobe SDK material" rule. |
 | 2.9 | License | DONE | `LICENSE` (MIT) |
 | 2.10 | Issue templates | DONE | (R54) `.github/ISSUE_TEMPLATE/`: `bug_report.yml`, `feature_request.yml`, `plugin_compat.yml`, `format_support.yml`, `config.yml`; `.github/PULL_REQUEST_TEMPLATE.md`. Rendering on GitHub to be checked by the user. |
-| 2.11 | Bug-report template | DONE | (R54) `.github/ISSUE_TEMPLATE/bug_report.yml` (version, Windows build, GPU, look, steps, expected/actual, media, diagnostic report). |
+| 2.11 | Bug-report template | DONE | (R54) `.github/ISSUE_TEMPLATE/bug_report.yml` (version, Windows build, GPU, steps, expected/actual, media, diagnostic report). |
 | 2.12 | Feature-request template | DONE | (R54) `.github/ISSUE_TEMPLATE/feature_request.yml`. |
 | 2.13 | GitHub Actions CI | DONE | `.github/workflows/ci.yml` (build plus test on windows-latest) |
 | 2.14 | Automated build workflows | DONE | `ci.yml` uploads `milan-pro.exe` as an artifact |
@@ -99,14 +99,14 @@ What matters most:
 |---|---|---|---|
 | 3.1 | Rust for core functionality | DONE | 36k lines of Rust; FFmpeg only as child processes |
 | 3.2 | FFmpeg for decode, encode, filters | DONE | `src/engine/vdecode.rs`, `src/engine/mix.rs`, `src/engine/render.rs`, `src/proc.rs` |
-| 3.3 | GStreamer evaluated | MISSING | No written evaluation → R53 (decision record) |
+| 3.3 | GStreamer evaluated | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) 10.1: FFmpeg CLI against libav bindings and GStreamer. |
 | 3.4 | GPU-accelerated rendering and compositing | DONE | (R21a-c) `engine/gpu`: the compositor runs on the GPU through wgpu on Vulkan (`GpuCompositor`, a `composite::Compositor` beside `CpuCompositor`), for the preview and renders alike; draws, every blend mode, Track Motion, the video FX, transitions and generators in WGSL, bit-exact against the CPU on 3000 random plans and at three parameter sets per plug-in (the clock wipe within 1). A preview frame stays on the GPU (`Picture`, shown as an egui native texture); a render reads back. Preferences › Video › GPU acceleration of video processing: Automatic, Off or an adapter. |
 | 3.5 | Vulkan / Direct3D or another graphics API evaluated | DONE | (R21a) The UI paints through wgpu on Vulkan (eframe feature `wgpu`, the default; OpenGL where there is no Vulkan), and the compositor shares its device. Direct3D 12 was not taken: wgpu's dx12 backend would add gpu-allocator and its MIT/Apache tree, and VEGAS's own compositor runs on OpenCL/Vulkan-class hardware either way. Cargo feature `glow` keeps the OpenGL painter (the compositor then opens its own device). → R53 for the docs |
 | 3.6 | Hardware video decoding and encoding | DONE | (R22) `engine/hw.rs` capability table (timed d3d11va/cuda/qsv decodes, nvenc/qsv/amf/mf encodes, cached per FFmpeg and driver); Preferences › Video decode acceleration and encode device; hardware Render As templates that fall back to software with a note. |
-| 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
+| 3.7 | Suitable GUI framework, evaluated | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) 10.2: egui against Qt, Slint and iced. |
 | 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
 | 3.9 | OpenFX and VST hosting where compatible | DONE | OFX video (R31-R33c), VST3 and CLAP audio effects (R34a-b, R35) in the out-of-process host; VST2 not feasible (10.11), DX/DMO investigated and not pursued (`docs/compat/dx-audio.md`). |
-| 3.10 | Frameworks evaluated for performance, extensibility, maintainability | PARTIAL | `FEATURE_PLAN.md` section 0/1 records decisions but no comparison → R53 |
+| 3.10 | Frameworks evaluated for performance, extensibility, maintainability | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) section 10: FFmpeg, GUI, glow/wgpu, rodio/cpal, JSON projects, out-of-process plug-ins. |
 
 ### 2.4 Section 4: interface
 
@@ -542,7 +542,7 @@ What matters most:
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
 | 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
 | 18.9 | Memory-safety-conscious design | DONE | `unsafe` only in `windows-sys` calls (`main.rs`, `proc.rs`) |
-| 18.10 | Documentation | PARTIAL | → R52-R56 |
+| 18.10 | Documentation | PARTIAL | (R52, R53, R54, R56 DONE) Reference analysis, architecture, developer guide, community files and licences are written. → R55 (compatibility matrix) |
 | 18.11 | Dependency licensing review | DONE | (R56) [`docs/LICENSES.md`](LICENSES.md); `tools/licenses.ps1 -Check` fails when it is stale. |
 | 18.12 | CI builds | DONE | |
 | 18.13 | Code formatting and linting | MISSING | No `rustfmt.toml`; rustfmt is not even installed locally; no clippy or fmt in CI. → R51 |
@@ -587,9 +587,9 @@ What matters most:
 | Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
-| Complete technical documentation | MISSING | R52-R56 |
+| Complete technical documentation | PARTIAL | R52, R53, R54, R56 done; R55 open |
 | Public compatibility matrix | MISSING | R55 |
-| Development roadmap | PARTIAL | this file; R53 |
+| Development roadmap | DONE | this file (section 5), linked from the README roadmap (R53) |
 | Repository stays buildable | DONE | |
 
 ---
@@ -629,7 +629,7 @@ The inventory as found before R0:
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a (DONE), R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
 | Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c (DONE), R31, R10b, R8b (DONE), R59 |
-| Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a (DONE), R59 |
+| Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53 (DONE), R18a (DONE), R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
 **Toolbar buttons already labelled before R0** (R0 added the batch to each tooltip; they stay until their feature lands):
@@ -771,7 +771,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
 - R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
 - R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
-- R53: Show Me How, Interactive Tutorials, Download User Manual (open the docs).
+- R53 (done): Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
 
 **Scope**
@@ -2161,6 +2161,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 **Acceptance:** every section 1 row of this file can be marked DONE with a link to it.
 
 ### R53: ARCHITECTURE.md, developer guide, README, roadmap (M)
+
+**Status: DONE.** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (with the six decision records), [`docs/DEVELOPING.md`](DEVELOPING.md), the README refresh (screenshots from the harness in `docs/images/`, the 0.8.0 feature table, system requirements, the documentation index and the roadmap), and `FEATURE_PLAN.md`'s header. Help > Contents and Index opens the docs folder on GitHub and Help > Download User Manual the README (`dialogs::DOCS_URL`, `MANUAL_URL`); What's This?, Show Me How and Interactive Tutorials stay greyed with a final reason (hover text and the docs stand in for them) instead of a batch. Link check: `tests/doc_links.rs` resolves every relative link (inline, reference and HTML) of every Markdown file and runs with `cargo test`, so CI checks it. Not done: the "name check" note of row 2.2.
 
 **Scope**
 - `docs/ARCHITECTURE.md`: crates and modules, threads, data flow (plan → compose/mix → preview/render), the plug-in host, the updater, file formats, and decision records:

@@ -69,6 +69,8 @@ pub enum Command {
     CustomizeToolbar, CustomizeTimelineToolbar, CustomizeKeyboard,
     /// R47: View › Command Palette, Milan Pro's own (VEGAS has none); its key is `palette::KEY`.
     CommandPalette,
+    /// R53: Help › Download User Manual (VEGAS 23): the README on GitHub, which links every document.
+    UserManual,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
