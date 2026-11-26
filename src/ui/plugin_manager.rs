@@ -130,7 +130,7 @@ impl PluginManager {
             key: if e.id.is_empty() { e.binary.display().to_string() } else { e.id.clone() },
             id: e.id,
             name: e.name,
-            kind: "OFX",
+            kind: e.kind,
             group: e.group,
             status: e.status,
             version: e.version,
@@ -138,7 +138,8 @@ impl PluginManager {
         });
         let q = self.query.trim().to_lowercase();
         let mut v: Vec<Row> = found.chain(builtins).filter(|r| q.is_empty() || [&r.name, &r.group, &r.id, &r.file, &r.status.name().to_string()].iter().any(|s| s.to_lowercase().contains(&q))).collect();
-        v.sort_by(|a, b| (a.kind != "OFX", a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(b.kind != "OFX", b.group.to_lowercase(), b.name.to_lowercase())));
+        let ext = |r: &Row| r.kind.starts_with("OFX");
+        v.sort_by(|a, b| (!ext(a), a.group.to_lowercase(), a.name.to_lowercase()).cmp(&(!ext(b), b.group.to_lowercase(), b.name.to_lowercase())));
         v
     }
 }
@@ -213,7 +214,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
         for r in &rows {
             let sel = pm.sel.as_ref() == Some(&r.key);
             let resp = widgets::list_row(ui, row_h, sel);
-            let ext = r.kind == "OFX" && !r.id.is_empty();
+            let ext = r.kind.starts_with("OFX") && !r.id.is_empty();
             let on = !ext || !prefs.disabled.contains(&r.id);
             let bx = Rect::from_center_size(pos2(resp.rect.min.x + CHECK_W * 0.5, resp.rect.center().y), vec2(12.0, 12.0));
             let hit = ui.interact(bx.expand(3.0), resp.id.with("on"), if ext { Sense::click() } else { Sense::hover() });

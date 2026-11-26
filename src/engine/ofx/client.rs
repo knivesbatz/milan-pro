@@ -125,26 +125,41 @@ impl Conn {
             })
             .map_err(|e| Fail::Io(format!("cannot start the plug-in watchdog: {e}")))?;
         let mut c = Conn { child, pipe, watch, shm: None };
-        match c.request(&Req::Load { binary: binary.to_path_buf() }, LOAD_TIMEOUT)? {
+        match c.request(&Req::Load { binary: binary.to_path_buf() }, Some(LOAD_TIMEOUT))? {
             Reply::Loaded(n) => Ok((c, n)),
             Reply::Error(e) => Err(Fail::Io(e)),
             r => Err(Fail::Io(format!("unexpected reply {r:?}"))),
         }
     }
 
-    /// Send `req`; the host is killed if it does not answer within `timeout`.
-    pub fn request(&mut self, req: &Req, timeout: Duration) -> Result<Reply, Fail> {
-        lock(&self.watch).deadline = Some(Instant::now() + timeout);
+    /// Send `req`; the host is killed if it does not answer within `timeout`. None: no time limit (a push button whose
+    /// plug-in may show a window of its own and wait for the user; `killer` stops it).
+    pub fn request(&mut self, req: &Req, timeout: Option<Duration>) -> Result<Reply, Fail> {
+        lock(&self.watch).deadline = timeout.map(|t| Instant::now() + t);
         let res = proto::write_msg(&mut self.pipe, req).and_then(|_| proto::read_msg::<Reply>(&mut self.pipe));
         let fired = {
             let mut g = lock(&self.watch);
             g.deadline = None;
-            g.fired
+            std::mem::take(&mut g.fired)
         };
         match (res, fired) {
-            (_, true) => Err(Fail::Hung(timeout)),
+            (_, true) => Err(Fail::Hung(timeout.unwrap_or_default())),
             (Ok(r), false) => Ok(r),
             (Err(e), false) => Err(self.why_gone(e)),
+        }
+    }
+
+    /// A way to stop this host from another thread (the user's Stop on a button that never returns).
+    pub fn killer(&self) -> Killer {
+        Killer(self.watch.clone())
+    }
+
+    /// Let the host (and the plug-in in it) bring a window to the front: the user clicked a button in Milan.
+    pub fn allow_foreground(&self) {
+        #[cfg(windows)]
+        // SAFETY: a plain system call with the child's process id.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(self.child.id());
         }
     }
 
@@ -164,7 +179,21 @@ impl Conn {
 
     /// Ask the host to end (destroying its instances), else kill it.
     pub fn quit(mut self) {
-        let _ = self.request(&Req::Quit, Duration::from_secs(2));
+        let _ = self.request(&Req::Quit, Some(Duration::from_secs(2)));
+    }
+}
+
+/// Stops a host from another thread (`Conn::killer`); the request waiting on it fails as hung.
+#[derive(Clone)]
+pub struct Killer(Arc<Mutex<Watch>>);
+
+impl Killer {
+    pub fn kill(&self) {
+        let mut g = lock(&self.0);
+        if g.process != 0 {
+            kill(g.process);
+            (g.fired, g.deadline) = (true, None);
+        }
     }
 }
 

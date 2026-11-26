@@ -15,6 +15,8 @@ use super::proto::{PluginDesc, Reply, Req};
 pub struct OfxPrefs {
     pub folders: Vec<PathBuf>,
     pub disabled: BTreeSet<String>,
+    /// Plug-ins (by id) whose input colour space hint the user dismissed in the FX window.
+    pub hints_seen: BTreeSet<String>,
 }
 
 /// One binary as last described.
@@ -141,7 +143,7 @@ pub fn describe_binary(binary: &Path) -> Binary {
         }
     };
     for i in 0..n {
-        match conn.request(&Req::Describe { index: i }, DESCRIBE_TIMEOUT) {
+        match conn.request(&Req::Describe { index: i }, Some(DESCRIBE_TIMEOUT)) {
             Ok(Reply::Described(d)) => out.plugins.push(*d),
             Ok(Reply::Error(e)) => out.errors.push((Some(i), e)),
             Ok(r) => out.errors.push((Some(i), format!("unexpected reply {r:?}"))),

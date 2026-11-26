@@ -255,6 +255,31 @@ struct Parent {
 const PLACING: u8 = 10;
 
 impl MeridianApp {
+    /// R33a: what OFX plug-ins changed themselves goes into the project. A button's edits are the user's own undo
+    /// step; a new instance's starting values and edits made while rendering ride on the step that caused them.
+    /// A dismissed colour space hint goes to the preferences.
+    fn take_ofx_edits(&mut self) {
+        for ed in crate::engine::ofx::take_edits() {
+            if ed.edits.is_empty() || self.project.fx_by_id_mut(&ed.instance).is_none_or(|f| f.plugin != ed.plugin) {
+                continue;
+            }
+            let before = ed.by_user.then(|| self.project.clone());
+            let Some(fx) = self.project.fx_by_id_mut(&ed.instance) else { continue };
+            if crate::engine::ofx::apply_edits(fx, &ed.edits, ed.initial) {
+                if let Some(b) = before {
+                    self.history.push(b);
+                }
+                if !ed.initial {
+                    self.project.mark_modified();
+                }
+            }
+        }
+        if let Some(seen) = crate::engine::ofx::hints_changed() {
+            self.prefs.ofx.hints_seen = seen;
+            self.save_prefs();
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
         ui::fonts::install(&cc.egui_ctx);
         ui::keymap::install(&cc.egui_ctx);
@@ -341,7 +366,7 @@ impl MeridianApp {
         } else {
             plugin_mgr.rescan(Some(&cc.egui_ctx), &prefs.ofx, false);
         }
-        crate::engine::ofx::set_registry(&plugin_mgr.cache, &prefs.ofx.disabled);
+        crate::engine::ofx::set_registry(&plugin_mgr.cache, &prefs.ofx);
         let mut app = Self {
             project,
             history: History::default(),
@@ -648,11 +673,12 @@ impl eframe::App for MeridianApp {
         self.tick_audio_editor(ctx);
         // R31-R33b: a plug-in scan that finished; a plug-in that failed while rendering (it is bypassed).
         if self.plugin_mgr.poll() {
-            crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx.disabled);
+            crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx);
         }
         if let Some(m) = self.plugin_mgr.message.take().or_else(|| crate::engine::ofx::take_events().pop()) {
             self.message = Some(m);
         }
+        self.take_ofx_edits();
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -830,7 +856,7 @@ impl eframe::App for MeridianApp {
             // what renders; a folder added or removed is searched.
             if ofx_changed {
                 self.save_prefs();
-                crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx.disabled);
+                crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx);
                 crate::engine::ofx::clear_failures();
             }
             if plugin_rescan || ofx_changed {

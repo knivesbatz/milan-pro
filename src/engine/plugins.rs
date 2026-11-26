@@ -727,10 +727,9 @@ pub fn find(id: &str) -> Option<&'static PluginInfo> {
     PLUGINS.iter().find(|p| p.id == id).or_else(|| super::ofx::info(id))
 }
 
-/// The built-ins of `kind`, then (video FX) the OFX plug-ins found.
+/// The built-ins of `kind`, then the OFX plug-ins found (video FX, transitions and generators).
 pub fn catalog(kind: PluginKind) -> impl Iterator<Item = &'static PluginInfo> {
-    let ofx = if kind == PluginKind::VideoFx { super::ofx::catalog() } else { Vec::new() };
-    PLUGINS.iter().filter(move |p| p.kind == kind).chain(ofx)
+    PLUGINS.iter().filter(move |p| p.kind == kind).chain(super::ofx::catalog(kind))
 }
 
 /// A new instance with `preset`'s values as single keys at t = 0.

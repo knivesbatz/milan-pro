@@ -261,7 +261,7 @@ impl Host {
         *lock(&inst.effect.frame) = frame;
         self.apply_values(r, &ctx.context, &mut inst, &frame);
         let res = run(self, &mut inst, &frame);
-        let out = self.outcome(&mut inst, &ctx.context, fresh && !r.restored);
+        let out = self.outcome(&mut inst, &ctx.context, fresh, fresh && !r.restored);
         self.instances.insert(key, inst);
         res.map(|_| out)
     }
@@ -306,9 +306,10 @@ impl Host {
     }
 
     /// What the plug-in changed since Milan's values went in: its own parameter edits (every value for a new
-    /// instance), the parameters' hidden / enabled / label / options when they changed, and its messages. Values are
+    /// instance), the parameters' hidden / enabled / label / options when they changed (always for a new instance),
+    /// and its messages. Values are
     /// kept as Milan stores them (32-bit floats), in the instance too, so both sides hold the same numbers.
-    fn outcome(&self, inst: &mut Instance, context: &str, initial: bool) -> Outcome {
+    fn outcome(&self, inst: &mut Instance, context: &str, fresh: bool, initial: bool) -> Outcome {
         let mut out = Outcome { initial, messages: std::mem::take(&mut *lock(&suites::MESSAGES)), ..Default::default() };
         let params = lock(&inst.effect.params.params);
         let mut state = Vec::with_capacity(params.len());
@@ -333,7 +334,8 @@ impl Host {
                 out.edits.push((p.name.clone(), cur));
             }
         }
-        if state != inst.state {
+        // A new instance always reports its state, so Milan holds one for every instance it has rendered.
+        if fresh || state != inst.state {
             out.state = Some(state.clone());
             inst.state = state;
         }

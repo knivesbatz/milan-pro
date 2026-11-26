@@ -430,7 +430,7 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
 /// pictures they get at full quality, which sets their render scale).
 fn evals(chain: &[Fx], t: f64, full_h: u32, p: &VideoPlan) -> Vec<FxEval> {
     let frame = |f: &Fx, mut e: FxEval| {
-        crate::engine::ofx::add_frame_vals(&mut e, &f.id, t, full_h as f64, p.fps, p.par);
+        crate::engine::ofx::add_frame_vals(&mut e, &f.id, crate::engine::ofx::restored(f), t, full_h as f64, p.fps, p.par);
         e
     };
     chain.iter().filter(|f| f.enabled).filter_map(|f| plugins::eval(f, t).map(|e| frame(f, e))).collect()
@@ -612,6 +612,10 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                     if g.id == generate::CREDITS {
                         g.vals.push((generate::LENGTH, plugins::Val::F(e.m.duration as f32)));
                     }
+                    // R33b: an OFX generator is an instance of its own, at its media time, drawn at the project size.
+                    if let Some(gf) = &e.generator {
+                        crate::engine::ofx::add_frame_vals(&mut g, &gf.id, crate::engine::ofx::restored(gf), st, p.h as f64, p.fps, p.par);
+                    }
                     let gt = if generate::animated(&g) { st + dt } else { 0.0 };
                     (g, gt)
                 });
@@ -632,7 +636,13 @@ pub fn frame_plan_at(p: &VideoPlan, n: i64, dt: f64) -> FramePlan {
                     flicker: c.reduce_flicker,
                     masks: masks.clone(),
                 };
-                let kind = |tr: &crate::project::Transition| plugins::eval_transition(tr);
+                // R33b: an OFX transition is an instance per event (its settings are not keyframed: Milan's values stand).
+                let kind = |tr: &crate::project::Transition| {
+                    plugins::eval_transition(tr).map(|mut k| {
+                        crate::engine::ofx::add_frame_vals(&mut k, &format!("{}.tr", c.id), true, la, p.h as f64, p.fps, p.par);
+                        k
+                    })
+                };
                 // Progress through a transition `x` (0..1) of the way along: its Transition Progress envelope, else x.
                 let progress = |tr: &crate::project::Transition, x: f64| {
                     let x = x.clamp(0.0, 1.0);

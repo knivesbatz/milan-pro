@@ -75,6 +75,10 @@ pub fn mix(e: &FxEval, a: &ColorImage, b: &ColorImage, p: f32, k: usize) -> Colo
     if p >= 1.0 || a.size != b.size {
         return b.clone();
     }
+    // R33b: an OFX transition renders in its plug-in host; one that cannot run dissolves.
+    if e.id.starts_with(crate::engine::ofx::PREFIX) {
+        return crate::engine::ofx::transition(e, a, b, p).unwrap_or_else(|| blend(a, b, k, |_, _| p));
+    }
     let [w, h] = a.size;
     let (wf, hf) = (w as f32, h as f32);
     let (cx, cy) = (wf / 2.0, hf / 2.0);

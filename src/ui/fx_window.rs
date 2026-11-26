@@ -45,6 +45,29 @@ pub struct FxWindow {
     drag: Option<usize>,
     /// Installed fonts, read the first time a Font parameter shows.
     fonts: Option<Vec<String>>,
+    /// R33a: OFX groups (FX id, group) the user opened or closed against the plug-in's default.
+    toggled: HashSet<(String, String)>,
+}
+
+/// A parameter's name cell: "Name *" when off its default, a hint on hover; true on a double-click (reset).
+fn name_cell(ui: &mut Ui, name: &str, changed: bool, depth: usize, hint: &str) -> bool {
+    let text = format!("{}{}", name, if changed { " *" } else { "" });
+    let w = (LABEL_W - depth as f32 * 12.0).max(40.0);
+    let lr = ui.add_sized([w, 18.0], Label::new(text).sense(Sense::click()).truncate());
+    let lr = if hint.is_empty() { lr.on_hover_text("Double-click to reset") } else { lr.on_hover_text(format!("{hint}\nDouble-click to reset")) };
+    lr.double_clicked()
+}
+
+/// A choice whose options the plug-in set at run time (R33a: `ofx::Row::Param::options`).
+fn live_choice(ui: &mut Ui, fx: &mut Fx, key: &str, options: &[String], cur: f32, key_at: Option<f64>, fps: f64) {
+    let k = (cur.round().max(0.0) as usize).min(options.len().saturating_sub(1));
+    widgets::combo(ui, ("fx_choice", key), 180.0, options.get(k).map_or("", String::as_str), |ui| {
+        for (j, o) in options.iter().enumerate() {
+            if ui.selectable_label(j == k, o).clicked() {
+                set_num(fx, key, j as f32, cur, key_at, fps);
+            }
+        }
+    });
 }
 
 /// The name a chain shows for plug-in `id`: its name, or (an OFX plug-in that does not run) what is known of it.
@@ -186,7 +209,7 @@ impl FxWindow {
     pub fn open(project: &Project, target: FxTarget) -> Option<Self> {
         let (list, _) = edit::fx_list(project, &target)?;
         let animate = list.iter().filter(|f| animated(f)).map(|f| f.id.clone()).collect();
-        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None })
+        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None, toggled: HashSet::new() })
     }
 
     /// Select the plug-in last in the chain (just dropped on it).
@@ -230,6 +253,7 @@ impl FxWindow {
         let audio = edit::fx_is_audio(project, &self.target);
         let kind = if audio { PluginKind::AudioFx } else { PluginKind::VideoFx };
         let fps = project.settings.frame_rate;
+        let (size, par) = ((project.settings.width, project.settings.height), project.settings.par);
         let keyed = key_time(project, &self.target);
         let (at, span, base) = keyed.map_or((0.0, 0.0, 0.0), |(_, span, base)| (self.kf.cursor(project.timeline.cursor_position - base).clamp(0.0, span), span, base));
         // Event FX keys stop at the event's end; track and output keys may go past the last event.
@@ -439,7 +463,83 @@ impl FxWindow {
             let off = mode == Some(AutoMode::Off);
             let shown = if off { Fx { auto: Default::default(), ..fx.clone() } } else { fx.clone() };
             let (Some(e), d) = (plugins::eval(&shown, at), plugins::preset_eval(info, None)) else { return };
+            // R33a: an OFX plug-in's controls as it lays them out now (pages, groups, hidden and greyed parameters,
+            // live labels and choice options, push buttons), with what the plug-in said and what it is doing.
+            let toggled = &self.toggled;
+            let ofx_rows = ofx::layout(&fx.plugin, &fx.id, &|g, open| toggled.contains(&(fx.id.clone(), g.to_string())) != open);
+            let warn = super::theme::get().warning_text;
+            if ofx_rows.is_some() {
+                if let Some(hint) = ofx::colour_hint(&fx.plugin, &fx.id, &e) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(Label::new(RichText::new(hint).color(warn)).wrap());
+                        if widgets::push_button(ui, "OK").on_hover_text("Do not show this again for this plug-in").clicked() {
+                            ofx::dismiss_hint(&fx.plugin);
+                        }
+                    });
+                }
+                if let Some(button) = ofx::busy(&fx.id) {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Running \"{button}\" (the plug-in may be showing a window of its own)..."));
+                        if widgets::push_button(ui, "Stop").on_hover_text("Stop the plug-in host; it starts again with the next frame").clicked() {
+                            ofx::stop(&fx.id);
+                        }
+                    });
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                }
+                if let Some(note) = ofx::note(&fx.id) {
+                    let color = if note.starts_with("Error") { warn } else { super::theme::get().text_dim };
+                    ui.add(Label::new(RichText::new(note).color(color)).wrap());
+                }
+            }
+            let (mut pressed, mut toggle) = (None, None);
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if let Some(rows) = &ofx_rows {
+                    let busy = ofx::busy(&fx.id).is_some();
+                    for row in rows {
+                        match row {
+                            ofx::Row::Heading(h) => {
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(h).strong().underline());
+                            }
+                            ofx::Row::Group { name, label, depth, open } => {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0);
+                                    let r = ui.add(Label::new(RichText::new(format!("{} {label}", if *open { "▾" } else { "▸" })).strong()).sense(Sense::click()));
+                                    if r.clicked() {
+                                        toggle = Some(name.clone());
+                                    }
+                                });
+                            }
+                            ofx::Row::Button { name, label, depth, enabled, hint } => {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0 + LABEL_W);
+                                    let b = widgets::push_button_enabled(ui, *enabled && editable && !busy, label);
+                                    if b.on_hover_text(if hint.is_empty() { "Runs in the plug-in" } else { hint.as_str() }).clicked() {
+                                        pressed = Some(name.clone());
+                                    }
+                                });
+                            }
+                            ofx::Row::Param { index, label, depth, enabled, options, hint } => {
+                                let (i, spec) = (*index, &info.params[*index]);
+                                let changed = e.vals[i].1 != d.vals[i].1;
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0);
+                                    if name_cell(ui, label, changed, *depth, hint) && editable {
+                                        reset(fx, spec.key, spec.kind);
+                                    }
+                                    ui.add_enabled_ui(editable && *enabled, |ui| match (options, &e.vals[i].1) {
+                                        (Some(o), Val::F(v)) => live_choice(ui, fx, spec.key, o, *v, key_at, fps),
+                                        _ => {
+                                            param(ui, fx, spec.key, spec.kind, &e.vals[i].1, key_at, fps, &mut self.fonts);
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
                 for (i, spec) in info.params.iter().enumerate() {
                     if !spec.section.is_empty() {
                         ui.add_space(if i > 0 { 6.0 } else { 0.0 });
@@ -447,9 +547,7 @@ impl FxWindow {
                     }
                     let changed = e.vals[i].1 != d.vals[i].1;
                     ui.horizontal(|ui| {
-                        let text = format!("{}{}", spec.name, if changed { " *" } else { "" });
-                        let lr = ui.add_sized([LABEL_W, 18.0], Label::new(text).sense(Sense::click()).truncate()).on_hover_text("Double-click to reset");
-                        if lr.double_clicked() && editable {
+                        if name_cell(ui, spec.name, changed, 0, "") && editable {
                             reset(fx, spec.key, spec.kind);
                         }
                         let automated = !off && fx.auto.contains_key(spec.key);
@@ -470,6 +568,17 @@ impl FxWindow {
                     });
                 }
             });
+            if let Some(g) = toggle {
+                let key = (fx.id.clone(), g);
+                if !self.toggled.remove(&key) {
+                    self.toggled.insert(key);
+                }
+            }
+            if let Some(b) = pressed.filter(|_| editable) {
+                // The button's action runs in the plug-in host on a thread of its own; its edits come back through the
+                // app as one undo step (`App::take_ofx_edits`).
+                ofx::press(Some(ui.ctx()), fx, at, &b, size, fps, par);
+            }
             if animating {
                 let lanes = lane(fx, fps);
                 if let Some(r) = keyframes::controller(ui, kf_r, &mut self.kf, info.name, &lanes, span, end, at, fps) {

@@ -89,8 +89,9 @@ static EDITS: LazyLock<Mutex<Vec<Edit>>> = LazyLock::new(Default::default);
 static STATE: LazyLock<Mutex<HashMap<String, Arc<HashMap<String, ParamState>>>>> = LazyLock::new(Default::default);
 /// Per instance: the plug-in's last messages (after a button, or with a frame), as it worded them.
 static NOTES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
-/// Per instance: the button whose action is running, and the way to stop its host.
-static BUSY: LazyLock<Mutex<HashMap<String, (String, client::Killer)>>> = LazyLock::new(Default::default);
+/// Per instance: the button whose action is running (set before its thread starts), and the way to stop its host once
+/// it is talking to one.
+static BUSY: LazyLock<Mutex<HashMap<String, (String, Option<client::Killer>)>>> = LazyLock::new(Default::default);
 /// Plug-ins (by id) whose input colour space hint was dismissed, and whether that changed since `hints_changed`.
 static HINTS: LazyLock<Mutex<(BTreeSet<String>, bool)>> = LazyLock::new(Default::default);
 
@@ -255,7 +256,7 @@ pub fn busy(instance: &str) -> Option<String> {
 
 /// Stop the plug-in host that is running `instance`'s button (it starts again with the next frame).
 pub fn stop(instance: &str) {
-    if let Some((_, k)) = lock(&BUSY).get(instance) {
+    if let Some((_, Some(k))) = lock(&BUSY).get(instance) {
         k.kill();
     }
 }
@@ -281,6 +282,12 @@ pub fn label(id: &str) -> Option<String> {
         Some(e) => format!("{} (failed)", e.name),
         None => format!("{} (missing)", rest.rsplit_once('@').map_or(rest, |x| x.0)),
     })
+}
+
+/// An instance of OFX plug-in `id` would be bypassed now (failed, crashed, turned off, unsupported or missing): the
+/// timeline badge. Cheap enough for every event on every frame.
+pub fn is_bypassed(id: &str) -> bool {
+    id.starts_with(PREFIX) && (!reg().usable.contains_key(id) || lock(&FAILED).contains_key(id))
 }
 
 const KEPT: &str = "It is bypassed; its settings are kept in the project.";
@@ -445,32 +452,32 @@ pub fn values(d: &PluginDesc, e: &FxEval) -> Vec<(String, PVal)> {
 pub fn apply_edits(fx: &mut Fx, edits: &[(String, PVal)], initial: bool) -> bool {
     let Some(p) = find(&fx.plugin) else { return false };
     let mut changed = false;
-    let mut num = |fx: &mut Fx, key: String, v: f64| {
+    let num = |fx: &mut Fx, key: String, v: f64| -> bool {
         let v = v as f32;
         match fx.params.get(&key) {
-            Some(_) if initial => {}
+            Some(_) if initial => false,
             // shortcut: a keyframed parameter keeps the user's keys; key the plug-in's value at the frame's time if a
             // plug-in needs to drive an animated parameter.
-            Some(k) if k.keys.len() > 1 => {}
-            Some(k) if k.keys.first().is_some_and(|k| k.v == v) => {}
+            Some(k) if k.keys.len() > 1 => false,
+            Some(k) if k.keys.first().is_some_and(|k| k.v == v) => false,
             _ => {
                 fx.params.insert(key, Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] });
-                changed = true;
+                true
             }
         }
     };
     for (name, v) in edits {
         let Some(d) = p.desc.params.iter().find(|d| d.name == *name && !is_progress(&p.desc, d)) else { continue };
         match (d.kind.as_str(), v) {
-            ("Double" | "Integer" | "Boolean" | "Choice", PVal::N(x)) if !x.is_empty() => num(fx, name.clone(), x[0]),
+            ("Double" | "Integer" | "Boolean" | "Choice", PVal::N(x)) if !x.is_empty() => changed |= num(fx, name.clone(), x[0]),
             ("Double2D" | "Double3D" | "Integer2D" | "Integer3D", PVal::N(x)) => {
                 for ((k, _), v) in XYZ.iter().zip(x) {
-                    num(fx, format!("{name}.{k}"), *v);
+                    changed |= num(fx, format!("{name}.{k}"), *v);
                 }
             }
             ("RGB" | "RGBA", PVal::N(x)) => {
                 for (k, v) in ["r", "g", "b", "a"].iter().zip(x) {
-                    num(fx, format!("{name}.{k}"), *v);
+                    changed |= num(fx, format!("{name}.{k}"), *v);
                 }
             }
             ("String" | "Custom", PVal::S(t)) => {
@@ -708,20 +715,23 @@ pub fn press(ctx: Option<&eframe::egui::Context>, fx: &Fx, at: f64, button: &str
     add_frame_vals(&mut e, &fx.id, restored(fx), at, size.1 as f64, fps, par);
     let r = request(&p, &e, [size.0.max(1) as usize, size.1.max(1) as usize]);
     let (button, ctx) = (button.to_string(), ctx.cloned());
+    lock(&BUSY).insert(r.instance.clone(), (button.clone(), None));
     let run = move || {
         let instance = r.instance.clone();
         match act(&p, r, &button) {
             Ok(o) => absorb(&p, &instance, o, !button.is_empty()),
             Err(why) => {
-                lock(&NOTES).insert(instance, format!("Error: {why}"));
+                lock(&NOTES).insert(instance.clone(), format!("Error: {why}"));
             }
         }
+        lock(&BUSY).remove(&instance);
         GEN.fetch_add(1, Ordering::Relaxed);
         if let Some(c) = ctx {
             c.request_repaint();
         }
     };
     if let Err(e) = std::thread::Builder::new().name("milan-ofx-button".into()).spawn(run) {
+        lock(&BUSY).remove(&fx.id);
         lock(&NOTES).insert(fx.id.clone(), format!("Error: cannot start the button's thread: {e}"));
     }
 }
@@ -864,12 +874,10 @@ fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&Color
 fn act(p: &Plugin, r: Render, button: &str) -> Result<Outcome, String> {
     let instance = r.instance.clone();
     with_host(&p.binary, |conn| {
-        lock(&BUSY).insert(instance.clone(), (button.to_string(), conn.killer()));
+        lock(&BUSY).insert(instance.clone(), (button.to_string(), Some(conn.killer())));
         // The user's click lets the plug-in bring a window of its own to the front.
         conn.allow_foreground();
-        let reply = conn.request(&Req::Button(r, button.to_string()), None);
-        lock(&BUSY).remove(&instance);
-        reply
+        conn.request(&Req::Button(r, button.to_string()), None)
     })
 }
 

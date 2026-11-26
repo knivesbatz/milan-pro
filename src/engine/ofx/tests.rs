@@ -38,16 +38,17 @@ fn desc() -> PluginDesc {
     }
 }
 
-/// R33a: OFX parameters map onto the FX window's controls (groups as headings; hidden, page, button, custom and empty
-/// choices left out), and an evaluated instance maps back to the values the host sets, defaults included.
+/// R33a: every OFX parameter with a value maps onto a control (hidden and custom ones too: `layout` decides what shows;
+/// pages, groups and buttons have no value), and an evaluated instance maps back to the values the host sets, defaults
+/// included.
 #[test]
 fn parameters_map_both_ways() {
     let d = desc();
     let info = leak_info(&d);
     assert_eq!((info.id, info.name, info.group, info.kind), ("ofx:com.example.all@2", "All Kinds", "Example", PluginKind::VideoFx));
     let keys: Vec<&str> = info.params.iter().map(|p| p.key).collect();
-    assert_eq!(keys, ["amount", "count", "flag", "mode", "tint", "pos.x", "pos.y", "idx.x", "idx.y", "idx.z", "note"]);
-    assert_eq!((info.params[0].section, info.params[1].section, info.params[2].section), ("GRP", "", "Other"));
+    assert_eq!(keys, ["amount", "count", "flag", "mode", "tint", "pos.x", "pos.y", "idx.x", "idx.y", "idx.z", "note", "hidden", "blob", "empty"]);
+    assert!(info.params.iter().all(|p| p.section.is_empty()), "the OFX layout places them, not sections");
     assert!(matches!(info.params[0].kind, ParamKind::Float { min: 0.0, max: 4.0, default: 1.5 }));
     assert!(matches!(info.params[3].kind, ParamKind::Choice { default: 2, .. }));
     assert!(std::ptr::eq(info, leak_info(&d)), "an unchanged description is leaked once");
@@ -61,10 +62,12 @@ fn parameters_map_both_ways() {
     assert_eq!(get("pos"), Some(PVal::N(vec![0.5, 0.25])));
     assert_eq!(get("idx"), Some(PVal::N(vec![1.0, 2.0, 3.0])));
     assert_eq!(get("note"), Some(PVal::S("hello".into())));
-    assert!(get("hidden").is_none() && get("go").is_none() && get("blob").is_none());
+    assert_eq!((get("hidden"), get("blob"), get("empty")), (Some(PVal::N(vec![9.0])), Some(PVal::S(String::new())), Some(PVal::N(vec![0.0]))));
+    assert!(get("go").is_none() && get("page").is_none() && get("grp").is_none());
     // A plug-in for Generators only, or 16-bit only, is listed and not run.
     assert!(unsupported(&PluginDesc { context: String::new(), contexts: vec!["OfxImageEffectContextGenerator".into()], ..d.clone() }).unwrap().contains("Generator"));
-    assert!(unsupported(&PluginDesc { depths: vec!["OfxBitDepthHalf".into()], ..d.clone() }).unwrap().contains("OfxBitDepthHalf"));
+    assert!(unsupported(&PluginDesc { depths: vec!["OfxBitDepthWeird".into()], ..d.clone() }).unwrap().contains("OfxBitDepthWeird"));
+    assert!(unsupported(&PluginDesc { depths: vec!["OfxBitDepthHalf".into()], ..d.clone() }).is_none(), "half is given");
     assert!(unsupported(&d).is_none());
 }
 
@@ -72,24 +75,32 @@ fn parameters_map_both_ways() {
 #[test]
 fn frames_flip_and_convert() {
     let img = ColorImage { size: [3, 2], pixels: (0..6).map(|i| Color32::from_rgba_premultiplied(i * 10, i * 20, i * 30, 200)).collect() };
-    for float in [false, true] {
-        let mut buf = vec![0u8; 6 * bpp(float)];
-        put(&img, float, &mut buf);
+    for depth in [Depth::Byte, Depth::Short, Depth::Half, Depth::Float] {
+        let mut buf = vec![0u8; 6 * bpp(depth)];
+        put(&img, depth, &mut buf);
         let mut back = ColorImage::new([3, 2], Color32::TRANSPARENT);
-        take(&buf, float, &mut back);
-        assert_eq!(back.pixels, img.pixels, "float {float}");
-        if float {
+        take(&buf, depth, &mut back);
+        assert_eq!(back.pixels, img.pixels, "{depth:?}");
+        if depth == Depth::Float {
             let first = f32::from_le_bytes(buf[0..4].try_into().unwrap());
             assert_eq!(first, 30.0 / 255.0, "the bottom row (pixel 3) comes first");
         }
+        if depth == Depth::Short {
+            assert_eq!(u16::from_le_bytes([buf[0], buf[1]]), 30 * 257);
+        }
     }
+    // Half floats round-trip 8-bit values exactly and keep sign, infinity and small numbers.
+    for v in [0.0f32, 1.0, 0.5, 30.0 / 255.0, -2.0, 65504.0, 1e-5] {
+        assert!((half_to_f32(f32_to_half(v)) - v).abs() <= v.abs() / 1024.0 + 1e-7, "{v}");
+    }
+    assert!(half_to_f32(f32_to_half(1e6)).is_infinite());
     // Out of range floats are clamped; colour never exceeds alpha.
     let mut buf = Vec::new();
     for v in [2.0f32, -1.0, 0.9, 0.5] {
         buf.extend(v.to_le_bytes());
     }
     let mut one = ColorImage::new([1, 1], Color32::TRANSPARENT);
-    take(&buf, true, &mut one);
+    take(&buf, Depth::Float, &mut one);
     assert_eq!(one.pixels[0].to_array(), [128, 0, 128, 128]);
 }
 
@@ -127,6 +138,9 @@ const INVERT: &str = "ofx:com.meridiannle.test.invert@1";
 const GAIN: &str = "ofx:com.meridiannle.test.gain@1";
 const CRASH: &str = "ofx:com.meridiannle.test.crash@1";
 const HANG: &str = "ofx:com.meridiannle.test.hang@1";
+const DISSOLVE: &str = "ofx:com.meridiannle.test.dissolve@1";
+const SOLID: &str = "ofx:com.meridiannle.test.solid@1";
+const PARAMS: &str = "ofx:com.meridiannle.test.params@1";
 
 fn picture() -> ColorImage {
     let (w, h) = (64usize, 36usize);
@@ -144,7 +158,7 @@ fn picture() -> ColorImage {
 fn eval_at(id: &str, fx: Option<Fx>, t: f64, full_h: f64) -> FxEval {
     let fx = fx.unwrap_or_else(|| plugins::new_fx(plugins::find(id).expect("registered"), None));
     let mut e = plugins::eval(&fx, t).expect("evaluates");
-    add_frame_vals(&mut e, &fx.id, t, full_h, 30.0, 1.0);
+    add_frame_vals(&mut e, &fx.id, restored(&fx), t, full_h, 30.0, 1.0);
     e
 }
 
@@ -161,7 +175,13 @@ fn describe_through_the_host() {
     let b = &cache.binaries[0];
     assert!(b.errors.is_empty(), "{:?}", b.errors);
     let ids: Vec<String> = b.plugins.iter().map(id_of).collect();
-    assert_eq!(ids, [INVERT, GAIN, CRASH, HANG]);
+    assert_eq!(ids, [INVERT, GAIN, CRASH, HANG, DISSOLVE, SOLID, PARAMS]);
+    assert_eq!(b.plugins[4].context, "OfxImageEffectContextTransition");
+    assert_eq!((b.plugins[5].context.as_str(), b.plugins[5].depths.as_slice()), ("OfxImageEffectContextGenerator", &["OfxBitDepthShort".to_string()][..]));
+    assert!(plugins::catalog(PluginKind::Transition).any(|i| i.id == DISSOLVE) && plugins::catalog(PluginKind::Generator).any(|i| i.id == SOLID));
+    let params = &b.plugins[6].params;
+    assert_eq!(params.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(), ["Group", "Choice", "Double", "Double", "Double", "Integer", "Choice", "String", "Double", "PushButton", "PushButton", "PushButton"]);
+    assert!(params[3].secret && params[1].parent == "grp" && params[0].open);
     let gain = &b.plugins[1];
     assert_eq!((gain.label.as_str(), gain.group.as_str(), gain.context.as_str()), ("Test Gain", "Milan Test", "OfxImageEffectContextFilter"));
     assert_eq!(gain.depths, ["OfxBitDepthByte", "OfxBitDepthFloat"]);
@@ -170,7 +190,8 @@ fn describe_through_the_host() {
     let info = plugins::find(GAIN).unwrap();
     assert!(plugins::catalog(PluginKind::VideoFx).any(|i| i.id == GAIN), "offered in the Video FX chooser");
     assert_eq!((info.name, info.group, info.params[0].key), ("Test Gain", "Milan Test", "gain"));
-    assert!(entries().iter().filter(|e| e.status == Status::Ok).count() >= 4);
+    assert!(entries().iter().filter(|e| e.status == Status::Ok).count() >= 7);
+    assert_eq!(entries().iter().find(|e| e.id == DISSOLVE).unwrap().kind, "OFX Transition");
     close_hosts();
 }
 
@@ -188,10 +209,10 @@ fn invert_matches_the_builtin_invert() {
     assert!(failure(INVERT).is_none(), "{:?}", failure(INVERT));
     assert!(max_diff(&float, &builtin) <= 1, "float: {}", max_diff(&float, &builtin));
     let p = find(INVERT).unwrap();
-    assert!(p.float);
+    assert_eq!(p.depth, Depth::Float);
     let mut byte = src.clone();
-    let r = Render { index: p.desc.index, instance: "byte".into(), w: 64, h: 36, float: false, scale: 1.0, par: 1.0, fps: 30.0, ..Default::default() };
-    render(&p.binary, r, &mut byte).unwrap();
+    let r = Render { index: p.desc.index, instance: "byte".into(), w: 64, h: 36, depth: Depth::Byte, scale: 1.0, par: 1.0, fps: 30.0, restored: true, ..Default::default() };
+    render(&p, r, &mut byte, None, true).unwrap();
     assert!(max_diff(&byte, &builtin) <= 1, "8-bit: {}", max_diff(&byte, &builtin));
     close_hosts();
 }
@@ -253,8 +274,8 @@ fn crash_and_hang_are_contained() {
 fn a_panicking_host_is_reported() {
     let bin = test_bundle().join("MilanTest.ofx.bundle").join("Contents").join("Win64").join("MilanTest.ofx");
     let (mut c, n) = Conn::start(&bin).unwrap();
-    assert_eq!(n, 4);
-    assert!(matches!(c.request(&Req::Panic, std::time::Duration::from_secs(5)), Err(client::Fail::Crashed(_))));
+    assert_eq!(n, 7);
+    assert!(matches!(c.request(&Req::Panic, Some(std::time::Duration::from_secs(5))), Err(client::Fail::Crashed(_))));
 }
 
 /// R33b acceptance, needs ffmpeg: a render runs OFX plug-ins as the preview does. A project with an OFX invert on its
@@ -309,4 +330,238 @@ fn render_matches_preview_with_ofx_plugins() {
     drop(wk);
     close_hosts();
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// R33a: the FX window's rows follow the plug-in's layout (pages in order, groups with their members, hidden
+/// parameters left out, a transition's own progress parameter never shown) and the run-time state when there is one.
+#[test]
+fn layout_follows_pages_groups_and_state() {
+    let mut d = desc();
+    d.params[0].children = vec!["tint".into(), "grp".into(), "nope".into()];
+    d.params.push(ParamDesc { children: vec!["flag".into()], ..param("page2", "Page", &[]) });
+    let mut p = Plugin { info: leak_info(&d), binary: PathBuf::new(), desc: d.clone(), depth: Depth::Float, specs: HashMap::new() };
+    for (i, s) in p.info.params.iter().enumerate() {
+        p.specs.entry(param_of(&d, s.key).to_string()).or_default().push(i);
+    }
+    let names = |rows: &[Row]| {
+        rows.iter()
+            .map(|r| match r {
+                Row::Group { label, open, .. } => format!("G:{label}{}", if *open { "" } else { "(closed)" }),
+                Row::Heading(h) => format!("H:{h}"),
+                Row::Param { label, enabled, options, .. } => format!("{label}{}{}", if *enabled { "" } else { "(off)" }, options.as_ref().map_or(String::new(), |o| format!("[{}]", o.join(",")))),
+                Row::Button { label, .. } => format!("B:{label}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = layout_of(&p, None, &|_, d| d);
+    assert_eq!(names(&rows), ["H:PAGE", "TINT", "G:GRP", "AMOUNT", "COUNT", "H:PAGE2", "FLAG", "MODE[A,B,C]", "POS X", "POS Y", "IDX X", "IDX Y", "IDX Z", "NOTE", "B:GO", "EMPTY[]"]);
+    // A closed group hides its members; the plug-in's run-time state hides, greys, relabels and refills options.
+    let rows = layout_of(&p, None, &|g, _| g != "grp");
+    assert!(names(&rows).contains(&"G:GRP(closed)".to_string()) && !names(&rows).iter().any(|n| n == "AMOUNT"));
+    let st: HashMap<String, ParamState> = [
+        ("tint", ParamState { name: "tint".into(), secret: true, enabled: true, label: "TINT".into(), options: vec![] }),
+        ("count", ParamState { name: "count".into(), secret: false, enabled: false, label: "Count!".into(), options: vec![] }),
+        ("empty", ParamState { name: "empty".into(), secret: false, enabled: true, label: "EMPTY".into(), options: vec!["X".into(), "Y".into()] }),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect();
+    let rows = layout_of(&p, Some(&st), &|_, d| d);
+    let n = names(&rows);
+    assert!(!n.iter().any(|x| x == "TINT") && n.contains(&"Count!(off)".to_string()) && n.contains(&"EMPTY[X,Y]".to_string()), "{n:?}");
+    // The colour hint: a camera log default on an input colour space choice, once.
+    let mut c = desc();
+    c.id = "com.example.log".into();
+    c.params.push(ParamDesc { options: ["ARRI LogC4", "sRGB", "Rec.709 Gamma 2.4"].iter().map(|s| s.to_string()).collect(), ..param("inputColorSpace", "Choice", &[0.0]) });
+    c.params.last_mut().unwrap().label = "Input Color Space".into();
+    let info = leak_info(&c);
+    let id = info.id;
+    {
+        let mut r = Registry::default();
+        r.usable.insert(id.to_string(), Arc::new(Plugin { info, binary: PathBuf::new(), desc: c.clone(), depth: Depth::Float, specs: HashMap::new() }));
+        *REG.write().unwrap() = Arc::new(r);
+    }
+    let fx = plugins::new_fx(info, None);
+    let e = plugins::eval(&fx, 0.0).unwrap();
+    let hint = colour_hint(id, &fx.id, &e).expect("a hint");
+    assert!(hint.contains("Rec.709") && hint.contains("ARRI LogC4") && hint.contains("Input Color Space"), "{hint}");
+    let mut srgb = fx.clone();
+    srgb.params.insert("inputColorSpace".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.0, curve: Curve::Linear }] });
+    assert!(colour_hint(id, &fx.id, &plugins::eval(&srgb, 0.0).unwrap()).is_none(), "set to sRGB: no hint");
+    dismiss_hint(id);
+    assert!(colour_hint(id, &fx.id, &e).is_none() && hints_changed().unwrap().contains(id) && hints_changed().is_none());
+    assert!(is_bypassed("ofx:nope@1") && !is_bypassed(id) && !is_bypassed("milan.fx.invert"));
+    set_registry(&ScanCache::default(), &OfxPrefs::default());
+}
+
+/// R33b: an OFX transition and generator render through the host: the dissolve at p = 0.5 is the mean of A and B
+/// (Swap turns it round); the 16-bit solid colour generator fills the frame with its (premultiplied) colour.
+#[test]
+#[ignore]
+fn transition_and_generator_render_through_the_host() {
+    registered();
+    let a = ColorImage::new([16, 8], Color32::from_rgba_premultiplied(200, 100, 0, 255));
+    let b = ColorImage::new([16, 8], Color32::from_rgba_premultiplied(0, 100, 200, 255));
+    let mut tr = crate::project::Transition { plugin: DISSOLVE.into(), ..Default::default() };
+    let mut e = plugins::eval_transition(&tr).expect("an OFX transition evaluates");
+    add_frame_vals(&mut e, "ev.tr", true, 0.0, 8.0, 30.0, 1.0);
+    let mid = crate::engine::transition::mix(&e, &a, &b, 0.5, 1);
+    assert_eq!(mid.pixels[0].to_array(), [100, 100, 100, 255], "{:?}", failure(DISSOLVE));
+    assert_eq!(crate::engine::transition::mix(&e, &a, &b, 0.25, 1).pixels[5].to_array(), [150, 100, 50, 255]);
+    tr.params.insert("swap".into(), 1.0);
+    let mut e = plugins::eval_transition(&tr).unwrap();
+    add_frame_vals(&mut e, "ev.tr", true, 0.0, 8.0, 30.0, 1.0);
+    assert_eq!(crate::engine::transition::mix(&e, &a, &b, 0.25, 1).pixels[5].to_array(), [50, 100, 150, 255]);
+    assert!(failure(DISSOLVE).is_none());
+    // The generator, with and without a frame plan (a thumbnail).
+    let info = plugins::find(SOLID).unwrap();
+    assert_eq!((info.kind, find(SOLID).unwrap().depth), (PluginKind::Generator, Depth::Short));
+    let fx = plugins::new_fx(info, None);
+    let g = plugins::eval(&fx, 0.0).unwrap();
+    assert!(crate::engine::generate::animated(&g));
+    let img = crate::engine::generate::render(&g, 8, 4, 0.0);
+    assert_eq!(img.pixels[0].to_array(), [255, 128, 64, 255], "{:?}", failure(SOLID));
+    let mut half = fx.clone();
+    half.params.insert("color.a".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.5, curve: Curve::Linear }] });
+    let mut g = plugins::eval(&half, 0.0).unwrap();
+    add_frame_vals(&mut g, &half.id, restored(&half), 0.0, 4.0, 30.0, 1.0);
+    assert_eq!(crate::engine::generate::render(&g, 8, 4, 0.0).pixels[31].to_array(), [128, 64, 32, 128]);
+    assert!(failure(SOLID).is_none());
+    close_hosts();
+}
+
+fn wait_idle(id: &str) {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while busy(id).is_some() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(busy(id).is_none(), "the button never returned");
+}
+
+/// R33a: what a plug-in does to its own parameters reaches Milan: a new instance's starting values (the seed), a
+/// value set while rendering (the render scale it saw), hidden and greyed parameters, labels and choice options
+/// changed at run time, push buttons (with the plug-in's message, as the user's own edit), and a plug-in error shown
+/// as the plug-in worded it.
+#[test]
+#[ignore]
+fn plug_in_edits_buttons_state_and_messages() {
+    registered();
+    let _ = take_edits();
+    let info = plugins::find(PARAMS).unwrap();
+    let mut fx = plugins::new_fx(info, None);
+    assert!(!restored(&fx), "a new instance holds no values yet");
+    let gray = || ColorImage::new([8, 8], Color32::from_gray(100));
+    let mut img = gray();
+    vfx::apply(&mut img, &eval_at(PARAMS, Some(fx.clone()), 0.0, 8.0), 1);
+    assert!(failure(PARAMS).is_none(), "{:?}", failure(PARAMS));
+    assert_eq!(img.pixels[0].to_array(), [100, 100, 100, 255], "amount 1: unchanged");
+    let eds = take_edits();
+    assert_eq!(eds.len(), 1);
+    let ed = &eds[0];
+    assert!(ed.initial && !ed.by_user && ed.instance == fx.id && ed.plugin == PARAMS);
+    // Milan stores 32-bit floats: a large integer is rounded to one (on both sides, so they agree).
+    let seed = 123_456_789f32 as f64;
+    assert!(ed.edits.iter().any(|e| e.0 == "seed" && e.1 == PVal::N(vec![seed])), "{:?}", ed.edits);
+    assert!(ed.edits.iter().any(|e| e.0 == "note" && e.1 == PVal::S("hi".into())));
+    // Values the user set first stand; the seed fills in.
+    fx.params.insert("amount".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 2.0, curve: Curve::Linear }] });
+    assert!(apply_edits(&mut fx, &ed.edits, ed.initial));
+    assert_eq!((fx.params["seed"].keys[0].v, fx.params["amount"].keys[0].v, fx.text["note"].as_str()), (seed as f32, 2.0, "hi"));
+    assert!(!apply_edits(&mut fx, &ed.edits, true), "applied once");
+    // The run-time state: Extra is hidden in Simple mode, shown in Advanced; the layout follows it.
+    let rows = |fx: &Fx| layout(PARAMS, &fx.id, &|_, d| d).unwrap();
+    let labels = |rows: &[Row]| rows.iter().filter_map(|r| if let Row::Param { label, .. } = r { Some(label.clone()) } else { None }).collect::<Vec<_>>();
+    let st = state(&fx.id).expect("reported with the first frame");
+    assert!(st["extra"].secret && st["sawScale"].secret);
+    assert!(!labels(&rows(&fx)).contains(&"Extra".to_string()));
+    assert!(matches!(&rows(&fx)[0], Row::Group { label, open: true, .. } if label == "Controls"));
+    assert_eq!(rows(&fx).iter().filter(|r| matches!(r, Row::Button { .. })).count(), 3);
+    // Amount 2 now (restored): the picture doubles; the plug-in sets the render scale it saw (0.5: a preview-size picture).
+    let mut img = gray();
+    vfx::apply(&mut img, &eval_at(PARAMS, Some(fx.clone()), 0.0, 16.0), 1);
+    assert_eq!(img.pixels[0].to_array(), [200, 200, 200, 255]);
+    let eds = take_edits();
+    let saw = eds.iter().flat_map(|e| &e.edits).find(|e| e.0 == "sawScale").expect("the render scale");
+    assert_eq!(saw.1, PVal::N(vec![0.5]));
+    for ed in &eds {
+        apply_edits(&mut fx, &ed.edits, ed.initial);
+    }
+    assert_eq!(fx.params["sawScale"].keys[0].v, 0.5);
+    fx.params.insert("mode".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.0, curve: Curve::Linear }] });
+    vfx::apply(&mut gray(), &eval_at(PARAMS, Some(fx.clone()), 0.0, 8.0), 1);
+    assert!(!state(&fx.id).unwrap()["extra"].secret, "Advanced shows Extra");
+    assert!(labels(&rows(&fx)).contains(&"Extra".to_string()));
+    let _ = take_edits();
+    // Push buttons: Bump adds one to Amount with a message; Refresh refills the list, relabels it, greys Note and picks
+    // "Three"; Broken fails with the plug-in's own error and does not bypass the plug-in.
+    press(None, &fx, 0.0, "bump", (8, 8), 30.0, 1.0);
+    wait_idle(&fx.id);
+    let eds = take_edits();
+    assert_eq!(eds.len(), 1);
+    assert!(eds[0].by_user && !eds[0].initial);
+    assert!(eds[0].edits.contains(&("amount".to_string(), PVal::N(vec![3.0]))), "{:?}", eds[0].edits);
+    assert!(apply_edits(&mut fx, &eds[0].edits, false));
+    assert_eq!(fx.params["amount"].keys[0].v, 3.0);
+    assert_eq!(note(&fx.id).as_deref(), Some("Message: [bump] bumped to 3"));
+    press(None, &fx, 0.0, "refresh", (8, 8), 30.0, 1.0);
+    wait_idle(&fx.id);
+    let eds = take_edits();
+    assert!(eds[0].edits.contains(&("list".to_string(), PVal::N(vec![2.0]))));
+    let st = state(&fx.id).unwrap();
+    assert_eq!((st["list"].options.clone(), st["list"].label.as_str(), st["note"].enabled), (vec!["One".to_string(), "Two".into(), "Three".into()], "List (3)", false));
+    let r = rows(&fx);
+    assert!(r.iter().any(|r| matches!(r, Row::Param { label, options: Some(o), .. } if label == "List (3)" && o.len() == 3)));
+    assert!(r.iter().any(|r| matches!(r, Row::Param { label, enabled: false, .. } if label == "Note")));
+    assert!(note(&fx.id).is_none(), "a button without messages clears the last ones");
+    press(None, &fx, 0.0, "broken", (8, 8), 30.0, 1.0);
+    wait_idle(&fx.id);
+    assert_eq!(note(&fx.id).as_deref(), Some("Error: [broken] Could not do that."));
+    assert!(failure(PARAMS).is_none() && take_edits().is_empty());
+    // A render error carries the plug-in's words, verbatim, into the failure the FX window and Plug-In Manager show.
+    fx.params.insert("mode".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 2.0, curve: Curve::Linear }] });
+    vfx::apply(&mut gray(), &eval_at(PARAMS, Some(fx.clone()), 0.0, 8.0), 1);
+    let why = failure(PARAMS).expect("bypassed");
+    assert!(why.contains("Error: [renderer] No Vulkan physical device is available. (7)"), "{why}");
+    assert!(bypassed_because(PARAMS).unwrap().contains("No Vulkan physical device is available."));
+    assert!(entries().iter().any(|e| e.id == PARAMS && matches!(&e.status, Status::Failed(w) if w.contains("No Vulkan"))));
+    clear_failures();
+    close_hosts();
+}
+
+/// R33b bench: the plug-in host round trip at 1080p (shared memory both ways, the OFX invert) against the built-in
+/// invert on the same picture. Prints BENCH lines for tools/bench.ps1.
+#[test]
+#[ignore]
+fn bench_ofx_roundtrip_1080p() {
+    registered();
+    let (w, h) = (1920usize, 1080usize);
+    let src = ColorImage { size: [w, h], pixels: (0..w * h).map(|i| Color32::from_rgba_premultiplied((i % 251) as u8, (i / w % 253) as u8, (i % 97) as u8, 255)).collect() };
+    let builtin = plugins::eval(&plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None), 0.0).unwrap();
+    let k = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let time = |e: &FxEval, k: usize| {
+        let mut img = src.clone();
+        vfx::apply(&mut img, e, k); // warm: the host starts, the instance is made
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            img = src.clone();
+            vfx::apply(&mut img, e, k);
+        }
+        (t.elapsed().as_secs_f64() * 1000.0 / 20.0, img)
+    };
+    let (base, want) = time(&builtin, k);
+    let (float, got) = time(&eval_at(INVERT, None, 0.0, h as f64), 1);
+    assert!(max_diff(&got, &want) <= 1 && failure(INVERT).is_none());
+    let p = find(INVERT).unwrap();
+    let byte = {
+        let r = Render { index: p.desc.index, instance: "bench8".into(), w: w as u32, h: h as u32, depth: Depth::Byte, scale: 1.0, par: 1.0, fps: 30.0, restored: true, ..Default::default() };
+        let mut img = src.clone();
+        render(&p, r.clone(), &mut img, None, true).unwrap();
+        let t = std::time::Instant::now();
+        for _ in 0..20 {
+            render(&p, r.clone(), &mut img, None, true).unwrap();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / 20.0
+    };
+    println!("BENCH ofx_roundtrip_1080p float_ms={float:.2} byte_ms={byte:.2} builtin_invert_ms={base:.2} float_overhead_ms={:.2}", float - base);
+    close_hosts();
 }
