@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/brand/milan-pro-256.png" width="128" height="128" alt="Milan Pro icon"></p>
+<p align="center"><img src="assets/brand/readme-banner-960x260.png" width="720" alt="Milan Pro: Nonlinear Editing System"></p>
 
 # Milan Pro
 
