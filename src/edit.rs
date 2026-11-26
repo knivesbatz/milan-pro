@@ -340,6 +340,46 @@ pub fn set_stream(project: &mut Project, ids: &[String], video: bool, n: u32) ->
     changed(project, done)
 }
 
+/// R10b: stereo pairs of audio event `c`'s stream (channels / 2, rounded up): 0 for mono and stereo media. The media's
+/// probed channel count is the first stream's; another stream (or media probed before R10a) asks ffprobe, once.
+pub fn channel_pairs(project: &Project, c: &Clip) -> u32 {
+    let Some(m) = media_of(project, c).filter(|m| m.generator.is_none() && !m.nested) else { return 0 };
+    let ch = if c.stream == 0 && m.channels > 0 { m.channels as usize } else { crate::engine::mix::channels(&m.path, c.stream).unwrap_or(2) };
+    if ch > 2 { ch.div_ceil(2) as u32 } else { 0 }
+}
+
+/// R10b: Channels ▸ of multichannel audio events `ids`: stereo pair `pair` (from 0), or None for the downmix.
+pub fn set_pair(project: &mut Project, ids: &[String], pair: Option<u32>) -> bool {
+    let pairs: HashMap<String, u32> = project.timeline.audio_tracks.iter().flat_map(|t| &t.clips).filter(|c| ids.contains(&c.id)).map(|c| (c.id.clone(), channel_pairs(project, c))).collect();
+    let mut done = false;
+    for c in project.timeline.audio_tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| c.pair != pair) {
+        if pairs.get(&c.id).is_some_and(|&n| n > 1 && pair.is_none_or(|k| k < n)) {
+            c.pair = pair;
+            done = true;
+        }
+    }
+    changed(project, done)
+}
+
+/// R10b: Stream ▸ Add All Streams as Tracks: audio event `id`'s other streams, each as a copy of the event on a new
+/// audio track under its own (in stream order), as VEGAS adds a multi-stream file. The new events' ids.
+pub fn add_stream_tracks(project: &mut Project, id: &str) -> Vec<String> {
+    let Some((ti, c)) = project.timeline.audio_tracks.iter().enumerate().find_map(|(i, t)| t.clips.iter().find(|c| c.id == id).map(|c| (i, c.clone()))) else { return Vec::new() };
+    let Some(n) = media_of(project, &c).map(|m| m.audio_streams).filter(|n| *n > 1) else { return Vec::new() };
+    let name = project.timeline.audio_tracks[ti].name.clone();
+    let mut ids = Vec::new();
+    for (k, s) in (0..n).filter(|s| *s != c.stream).enumerate() {
+        let mut t = Track::new(&format!("{name} (Stream {})", s + 1), TrackKind::Audio);
+        let mut e = c.clone();
+        (e.id, e.stream, e.group) = (uuid::Uuid::new_v4().to_string(), s, None);
+        ids.push(e.id.clone());
+        t.clips.push(e);
+        project.timeline.audio_tracks.insert(ti + 1 + k, t);
+    }
+    changed(project, !ids.is_empty());
+    ids
+}
+
 /// Preferences › Audio "Normalize peak level" (VEGAS's default).
 pub const NORMALIZE_PEAK_DB: f32 = -0.1;
 
@@ -2508,7 +2548,7 @@ pub fn env_clamp(kind: EnvKind, v: f32) -> f32 {
 /// The track envelopes Milan Pro plays: Volume, Pan and Mute on audio tracks, Mute, Composite Level and Fade to
 /// Color on video tracks.
 pub fn env_fits(kind: EnvKind, video: bool) -> bool {
-    matches!((kind, video), (EnvKind::Volume | EnvKind::Pan | EnvKind::Mute, false) | (EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::FadeToColor, true))
+    matches!((kind, video), (EnvKind::Volume | EnvKind::Pan | EnvKind::Mute | EnvKind::SurroundX | EnvKind::SurroundY, false) | (EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::FadeToColor, true))
 }
 
 /// Height of value `v` in the envelope's lane, 0 (bottom) ..= 1 (top). Volume: 0 dB at 0.7, linear up to +6 dB at the
@@ -4144,6 +4184,35 @@ pub fn place_on_new_tracks(p: &mut Project, idx: usize, at: f64) -> Vec<String> 
 mod tests {
     use super::*;
 
+    /// R10b acceptance: a 3-stream MOV, asked to (Stream ▸ Add All Streams as Tracks), plays as 3 audio events on 3
+    /// tracks, streams 1, 2 and 3; Channels ▸ picks a pair of a 5.1 source only.
+    #[test]
+    fn a_three_stream_mov_adds_three_audio_events_when_asked() {
+        let mut p = Project::new("t");
+        let m = MediaItem { id: "m".into(), name: "three.mov".into(), media_type: MediaType::Video, duration: 4.0, sample_rate: Some(48_000), audio_streams: 3, video_streams: 1, channels: 6, ..Default::default() };
+        p.media_pool = vec![m.clone()];
+        let c = Clip::from_media(&m, 0.0);
+        let id = c.id.clone();
+        p.timeline.audio_tracks[0].clips.push(c);
+        let before = p.timeline.audio_tracks.len();
+        let ids = add_stream_tracks(&mut p, &id);
+        assert_eq!(ids.len(), 2);
+        let tl = &p.timeline;
+        assert_eq!(tl.audio_tracks.len(), before + 2);
+        let streams: Vec<u32> = tl.audio_tracks[..3].iter().map(|t| t.clips[0].stream).collect();
+        assert_eq!(streams, [0, 1, 2]);
+        assert!(tl.audio_tracks[1].name.ends_with("(Stream 2)"));
+        // Channels ▸ of the 5.1 stream: three pairs; a pair past them is refused; the downmix comes back.
+        assert_eq!(channel_pairs(&p, &p.timeline.audio_tracks[0].clips[0]), 3);
+        assert!(set_pair(&mut p, std::slice::from_ref(&id), Some(2)));
+        assert!(!set_pair(&mut p, std::slice::from_ref(&id), Some(3)));
+        assert_eq!(p.timeline.audio_tracks[0].clips[0].pair, Some(2));
+        assert!(set_pair(&mut p, std::slice::from_ref(&id), None));
+        // A stereo file has no pairs to pick.
+        let st = MediaItem { id: "s".into(), channels: 2, audio_streams: 1, media_type: MediaType::Audio, ..Default::default() };
+        p.media_pool.push(st.clone());
+        assert_eq!(channel_pairs(&p, &Clip::from_media(&st, 0.0)), 0);
+    }
 
     /// R12: Render to New Track puts the file at the start of what was rendered, on new tracks above the others.
     #[test]

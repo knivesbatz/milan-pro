@@ -29,6 +29,7 @@ mod properties;
 mod scopes;
 pub mod splash;
 mod status;
+mod surround;
 #[allow(dead_code)] // full token set from the spec; later stages use the rest
 pub mod theme;
 mod timeline;
@@ -51,7 +52,7 @@ pub use keyframes::set_at as set_key_at;
 pub use explorer::{Explorer, draw_explorer, draw_explorer_toolbar, is_media};
 pub use loudness::{LoudPrefs, Loudness, loudness_meters};
 pub use master_bus::{MasterView, master_bus, master_bus_toolbar};
-pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_console, show_level, MASTER as MASTER_LEVEL};
+pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_console, show_level, show_levels, MASTER as MASTER_LEVEL};
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use overlays::{OverlaysView, draw_overlays, draw_overlays_toolbar, overlay_dialogs, place_in_layout};
 pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
@@ -64,6 +65,7 @@ pub use status::draw_status_bar;
 pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, request_context_menu, take_command_edit, take_crumb};
 pub use toolbar::{Bar, draw_main_toolbar};
 pub use trackmotion::TrackMotionWin;
+pub use surround::{SurroundWin, key_pan};
 pub use transport::{Cmd, Playback, TransportState, add_region, draw_rate, draw_transport, run as run_cmd};
 pub use trimmer::{EditSide, Trimmer, draw_trimmer, draw_trimmer_toolbar};
 
@@ -88,6 +90,8 @@ pub enum ToolWin {
     /// A compositing parent's Parent Motion.
     ParentMotion(String),
     Fx(crate::edit::FxTarget),
+    /// R10b: an audio track's Surround Panner.
+    Surround(String),
 }
 
 /// A plug-in tile dragged from a chooser: a ready instance of its preset (a transition's values as keys at 0).
@@ -148,7 +152,7 @@ pub fn take_tool(ctx: &eframe::egui::Context) -> Option<ToolWin> {
 /// The tool windows' layers: plain keys over them (Delete) are theirs, as over a dock window.
 pub fn over_tool_window(ctx: &eframe::egui::Context) -> bool {
     let layer = ctx.pointer_hover_pos().and_then(|p| ctx.layer_id_at(p));
-    [pancrop::ID, trackmotion::ID, fx_window::ID].iter().any(|id| layer == Some(dialogs::tool_layer(id)))
+    [pancrop::ID, trackmotion::ID, fx_window::ID, surround::ID].iter().any(|id| layer == Some(dialogs::tool_layer(id)))
 }
 
 /// Drag-and-drop payload for media headed to the timeline.

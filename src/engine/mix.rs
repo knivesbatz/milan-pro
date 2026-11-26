@@ -579,18 +579,15 @@ impl Meter {
     }
 
     /// R10a: channels the meter was last fed with.
-    #[allow(dead_code)] // read by the Mixing Console's per-channel meters (R10b)
     pub fn channels(&self) -> usize {
         self.channels.load(Relaxed).clamp(1, MAX)
     }
 
     /// R10a: every channel's peak since the last call (reading resets them), and every channel's RMS.
-    #[allow(dead_code)]
     pub fn take_peaks_all(&self) -> [f32; MAX] {
         std::array::from_fn(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
     }
 
-    #[allow(dead_code)]
     pub fn rms_all(&self) -> [f32; MAX] {
         std::array::from_fn(|c| f32::from_bits(self.rms[c].load(Relaxed)))
     }

@@ -128,6 +128,8 @@ pub fn pan_matrix(pt: PanType, sp: &SurroundPan, x_trim: f32, ch: usize) -> [[f3
         (g[0][LFE], g[1][LFE]) = (0.5, 0.5);
         return g;
     }
+    // R10b: the Surround Panner's Constant Power pan type, whatever the track's.
+    let pt = if sp.constant_power { PanType::ConstantPower } else { pt };
     let s = 1.0 - sp.smooth.clamp(0.0, 1.0);
     let x = (sp.x + x_trim).clamp(-1.0, 1.0) * s;
     let y = sp.y.clamp(-1.0, 1.0) * s;

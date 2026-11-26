@@ -164,6 +164,8 @@ pub struct MeridianApp {
     /// The modeless Event Pan/Crop and Track Motion windows.
     pan_crop: Option<ui::PanCropWin>,
     track_motion: Option<ui::TrackMotionWin>,
+    /// R10b: the Surround Panner.
+    surround: Option<ui::SurroundWin>,
     /// The FX window (event, track or output FX, generated media or a transition).
     fx_win: Option<ui::FxWindow>,
     /// User plug-in presets (%APPDATA%\MilanPro\presets.json), read at start and after the FX window saves or deletes one.
@@ -532,6 +534,7 @@ impl MeridianApp {
             default_track: None,
             pan_crop: None,
             track_motion: None,
+            surround: None,
             fx_win: None,
             // The demo harness never reads the user's files.
             user_presets: if launch.demo { Vec::new() } else { crate::engine::plugins::load_user_presets() },
@@ -1134,6 +1137,7 @@ impl eframe::App for MeridianApp {
             Some(ui::ToolWin::TrackMotion(id)) => self.track_motion = ui::TrackMotionWin::open(&self.project, &id),
             Some(ui::ToolWin::ParentMotion(id)) => self.track_motion = ui::TrackMotionWin::open_parent(&self.project, &id),
             Some(ui::ToolWin::Fx(target)) => self.open_fx(target),
+            Some(ui::ToolWin::Surround(id)) => self.surround = ui::SurroundWin::open(&self.project, &id),
             None => {}
         }
         if let Some(h) = ui::take_hint(ctx) {
@@ -1170,13 +1174,17 @@ impl eframe::App for MeridianApp {
                 }
                 self.history.push(before);
             }
+            // R10b: a placed audio event whose media has more than one audio stream says so, and how to add the rest.
+            let streams = placed.ids.iter().filter_map(|id| self.project.timeline.audio_tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == *id)).filter_map(|c| crate::edit::media_of(&self.project, c)).map(|m| m.audio_streams).max().unwrap_or(0);
             if !placed.ids.is_empty() {
                 (self.sel.clips, self.sel.list_focus) = (placed.ids, false);
             }
             self.message = if !placed.errors.is_empty() {
                 Some(format!("Import failed: {}", placed.errors.join("; ")))
+            } else if placed.refused {
+                Some("Drop refused: the track is locked".to_string())
             } else {
-                placed.refused.then(|| "Drop refused: the track is locked".to_string())
+                (streams > 1).then(|| format!("The media has {streams} audio streams: Event › Stream › Add All Streams as Tracks puts each one on a track of its own"))
             };
         }
         // Not during a drag either: its undo step was cloned at its start, without this media (it waits queued).

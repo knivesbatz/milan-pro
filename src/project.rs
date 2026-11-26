@@ -160,6 +160,15 @@ impl BusMode {
         }
     }
 
+    /// Short channel names in channel order.
+    pub fn channel_names(self) -> &'static [&'static str] {
+        match self {
+            BusMode::Stereo => &["L", "R"],
+            BusMode::Surround51 => &["L", "R", "C", "LFE", "Ls", "Rs"],
+            BusMode::Surround71 => &["L", "R", "C", "LFE", "Lb", "Rb", "Ls", "Rs"],
+        }
+    }
+
     pub fn surround(self) -> bool {
         self != BusMode::Stereo
     }
@@ -246,6 +255,8 @@ impl AudioQuality {
 /// The pan point `x`, `y` is in the room, -1..1 each (y = 1 is the front). `off` are the speakers switched off
 /// (bits in channel order: FL FR C LFE BL BR SL SR), as VEGAS's clicked-out speaker icons. `lfe` sends the track to
 /// the LFE channel only (VEGAS's track LFE button). `smooth` (0..1) is VEGAS's Smoothness: 1 pans nothing at all.
+/// R10b: `constant_power` is the Surround Panner's Constant Power pan type (power kept at 1 across the room); off
+/// (Smooth) pans by the track's own Pan Type (Balance 0 dB by default: no dip in the middle).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SurroundPan {
@@ -254,12 +265,14 @@ pub struct SurroundPan {
     pub smooth: f32,
     pub off: u8,
     pub lfe: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub constant_power: bool,
 }
 
 impl Default for SurroundPan {
     /// The front centre, every speaker on (VEGAS's new track).
     fn default() -> Self {
-        Self { x: 0.0, y: 1.0, smooth: 0.0, off: 0, lfe: false }
+        Self { x: 0.0, y: 1.0, smooth: 0.0, off: 0, lfe: false, constant_power: false }
     }
 }
 

@@ -147,6 +147,7 @@ fn color(t: &Theme, kind: EnvKind) -> Color32 {
         EnvKind::FadeToColor => FADE_TO_COLOR,
         EnvKind::TransitionProgress => super::TRANSITION,
         EnvKind::FxParam => FX_PARAM,
+        EnvKind::SurroundX | EnvKind::SurroundY => t.envelope_pan,
         _ => t.envelope_volume,
     }
 }
@@ -213,6 +214,9 @@ pub(super) fn value_text(kind: EnvKind, v: f32) -> String {
         EnvKind::FadeToColor => format!("{:.1}% {}", v.abs() * 100.0, if v < 0.0 { "Bottom" } else { "Top" }),
         EnvKind::MotionBlur => format!("Motion Blur {v:.3} s"),
         EnvKind::Supersampling => format!("Supersampling {}", v.round()),
+        // R10b: the Surround Panner's keyframes.
+        EnvKind::SurroundX => format!("Surround {:.1}% {}", v.abs() * 100.0, if v < 0.0 { "Left" } else { "Right" }),
+        EnvKind::SurroundY => format!("Surround {:.1}% {}", v.abs() * 100.0, if v < 0.0 { "Rear" } else { "Front" }),
         _ => format!("{:.1} %", v * 100.0),
     }
 }

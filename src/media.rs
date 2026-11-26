@@ -188,6 +188,8 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
     }
     if let Some(s) = audio {
         item.sample_rate = s["sample_rate"].as_str().and_then(|sr| sr.parse().ok());
+        // R10a: its channels (6 for 5.1), for Channels ▸ and a 5.1 / 7.1 track.
+        item.channels = s["channels"].as_u64().unwrap_or(0) as u32;
         if item.codec.is_none() {
             item.codec = s["codec_name"].as_str().map(String::from);
         }
@@ -302,6 +304,8 @@ mod tests {
 
     #[test]
     fn streams_classify_before_extension() {
+        let m = parse("wav", r#"{"streams":[{"codec_type":"audio","sample_rate":"48000","channels":6}]}"#);
+        assert_eq!(m.channels, 6, "R10a: a 5.1 file's channels");
         let m = parse("mts", r#"{"streams":[{"codec_type":"video","codec_name":"h264"},{"codec_type":"audio","sample_rate":"48000"}]}"#);
         assert_eq!(m.media_type, MediaType::Video);
         let m = parse("mp4", r#"{"streams":[{"codec_type":"audio","sample_rate":"48000"}]}"#);

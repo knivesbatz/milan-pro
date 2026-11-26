@@ -200,6 +200,17 @@ fn media_page(ui: &mut Ui, m: Option<&MediaItem>, fps: f64) {
         ("Frame size:", opt(m.width.zip(m.height).map(|(w, h)| format!("{w}x{h}")))),
         ("Frame rate:", opt(m.frame_rate.map(|f| format!("{f:.3} fps")))),
         ("Sample rate:", opt(m.sample_rate.map(|s| format!("{s} Hz")))),
+        // R10b: the audio streams (Event › Stream picks one) and the first one's channels (Event › Channels picks a
+        // pair of a multichannel stream).
+        ("Audio streams:", if m.audio_streams > 0 { m.audio_streams.to_string() } else { "-".into() }),
+        ("Channels:", match m.channels {
+            0 => "-".into(),
+            1 => "1 (mono)".into(),
+            2 => "2 (stereo)".into(),
+            6 => "6 (5.1: L, R, C, LFE, Ls, Rs)".into(),
+            8 => "8 (7.1: L, R, C, LFE, Lb, Rb, Ls, Rs)".into(),
+            n => n.to_string(),
+        }),
         ("Codec:", opt(m.codec.clone())),
         ("Rotation:", format!("{} degrees", m.rotation)),
         ("Alpha channel:", yes(m.has_alpha)),

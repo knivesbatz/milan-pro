@@ -145,6 +145,9 @@ impl MeridianApp {
             channels: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map(|c| c.channels).unwrap_or_default(),
             stream: clip.map_or(0, |c| c.stream),
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
+            pair: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| c.pair),
+            pairs: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map_or(0, |c| edit::channel_pairs(&self.project, c)),
+            audio_streams: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| edit::media_of(&self.project, c)).map_or(0, |m| m.audio_streams),
             quickfade: self.prefs.quickfade,
             audio_follows_velocity: tl.audio_follows_velocity,
             assignable_fx: !tl.audio.fx.is_empty(),
@@ -1114,6 +1117,21 @@ impl MeridianApp {
                     _ => edit::loop_clips(p, &ids),
                 });
             }
+            SetPair(p) => {
+                let ids = self.sel.clips.clone();
+                self.edit(|pr| edit::set_pair(pr, &ids, p));
+            }
+            AddStreamTracks => {
+                let Some(id) = self.focus_clip(false) else { return };
+                let mut n = 0;
+                self.edit(|p| {
+                    n = edit::add_stream_tracks(p, &id).len();
+                    n > 0
+                });
+                if n > 0 {
+                    self.message = Some(format!("Added {n} audio track{} with the event's other streams", if n == 1 { "" } else { "s" }));
+                }
+            }
             EventSwitch(_) | SetResample(_) | SetChannels(_) | SetStream(_) => {
                 let ids = self.sel.clips.clone();
                 // Stream ▸ lists the focus event's streams, for the selected events of its kind.
@@ -1193,6 +1211,11 @@ impl MeridianApp {
                 }
             }
             EventProperties => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
+            // R10b: View › Window › Surround Panner, on the focus audio track (the first one without a focus).
+            SurroundPanner => {
+                let i = self.focus_of(false).unwrap_or(0);
+                self.surround = self.project.timeline.audio_tracks.get(i).and_then(|t| ui::SurroundWin::open(&self.project, &t.id));
+            }
             RenameEvent => {
                 if let Some(id) = self.sel.clips.last() {
                     ui::rename_event(ctx, id);
@@ -2136,7 +2159,7 @@ impl MeridianApp {
         (self.slideshow, self.audio_transition) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
-        (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
+        (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
         self.message = None;
@@ -2340,6 +2363,9 @@ impl MeridianApp {
         }
         if self.track_motion.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
             self.track_motion = None;
+        }
+        if self.surround.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
+            self.surround = None;
         }
         if let Some(w) = &mut self.fx_win {
             let (open, msg) = w.show(ctx, &mut self.project, &mut self.history, &mut self.user_presets);
@@ -2841,6 +2867,36 @@ impl MeridianApp {
                 }
                 if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
                     edit::set_send(t, &a, 0.5, true);
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
+            // R10b review: a 5.1 project, the first track a stereo track panned to the front left in the Surround
+            // Panner (keyed from the front left to the rear right), the second a 5.1 track; the Mixing Console lit
+            // with per-channel levels ("mixer-51"), or the Surround Panner open ("surround").
+            "mixer-51" | "surround" => {
+                use crate::project::{AudioLayout, BusMode, SurroundPan};
+                self.project.settings.layout = BusMode::Surround51;
+                let fps = self.project.settings.frame_rate;
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    t.surround = SurroundPan { x: -0.7, y: 0.6, ..Default::default() };
+                    let sp = t.surround;
+                    ui::key_pan(&mut t.envelopes, &sp, 4.0, (0.8, -0.7), fps);
+                }
+                if let Some(t) = self.project.timeline.audio_tracks.get_mut(1) {
+                    t.layout = AudioLayout::Surround51;
+                }
+                self.project.timeline.cursor_position = 1.5;
+                self.exec(ctx, InsertAudioBus);
+                let tl = &self.project.timeline;
+                let ids: Vec<String> = tl.audio_tracks.iter().map(|t| t.id.clone()).chain(tl.audio.buses.iter().map(|b| b.id.clone())).chain([ui::MASTER_LEVEL.to_string()]).collect();
+                for (k, id) in ids.iter().enumerate() {
+                    let d = -4.0 - 4.0 * k as f32;
+                    ui::show_levels(ctx, id, &[d, d - 2.0, d - 6.0, d - 18.0, d - 9.0, d - 11.0]);
+                }
+                if what == "mixer-51" {
+                    self.dock.open(crate::ui::dock::Panel::MixingConsole);
+                } else if let Some(id) = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()) {
+                    self.surround = ui::SurroundWin::open(&self.project, &id);
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }

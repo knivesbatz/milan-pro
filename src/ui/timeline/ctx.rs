@@ -953,6 +953,11 @@ fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[Str
             }
         }
     });
+    // R10b: the Surround Panner (it places a stereo track in a 5.1 / 7.1 project; a 5.1 / 7.1 track goes channel for
+    // channel).
+    if entry(ui, "Surround Pa&nner...", "", true, Mark::None) {
+        crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Surround(project.timeline.audio_tracks[i].id.clone()));
+    }
     // R10a: Channel Layout ▸ (Stereo, as VEGAS's tracks; a 5.1 / 7.1 track decodes its media to that layout).
     let mut layout = None;
     sub(ui, "Channel &Layout", true, |ui| {

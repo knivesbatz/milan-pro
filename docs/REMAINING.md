@@ -283,11 +283,11 @@ What matters most:
 | 7.58 | HDR media | MISSING | Transfer (PQ/HLG) and BT.2020 are not probed. HDR sources are converted as if SDR, which washes them out. That breaks the "never incorrectly interpret" rule. → R40a |
 | 7.59 | Variable frame rate media | DONE | `avg_frame_rate` rule plus the `fps` filter conform (`media.rs:166-171`, `vdecode.rs:48`) |
 | 7.60 | Interlaced video | DONE | `field_order` probe plus yadif (`media.rs:176`, `vdecode.rs:49`) |
-| 7.61 | Multichannel audio (media) | PARTIAL | R3b: Stream ▸ plays any audio (or video) stream of a multi-stream file (`Clip.stream`, `-map 0:a:N` in `engine/mix.rs`, `0:v:N` in `engine/vdecode.rs`; streams counted at import, `media.rs`); Channels ▸ Both / Left Only / Right Only / Combine / Swap (`mix::map_channels`). Tests `invert_phase_and_channels`, `streams_are_counted_by_kind`, `ffmpeg_second_stream_and_peak` (ignored, ffmpeg). Missing: sources are still downmixed to stereo, and nothing offers the extra streams on import. → R10a, R10b |
+| 7.61 | Multichannel audio (media) | DONE | R3b: Stream ▸ plays any audio (or video) stream of a multi-stream file (`Clip.stream`, `-map 0:a:N` in `engine/mix.rs`, `0:v:N` in `engine/vdecode.rs`; streams counted at import, `media.rs`); Channels ▸ Both / Left Only / Right Only / Combine / Swap (`mix::map_channels`). R10a: a 5.1 / 7.1 track plays every channel of the media. R10b: Channels ▸ picks a stereo pair of a multichannel stream (or its downmix), Stream ▸ Add All Streams as Tracks, a drop of multi-stream media says how many streams it has, Event Properties › Media shows the streams and channels. Tests `a_three_stream_mov_adds_three_audio_events_when_asked`, `ffmpeg_second_stream_and_peak` |
 | 7.62 | Professional camera formats | PARTIAL | AVCHD, XAVC and MXF decode through FFmpeg; untested. No spanned-clip joining. (R17a) Media timecode is read: `timecode` tags, QuickTime `tmcd`, MXF, BWF `time_reference`. → R41 |
 | 7.63 | Format compatibility system; every supported format tested | MISSING | No capability probe, no test corpus, no format report. → R37 |
 | 7.64 | Limitations, external dependencies and licensing documented | MISSING | → R37, R56 |
-| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). Extra audio streams can be picked with Stream ▸ (R3b) but are not offered on import, and extra channels are dropped silently. → R37, R40a, R10b |
+| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). (R10b) Extra audio streams are announced on a drop and can be added as tracks; extra channels play on a 5.1 / 7.1 track or are picked by pair. → R37, R40a |
 
 ### 2.8 Section 8: VEGAS project import
 
@@ -628,7 +628,7 @@ The inventory as found before R0:
 | Zoom | ZoomFramePerThumb, WaveZoomIn, WaveZoomOut | R2 (DONE) |
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a (DONE), R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
-| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c (DONE), R31, R10b, R8b (DONE), R59 |
+| Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c (DONE), R31, R10b (DONE), R8b (DONE), R59 |
 | Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a (DONE), R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
@@ -901,7 +901,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Resampling blends the two source frames around each frame's time, read on the source's own frame grid (`plan::event_source`, `EventPlan.next`, `composite::blend_frames`). Smart (VP23 "Frame blend") acts when the source rate differs from the project's or the event plays off speed; a source that lands on whole frames (60p at normal speed in 30p) is read as before. Optical Flow decodes through ffmpeg `minterpolate` (mci) on its own grid: correct but a few 1080p frames a second (shortcut in `vdecode.rs`). New projects resample Smart (VP16), the VP23 Welcome screen's projects start with resampling off, and a project saved before R3b opens with Disable so its renders do not change. Event Properties has no resample control (the Switches radios are it).
 - Maintain Aspect Ratio off stretches the crop to the frame (`plan::place`); Reduce Interlace Flicker is a vertical 1-2-1 blur of the source before the event FX (`composite::reduce_flicker`); Undersample rate holds each frame for 1/r project frames (Event Properties, 0.05-0.99).
 - Channels and Invert Phase act on the PCM as it is read, before the event FX; Combine is the mean of both sides. The audio track header's Switches › Invert Phase is built too (`Track.invert`).
-- Stream ▸ lists the focus event's streams (`MediaItem.audio_streams` / `video_streams`, counted at import; media probed before R3b counts as one stream until imported again) and sets them on the selected events of that kind. Another video stream, or Optical Flow, is decoded under its own source id; proxies are only used for stream 1. Waveforms still show the first audio stream (shortcut in `audio.rs`). R10b keeps the import warning and "add all streams as tracks".
+- Stream ▸ lists the focus event's streams (`MediaItem.audio_streams` / `video_streams`, counted at import; media probed before R3b counts as one stream until imported again) and sets them on the selected events of that kind. Another video stream, or Optical Flow, is decoded under its own source id; proxies are only used for stream 1. Waveforms still show the first audio stream (shortcut in `audio.rs`). R10b added the import notice and Stream ▸ Add All Streams as Tracks.
 - Options › Quickfade Audio Edits (on by default, a preference): a 10 ms linear fade at each audio event edge that has no fade of its own, in playback and render alike (`AudioPlan.quickfade`).
 
 **Scope**
@@ -1960,6 +1960,13 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a master Volume envelope ramp plays and renders the same; the badge sets Off / Read / Touch / Latch.
 
 ### R10b: Surround Panner and stream selection UI (M)
+
+**Status: DONE.** As designed below, where VEGAS differs:
+- The Surround Panner (`ui/surround.rs`; View › Window › Surround Panner, Ctrl+Alt+3, on the focus audio track; the track header menu; a click on the track header's room): the room from above with a speaker icon per channel of the master bus mode (each shows its gain; a click switches it off or on), the pan point (drag; a click in the room moves it there; a double-click returns it to the front centre), Pan type Smooth (the track's own Pan Type) or Constant Power, Smoothness, LFE only, and the keyframe controller. Keyframes are the track's Surround X / Y envelopes (`EnvKind::SurroundX/SurroundY`, shown as envelopes on the track and played by the mixer); without keyframes the pan point is the track's static surround pan. A stereo project shows the 5.1 room and says the master bus mode is Stereo.
+- Track headers: in a 5.1 / 7.1 project a stereo track's Pan row shows the room in miniature with its pan point (VEGAS's surround pan control); a click opens the Surround Panner.
+- Mixing Console: a 5.1 / 7.1 node's peak meter has a bar per channel (named under it) and one readout; track headers and VU meters show the left and right sides of it (`MeterView::stereo`). The master of a 5.1 / 7.1 project is metered by the mix thread before the fold-down.
+- Channels ▸ of a multichannel stream adds Channels 1 and 2, 3 and 4, ... and All Channels (Downmix) (`Clip.pair`); Stream ▸ Add All Streams as Tracks puts the event's other streams on new tracks under it; a drop of media with several audio streams says so in the status bar (VEGAS asks; Milan Pro does not interrupt the drop). Event Properties › Media lists the audio streams and the channels.
+- One look: the window follows the application's look.
 
 **Scope:** the Surround Panner window (a 2D puck per track with keyframes → pan envelopes per channel); the Stream submenu itself was built in R3b; a "Media has N audio streams" warning on import with an option to add all streams as separate tracks (as VEGAS does).
 

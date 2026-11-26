@@ -109,6 +109,10 @@ pub enum Command {
     SetResample(Option<crate::project::Resample>),
     SetChannels(crate::project::ChannelMap),
     SetStream(u32),
+    /// R10b: Channels ▸ of a multichannel source: the stereo pair played (from 0), or None for the downmix.
+    SetPair(Option<u32>),
+    /// R10b: Stream ▸ Add All Streams as Tracks: the focus audio event's other streams on new tracks under it.
+    AddStreamTracks,
     Quickfade,
     /// Options › Audio Follows Video Velocity (per project, off as in VEGAS).
     AudioFollowsVelocity,

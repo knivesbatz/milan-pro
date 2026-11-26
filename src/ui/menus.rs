@@ -143,6 +143,11 @@ pub struct CmdState {
     /// Stream ▸: the focus event's stream, and how many of its kind its media has.
     pub stream: u32,
     pub streams: u32,
+    /// R10b: Channels ▸ of a multichannel source: the focus audio event's pair, its media's stereo pairs (0 for mono
+    /// and stereo media) and audio streams.
+    pub pair: Option<u32>,
+    pub pairs: u32,
+    pub audio_streams: u32,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
     /// Options › Audio Follows Video Velocity (the project's).
@@ -265,6 +270,8 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
+            SetPair(_) => self.audio_clip && self.pairs > 1,
+            AddStreamTracks => self.audio_clip && self.audio_streams > 1,
             Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx | InsertInputBus => true,
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
@@ -292,6 +299,8 @@ impl CmdState {
             InsertAdjustmentEvent => v23 && self.video_track_focus,
             InsertAudioTransition => self.audio_clip || self.audio_track_focus,
             InsertTime | ResizeGenerated => true,
+            // R10b: on the focus audio track, or the first.
+            SurroundPanner => self.any_tracks,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -328,6 +337,7 @@ impl CmdState {
             SetResample(r) => self.resample == r,
             SetChannels(ch) => self.channels == ch,
             SetStream(n) => self.stream == n,
+            SetPair(p) => self.pair == p,
             Quickfade => self.quickfade,
             AudioFollowsVelocity => self.audio_follows_velocity,
             VideoBusTrack => self.video_bus,
@@ -428,7 +438,6 @@ impl Why {
 /// Why `c` is greyed out whatever is selected; None for commands that work (they may still need a selection).
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
-        SurroundPanner => Later("R10b"),
         Help | WhatsThis => Later("R53"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
         SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => ALWAYS_ON,
@@ -530,7 +539,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let radio = matches!(
         c,
         PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutVp14 | LayoutAudio
-            | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+            | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_) | SetPair(_)
             | Loudness(super::loudness::LoudCmd::Mode(_) | super::loudness::LoudCmd::Range(_) | super::loudness::LoudCmd::Wide(_))
     );
     let mark = match st.checked(c) {
@@ -590,6 +599,8 @@ pub enum M {
     UserLayouts,
     /// Stream ▸: a radio per stream of the focus event's media (Stream 1, Stream 2...).
     Streams,
+    /// R10b: Channels ▸ of a multichannel source: a radio per stereo pair and the downmix.
+    Pairs,
 }
 
 use M::*;
@@ -631,6 +642,16 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
         Streams => {
             for n in 0..state(ui.ctx()).streams.max(1) {
                 cmd(ui, &format!("Stream &{}", n + 1), SetStream(n));
+            }
+        }
+        Pairs => {
+            let n = state(ui.ctx()).pairs;
+            if n > 1 {
+                sep(ui);
+                for k in 0..n {
+                    cmd(ui, &format!("Channels &{} and {}", 2 * k + 1, 2 * k + 2), SetPair(Some(k)));
+                }
+                cmd(ui, "All Channels (Do&wnmix)", SetPair(None));
             }
         }
     }
@@ -818,9 +839,10 @@ pub const CHANNELS: &[M] = &[
     C("&Right Only", SetChannels(ChannelMap::RightOnly)),
     C("&Combine", SetChannels(ChannelMap::Combine)),
     C("&Swap", SetChannels(ChannelMap::Swap)),
+    Pairs,
 ];
 
-pub const STREAM: &[M] = &[Streams];
+pub const STREAM: &[M] = &[Streams, S, C("Add All Streams as &Tracks", AddStreamTracks)];
 
 pub const EDIT: &[M] = &[
     C("&Undo", Undo),
@@ -1288,7 +1310,7 @@ pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
                 greyed(std::slice::from_ref(*i), out);
                 None
             }
-            S | Recent | UserLayouts | Streams => None,
+            S | Recent | UserLayouts | Streams | Pairs => None,
         };
         if let Some((l, w)) = row {
             let l = keymap::mnemonic(l).0;
@@ -2044,6 +2066,8 @@ mod tests {
             multicam_track: true,
             multicam: true,
             rollback: true,
+            audio_streams: 3,
+            pairs: 3,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

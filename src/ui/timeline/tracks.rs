@@ -113,6 +113,19 @@ impl Slider {
     }
 }
 
+/// R10b: a stereo audio track in a 5.1 / 7.1 project: its Pan control is the surround pan (VEGAS's track header shows
+/// the room with the pan point; a click opens the Surround Panner).
+fn surround_pan(project: &Project, tr: &Track, s: Slider) -> bool {
+    s == Slider::Pan && tr.kind == TrackKind::Audio && project.settings.layout.surround() && tr.layout.width() == 2
+}
+
+/// R10b: the pan point of `tr` at the cursor (its Surround envelopes, else its static pan).
+fn surround_point(project: &Project, tr: &Track) -> (f32, f32) {
+    let at = project.timeline.cursor_position;
+    let env = |k: EnvKind, d: f32| tr.envelopes.iter().find(|e| e.kind == k && !e.points.keys.is_empty()).map_or(d, |e| e.at(at));
+    (env(EnvKind::SurroundX, tr.surround.x), env(EnvKind::SurroundY, tr.surround.y))
+}
+
 /// R8c: an audio track's Vol or Pan as an automation control (Show Automation Controls, mode not Off): its envelope
 /// kind, the mode, and the envelope's value at the cursor.
 fn auto_ctl(ctx: &Context, project: &Project, tr: &Track, s: Slider) -> Option<(EnvKind, AutoMode, f32)> {
@@ -483,6 +496,14 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
                 send_menu(ui, id, Rect::from_x_y_ranges(Rangef::new(l.body.min.x, groove.min - 10.0), r.y_range()), project, history, row, &cx);
             }
             let tr = &project.timeline.tracks(row.is_video)[row.idx];
+            if surround_pan(project, tr, *s) {
+                let (x, y) = surround_point(project, tr);
+                if resp.clicked() || resp.double_clicked() {
+                    crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Surround(tid.clone()));
+                }
+                resp.on_hover_text(format!("Surround pan: {:+.0}% left/right, {:+.0}% front/rear (click for the Surround Panner)", x * 100.0, y * 100.0));
+                continue;
+            }
             if let Some((kind, mode, v)) = auto_ctl(ui.ctx(), project, tr, *s) {
                 let span = groove.span();
                 let to_v = |np: f32| if kind == EnvKind::Volume { automation::db_of(fader_gain(np)) } else { np * 2.0 - 1.0 };
@@ -703,6 +724,20 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             // VP16 (and Classic 2006) put values in a column at x=48; VP23 sets them right after the label.
             let vx = if v16 || t.classic() { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
             let auto = auto_ctl(p.ctx(), project, tr, *s);
+            if surround_pan(project, tr, *s) {
+                // R10b: the room in miniature, the pan point in it.
+                p.text(pos2(vx, cy), Align2::LEFT_CENTER, "Surround", font.clone(), t.text_value);
+                if groove.span() < 20.0 {
+                    continue;
+                }
+                let room = Rect::from_x_y_ranges(Rangef::new(groove.max - 26.0, groove.max), Rangef::new(r.min.y + 1.0, r.max.y - 1.0));
+                p.rect_filled(room, 0.0, t.workspace_bg);
+                p.rect_stroke(room, 0.0, Stroke::new(1.0_f32, t.workspace_frame), StrokeKind::Inside);
+                let (x, y) = surround_point(project, tr);
+                let dot = pos2(room.center().x + x * (room.width() * 0.5 - 3.0), room.center().y - y * (room.height() * 0.5 - 3.0));
+                p.circle_filled(dot, 2.5, t.envelope_pan);
+                continue;
+            }
             let value = auto.map_or_else(|| s.value(tr, &cx), |(k, _, v)| auto_text(k, v));
             p.text(pos2(vx, cy), Align2::LEFT_CENTER, value, font.clone(), t.text_value);
             if groove.span() < 20.0 {
