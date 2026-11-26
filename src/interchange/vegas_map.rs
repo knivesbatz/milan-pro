@@ -295,6 +295,110 @@ pub static MAP: &[FxMap] = &[
         set: &[],
         text: &[],
     },
+    // ---- MVFX: the music-video FX that are VEGAS built-ins (docs/research/MUSIC_VIDEO_2000S.md) ----
+    FxMap {
+        vegas: "com.sonycreativesoftware:glow",
+        milan: "milan.fx.glow",
+        params: &[same("GlowPercent", "glow_percent"), same("Intensity", "intensity"), same("Suppression", "suppression"), same("Color.r", "color.r"), same("Color.g", "color.g"), same("Color.b", "color.b")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:filmeffects",
+        milan: "milan.fx.film_effects",
+        // The particle Type list is the same in both: Dust, Flicker, Hair, Jitter, Scratches.
+        params: &[
+            same("Grain", "grain"),
+            same("Tint", "tint"),
+            same("Color.r", "color.r"),
+            same("Color.g", "color.g"),
+            same("Color.b", "color.b"),
+            same("ConvertToGreyscale", "grey"),
+            same("EnableEnableParticles", "particles"),
+            same("EnableParticlesType", "type"),
+            same("EnableParticlesAmount", "amount"),
+        ],
+        set: &[],
+        text: &[],
+    },
+    // VEGAS spells the third parameter "Chormaticity".
+    FxMap { vegas: "com.sonycreativesoftware:filmgrain", milan: "milan.fx.film_grain", params: &[same("Amount", "amount"), same("Granularity", "granularity"), same("Chormaticity", "chroma")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:spherize",
+        milan: "milan.fx.spherize",
+        params: &[same("Center.x", "x"), p("Center.y", "y", -1.0, 1.0), same("Amount", "amount"), same("ScalingHorizontal", "sh"), same("ScalingVertical", "sv"), same("ScalingProportional", "proportional")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:pinchpunch",
+        milan: "milan.fx.pinch_punch",
+        params: &[same("Center.x", "x"), p("Center.y", "y", -1.0, 1.0), same("Amount", "amount"), same("ScalingHorizontal", "sh"), same("ScalingVertical", "sv"), same("ScalingProportional", "proportional")],
+        set: &[],
+        text: &[],
+    },
+    // Type: Proportional, Fixed radius, Gaussian in both.
+    FxMap { vegas: "com.sonycreativesoftware:radialblur", milan: "milan.fx.radial_blur", params: &[same("Center.x", "x"), p("Center.y", "y", -1.0, 1.0), same("Type", "type"), same("Strength", "strength")], set: &[], text: &[] },
+    FxMap { vegas: "com.sonycreativesoftware:linearblur", milan: "milan.fx.linear_blur", params: &[same("Angle", "angle"), same("Amount", "amount")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:tvsimulator",
+        milan: "milan.fx.tv_simulator",
+        params: &[
+            same("DetailZoom", "detail"),
+            same("ApertureGrill", "aperture"),
+            same("Interlacing", "interlacing"),
+            same("LineSync", "line_sync"),
+            same("VerticalSync", "vsync"),
+            same("ScanPhasing", "phasing"),
+            same("Phosphorescence", "phosphor"),
+            same("Static", "static"),
+        ],
+        set: &[],
+        text: &[],
+    },
+    FxMap { vegas: "com.sonycreativesoftware:threshold", milan: "milan.fx.threshold", params: &[same("Threshold", "threshold")], set: &[], text: &[] },
+    // Type: Color, Monochrome, Offset color in both.
+    FxMap { vegas: "com.sonycreativesoftware:newsprint", milan: "milan.fx.newsprint", params: &[same("DotSize", "dot"), same("Type", "type")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:addnoise",
+        milan: "milan.fx.add_noise",
+        params: &[same("NoiseLevel", "level"), same("Monochromatic", "mono"), same("GaussianNoise", "gaussian"), same("Animate", "animate")],
+        set: &[],
+        text: &[],
+    },
+    FxMap { vegas: "com.sonycreativesoftware:pixelate", milan: "milan.fx.pixelate", params: &[same("HorizontalPixelization", "h"), same("VerticalPixelization", "v")], set: &[], text: &[] },
+    // The gradient itself is VEGAS's own control (not an OFX parameter): it imports as Milan's default.
+    FxMap { vegas: "com.sonycreativesoftware:gradientmap", milan: "milan.fx.gradient_map", params: &[same("Amount", "amount"), same("Mode", "mode")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:lightrays",
+        milan: "milan.fx.light_rays",
+        params: &[
+            same("LightSource.x", "x"),
+            p("LightSource.y", "y", -1.0, 1.0),
+            same("TintColor.r", "tint.r"),
+            same("TintColor.g", "tint.g"),
+            same("TintColor.b", "tint.b"),
+            same("group0Sensitivity", "sensitivity"),
+            same("group0Strength", "strength"),
+            same("group1RadiusX", "radius"),
+        ],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:softcontrastvelvetmatter",
+        milan: "milan.fx.soft_contrast",
+        params: &[same("EffectContrast", "contrast"), same("EffectDiffusion", "diffusion"), same("EffectTint", "tint"), same("EffectCorrectionHue", "hue"), same("VignetteStrength", "vignette")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:starburstvelvetmatter",
+        milan: "milan.fx.starburst",
+        params: &[same("Threshold", "threshold"), same("Brilliance", "brilliance"), same("Strength", "strength"), same("Radius", "radius"), same("Points", "points"), same("Orientation", "orientation"), same("EffectOnly", "effect_only")],
+        set: &[],
+        text: &[],
+    },
     // ---- Transitions ----
     FxMap { vegas: "com.sonycreativesoftware:dissolve", milan: "milan.tr.dissolve", params: &[], set: &[], text: &[] },
     FxMap {
@@ -322,6 +426,82 @@ pub static MAP: &[FxMap] = &[
     FxMap { vegas: "com.sonycreativesoftware:push", milan: "milan.tr.push", params: &[pick("Direction", "direction", PUSH_DIR)], set: &[], text: &[] },
     FxMap { vegas: "com.sonycreativesoftware:slide", milan: "milan.tr.slide", params: &[pick("Angle", "direction", SLIDE_ANGLE)], set: &[], text: &[] },
     FxMap { vegas: "com.sonycreativesoftware:zoom", milan: "milan.tr.zoom", params: &[], set: &[], text: &[] },
+    // MVFX: VEGAS's Flash with its diffusion and tint (the Fade to Color row below still exports as a Flash).
+    FxMap { vegas: "com.sonycreativesoftware:flash", milan: "milan.tr.flash", params: &[same("HorizontalDiffusion", "h_diff"), same("VerticalDiffusion", "v_diff"), same("Tint.r", "tint.r"), same("Tint.g", "tint.g"), same("Tint.b", "tint.b")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:crosseffect",
+        milan: "milan.tr.cross_effect",
+        // Effect: None, Zoom, Pixelate, Blur; Apply to: Source, Destination, Both, in both.
+        params: &[same("EffectType", "effect"), same("ApplyTo", "apply_to"), same("FadeRange", "fade"), same("EffectSettingsMaxZoom", "max_zoom"), same("EffectSettingsMaxX", "max_x"), same("EffectSettingsMaxY", "max_y"), same("EffectSettingsMaxBlur", "max_blur")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:pagepeel",
+        milan: "milan.tr.page_peel",
+        params: &[same("PeelAngle", "angle"), same("FoldRadius", "fold"), same("PeelOpacity", "opacity"), same("LightColor.r", "light.r"), same("LightColor.g", "light.g"), same("LightColor.b", "light.b")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:pageroll",
+        milan: "milan.tr.page_roll",
+        params: &[same("RollAngle", "angle"), same("FoldRadius", "fold"), same("RollOpacity", "opacity"), same("LightColor.r", "light.r"), same("LightColor.g", "light.g"), same("LightColor.b", "light.b")],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:barndoor",
+        milan: "milan.tr.barn_door",
+        params: &[same("Orientation", "orientation"), same("Direction", "direction"), same("BorderSize", "border"), same("BorderFeather", "feather"), same("BorderColor.r", "border_color.r"), same("BorderColor.g", "border_color.g"), same("BorderColor.b", "border_color.b")],
+        set: &[],
+        text: &[],
+    },
+    FxMap { vegas: "com.sonycreativesoftware:venetianblinds", milan: "milan.tr.venetian_blinds", params: &[same("Angle", "angle"), same("Feather", "feather"), same("NumberOfBlinds", "blinds")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:spiral",
+        milan: "milan.tr.spiral",
+        params: &[same("Turns", "turns"), same("Zoom", "zoom"), same("Orientation", "orientation"), same("Motion", "motion"), same("Direction", "direction")],
+        set: &[],
+        text: &[],
+    },
+    FxMap { vegas: "com.sonycreativesoftware:squeeze", milan: "milan.tr.squeeze", params: &[same("Start", "start"), same("SqueezePreviousImage", "squeeze_previous")], set: &[], text: &[] },
+    FxMap {
+        vegas: "com.sonycreativesoftware:starwipe",
+        milan: "milan.tr.star_wipe",
+        params: &[
+            same("Arms", "arms"),
+            same("Ratio", "ratio"),
+            same("Angle", "angle"),
+            same("Feather", "feather"),
+            same("Border", "border"),
+            same("BorderColor.r", "border_color.r"),
+            same("BorderColor.g", "border_color.g"),
+            same("BorderColor.b", "border_color.b"),
+            same("Center.x", "x"),
+            p("Center.y", "y", -1.0, 1.0),
+            same("Waveform", "waveform"),
+        ],
+        set: &[],
+        text: &[],
+    },
+    FxMap {
+        vegas: "com.sonycreativesoftware:portals",
+        milan: "milan.tr.portals",
+        params: &[
+            same("RandomPatternSeed", "seed"),
+            same("Squares", "squares"),
+            same("MaxTransparency", "transparency"),
+            same("MaxOffset", "offset"),
+            same("MaxScale", "scale"),
+            same("BorderSize", "border"),
+            same("BorderColor.r", "border_color.r"),
+            same("BorderColor.g", "border_color.g"),
+            same("BorderColor.b", "border_color.b"),
+        ],
+        set: &[],
+        text: &[],
+    },
     FxMap {
         vegas: "com.sonycreativesoftware:flash",
         milan: "milan.tr.fade_to_color",
@@ -458,15 +638,62 @@ mod tests {
         let m = to_milan("{Svfx:com.sonycreativesoftware:gaussianblur}").unwrap();
         assert_eq!(m.milan, "milan.fx.gaussian_blur");
         assert_eq!(to_milan("com.sonycreativesoftware:GaussianBlur").map(|m| m.milan), Some("milan.fx.gaussian_blur"));
-        assert!(to_milan("com.sonycreativesoftware:filmgrain").is_none());
+        assert!(to_milan("com.sonycreativesoftware:radialpixelate").is_none());
         assert_eq!(to_vegas("milan.tr.fade_to_color").map(|m| m.vegas), Some("com.sonycreativesoftware:flash"));
-        assert_eq!(placeholder("{Svfx:com.sonycreativesoftware:filmgrain}"), "ofx:com.sonycreativesoftware:filmgrain@1");
+        assert_eq!(placeholder("{Svfx:com.sonycreativesoftware:radialpixelate}"), "ofx:com.sonycreativesoftware:radialpixelate@1");
         assert_eq!(from_placeholder("ofx:com.sonycreativesoftware:filmgrain@1"), Some("com.sonycreativesoftware:filmgrain"));
         assert_eq!(from_placeholder("milan.fx.invert"), None);
         assert_eq!(audio_to_milan("VEGAS Track EQ"), Some("milan.afx.eq"));
         assert_eq!(audio_to_milan("Sony Wave Hammer"), Some("milan.afx.limiter"));
         assert_eq!(audio_to_milan("Acoustic Mirror"), None);
         assert_eq!(audio_to_vegas("milan.afx.gate"), Some("Track Noise Gate"));
+    }
+
+    /// MVFX: VEGAS's music-video built-ins import as Milan's own (settings kept) and export back as themselves.
+    #[test]
+    fn mvfx_vegas_effects_import_as_built_ins() {
+        let rows = [
+            ("glow", "milan.fx.glow"),
+            ("filmeffects", "milan.fx.film_effects"),
+            ("filmgrain", "milan.fx.film_grain"),
+            ("spherize", "milan.fx.spherize"),
+            ("pinchpunch", "milan.fx.pinch_punch"),
+            ("radialblur", "milan.fx.radial_blur"),
+            ("linearblur", "milan.fx.linear_blur"),
+            ("tvsimulator", "milan.fx.tv_simulator"),
+            ("threshold", "milan.fx.threshold"),
+            ("newsprint", "milan.fx.newsprint"),
+            ("addnoise", "milan.fx.add_noise"),
+            ("pixelate", "milan.fx.pixelate"),
+            ("gradientmap", "milan.fx.gradient_map"),
+            ("lightrays", "milan.fx.light_rays"),
+            ("softcontrastvelvetmatter", "milan.fx.soft_contrast"),
+            ("starburstvelvetmatter", "milan.fx.starburst"),
+            ("flash", "milan.tr.flash"),
+            ("crosseffect", "milan.tr.cross_effect"),
+            ("pagepeel", "milan.tr.page_peel"),
+            ("pageroll", "milan.tr.page_roll"),
+            ("barndoor", "milan.tr.barn_door"),
+            ("venetianblinds", "milan.tr.venetian_blinds"),
+            ("spiral", "milan.tr.spiral"),
+            ("squeeze", "milan.tr.squeeze"),
+            ("starwipe", "milan.tr.star_wipe"),
+            ("portals", "milan.tr.portals"),
+        ];
+        for (v, m) in rows {
+            let id = format!("com.sonycreativesoftware:{v}");
+            let row = to_milan(&format!("{{Svfx:{id}}}")).unwrap_or_else(|| panic!("{v} has no row"));
+            assert_eq!(row.milan, m);
+            assert!(!row.params.is_empty(), "{v} keeps its settings");
+            assert_eq!(to_vegas(m).map(|r| r.vegas), Some(id.as_str()), "{m} exports as {v}");
+        }
+        // VEGAS's centres are y-up; the particle and choice lists line up one to one.
+        let y = to_milan("com.sonycreativesoftware:spherize").unwrap().params.iter().find(|p| p.milan == "y").unwrap();
+        assert!((y.to_milan(0.25) - 0.75).abs() < 1e-6);
+        let ty = to_milan("com.sonycreativesoftware:filmeffects").unwrap().params.iter().find(|p| p.vegas == "EnableParticlesType").unwrap();
+        assert_eq!(ty.to_milan(4.0), 4.0);
+        let fx = plugins::find("milan.fx.film_effects").unwrap();
+        assert!(matches!(fx.params.iter().find(|p| p.key == "type").unwrap().kind, ParamKind::Choice { options, .. } if options[4] == "Scratches"));
     }
 
     #[test]

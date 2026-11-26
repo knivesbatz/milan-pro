@@ -935,7 +935,7 @@ mod tests {
               "fx": [ { "id": "{Svfx:com.sonycreativesoftware:gaussianblur}", "name": "VEGAS Gaussian Blur",
                         "params": [ { "name": "HorizontalRange", "type": "Double", "v": 0.06, "keys": [ { "t": 0, "v": 0.06, "curve": "Linear" }, { "t": 2, "v": 0.0, "curve": "Hold" } ] },
                                     { "name": "VerticalRange", "type": "Double", "v": 0.01 }, { "name": "R", "type": "Boolean", "v": true } ] },
-                      { "id": "{Svfx:com.sonycreativesoftware:filmgrain}", "name": "VEGAS Film Grain", "preset": "Fine",
+                      { "id": "{Svfx:com.sonycreativesoftware:radialpixelate}", "name": "VEGAS Radial Pixelate", "preset": "Fine",
                         "params": [ { "name": "Amount", "type": "Double", "v": 0.3 }, { "name": "Tint", "type": "RGBA", "v": [1, 0.5, 0.25, 1] },
                                     { "name": "Center", "type": "Double2D", "v": [0.5, 0.5], "keys": [ { "t": 0, "v": [0.5, 0.5] }, { "t": 1, "v": [0.25, 0.75], "curve": "Smooth" } ] },
                                     { "name": "Label", "type": "String", "v": "grainy" } ] } ],
@@ -1090,13 +1090,13 @@ mod tests {
         // The channel flags have no Milan counterpart and are dropped.
         assert!(!blur.params.contains_key("R"));
         let grain = &v.fx[1];
-        assert_eq!((grain.plugin.as_str(), grain.enabled), ("ofx:com.sonycreativesoftware:filmgrain@1", false));
+        assert_eq!((grain.plugin.as_str(), grain.enabled), ("ofx:com.sonycreativesoftware:radialpixelate@1", false));
         assert_eq!(val(grain, "Amount"), 0.3);
         assert_eq!((val(grain, "Tint.r"), val(grain, "Tint.g"), val(grain, "Tint.b"), val(grain, "Tint.a")), (1.0, 0.5, 0.25, 1.0));
         let cy = &grain.params["Center.y"].keys;
         assert!(cy.len() == 2 && cy[1].v == 0.75 && cy[1].curve == Curve::Smooth);
         assert_eq!(grain.text["Label"], "grainy");
-        assert!(w.iter().any(|x| x == "Parent: track FX: VEGAS Film Grain (com.sonycreativesoftware:filmgrain) is not available in Milan Pro; kept disabled as an OFX placeholder"), "{w:?}");
+        assert!(w.iter().any(|x| x == "Parent: track FX: VEGAS Radial Pixelate (com.sonycreativesoftware:radialpixelate) is not available in Milan Pro; kept disabled as an OFX placeholder"), "{w:?}");
 
         // The placeholder survives a save and load as it is.
         let json = serde_json::to_string(&p).unwrap();
@@ -1127,12 +1127,12 @@ mod tests {
         let (p, w) = to_project(&e, &probed());
         let v = &p.timeline.video_tracks[0];
         let c = &v.clips[0];
-        // Push Right (VEGAS 3) is Milan's Right (1); Flash is a yellow additive Fade to Color.
+        // Push Right (VEGAS 3) is Milan's Right (1); Flash is Milan's own Flash (MVFX), tinted yellow.
         let tin = c.transition.as_ref().unwrap();
         assert_eq!((tin.plugin.as_str(), tin.params["direction"]), ("milan.tr.push", 1.0));
         let tout = c.transition_out.as_ref().unwrap();
-        assert_eq!(tout.plugin, "milan.tr.fade_to_color");
-        assert_eq!((tout.params["additive"], tout.params["color.r"], tout.params["color.g"], tout.params["color.b"]), (1.0, 1.0, 1.0, 0.0));
+        assert_eq!(tout.plugin, "milan.tr.flash");
+        assert_eq!((tout.params["tint.r"], tout.params["tint.g"], tout.params["tint.b"]), (1.0, 1.0, 0.0));
         // Velocity comes across (a 0 % hold is a freeze frame); Transition Progress is reported.
         let vel = c.envelopes.iter().find(|e| e.kind == EnvKind::Velocity).unwrap();
         assert_eq!(vel.points.keys.iter().map(|k| (k.t, k.v, k.curve)).collect::<Vec<_>>(), [(0.0, 1.0, Curve::Linear), (2.0, 0.0, Curve::Hold)]);
