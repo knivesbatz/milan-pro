@@ -879,7 +879,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
                 p.text(at, if ch == 0 { Align2::LEFT_CENTER } else { Align2::RIGHT_CENTER }, lv.readout(ch), font.clone(), if lv.clip[ch] { t.meter_red } else { t.text });
             }
         }
-        let half_w = if n > 2 { (n as f32 * 6.0 - 1.0) * 0.5 } else { 9.0 };
+        let half_w = if n > 2 { (n as f32 * 8.0 - 1.0) * 0.5 } else { 9.0 };
         let bottom = if n > 2 { r.max.y - 16.0 } else { r.max.y - 4.0 };
         let well = Rect::from_min_max(pos2((r.center().x - half_w).round(), read.max.y + 3.0), pos2((r.center().x + half_w).round(), bottom));
         if well.height() > 10.0 {
@@ -887,14 +887,11 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             if n > 2 {
                 paint_channels(&p, well, &lv, v16, n);
                 let names = BusMode::of_channels(n).unwrap_or(BusMode::Surround51).channel_names();
+                // Every other name a row lower, so each has two bars' width.
                 for (c, name) in names.iter().enumerate() {
-                    let x = well.min.x + c as f32 * 6.0 + 2.5;
-                    let short = match *name {
-                        "LFE" => "E",
-                        s => &s[..1.min(s.len())],
-                    };
-                    let tip = if c % 2 == 0 { 0.0 } else { 6.0 };
-                    p.text(pos2(x, well.max.y + 2.0 + tip), Align2::CENTER_TOP, short, t.font(t.font.meter - 1.0), t.meter_label);
+                    let x = well.min.x + c as f32 * 8.0 + 3.5;
+                    let y = well.max.y + 2.0 + if c % 2 == 0 { 0.0 } else { 6.5 };
+                    p.text(pos2(x, y), Align2::CENTER_TOP, *name, t.font(t.font.meter - 1.0), t.meter_label);
                 }
             } else {
                 paint_levels(&p, well, &lv, v16);
