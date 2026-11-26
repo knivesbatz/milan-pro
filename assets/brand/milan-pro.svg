@@ -1,16 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <title>Milan Pro</title>
-  <defs><linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" y2="256"><stop offset="0" stop-color="#0B2E8A"/><stop offset="1" stop-color="#001751"/></linearGradient></defs>
-  <rect x="8" y="8" width="240" height="240" rx="48" fill="#258EE4"/>
-  <rect x="16" y="16" width="224" height="224" rx="40" fill="url(#tile)"/>
-  <g fill="#FFFFFF">
-    <rect x="60" y="50" width="30" height="114"/>
-    <rect x="166" y="50" width="30" height="114"/>
-    <polygon points="60,50 92.65,50 128,101.98 128,150"/>
-    <polygon points="196,50 163.35,50 128,101.98 128,150"/>
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3C4658"/><stop offset="0.55" stop-color="#1B212C"/><stop offset="1" stop-color="#07090F"/></linearGradient>
+    <linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="0" y1="66" x2="0" y2="180"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.1" stop-color="#E2E8EE"/><stop offset="0.4" stop-color="#9AA6B4"/><stop offset="0.49" stop-color="#4A5562"/><stop offset="0.51" stop-color="#222A34"/><stop offset="0.56" stop-color="#4E6278"/><stop offset="0.8" stop-color="#9FB8CC"/><stop offset="1" stop-color="#DCE8F2"/></linearGradient>
+    <radialGradient id="glint"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.35" stop-color="#3CE6FF" stop-opacity="0.8"/><stop offset="1" stop-color="#3CE6FF" stop-opacity="0"/></radialGradient>
+    <radialGradient id="top"><stop offset="0" stop-color="#8A9AB2" stop-opacity="0.45"/><stop offset="1" stop-color="#8A9AB2" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="21.33" height="21.33" patternUnits="userSpaceOnUse"><path d="M21.33 0V21.33H0" fill="none" stroke="#FFFFFF" stroke-opacity="0.07" stroke-width="0.6"/></pattern>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#plate)" stroke="#2EB8F0" stroke-width="2"/>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="url(#grid)"/>
+  <ellipse cx="128" cy="30" rx="166" ry="100" fill="url(#top)"/>
+  <g fill="none" stroke="#3CE6FF" stroke-opacity="0.5" stroke-width="1" stroke-linejoin="round">
+    <path d="M20,77 V41 L41,20 H87"/><path d="M236,179 V215 L215,236 H169"/><path d="M169,20 H200 L215,36"/><path d="M41,236 H72 L87,220"/>
   </g>
-  <rect x="60" y="184" width="136" height="14" rx="7" fill="#123F8F"/>
-  <rect x="60" y="184" width="68" height="14" rx="7" fill="#258EE4"/>
-  <rect x="147.9" y="177.7" width="4.2" height="26.6" fill="#FFFFFF"/>
-  <polygon points="142.3,172.1 157.7,172.1 150,182.6" fill="#FFFFFF"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#3CE6FF" stroke-opacity="0.35" stroke-width="15"/>
+  <circle cx="128" cy="128" r="80" fill="none" stroke="#C8F6FF" stroke-width="5"/>
+  <path d="M58,66 H90 V180 H58 Z M166,66 H198 V180 H166 Z M58,66 L93.39,66 L128,114.45 L128,164 Z M198,66 L162.61,66 L128,114.45 L128,164 Z" fill="#070A10" opacity="0.6" transform="translate(2.5 4)"/>
+  <path d="M58,66 H90 V180 H58 Z M166,66 H198 V180 H166 Z M58,66 L93.39,66 L128,114.45 L128,164 Z M198,66 L162.61,66 L128,114.45 L128,164 Z" fill="url(#chrome)" stroke="#070A10" stroke-width="2.8" stroke-linejoin="miter"/>
+  <polygon points="58,66 93.39,66 128,114.45 128,164 198,66 162.61,66 128,114.45 128,164" fill="none"/>
+  <circle cx="182" cy="68" r="20" fill="url(#glint)"/>
+  <ellipse cx="182" cy="68" rx="40" ry="2.2" fill="#D8F6FF" opacity="0.8"/>
+  <circle cx="198" cy="76" r="3.5" fill="#FF8A1F" opacity="0.9"/>
 </svg>
