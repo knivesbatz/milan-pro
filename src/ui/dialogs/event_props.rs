@@ -2,6 +2,7 @@
 //! on OK; the media page shows the active take's media. A field only changes the value when its text is edited, so
 //! focusing it does not round an off-frame value to the frame or rate shown.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::edit;
 use crate::project::{Clip, Curve, MediaItem, Project, format_timecode, parse_timecode};
 
@@ -62,7 +63,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
     }
     super::row(ui, "Active take:", W, on && !d.takes.is_empty(), |ui| {
         let mut k = None;
-        ComboBox::from_id_salt("ev_take").width(250.0).selected_text(d.name.as_str()).show_ui(ui, |ui| {
+        widgets::combo(ui, "ev_take", 250.0, d.name.as_str(), |ui| {
             let _ = ui.selectable_label(true, d.name.as_str()); // the active take
             for (i, t) in d.takes.iter().enumerate() {
                 if ui.selectable_label(false, t.name.as_str()).clicked() {
@@ -74,7 +75,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
             edit::choose_take(d, k);
         }
     });
-    super::row(ui, "Take name:", W, on, |ui| ui.add(TextEdit::singleline(&mut d.name).desired_width(250.0)));
+    super::row(ui, "Take name:", W, on, |ui| widgets::edit(ui, TextEdit::singleline(&mut d.name).desired_width(250.0)));
     super::group(ui, "Time");
     super::row(ui, "Position:", W, on, |ui| tc_edit(ui, "ev_pos", &mut d.position, fps));
     super::row(ui, "Length:", W, on, |ui| tc_edit(ui, "ev_len", &mut d.duration, fps));
@@ -106,20 +107,20 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
     }
     super::group(ui, "Switches");
     ui.horizontal(|ui| {
-        ui.add_enabled(on, Checkbox::new(&mut d.reverse, "Reverse"));
-        ui.add_enabled(on, Checkbox::new(&mut d.muted, "Mute"));
-        ui.checkbox(&mut d.locked, "Lock");
-        ui.add_enabled(on, Checkbox::new(&mut d.looping, "Loop"));
+        widgets::checkbox_enabled(ui, on, &mut d.reverse, "Reverse");
+        widgets::checkbox_enabled(ui, on, &mut d.muted, "Mute");
+        widgets::checkbox(ui, &mut d.locked, "Lock");
+        widgets::checkbox_enabled(ui, on, &mut d.looping, "Loop");
     });
     ui.horizontal(|ui| {
         if is_video {
-            ui.add_enabled(on, Checkbox::new(&mut d.keep_aspect, "Maintain aspect ratio"));
-            ui.add_enabled(on, Checkbox::new(&mut d.reduce_flicker, "Reduce interlace flicker"));
+            widgets::checkbox_enabled(ui, on, &mut d.keep_aspect, "Maintain aspect ratio");
+            widgets::checkbox_enabled(ui, on, &mut d.reduce_flicker, "Reduce interlace flicker");
         } else {
-            ui.add_enabled(on, Checkbox::new(&mut d.invert, "Invert phase"));
-            ui.add_enabled(on, Checkbox::new(&mut d.normalize, "Normalize"));
-            if crate::ui::theme::get().look() == crate::ui::theme::UiLook::Vegas23 {
-                ui.add_enabled(on, Checkbox::new(&mut d.auto_normalize, "Auto normalize"));
+            widgets::checkbox_enabled(ui, on, &mut d.invert, "Invert phase");
+            widgets::checkbox_enabled(ui, on, &mut d.normalize, "Normalize");
+            if crate::ui::theme::get().look().v23() {
+                widgets::checkbox_enabled(ui, on, &mut d.auto_normalize, "Auto normalize");
             }
         }
     });
@@ -127,11 +128,11 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         // Undersample rate: the event plays at this share of the project frame rate.
         ui.add_enabled_ui(on, |ui| ui.horizontal(|ui| {
             let mut under = d.undersample.is_some();
-            if ui.checkbox(&mut under, "Undersample rate").changed() {
+            if widgets::checkbox(ui, &mut under, "Undersample rate").changed() {
                 d.undersample = under.then_some(0.5);
             }
             if let Some(r) = &mut d.undersample {
-                ui.add(DragValue::new(r).range(0.05..=0.99).speed(0.01).fixed_decimals(2));
+                widgets::spin(ui, r, 0.01, |d| d.range(0.05..=0.99).speed(0.01).fixed_decimals(2));
             }
         }));
     } else {
@@ -141,7 +142,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
                 None => "-".into(),
             });
             // Measured again (in the background) after OK.
-            if ui.button("Recalculate").clicked() {
+            if widgets::push_button(ui, "Recalculate").clicked() {
                 d.normalized = None;
             }
         });
@@ -159,7 +160,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
 fn curve_combo(ui: &mut Ui, id: &str, c: &mut Curve) {
     const CURVES: [(&str, Curve); 5] = [("Linear", Curve::Linear), ("Fast", Curve::Fast), ("Slow", Curve::Slow), ("Smooth", Curve::Smooth), ("Sharp", Curve::Sharp)];
     let name = CURVES.iter().find(|k| k.1 == *c).map_or("Hold", |k| k.0);
-    ComboBox::from_id_salt((id, "curve")).width(90.0).selected_text(name).show_ui(ui, |ui| {
+    widgets::combo(ui, (id, "curve"), 90.0, name, |ui| {
         for (n, k) in CURVES {
             ui.selectable_value(c, k, n);
         }
@@ -170,7 +171,7 @@ fn curve_combo(ui: &mut Ui, id: &str, c: &mut Curve) {
 /// the field keeps the exact value.
 fn num_edit<T: emath::Numeric + std::fmt::Display>(ui: &mut Ui, v: &mut T, range: std::ops::RangeInclusive<T>, speed: f64, decimals: usize, suffix: &str) -> bool {
     let mut x = *v;
-    let changed = ui.add(DragValue::new(&mut x).range(range).speed(speed).fixed_decimals(decimals).suffix(suffix)).changed();
+    let changed = widgets::spin(ui, &mut x, speed, |d| d.range(range).speed(speed).fixed_decimals(decimals).suffix(suffix)).changed();
     let edited = changed && format!("{x:.decimals$}") != format!("{:.decimals$}", *v);
     if edited {
         *v = x;

@@ -1378,6 +1378,18 @@ impl Project {
         Some(&self.timeline.tracks(r.is_video)[r.track_idx].clips[r.clip_idx])
     }
 
+    /// The plug-in instance with `id`, wherever it is: an event's, track's, bus's or master FX, a compositor or a
+    /// media generator (R33a: a plug-in's own edits are written back to it).
+    pub fn fx_by_id_mut(&mut self, id: &str) -> Option<&mut Fx> {
+        let tl = &mut self.timeline;
+        let tracks = tl.video_tracks.iter_mut().flat_map(|t| t.fx.iter_mut().chain(t.compositor.iter_mut()).chain(t.clips.iter_mut().flat_map(|c| c.fx.iter_mut())));
+        let audio = tl.audio_tracks.iter_mut().flat_map(|t| t.fx.iter_mut().chain(t.clips.iter_mut().flat_map(|c| c.fx.iter_mut())));
+        let buses = tl.audio.buses.iter_mut().chain(tl.audio.fx.iter_mut()).flat_map(|b| b.fx.iter_mut());
+        let master = tl.master.video_fx.iter_mut().chain(tl.master.audio_fx.iter_mut());
+        let media = self.media_pool.iter_mut().filter_map(|m| m.generator.as_mut());
+        tracks.chain(audio).chain(buses).chain(master).chain(media).find(|f| f.id == id)
+    }
+
     /// (is video, index) of the track with `id`.
     pub fn find_track(&self, id: &str) -> Option<(bool, usize)> {
         [true, false].into_iter().find_map(|v| self.timeline.tracks(v).iter().position(|t| t.id == id).map(|i| (v, i)))

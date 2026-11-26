@@ -163,6 +163,11 @@ pub fn draw_transport(ui: &mut Ui, rect: Rect, ids: &[&'static str], mut s: Tran
     row.set_clip_rect(buttons.intersect(ui.clip_rect()));
     let ui = &mut row;
     ui.spacing_mut().item_spacing.x = 0.0;
+    let t = theme::get();
+    if t.classic() {
+        super::widgets::grip(ui.painter(), rect, &t.metal);
+        ui.add_space(9.0);
+    }
     super::toolbar::draw_buttons(ui, ids, s.project, s.history, Some(&mut s.playback));
     length_boxes(&boxes, rect, s.project);
 }
@@ -198,7 +203,14 @@ fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
     for (k, (icon, text)) in boxes.into_iter().zip(texts).enumerate() {
         let x = rect.max.x - 8.0 - w * (3 - k) as f32;
         let r = Rect::from_min_size(pos2(x, rect.center().y - 7.0), vec2(14.0, 14.0));
-        p.rect_filled(Rect::from_min_max(pos2(x - 2.0, rect.min.y), pos2(x + w - 4.0, rect.max.y)), 0.0, t.toolbar_bg);
+        let cell = Rect::from_min_max(pos2(x - 2.0, rect.min.y), pos2(x + w - 4.0, rect.max.y));
+        if t.classic() {
+            // Sunken white read-outs, as Vegas 6 draws its selection boxes.
+            super::widgets::metal(p, cell, &t.metal);
+            super::widgets::sunken(p, Rect::from_min_max(pos2(r.max.x + 2.0, rect.min.y + 3.0), pos2(cell.max.x - 2.0, rect.max.y - 3.0)), t.input_bg, &t.metal);
+        } else {
+            p.rect_filled(cell, 0.0, t.toolbar_bg);
+        }
         paint_icon(p, r, icon, t.look(), None);
         p.text(pos2(r.max.x + 6.0, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), t.text);
     }
@@ -210,7 +222,11 @@ fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
 pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool) -> Option<f32> {
     let t = theme::get();
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, if t.look() == UiLook::Vegas16 { t.band_bg } else { t.toolbar_bg });
+    if t.classic() {
+        super::widgets::metal_bar(p, rect, &t.metal);
+    } else {
+        p.rect_filled(rect, 0.0, if t.look() == UiLook::Vegas16 { t.band_bg } else { t.toolbar_bg });
+    }
     if t.look() == UiLook::Vegas16 {
         let x = rect.x_range();
         let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
@@ -230,11 +246,19 @@ pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool) -> Option<f32> {
             rate = ((pos.x - x0) / (x1 - x0) * 8.0 - 4.0).clamp(-4.0, 4.0);
             dragged = Some(rate);
         }
-        p.rect_filled(Rect::from_min_max(pos2(x0, cy), pos2(x1, cy + 1.0)), 0.0, t.fader_track);
+        if t.classic() {
+            super::widgets::groove(p, Rangef::new(x0, x1), cy, &t.metal);
+        } else {
+            p.rect_filled(Rect::from_min_max(pos2(x0, cy), pos2(x1, cy + 1.0)), 0.0, t.fader_track);
+        }
         let normal = to_x(1.0);
         p.add(Shape::convex_polygon(vec![pos2(normal, cy + 6.0), pos2(normal + 4.0, cy + 10.0), pos2(normal - 4.0, cy + 10.0)], t.text, Stroke::NONE));
         let thumb = Rect::from_center_size(pos2(to_x(rate), cy), vec2(16.0, 16.0));
-        paint_icon(p, thumb, Icon::FaderThumb, t.look(), None);
+        if t.classic() {
+            super::widgets::thumb(p, Rect::from_center_size(pos2(to_x(rate), cy), vec2(11.0, 17.0)), &t.metal, None);
+        } else {
+            paint_icon(p, thumb, Icon::FaderThumb, t.look(), None);
+        }
     }
     let shown = if rate != 0.0 { rate } else if playing { 1.0 } else { 0.0 };
     p.text(pos2(rect.min.x + 6.0, cy), Align2::LEFT_CENTER, format!("Rate: {shown:.2}"), t.font(t.font.ui), t.text);

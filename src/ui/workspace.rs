@@ -2,6 +2,7 @@
 //! dotted grid, with 8 sizing handles and a rotation circle; the view zooms and pans. Also the windows' shared toolbar
 //! toggles, property rows and one-undo-step-per-gesture commit. The box maths is pure and tested.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::engine::keyframes::Lerp;
 use crate::history::History;
 use crate::project::{Motion, PanCrop, Project};
@@ -316,7 +317,7 @@ pub fn prop(ui: &mut Ui, label: &str, v: &mut f32, speed: f64, decimals: usize, 
         let (r, _) = ui.allocate_exact_size(vec2(90.0, 18.0), Sense::hover());
         ui.painter().text(r.left_center() + vec2(14.0, 0.0), Align2::LEFT_CENTER, label, t.font(12.0), t.text);
         // A typed value applies on Enter or leaving the field: one undo step, no partial values.
-        ui.add_enabled(enabled, DragValue::new(v).speed(speed).fixed_decimals(decimals).update_while_editing(false)).changed()
+        widgets::spin_enabled(ui, enabled, v, speed, |d| d.speed(speed).fixed_decimals(decimals).update_while_editing(false)).changed()
     })
     .inner
 }

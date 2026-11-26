@@ -18,6 +18,7 @@ use super::menus::{self, Mark, entry, send};
 use super::theme::{self, Theme, UiLook};
 use super::timeline::{fader_gain, fader_pos};
 use super::toolbar::tool_button;
+use super::widgets::{self, Chrome};
 
 /// Meter range: 0 dB at the top of a well, -60 dB at the bottom.
 pub const RANGE_DB: f32 = 60.0;
@@ -199,14 +200,14 @@ pub fn paint_well(p: &Painter, well: Rect) {
         let to_y = |d: f32| well.min.y + well.height() * (-d / RANGE_DB).clamp(0.0, 1.0);
         super::master_bus::paint_bar(p, well, well.min.y, &to_y, false, t.meter_unlit);
     } else {
-        p.rect_filled(well, 0.0, t.meter_bg);
+        super::widgets::meter_well(p, well, &t);
     }
 }
 
 /// The VU pair: green up to 0 VU, red above, on a -20..+3 VU scale.
 fn paint_vu(p: &Painter, well: Rect, lv: &MeterView) {
     let t = theme::get();
-    p.rect_filled(well, 0.0, t.meter_bg);
+    super::widgets::meter_well(p, well, &t);
     let to_y = |v: f32| well.max.y - well.height() * ((v - VU_RANGE.0) / (VU_RANGE.1 - VU_RANGE.0)).clamp(0.0, 1.0);
     let half = ((well.width() - 1.0) * 0.5).floor().max(1.0);
     for c in 0..2 {
@@ -448,6 +449,15 @@ pub(super) fn slider(ui: &Ui, resp: &Response, pos: f32, reset: f32, at: impl Fn
     None
 }
 
+/// A strip's read-out box (I/O): a sunken white field in Classic 2006, the look's rounded input box elsewhere.
+fn field(p: &Painter, r: Rect, t: &theme::Theme) {
+    if t.classic() {
+        super::widgets::sunken(p, r, t.input_bg, &t.metal);
+    } else {
+        p.rect_filled(r, 2.0, t.input_bg);
+    }
+}
+
 pub(super) fn gain_text(g: f32) -> String {
     if g <= 1e-5 { "-Inf.".into() } else { format!("{:.1}", 20.0 * g.log10() + 0.0) }
 }
@@ -461,13 +471,17 @@ pub(super) fn pan_text(pan: f32) -> String {
 pub(super) fn toggle(ui: &Ui, p: &Painter, r: Rect, id: Id, icon: Option<Icon>, text: &str, on: bool, tip: &str) -> bool {
     let t = theme::get();
     let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip);
-    if on {
+    if t.classic() {
+        // A chrome button, pressed in while on (the track header's M / S buttons).
+        let state = if on { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
+        super::widgets::chrome_button(p, r, state, &t.metal);
+    } else if on {
         p.rect_filled(r, CornerRadius::same(2), if t.look() == UiLook::Vegas16 { t.button_active_bg } else { t.accent.gamma_multiply(0.3) });
     } else if resp.hovered() {
         p.rect_filled(r, CornerRadius::same(2), t.button_hover_bg);
     }
     // An unarmed Arm button is grey (its icon is red).
-    let tint = if on && t.look() != UiLook::Vegas16 { Some(t.accent) } else if !on && icon == Some(Icon::Record) { Some(t.text_dim) } else { None };
+    let tint = if on && !t.classic() && t.look() != UiLook::Vegas16 { Some(t.accent) } else if !on && icon == Some(Icon::Record) { Some(t.text_dim) } else { None };
     match icon {
         Some(i) => paint_icon(p, Rect::from_center_size(r.center(), vec2(16.0, 16.0)), i, t.look(), tint),
         None => {
@@ -543,12 +557,16 @@ pub fn mixing_console(ui: &mut Ui, view: &mut ConsoleView, prefs: &ConsolePrefs,
     if prefs.channel_list && rect.width() > 260.0 {
         let list = rect.with_max_x(rect.min.x + 130.0);
         area = rect.with_min_x(list.max.x + 1.0);
-        ui.painter().rect_filled(Rect::from_x_y_ranges(Rangef::new(list.max.x, list.max.x + 1.0), rect.y_range()), 0.0, t.frame);
+        if t.classic() {
+            super::widgets::etched_v(ui.painter(), list.max.x, rect.y_range(), &t.metal);
+        } else {
+            ui.painter().rect_filled(Rect::from_x_y_ranges(Rangef::new(list.max.x, list.max.x + 1.0), rect.y_range()), 0.0, t.frame);
+        }
         let mut child = ui.new_child(UiBuilder::new().max_rect(list.shrink(4.0)));
         ScrollArea::vertical().id_salt("console_list").auto_shrink(false).show(&mut child, |ui| {
             for (s, name, _) in &all {
                 let mut on = !view.hidden.contains(s.key());
-                if ui.checkbox(&mut on, RichText::new(name).color(t.text)).changed() {
+                if widgets::checkbox(ui, &mut on, RichText::new(name).color(t.text)).changed() {
                     if on { view.hidden.remove(s.key()) } else { view.hidden.insert(s.key().to_string()) };
                 }
             }
@@ -584,7 +602,12 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     let p = ui.painter().clone();
     let all = regs.iter().flatten().fold(label, |a, r| a.union(*r));
     let selected = matches!(s, Strip::Track(tid) if sel.tracks.contains(tid));
-    p.rect_filled(all, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
+    if t.classic() {
+        // Blue-grey metal strips, as the track headers.
+        super::widgets::header_metal(&p, all, &t, selected);
+    } else {
+        p.rect_filled(all, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
+    }
     p.rect_filled(Rect::from_x_y_ranges(Rangef::new(all.max.x, all.max.x + 1.0), all.y_range()), 0.0, t.track_separator);
     for r in regs.iter().flatten() {
         p.hline(r.x_range(), r.max.y - 0.5, Stroke::new(1.0_f32, t.track_separator));
@@ -630,10 +653,15 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             pc.text(pos2(row.max.x - 4.0, row.min.y + 1.0), Align2::RIGHT_TOP, gain_text(lvl), small.clone(), t.text_value);
             let groove = Rangef::new(row.min.x + 8.0, row.max.x - 8.0);
             let cy = row.min.y + 19.0;
-            p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
             let pos = fader_pos(lvl);
             let tx = groove.min + pos * groove.span();
-            p.rect_filled(Rect::from_center_size(pos2(tx.round(), cy), vec2(6.0, 10.0)), 1.0, t.fader_thumb);
+            if t.classic() {
+                super::widgets::groove(&p, groove, cy, &t.metal);
+                super::widgets::thumb(&p, Rect::from_center_size(pos2(tx.round(), cy), vec2(9.0, 13.0)), &t.metal, None);
+            } else {
+                p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
+                p.rect_filled(Rect::from_center_size(pos2(tx.round(), cy), vec2(6.0, 10.0)), 1.0, t.fader_thumb);
+            }
             let tip = format!("{tname}: {} dB ({})", gain_text(lvl), if pre { "Pre Volume" } else { "Post Volume" });
             let resp = ui.interact(row.shrink2(vec2(2.0, 0.0)), id.with(("send", k)), Sense::click_and_drag()).on_hover_text(tip);
             let span = groove.span().max(1.0);
@@ -672,7 +700,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         match s {
             Strip::Track(tid) => {
                 let mon = project.timeline.audio_tracks.iter().find(|x| x.id == *tid).map_or(Monitor::Off, |x| x.monitor);
-                p.rect_filled(inb, 2.0, t.input_bg);
+                field(&p, inb, &t);
                 let text = ["Monitor Off", "Monitor On", "Monitor Auto"][mon as usize];
                 p.with_clip_rect(inb).text(inb.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, small.clone(), if mon == Monitor::Off { t.text_dim } else { t.text });
                 let resp = ui.interact(inb, id.with("in"), Sense::click()).on_hover_text("Record Input: input monitoring of the armed track (the recording device is chosen in Preferences › Audio Device)");
@@ -700,14 +728,14 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
                 }
             }
             _ if is_input => {
-                p.rect_filled(inb, 2.0, t.input_bg);
+                field(&p, inb, &t);
                 p.with_clip_rect(inb).text(inb.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, "Record Input", small.clone(), t.text);
                 ui.interact(inb, id.with("in"), Sense::hover()).on_hover_text("The recording device chosen in Preferences › Audio Device, in stereo");
             }
             _ => {}
         }
         let b = Rect::from_min_max(pos2(r.min.x + 3.0, r.min.y + 25.0), pos2(r.max.x - 3.0, r.max.y - 4.0));
-        p.rect_filled(b, 2.0, t.input_bg);
+        field(&p, b, &t);
         let a = &project.timeline.audio;
         let text = match &c.out {
             None => "Default".to_string(),
@@ -857,11 +885,17 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         if *s != Strip::Master {
             let groove = Rangef::new(r.min.x + 8.0, r.max.x - 8.0);
             let cy = top + 8.0;
-            p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
-            p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy), vec2(1.0, 7.0)), 0.0, t.fader_track);
             let pos = (c.pan.clamp(-1.0, 1.0) + 1.0) * 0.5;
             let tx = (groove.min + pos * groove.span()).round();
-            p.add(Shape::convex_polygon(vec![pos2(tx - 5.0, cy - 5.0), pos2(tx + 5.0, cy - 5.0), pos2(tx, cy + 4.0)], tint(EnvKind::Pan).unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
+            if t.classic() {
+                super::widgets::groove(&p, groove, cy, &t.metal);
+                p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy - 4.0), vec2(1.0, 3.0)), 0.0, t.metal.dark);
+                super::widgets::thumb(&p, Rect::from_center_size(pos2(tx, cy), vec2(9.0, 13.0)), &t.metal, tint(EnvKind::Pan));
+            } else {
+                p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
+                p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy), vec2(1.0, 7.0)), 0.0, t.fader_track);
+                p.add(Shape::convex_polygon(vec![pos2(tx - 5.0, cy - 5.0), pos2(tx + 5.0, cy - 5.0), pos2(tx, cy + 4.0)], tint(EnvKind::Pan).unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
+            }
             let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 6.0, groove.max + 6.0), Rangef::new(top, top + 16.0));
             let resp = ui.interact(hit, id.with("pan"), Sense::click_and_drag()).on_hover_text(format!("Pan: {}", pan_text(c.pan)));
             let span = groove.span().max(1.0);
@@ -879,13 +913,18 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         let (y0, y1) = (top + 6.0, r.max.y - 18.0);
         if y1 - y0 > 20.0 {
             let fx = r.center().x.round() - if fader_meter { 8.0 } else { 0.0 };
-            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(fx, fx + 1.0), Rangef::new(y0, y1)), 0.0, t.fader_track);
             let pos = fader_pos(c.volume);
             let ty = (y1 - (y1 - y0) * pos).round();
             let thumb = Rect::from_center_size(pos2(fx + 0.5, ty), if v16 { vec2(21.0, 12.0) } else { vec2(25.0, 13.0) });
-            p.rect_filled(thumb, 1.0, tint(EnvKind::Volume).unwrap_or(t.fader_thumb));
-            p.rect_stroke(thumb, 1.0, Stroke::new(1.0_f32, t.fader_thumb_bar), StrokeKind::Inside);
-            p.rect_filled(Rect::from_center_size(thumb.center(), vec2(thumb.width() - 8.0, 1.0)), 0.0, t.fader_thumb_bar);
+            if t.classic() {
+                super::widgets::groove_v(&p, fx, Rangef::new(y0, y1), &t.metal);
+                super::widgets::fader_thumb(&p, thumb, &t.metal, tint(EnvKind::Volume));
+            } else {
+                p.rect_filled(Rect::from_x_y_ranges(Rangef::new(fx, fx + 1.0), Rangef::new(y0, y1)), 0.0, t.fader_track);
+                p.rect_filled(thumb, 1.0, tint(EnvKind::Volume).unwrap_or(t.fader_thumb));
+                p.rect_stroke(thumb, 1.0, Stroke::new(1.0_f32, t.fader_thumb_bar), StrokeKind::Inside);
+                p.rect_filled(Rect::from_center_size(thumb.center(), vec2(thumb.width() - 8.0, 1.0)), 0.0, t.fader_thumb_bar);
+            }
             if fader_meter {
                 let well = Rect::from_min_max(pos2(fx + 16.0, y0), pos2(fx + 26.0, y1));
                 paint_well(&p, well);

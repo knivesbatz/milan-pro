@@ -1,0 +1,135 @@
+//! milan-plugin-host.exe: runs OFX plug-ins for Milan Pro in a process of their own, so a plug-in that crashes or hangs
+//! never takes the editor down (R32, R33a, R33b). Milan starts it with `--pipe <name>`; the host serves that named pipe
+//! (requests in `proto.rs`, one reply each) and maps the frames Milan puts in shared memory. It has no window and no
+//! console, and shows no error dialogs: a crash ends the process silently and Milan reports it.
+#![windows_subsystem = "windows"]
+// The OFX names (kOfxStatOK...) are kept as the headers spell them.
+#![allow(non_upper_case_globals)]
+
+#[cfg(not(all(windows, target_arch = "x86_64")))]
+compile_error!("milan-plugin-host hosts 64-bit Windows OFX plug-ins (its variadic parameter functions rely on the Win64 ABI)");
+
+mod host;
+mod ofx;
+#[path = "../../engine/ofx/proto.rs"]
+mod proto;
+mod suites;
+
+use std::fs::File;
+use std::os::windows::io::FromRawHandle;
+use proto::{Reply, Req};
+
+fn main() {
+    quiet();
+    probe_mode();
+    let mut args = std::env::args().skip(1);
+    let name = match (args.next().as_deref(), args.next()) {
+        (Some("--pipe"), Some(n)) if n.starts_with(r"\\.\pipe\") => n,
+        _ => std::process::exit(2),
+    };
+    let Some(mut pipe) = serve(&name) else { std::process::exit(3) };
+    let mut host = host::Host::new();
+    loop {
+        let Ok(req) = proto::read_msg::<Req>(&mut pipe) else { break };
+        let reply = match req {
+            Req::Load { binary } => host.load(&binary),
+            Req::Describe { index } => host.describe(index),
+            Req::Render(r) => host.render(&r),
+            Req::Button(r, name) => host.button(&r, &name),
+            Req::Panic => panic!("asked to panic"),
+            Req::GpuCheck => host::gpu_check(),
+            Req::Quit => {
+                host.shutdown();
+                let _ = proto::write_msg(&mut pipe, &Reply::Rendered(Default::default()));
+                break;
+            }
+        };
+        if proto::write_msg(&mut pipe, &reply).is_err() {
+            break;
+        }
+    }
+    // Skip the plug-ins' unload and the DLL's detach: a hung or crashing unload must not keep the process alive.
+    std::process::exit(0);
+}
+
+/// No crash dialog, no "cannot find DLL" box, no Windows Error Reporting window: the user must never see the host.
+fn quiet() {
+    use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX, SetErrorMode};
+    use windows_sys::Win32::System::ErrorReporting::{WER_FAULT_REPORTING_NO_UI, WerSetFlags};
+    // SAFETY: process-wide flags, set before any plug-in loads.
+    unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+        WerSetFlags(WER_FAULT_REPORTING_NO_UI);
+    }
+}
+
+/// R33c compatibility probes (`MILAN_HOST_DESKTOP=<name>`): this thread moves to a desktop of that name, made if
+/// needed, so a plug-in's licence or registration dialog opens where nobody sees it and cannot take focus; the probe's
+/// watchdog ends the host when the dialog waits. With `MILAN_HOST_LOG=<file>`, a thread notes every window the plug-in
+/// opens on this thread ("dialog: <title>") in that file, so the report can tell a dialog from a hang.
+fn probe_mode() {
+    use windows_sys::Win32::System::StationsAndDesktops::{CreateDesktopW, DESKTOP_CREATEWINDOW, DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS, SetThreadDesktop};
+    use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW, IsWindowVisible};
+    if let Some(name) = std::env::var_os("MILAN_HOST_DESKTOP").filter(|n| !n.is_empty()) {
+        let w: Vec<u16> = name.to_string_lossy().encode_utf16().chain([0]).collect();
+        // SAFETY: a NUL-terminated name; the desktop handle is kept for the life of the process.
+        unsafe {
+            let d = CreateDesktopW(w.as_ptr(), std::ptr::null(), std::ptr::null(), 0, DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS, std::ptr::null());
+            if d.is_null() || SetThreadDesktop(d) == 0 {
+                eprintln!("milan-plugin-host: cannot use desktop {}: {}", name.to_string_lossy(), std::io::Error::last_os_error());
+            }
+        }
+    }
+    let Some(log) = std::env::var_os("MILAN_HOST_LOG").filter(|n| !n.is_empty()) else { return };
+    // SAFETY: a plain query.
+    let main_thread = unsafe { GetCurrentThreadId() };
+    unsafe extern "system" fn each(h: windows_sys::Win32::Foundation::HWND, titles: isize) -> windows_sys::Win32::Foundation::BOOL {
+        // SAFETY: `titles` is the Vec the enumerating thread passed; the window handle is live for this call.
+        unsafe {
+            if IsWindowVisible(h) != 0 {
+                let mut buf = [0u16; 256];
+                let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32);
+                (*(titles as *mut Vec<String>)).push(String::from_utf16_lossy(&buf[..n.max(0) as usize]));
+            }
+        }
+        1
+    }
+    let _ = std::thread::Builder::new().name("milan-host-window-watch".into()).spawn(move || {
+        let mut seen = std::collections::BTreeSet::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut titles: Vec<String> = Vec::new();
+            // SAFETY: the callback only reads the handle and writes into `titles`, which outlives the call.
+            unsafe { EnumThreadWindows(main_thread, Some(each), &mut titles as *mut Vec<String> as isize) };
+            for t in titles {
+                if seen.insert(t.clone()) {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&log) {
+                        let _ = writeln!(f, "dialog: {t}");
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Create pipe `name` (one instance, local clients only) and wait for Milan to open it.
+fn serve(name: &str) -> Option<File> {
+    use windows_sys::Win32::Foundation::{ERROR_PIPE_CONNECTED, GetLastError, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT};
+    let w: Vec<u16> = name.encode_utf16().chain([0]).collect();
+    // SAFETY: a NUL-terminated name; the handle is owned by the returned File.
+    unsafe {
+        let h = CreateNamedPipeW(w.as_ptr(), PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 1 << 16, 1 << 16, 0, std::ptr::null());
+        if h == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        if ConnectNamedPipe(h, std::ptr::null_mut()) == 0 && GetLastError() != ERROR_PIPE_CONNECTED {
+            windows_sys::Win32::Foundation::CloseHandle(h);
+            return None;
+        }
+        Some(File::from_raw_handle(h as _))
+    }
+}

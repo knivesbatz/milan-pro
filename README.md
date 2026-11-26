@@ -1,14 +1,14 @@
-<p align="center"><img src="assets/brand/milan-pro-256.png" width="128" height="128" alt="Milan Pro icon"></p>
+<p align="center"><img src="assets/brand/readme-banner-960x260.png" width="720" alt="Milan Pro: Nonlinear Editing System"></p>
 
 # Milan Pro
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.5). Editing, preview, effects, transitions, titles, audio FX, recording and rendering work; plug-in hosting is next.
+> Early development (v0.6). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, recording and rendering work; VST hosting is next.
 
 ## Features
 
-- Two interface looks modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
+- Three interface looks: Classic 2006, and two modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
@@ -18,6 +18,14 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Render As through the same engine as the preview (FFmpeg encoders)
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
+
+## Looks
+
+Milan Pro starts in the **Classic 2006** look: the brushed-metal, 3D-bevelled chrome of the 2005–2007 Windows video editors (Tahoma 8 pt, raised toolbars, sunken white lists, Windows 2000 dialogs and controls, a black LCD time display) on the VEGAS 23 window layout, with every menu, shortcut and docking area working as before. **Options > Preferences > Display > Interface Look** switches to the VEGAS 16 or VEGAS 23 (dark or white) looks, which are drawn as those applications are; the choice is kept in the preferences, and window layouts are saved per look. `docs/CLASSIC_2006_SPEC.md` and `docs/VEGAS_UI_SPEC.md` describe each look pixel by pixel.
+
+## Overlay packs
+
+**View > Window > Overlays** keeps your overlay video packs (light leaks, film grain, dust and scratches, bokeh, flares, frames, keyed elements) in a library folder, by default `Documents\Milan Pro\Overlay Packs` (change it in **Options > Preferences > General**). Each pack is a subfolder: **Import Pack...** copies a folder or extracts a `.zip` into the library, or links an existing folder where it is. Browse by pack, favourites, recent or search (names and tags), with thumbnails that scrub as you hover. Drag an overlay onto the timeline, or double-click it to add it at the cursor on a new track; the new track gets the overlay's blend (Normal, Screen, Add, Multiply, Overlay, or a green/blue screen key), set per pack in **Pack Properties** or per overlay from its right-click menu. Removing a copied pack moves its folder to the Recycle Bin; nothing is deleted for good. Milan Pro ships no third-party overlays; **Create Sample Pack** makes a few with FFmpeg.
 
 ## Install (Windows)
 
@@ -33,13 +41,24 @@ A few seconds after startup Milan Pro asks GitHub for the latest release (it sen
 
 Milan Pro cannot read `.veg` files directly. In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (including Pan/Crop, subclips and reversed events), fades, takes, groups, track envelopes, markers and regions come across; Milan Pro lists what does not (FX, generated media, transitions and Track Motion). Picking a `.veg` there instead only adds the media it uses to Project Media.
 
+## OFX plug-ins
+
+Milan Pro runs third-party OFX video effects, transitions and generators (Filter, General, Transition and Generator contexts; 8-bit, 16-bit, half or 32-bit float) in **milan-plugin-host.exe**, a separate process installed next to `MilanPro.exe`: a plug-in that crashes or hangs is stopped and bypassed with a message, and Milan Pro keeps running. Its settings stay in the project, so nothing is lost.
+
+- **Where Milan Pro looks:** `C:\Program Files\Common Files\OFX\Plugins` (the standard folder, where installers put `*.ofx.bundle` folders), every folder in the `OFX_PLUGIN_PATH` environment variable (separated by `;`), and folders you add in **View > Window > Plug-In Manager > Folders > Add Folder...**.
+- **Using them:** found effects appear in the Video FX window under their own grouping (for example "spektrafilm OFX"), transitions in the Transitions window and generators in Media Generators, and apply like the built-in ones, with their parameters and keyframes in the FX window. The FX window lays out an OFX plug-in's controls as the plug-in defines them (pages, groups, hidden and greyed parameters, labels and choice options it changes at run time) and runs its push buttons (Save Preset, Export LUT and the like) in the plug-in host; what the plug-in changes itself is written to the project. Projects store them as `ofx:<identifier>@<major version>`; a project that uses a plug-in you do not have keeps its settings and shows the FX as missing, with a red "!" on the event's fx button.
+- **Plug-In Manager** (View > Window, Ctrl+Alt+1): every plug-in with its status (OK, Failed with the reason, Disabled), a check box to turn one off, and **Rescan** (reads every plug-in again and tries failed ones again). Results are cached in `%LOCALAPPDATA%\MilanPro\plugins.json`.
+- **Limits:** Milan Pro does not provide GPU render suites (CUDA, OpenCL, Metal, OpenGL), overlays/on-screen controls, custom parameter UIs, parametric (curve) parameters, OFX 1.5 colour management or other frames than the current one (temporal access). Plug-ins that need these, or that only run in a particular host (DaVinci Resolve-only plug-ins; the VEGAS Pro OFX bundles, which need VEGAS's private suites and DLLs: see `docs/compat/ofx-vegas15.md`), fail with the reason shown. See `docs/compat/ofx-spektrafilm.md` for Spektrafilm.
+
+The OFX C API bindings in `src/bin/milan-plugin-host/ofx.rs` were written from the OpenFX 1.4 headers, Copyright (c) 2003-2015 The Open Effects Association Ltd, used under the BSD 3-Clause licence.
+
 ## Build from source
 
 ```bash
 cargo build --release
 ```
 
-Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/milan-pro.exe`.
+Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/milan-pro.exe` and `target/release/milan-plugin-host.exe` (the OFX plug-in host, which must sit beside it).
 
 ## Project layout
 
@@ -54,7 +73,7 @@ Requires Rust 1.85+ (edition 2024). The binary is written to `target/release/mil
 
 ## Roadmap
 
-- OFX / VST plug-in hosting
+- VST plug-in hosting; OFX transitions, generators and GPU render
 - Masks, freely dockable panels, direct `.veg` reading
 - EDL / OTIO interchange
 

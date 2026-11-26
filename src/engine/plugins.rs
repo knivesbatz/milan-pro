@@ -722,12 +722,14 @@ pub static PLUGINS: &[PluginInfo] = &[
     },
 ];
 
+/// A built-in, or (R33a) an enabled OFX plug-in that Milan Pro can run.
 pub fn find(id: &str) -> Option<&'static PluginInfo> {
-    PLUGINS.iter().find(|p| p.id == id)
+    PLUGINS.iter().find(|p| p.id == id).or_else(|| super::ofx::info(id))
 }
 
+/// The built-ins of `kind`, then the OFX plug-ins found (video FX, transitions and generators).
 pub fn catalog(kind: PluginKind) -> impl Iterator<Item = &'static PluginInfo> {
-    PLUGINS.iter().filter(move |p| p.kind == kind)
+    PLUGINS.iter().filter(move |p| p.kind == kind).chain(super::ofx::catalog(kind))
 }
 
 /// A new instance with `preset`'s values as single keys at t = 0.

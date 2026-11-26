@@ -13,7 +13,9 @@ use super::{theme, toolbar};
 pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>, progress: Option<(&str, &str)>) -> bool {
     let t = theme::get();
     let p = ui.painter();
-    p.rect_filled(rect, 0.0, t.status_bg);
+    if !t.classic() {
+        p.rect_filled(rect, 0.0, t.status_bg);
+    }
     let font = t.font(t.font.status);
     let hint = toolbar::take_hint(ui.ctx());
     let (left, color) = match (hint, message) {
@@ -24,30 +26,42 @@ pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Opti
         (None, None) => (String::new(), t.text),
     };
     let y = rect.center().y;
+    // Classic 2006: sunken panes (Windows status bar), the message pane taking what the right panes leave.
+    let classic = t.classic();
+    let pane = |r: Rect| {
+        if classic {
+            super::widgets::sunken(p, Rect::from_min_max(pos2(r.min.x, rect.min.y + 2.0), pos2(r.max.x, rect.max.y - 2.0)), t.metal.mid, &t.metal);
+        }
+    };
     // Right to left: record time, then the job's Cancel link and progress.
-    let mut x = rect.max.x - 6.0;
-    let mut put = |g: std::sync::Arc<Galley>, gap: f32| {
-        x -= g.size().x;
-        let at = pos2(x, (y - g.size().y * 0.5).round());
+    let mut x = rect.max.x - if classic { 8.0 } else { 6.0 };
+    let put = |x: &mut f32, g: std::sync::Arc<Galley>, gap: f32| {
+        *x -= g.size().x;
+        let at = pos2(*x, (y - g.size().y * 0.5).round());
         p.galley(at, g.clone(), t.text);
-        x -= gap;
+        *x -= gap;
         Rect::from_min_size(at, g.size())
     };
     if let Some(r) = record_time(project) {
-        put(p.layout_no_wrap(format!("Record Time (2 channels): {r}"), font.clone(), t.text), 36.0);
+        let g = p.layout_no_wrap(format!("Record Time (2 channels): {r}"), font.clone(), t.text);
+        pane(Rect::from_min_max(pos2(x - g.size().x - 6.0, rect.min.y), pos2(x + 4.0, rect.max.y)));
+        put(&mut x, g, if classic { 18.0 } else { 36.0 });
     }
     let mut cancel = false;
     if let Some((progress, stop)) = progress {
-        let link = put(p.layout_no_wrap("Cancel".into(), font.clone(), t.text), 10.0);
+        let (lg, pg) = (p.layout_no_wrap("Cancel".into(), font.clone(), t.text), p.layout_no_wrap(progress.to_owned(), font.clone(), t.text));
+        pane(Rect::from_min_max(pos2(x - lg.size().x - 10.0 - pg.size().x - 6.0, rect.min.y), pos2(x + 4.0, rect.max.y)));
+        let link = put(&mut x, lg, 10.0);
         let r = ui.interact(link, Id::new("status_job_cancel"), Sense::click()).on_hover_text(stop);
         if r.hovered() {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
             p.hline(link.x_range(), link.max.y, Stroke::new(1.0_f32, t.text));
         }
         cancel = r.clicked();
-        put(p.layout_no_wrap(progress.to_owned(), font.clone(), t.text), 0.0);
+        put(&mut x, pg, 0.0);
     }
     let left_room = (x - rect.min.x - 18.0).max(0.0);
+    pane(Rect::from_min_max(pos2(rect.min.x + 2.0, rect.min.y), pos2(rect.min.x + left_room + 8.0, rect.max.y)));
     let lg = p.layout(left, font, color, f32::INFINITY);
     p.with_clip_rect(Rect::from_min_size(rect.min, vec2(left_room, rect.height())))
         .galley(pos2(rect.min.x + 6.0, (y - lg.size().y * 0.5).round()), lg, t.text);

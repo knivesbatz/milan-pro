@@ -3,8 +3,10 @@
 //! presets, save and delete), the parameter grid from the plug-in's `ParamSpec`s and, while Animate is on, the keyframe
 //! controller with one lane for the selected plug-in. Each gesture is one undo step.
 use eframe::egui::*;
+use crate::ui::widgets;
 use std::collections::HashSet;
 use crate::edit::{self, FxTarget};
+use crate::engine::ofx;
 use crate::engine::plugins::{self, FxEval, ParamKind, PluginInfo, PluginKind, UserPreset, Val};
 use crate::history::History;
 use crate::project::{AutoMode, Curve, Fx, Keyframe, Keyframes, Project};
@@ -43,6 +45,34 @@ pub struct FxWindow {
     drag: Option<usize>,
     /// Installed fonts, read the first time a Font parameter shows.
     fonts: Option<Vec<String>>,
+    /// R33a: OFX groups (FX id, group) the user opened or closed against the plug-in's default.
+    toggled: HashSet<(String, String)>,
+}
+
+/// A parameter's name cell: "Name *" when off its default, a hint on hover; true on a double-click (reset).
+fn name_cell(ui: &mut Ui, name: &str, changed: bool, depth: usize, hint: &str) -> bool {
+    let text = format!("{}{}", name, if changed { " *" } else { "" });
+    let w = (LABEL_W - depth as f32 * 12.0).max(40.0);
+    let lr = ui.add_sized([w, 18.0], Label::new(text).sense(Sense::click()).truncate());
+    let lr = if hint.is_empty() { lr.on_hover_text("Double-click to reset") } else { lr.on_hover_text(format!("{hint}\nDouble-click to reset")) };
+    lr.double_clicked()
+}
+
+/// A choice whose options the plug-in set at run time (R33a: `ofx::Row::Param::options`).
+fn live_choice(ui: &mut Ui, fx: &mut Fx, key: &str, options: &[String], cur: f32, key_at: Option<f64>, fps: f64) {
+    let k = (cur.round().max(0.0) as usize).min(options.len().saturating_sub(1));
+    widgets::combo(ui, ("fx_choice", key), 180.0, options.get(k).map_or("", String::as_str), |ui| {
+        for (j, o) in options.iter().enumerate() {
+            if ui.selectable_label(j == k, o).clicked() {
+                set_num(fx, key, j as f32, cur, key_at, fps);
+            }
+        }
+    });
+}
+
+/// The name a chain shows for plug-in `id`: its name, or (an OFX plug-in that does not run) what is known of it.
+fn chain_name(id: &str) -> String {
+    plugins::find(id).map(|i| i.name.to_string()).or_else(|| ofx::label(id)).unwrap_or_else(|| id.to_string())
 }
 
 /// Some parameter is keyed over time (a key off 0, or several).
@@ -179,7 +209,7 @@ impl FxWindow {
     pub fn open(project: &Project, target: FxTarget) -> Option<Self> {
         let (list, _) = edit::fx_list(project, &target)?;
         let animate = list.iter().filter(|f| animated(f)).map(|f| f.id.clone()).collect();
-        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None })
+        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None, toggled: HashSet::new() })
     }
 
     /// Select the plug-in last in the chain (just dropped on it).
@@ -223,6 +253,7 @@ impl FxWindow {
         let audio = edit::fx_is_audio(project, &self.target);
         let kind = if audio { PluginKind::AudioFx } else { PluginKind::VideoFx };
         let fps = project.settings.frame_rate;
+        let (size, par) = ((project.settings.width, project.settings.height), project.settings.par);
         let keyed = key_time(project, &self.target);
         let (at, span, base) = keyed.map_or((0.0, 0.0, 0.0), |(_, span, base)| (self.kf.cursor(project.timeline.cursor_position - base).clamp(0.0, span), span, base));
         // Event FX keys stop at the event's end; track and output keys may go past the last event.
@@ -275,7 +306,7 @@ impl FxWindow {
                             op = Some(ChainOp::Enable(i, on));
                         }
                     }
-                    let name = plugins::find(&f.plugin).map_or(f.plugin.clone(), |i| i.name.to_string());
+                    let name = chain_name(&f.plugin);
                     let sense = if chain && editable { Sense::click_and_drag() } else { Sense::click() };
                     let r = ui.add(Button::new(name).selected(i == self.sel).sense(sense));
                     if r.clicked() {
@@ -296,7 +327,7 @@ impl FxWindow {
                 }
                 if chain {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add_enabled(editable && !list.is_empty(), Button::new("fx×")).on_hover_text("Remove Selected Plug-in").clicked() {
+                        if widgets::push_button_enabled(ui, editable && !list.is_empty(), "fx×").on_hover_text("Remove Selected Plug-in").clicked() {
                             op = Some(ChainOp::Remove(self.sel));
                             self.sel = self.sel.saturating_sub(1);
                         }
@@ -330,23 +361,29 @@ impl FxWindow {
                 .iter()
                 .enumerate()
                 .filter(|&(i, _)| i != self.sel)
-                .map(|(i, f)| (i, plugins::find(&f.plugin).map_or(f.plugin.clone(), |p| p.name.to_string()), lane(f, fps).iter().map(|k| k.0).collect()))
+                .map(|(i, f)| (i, chain_name(&f.plugin), lane(f, fps).iter().map(|k| k.0).collect()))
                 .collect();
             let Some(fx) = list.get_mut(self.sel) else {
                 ui.label(if audio { "No plug-ins. Use fx+ to add one." } else { "No plug-ins. Drag one here from the Video FX window, or use fx+." });
                 return;
             };
+            // R33a: an OFX plug-in that is missing, turned off or failed says why it is bypassed; its settings stay.
+            let why = ofx::bypassed_because(&fx.plugin);
             let Some(info) = plugins::find(&fx.plugin) else {
-                ui.label(format!("\"{}\" is not available in this version of Milan Pro. It is kept, and bypassed.", fx.plugin));
+                let why = why.unwrap_or_else(|| format!("\"{}\" is not available in this version of Milan Pro. It is kept, and bypassed.", fx.plugin));
+                ui.add(Label::new(RichText::new(why).color(super::theme::get().warning_text)).wrap());
                 return;
             };
+            if let Some(why) = why {
+                ui.add(Label::new(RichText::new(why).color(super::theme::get().warning_text)).wrap());
+            }
 
             // ---- Preset row ----
             ui.horizontal(|ui| {
                 ui.label("Preset:");
                 let mut pick: Option<Fx> = None;
                 let shown = shown_preset(info, users, fx, self.preset.as_ref());
-                ComboBox::from_id_salt("fx_preset").width(220.0).selected_text(shown.as_ref().map_or("", |p| p.1.as_str())).show_ui(ui, |ui| {
+                widgets::combo(ui, "fx_preset", 220.0, shown.as_ref().map_or("", |p| p.1.as_str()), |ui| {
                     for p in info.presets {
                         if ui.selectable_label(shown.as_ref().is_some_and(|s| !s.0 && s.1 == p.name), p.name).clicked() {
                             (pick, self.preset) = (Some(plugins::new_fx(info, Some(p))), Some((false, p.name.to_string())));
@@ -368,8 +405,8 @@ impl FxWindow {
                 }
                 match &mut self.save_as {
                     Some(name) => {
-                        ui.add(TextEdit::singleline(name).desired_width(120.0).hint_text("Preset name"));
-                        if ui.add_enabled(!name.trim().is_empty(), Button::new("Save")).clicked() {
+                        widgets::edit(ui, TextEdit::singleline(name).desired_width(120.0).hint_text("Preset name"));
+                        if widgets::push_button_enabled(ui, !name.trim().is_empty(), "Save").clicked() {
                             let name = name.trim().to_string();
                             match plugins::save_user_preset(plugins::user_preset_of(fx, &name, at)) {
                                 Ok(()) => {
@@ -379,7 +416,7 @@ impl FxWindow {
                                 Err(e) => msg = Some(format!("Could not save the preset: {e}")),
                             }
                             self.save_as = None;
-                        } else if ui.button("Cancel").clicked() {
+                        } else if widgets::push_button(ui, "Cancel").clicked() {
                             self.save_as = None;
                         }
                     }
@@ -399,13 +436,13 @@ impl FxWindow {
                     }
                 }
                 if let Some(id) = parent.as_deref() {
-                    if ui.add_enabled(editable, Button::new("Automation...")).on_hover_text("FX Automation Envelopes...").clicked() {
+                    if widgets::push_button_enabled(ui, editable, "Automation...").on_hover_text("FX Automation Envelopes...").clicked() {
                         super::automation::open_chooser(ui.ctx(), id);
                     }
                 }
                 if keyed.is_some() && chain {
                     let mut on = self.animate.contains(&fx.id);
-                    if ui.add_enabled(editable, Checkbox::new(&mut on, "Animate")).changed() {
+                    if widgets::checkbox_enabled(ui, editable, &mut on, "Animate").changed() {
                         if on {
                             self.animate.insert(fx.id.clone());
                         } else {
@@ -426,7 +463,89 @@ impl FxWindow {
             let off = mode == Some(AutoMode::Off);
             let shown = if off { Fx { auto: Default::default(), ..fx.clone() } } else { fx.clone() };
             let (Some(e), d) = (plugins::eval(&shown, at), plugins::preset_eval(info, None)) else { return };
+            // R33a: an OFX plug-in's controls as it lays them out now (pages, groups, hidden and greyed parameters,
+            // live labels and choice options, push buttons), with what the plug-in said and what it is doing.
+            let toggled = &self.toggled;
+            let ofx_rows = ofx::layout(&fx.plugin, &fx.id, &|g, open| toggled.contains(&(fx.id.clone(), g.to_string())) != open);
+            let warn = super::theme::get().warning_text;
+            if ofx_rows.is_some() {
+                if let Some(hint) = ofx::colour_hint(&fx.plugin, &fx.id, &e) {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(Label::new(RichText::new(hint).color(warn)).wrap());
+                        if widgets::push_button(ui, "OK").on_hover_text("Do not show this again for this plug-in").clicked() {
+                            ofx::dismiss_hint(&fx.plugin);
+                        }
+                    });
+                }
+                if let Some(button) = ofx::busy(&fx.id) {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Running \"{button}\" (the plug-in may be showing a window of its own)..."));
+                        if widgets::push_button(ui, "Stop").on_hover_text("Stop the plug-in host; it starts again with the next frame").clicked() {
+                            ofx::stop(&fx.id);
+                        }
+                    });
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                }
+                if let Some(note) = ofx::note(&fx.id) {
+                    let color = if note.starts_with("Error") { warn } else { super::theme::get().text_dim };
+                    ui.add(Label::new(RichText::new(note).color(color)).wrap());
+                }
+            }
+            let (mut pressed, mut toggle) = (None, None);
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                if let Some(rows) = &ofx_rows {
+                    let busy = ofx::busy(&fx.id).is_some();
+                    for row in rows {
+                        match row {
+                            ofx::Row::Heading(h) => {
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(h).strong().underline());
+                            }
+                            ofx::Row::Group { name, label, depth, open } => {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0);
+                                    let r = ui.add(Label::new(RichText::new(format!("{} {label}", if *open { "-" } else { "+" })).strong()).sense(Sense::click()));
+                                    if r.clicked() {
+                                        toggle = Some(name.clone());
+                                    }
+                                });
+                            }
+                            ofx::Row::Button { name, label, depth, enabled, hint } => {
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0 + LABEL_W);
+                                    let b = widgets::push_button_enabled(ui, *enabled && editable && !busy, label);
+                                    if b.on_hover_text(if hint.is_empty() { "Runs in the plug-in" } else { hint.as_str() }).clicked() {
+                                        pressed = Some(name.clone());
+                                    }
+                                });
+                            }
+                            ofx::Row::Param { index, label, depth, enabled, options, slider, hint } => {
+                                let (i, spec) = (*index, &info.params[*index]);
+                                let changed = e.vals[i].1 != d.vals[i].1;
+                                ui.horizontal(|ui| {
+                                    ui.add_space(*depth as f32 * 12.0);
+                                    if name_cell(ui, label, changed, *depth, hint) && editable {
+                                        reset(fx, spec.key, spec.kind);
+                                    }
+                                    // The slider spans the plug-in's display range, widened to a value outside it (a
+                                    // long seed); the value itself is only kept within the hard range (`spec.kind`).
+                                    let kind = match (spec.kind, slider, &e.vals[i].1) {
+                                        (ParamKind::Float { default, .. }, Some((lo, hi)), Val::F(v)) => ParamKind::Float { min: lo.min(*v), max: hi.max(*v), default },
+                                        (k, ..) => k,
+                                    };
+                                    ui.add_enabled_ui(editable && *enabled, |ui| match (options, &e.vals[i].1) {
+                                        (Some(o), Val::F(v)) => live_choice(ui, fx, spec.key, o, *v, key_at, fps),
+                                        _ => {
+                                            param(ui, fx, spec.key, kind, &e.vals[i].1, key_at, fps, &mut self.fonts);
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
                 for (i, spec) in info.params.iter().enumerate() {
                     if !spec.section.is_empty() {
                         ui.add_space(if i > 0 { 6.0 } else { 0.0 });
@@ -434,9 +553,7 @@ impl FxWindow {
                     }
                     let changed = e.vals[i].1 != d.vals[i].1;
                     ui.horizontal(|ui| {
-                        let text = format!("{}{}", spec.name, if changed { " *" } else { "" });
-                        let lr = ui.add_sized([LABEL_W, 18.0], Label::new(text).sense(Sense::click()).truncate()).on_hover_text("Double-click to reset");
-                        if lr.double_clicked() && editable {
+                        if name_cell(ui, spec.name, changed, 0, "") && editable {
                             reset(fx, spec.key, spec.kind);
                         }
                         let automated = !off && fx.auto.contains_key(spec.key);
@@ -457,6 +574,17 @@ impl FxWindow {
                     });
                 }
             });
+            if let Some(g) = toggle {
+                let key = (fx.id.clone(), g);
+                if !self.toggled.remove(&key) {
+                    self.toggled.insert(key);
+                }
+            }
+            if let Some(b) = pressed.filter(|_| editable) {
+                // The button's action runs in the plug-in host on a thread of its own; its edits come back through the
+                // app as one undo step (`App::take_ofx_edits`).
+                ofx::press(Some(ui.ctx()), fx, at, &b, size, fps, par);
+            }
             if animating {
                 let lanes = lane(fx, fps);
                 if let Some(r) = keyframes::controller(ui, kf_r, &mut self.kf, info.name, &lanes, span, end, at, fps) {
@@ -506,7 +634,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
         (ParamKind::Float { min, max, .. }, Val::F(v)) => {
             let mut x = *v;
             // Wide positive ranges (frequencies, times) are swept on a log scale.
-            let r = ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always).logarithmic(plugins::log_scale(min, max)));
+            let r = widgets::slider(ui, &mut x, min..=max, widgets::Slide { clamp: true, log: plugins::log_scale(min, max), ..Default::default() });
             if r.changed() {
                 set_num(fx, key, x, *v, key_at, fps);
             }
@@ -514,13 +642,13 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
         }
         (ParamKind::Bool { .. }, Val::F(v)) => {
             let mut on = *v >= 0.5;
-            if ui.checkbox(&mut on, "").changed() {
+            if widgets::checkbox(ui, &mut on, "").changed() {
                 set_num(fx, key, on as u8 as f32, *v, key_at, fps);
             }
         }
         (ParamKind::Choice { options, .. }, Val::F(v)) => {
             let k = (v.round().max(0.0) as usize).min(options.len().saturating_sub(1));
-            ComboBox::from_id_salt(("fx_choice", key)).width(180.0).selected_text(options.get(k).copied().unwrap_or_default()).show_ui(ui, |ui| {
+            widgets::combo(ui, ("fx_choice", key), 180.0, options.get(k).copied().unwrap_or_default(), |ui| {
                 for (j, o) in options.iter().enumerate() {
                     if ui.selectable_label(j == k, *o).clicked() {
                         set_num(fx, key, j as f32, *v, key_at, fps);
@@ -541,7 +669,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
             let edit = if multiline { TextEdit::multiline(&mut text).desired_rows(3) } else { TextEdit::singleline(&mut text) };
             let mut changed = ui.add(edit.desired_width(if key.ends_with("lut") { 230.0 } else { 300.0 })).changed();
             // LUT files are picked rather than typed.
-            if key.ends_with("lut") && ui.button("Browse...").clicked() {
+            if key.ends_with("lut") && widgets::push_button(ui, "Browse...").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Cube LUT", &["cube"]).pick_file() {
                     (text, changed) = (p.display().to_string(), true);
                 }
@@ -551,7 +679,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
             }
         }
         (ParamKind::Font { .. }, Val::T(s)) => {
-            ComboBox::from_id_salt(("fx_font", key)).width(200.0).selected_text(s.as_str()).show_ui(ui, |ui| {
+            widgets::combo(ui, ("fx_font", key), 200.0, s.as_str(), |ui| {
                 for f in fonts.get_or_insert_with(crate::engine::fonts::list).iter() {
                     if ui.selectable_label(f == s, f).clicked() {
                         fx.text.insert(key.to_string(), f.clone());
@@ -568,6 +696,48 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
 mod tests {
     use super::*;
     use crate::project::Clip;
+
+    /// R33a acceptance: a project using an OFX plug-in that is not installed loads with that FX and every saved
+    /// parameter (keys, curves, text) untouched; the FX window shows why it is bypassed without changing anything; it
+    /// renders as if absent; a save writes it back as it was.
+    #[test]
+    fn a_project_with_a_missing_ofx_plugin_keeps_its_parameters() {
+        use eframe::egui::{Context, RawInput};
+        let (mut p, id) = project();
+        let mut gone = Fx { plugin: "ofx:com.example.notinstalled@2".into(), ..plugins::new_fx(plugins::find("milan.fx.invert").unwrap(), None) };
+        gone.params.insert("gain".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.25, curve: Curve::Linear }, Keyframe { t: 1.0, v: 3.5, curve: Curve::Smooth }] });
+        gone.params.insert("tint.r".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.7, curve: Curve::Linear }] });
+        gone.text.insert("lut".into(), r"C:\looks\film.cube".into());
+        let fx = vec![p.clip(&id).unwrap().fx[0].clone(), gone.clone()];
+        p.timeline.video_tracks[0].clips[0].fx = fx.clone();
+        let dir = std::env::temp_dir().join("milan-agent").join("ofx").join(format!("missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("uses an OFX plug-in.mnle");
+        p.save(&path).unwrap();
+        let mut back = Project::load(&path).unwrap();
+        assert_eq!(back.clip(&id).unwrap().fx, fx);
+        assert!(plugins::eval(&gone, 0.0).is_none(), "bypassed");
+        let why = ofx::bypassed_because(&gone.plugin).unwrap();
+        assert!(why.contains("com.example.notinstalled") && why.contains("version 2") && why.contains("kept"), "{why}");
+        assert_eq!(chain_name(&gone.plugin), "com.example.notinstalled (missing)");
+        let (mut h, mut users) = (History::default(), Vec::new());
+        let ctx = Context::default();
+        crate::ui::fonts::install(&ctx);
+        for sel in 0..2 {
+            let mut w = FxWindow::open(&back, FxTarget::Event(id.clone())).unwrap();
+            w.sel = sel;
+            let _ = ctx.run(RawInput::default(), |ctx| assert!(w.show(ctx, &mut back, &mut h, &mut users).0));
+        }
+        assert_eq!((h.lens(), &back.clip(&id).unwrap().fx), ((0, 0), &fx));
+        // It plans and composes as if it were not there.
+        let vp = crate::engine::plan::compile(&back);
+        let fp = crate::engine::plan::frame_plan(&vp, (2.5 * vp.fps) as i64);
+        assert!(fp.fx().iter().all(|e| !e.id.starts_with("ofx:")));
+        back.save(&path).unwrap();
+        assert_eq!(Project::load(&path).unwrap().clip(&id).unwrap().fx, fx);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn project() -> (Project, String) {
         let mut p = Project::new("t");

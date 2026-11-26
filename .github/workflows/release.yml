@@ -20,6 +20,7 @@ jobs:
           # The app compares releases with its own Cargo version; a mismatch would offer the same update forever.
           $cargo = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           if ("v$cargo" -ne '${{ github.ref_name }}') { throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $cargo" }
+      # Builds both executables: MilanPro (milan-pro.exe) and the OFX plug-in host (milan-plugin-host.exe).
       - run: cargo build --release
       - run: choco install innosetup -y --no-progress
       - run: ./installer/fetch-ffmpeg.ps1

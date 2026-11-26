@@ -202,7 +202,7 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool, mo: MeterOpts
         (false, false) => &[Slider::Vol, Slider::Pan],
         (false, true) => &[Slider::Vol, Slider::Pan, Slider::Send],
     };
-    // VP23 squeezes the rows to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (c_ui_tl).
+    // VP23 (and Classic 2006) squeeze the rows to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (c_ui_tl).
     let (y0, pitch) = if !v16 && rect.height() < 64.0 { (19.0, 16.0) } else { (27.0, 22.0) };
     for (k, s) in rows.iter().enumerate() {
         let y = rect.min.y + y0 + pitch * k as f32;
@@ -673,8 +673,15 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             continue;
         }
 
-        // Body.
-        p.rect_filled(l.body, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
+        // Body: flat (VEGAS), or blue-grey brushed metal with a light top and shadow bottom row (Classic 2006).
+        if t.classic() {
+            crate::ui::widgets::header_metal(&p, l.body, &t, selected);
+            let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
+            line(l.body.min.y, t.metal.light);
+            line(l.body.max.y - 1.0, t.metal.shadow);
+        } else {
+            p.rect_filled(l.body, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
+        }
         if selected && v16 {
             let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
             line(l.body.min.y, t.track_header_sel_top);
@@ -693,15 +700,18 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
         for (s, r, groove) in &l.sliders {
             let cy = r.center().y.round();
             let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(&cx), font.clone(), t.text_label);
-            // VP16 puts values in a column at x=48; VP23 sets them right after the label.
-            let vx = if v16 { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
+            // VP16 (and Classic 2006) put values in a column at x=48; VP23 sets them right after the label.
+            let vx = if v16 || t.classic() { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
             let auto = auto_ctl(p.ctx(), project, tr, *s);
             let value = auto.map_or_else(|| s.value(tr, &cx), |(k, _, v)| auto_text(k, v));
             p.text(pos2(vx, cy), Align2::LEFT_CENTER, value, font.clone(), t.text_value);
             if groove.span() < 20.0 {
                 continue;
             }
-            if v16 {
+            if t.classic() {
+                // Sunken 3D groove (CLASSIC_2006_SPEC.md §6).
+                crate::ui::widgets::groove(&p, *groove, cy, &t.metal);
+            } else if v16 {
                 // Recessed groove: dark line over a lighter one.
                 p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy - 1.0, cy)), 0.0, t.frame);
                 p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy, cy + 1.0)), 0.0, t.fader_track);
@@ -719,6 +729,9 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
                 p.rect_filled(Rect::from_min_size(pos2(groove.center().round(), cy - 3.0), vec2(1.0, 7.0)), 0.0, t.fader_track);
                 let pts = vec![pos2(x - w * 0.5, cy - h * 0.5), pos2(x + w * 0.5, cy - h * 0.5), pos2(x, cy + h * 0.5)];
                 p.add(Shape::convex_polygon(pts, tint.unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
+            } else if t.classic() {
+                // Metallic 11×15 handle with a centre line.
+                crate::ui::widgets::thumb(&p, Rect::from_center_size(pos2(x, cy), vec2(11.0, 15.0)), &t.metal, tint);
             } else {
                 paint_icon(&p, Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0)), Icon::FaderThumb, t.look(), tint);
             }
@@ -744,7 +757,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
         p.rect_filled(r.translate(vec2(0.0, 1.0)), 0.0, t.track_separator_2);
     }
     let empty = Rect::from_min_max(pos2(g.rect.min.x, last.max(g.list.min.y)), pos2(g.rect.min.x + g.header_w, g.list.max.y));
-    p.rect_filled(empty, 0.0, if v16 { t.frame } else { t.empty_lane_bg });
+    p.rect_filled(empty, 0.0, if v16 { t.frame } else if t.classic() { t.band_bg } else { t.empty_lane_bg });
 }
 
 /// `at`: the cursor time, at which an audio track's FX count as present when some plug-in changes the sound (every
@@ -759,7 +772,7 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
         Btn::Mute => (Icon::Mute, tr.muted),
         Btn::Solo => (Icon::Solo, tr.solo),
     };
-    if b == Btn::Fx && !v16 {
+    if b == Btn::Fx && !v16 && !t.classic() {
         // VP23: a 4 px accent dot at the lower right when FX are present, not a toggle fill (§5.9.3).
         paint_icon(p, r, icon, t.look(), None);
         if on {
@@ -772,13 +785,18 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
 
 /// A header toggle button (Mute, Solo...), lit when `on`.
 fn paint_toggle(p: &Painter, t: &Theme, r: Rect, icon: Icon, on: bool) {
-    if t.look() == UiLook::Vegas16 {
+    if t.classic() {
+        // 18×18 chrome button, pressed in (blue-tinted) while on.
+        let state = if on { crate::ui::widgets::Chrome::Active } else { crate::ui::widgets::Chrome::Raised };
+        crate::ui::widgets::chrome_button(p, r.expand(1.0), state, &t.metal);
+        paint_icon(p, r.shrink(1.0), icon, t.look(), None);
+    } else if t.look() == UiLook::Vegas16 {
         paint_icon(p, r, icon, t.look(), None);
         if on {
             p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));
         }
     } else if on {
-        p.rect_filled(r, CornerRadius::same(2), t.accent.gamma_multiply(0.3));
+        p.rect_filled(r, t.radius(2), t.accent.gamma_multiply(0.3));
         paint_icon(p, r, icon, t.look(), Some(t.accent));
     } else {
         paint_icon(p, r, icon, t.look(), None);

@@ -115,9 +115,14 @@ pub struct MeridianApp {
     /// R9: audio devices may be opened (not in the screenshot harness, which never plays or records).
     devices: bool,
     shot: Option<Shot>,
+    /// `MILAN_DIALOG` still to open: the screenshot harness opens it once its window has its 1920×1080 size, so the
+    /// dialog centres as in a live session (an Area keeps the place it was first laid out at).
+    env_dialog: bool,
     // Dock window state.
     media_view: ui::MediaView,
     explorer: ui::Explorer,
+    /// The Overlays window: the overlay pack library (src/overlays.rs).
+    overlays: ui::OverlaysView,
     choosers: [ui::Chooser; 4],
     trimmer: ui::Trimmer,
     preview_view: ui::PreviewView,
@@ -128,6 +133,8 @@ pub struct MeridianApp {
     edit_details: ui::EditDetails,
     /// R16b: the Video Scopes window's thread and plots (its choices are in `prefs.scopes`).
     scopes: ui::Scopes,
+    /// R31: the OFX plug-ins found, their scan and the Plug-In Manager's view (its choices are in `prefs.ofx`).
+    plugin_mgr: ui::PluginManager,
     /// R16c: the Loudness Meters' measuring thread (its options are in `prefs.loudness`), and Tools › Generate Loudness
     /// Log running.
     loudness: ui::Loudness,
@@ -159,6 +166,8 @@ pub struct MeridianApp {
     user_presets: Vec<crate::engine::plugins::UserPreset>,
     grading: ui::ColorGrading,
     welcome: Option<Welcome>,
+    /// The startup splash while it shows (`ui::splash`; never in an off-screen run).
+    splash: Option<ui::splash::Splash>,
     shortcuts_open: bool,
     /// Help › Unfinished Features.
     unfinished_open: bool,
@@ -246,11 +255,50 @@ struct Parent {
 const PLACING: u8 = 10;
 
 impl MeridianApp {
+    /// R33a: what OFX plug-ins changed themselves goes into the project. A button's edits are the user's own undo
+    /// step; a new instance's starting values and edits made while rendering ride on the step that caused them.
+    /// A dismissed colour space hint goes to the preferences.
+    fn take_ofx_edits(&mut self) {
+        for ed in crate::engine::ofx::take_edits() {
+            if ed.edits.is_empty() || self.project.fx_by_id_mut(&ed.instance).is_none_or(|f| f.plugin != ed.plugin) {
+                continue;
+            }
+            let before = ed.by_user.then(|| self.project.clone());
+            let Some(fx) = self.project.fx_by_id_mut(&ed.instance) else { continue };
+            if crate::engine::ofx::apply_edits(fx, &ed.edits, ed.initial) {
+                if let Some(b) = before {
+                    self.history.push(b);
+                }
+                if !ed.initial {
+                    self.project.mark_modified();
+                }
+            }
+        }
+        if let Some(seen) = crate::engine::ofx::hints_changed() {
+            self.prefs.ofx.hints_seen = seen;
+            self.save_prefs();
+        }
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> Self {
         ui::fonts::install(&cc.egui_ctx);
         ui::keymap::install(&cc.egui_ctx);
         // The demo harness never reads or writes the user's preferences.
-        let prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
+        let mut prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
+        // Once: the Overlays window joins each look's saved last layout, beside Media Generators (user slots stay).
+        let mut overlays_into = Vec::new();
+        if !prefs.overlays_placed {
+            for (k, l) in prefs.layouts.iter_mut().filter(|(k, _)| k.ends_with(":last")) {
+                if ui::place_in_layout(l) {
+                    overlays_into.push(k.clone());
+                }
+            }
+        }
+        // The demo harness keeps its overlay library beside the demo media, never in Documents or AppData.
+        let overlays = match (launch.demo, &prefs.overlay_library) {
+            (true, _) => ui::OverlaysView::new(crate::demo::media_dir().join("overlay-packs"), None),
+            (false, dir) => ui::OverlaysView::new(dir.clone().unwrap_or_else(crate::overlays::default_library), crate::overlays::Index::file()),
+        };
         let look = launch.look.unwrap_or(prefs.look);
         // Before the first project: its audio track starts with this chain.
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
@@ -262,7 +310,7 @@ impl MeridianApp {
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
         let look = theme::get().choice;
-        let welcome = (look.look == UiLook::Vegas23 && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        let welcome = (look.look.v23() && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
         std::thread::spawn(|| {
             crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT);
             crate::engine::render::clean_temp(&std::env::temp_dir());
@@ -306,6 +354,21 @@ impl MeridianApp {
         let mut queue_win = ui::render_queue::QueueWindow::default();
         queue_win.open = queue.jobs.iter().any(|j| matches!(j.state, render::JobState::Queued | render::JobState::Interrupted));
         let offscreen = crate::offscreen_run(launch.screenshot.is_some());
+        // R31: the OFX plug-ins of the last scan at once, then the folders searched again in the background (unchanged
+        // binaries keep their entries, new ones are described in a plug-in host). The harness never reads or writes the
+        // user's plug-in list: it searches only MILAN_OFX_DIR, before its screenshot.
+        let harness = launch.demo || launch.screenshot.is_some();
+        let mut plugin_mgr = if harness {
+            ui::PluginManager::new(None, Some(std::env::var_os("MILAN_OFX_DIR").map(std::path::PathBuf::from).into_iter().collect()))
+        } else {
+            ui::PluginManager::new(crate::engine::ofx::scan::cache_path(), None)
+        };
+        if launch.screenshot.is_some() {
+            plugin_mgr.rescan_now(&prefs.ofx);
+        } else {
+            plugin_mgr.rescan(Some(&cc.egui_ctx), &prefs.ofx, false);
+        }
+        crate::engine::ofx::set_registry(&plugin_mgr.cache, &prefs.ofx);
         let mut app = Self {
             project,
             history: History::default(),
@@ -360,12 +423,14 @@ impl MeridianApp {
             customize_keys: None,
             customize_bar: None,
             layouts_changed: Default::default(),
-            decorated: look.look == UiLook::Vegas16,
+            decorated: look.look != UiLook::Vegas23,
             demo: launch.demo,
             devices: launch.screenshot.is_none(),
+            env_dialog: launch.screenshot.is_some(),
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
+            overlays,
             choosers: [PluginKind::Transition, PluginKind::VideoFx, PluginKind::Generator, PluginKind::Compositor].map(ui::Chooser::new),
             trimmer,
             preview_view: ui::PreviewView::default(),
@@ -373,6 +438,7 @@ impl MeridianApp {
             console: ui::ConsoleView::default(),
             edit_details: ui::EditDetails::default(),
             scopes: ui::Scopes::default(),
+            plugin_mgr,
             loudness: ui::Loudness::default(),
             loud_log: None,
             syncing: None,
@@ -391,6 +457,7 @@ impl MeridianApp {
             user_presets: if launch.demo { Vec::new() } else { crate::engine::plugins::load_user_presets() },
             grading: Default::default(),
             welcome,
+            splash: ui::splash::Splash::wanted(prefs.show_splash, offscreen).then(ui::splash::Splash::new),
             shortcuts_open: false,
             unfinished_open: false,
             time_entry: None,
@@ -432,8 +499,17 @@ impl MeridianApp {
             slideshow: None,
             audio_transition: None,
         };
+        if !launch.demo {
+            app.prefs.overlays_placed = true;
+            if !overlays_into.is_empty() {
+                app.layouts_changed.extend(overlays_into);
+                app.save_prefs();
+            }
+        }
         app.sync_sel();
-        app.open_from_env(&cc.egui_ctx);
+        if !app.env_dialog {
+            app.open_from_env(&cc.egui_ctx);
+        }
         app
     }
 
@@ -521,6 +597,16 @@ impl MeridianApp {
         let (offscreen, want, project, preview) = (self.offscreen, m.rect, &self.project, &mut self.preview);
         let (fit, rotate, mute) = (self.prefs.ext_fit, self.prefs.ext_rotate, self.mute_video);
         let id = egui::ViewportId::from_hash_of(("milan_external_preview", &m.name));
+        if offscreen {
+            // The harness: eframe cannot shoot an immediate viewport, so the picture is drawn in the main window
+            // (640×360 at the lower right) for the screenshot.
+            let r = egui::Rect::from_min_size(ctx.screen_rect().right_bottom() - egui::vec2(700.0, 460.0), egui::vec2(640.0, 360.0));
+            egui::Window::new("Video Preview (External Monitor)").id(egui::Id::new(id)).title_bar(false).frame(egui::Frame::NONE).fixed_rect(r).show(ctx, |ui| {
+                ui::draw_external(ui, project, preview, fit, rotate, mute);
+            });
+            self.preview.visible = true;
+            return;
+        }
         let close = ctx.show_viewport_immediate(id, b, |vctx, class| {
             if class == egui::ViewportClass::Embedded {
                 return true; // no native windows to show it in
@@ -549,6 +635,10 @@ impl MeridianApp {
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
+            self.env_dialog = false;
+            self.open_from_env(ctx);
+        }
         // Playback clock: audio is master while it plays (it wraps loops itself), frame dt otherwise
         if self.playing {
             let now = ctx.input(|i| i.time);
@@ -583,6 +673,14 @@ impl eframe::App for MeridianApp {
         self.tick_loudness_log();
         self.tick_sync();
         self.tick_audio_editor(ctx);
+        // R31-R33b: a plug-in scan that finished; a plug-in that failed while rendering (it is bypassed).
+        if self.plugin_mgr.poll() {
+            crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx);
+        }
+        if let Some(m) = self.plugin_mgr.message.take().or_else(|| crate::engine::ofx::take_events().pop()) {
+            self.message = Some(m);
+        }
+        self.take_ofx_edits();
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
@@ -590,10 +688,11 @@ impl eframe::App for MeridianApp {
         let title = format!("{}{} - Milan Pro", self.project.name, if self.project.modified { " *" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         let t = theme::get();
-        let v16 = t.look() == UiLook::Vegas16;
-        if self.decorated != v16 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(v16));
-            self.decorated = v16;
+        // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.
+        let native = t.look() != UiLook::Vegas23;
+        if self.decorated != native {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(native));
+            self.decorated = native;
         }
 
         let mut drag = self.file_drag(ctx);
@@ -606,10 +705,11 @@ impl eframe::App for MeridianApp {
             self.dock.bounds = egui::Rect::from_min_max(egui::pos2(full.min.x, a.toolbar.max.y), egui::pos2(full.max.x, a.status.min.y));
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
-            // Menu: own white row (VP16) or inline in the custom title bar (VP23); popups get the menu style.
+            // Menu: own row (VP16 white, Classic 2006 metal) or inline in the custom title bar (VP23); popups get the
+            // menu style.
             ui::menus::publish_state(ctx, self.cmd_state());
             chrome::with_menu_style(ctx, &t, || {
-                if v16 { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
+                if native { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
             });
 
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
@@ -631,6 +731,7 @@ impl eframe::App for MeridianApp {
             ui::feed_levels(ctx, &self.audio.meters, &self.audio.mon_meters, &self.audio.master, self.audio.running() || self.audio.monitoring());
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             let mut scopes_prefs = false;
+            let (mut plugin_rescan, mut ofx_changed) = (false, false);
             let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
             // R16a: Edit Details edits as the timeline does; its last edit's ripple, for Post-Edit Ripple.
             let (details_opts, mut details_edit) = (self.edit_opts(), None);
@@ -672,6 +773,10 @@ impl eframe::App for MeridianApp {
                 Panel::Explorer => {
                     ui::draw_explorer_toolbar(bar, &mut self.explorer);
                     ui::draw_explorer(body, &mut self.explorer, &mut actions);
+                }
+                Panel::Overlays => {
+                    ui::draw_overlays_toolbar(bar, &mut self.overlays);
+                    ui::draw_overlays(body, &mut self.overlays, &mut self.project, &mut self.history, &mut self.sel, &mut self.thumbs, &mut actions, self.prefs.still_len);
                 }
                 Panel::Transitions | Panel::VideoFx | Panel::MediaGenerators | Panel::Compositors => {
                     let k = match panel {
@@ -736,12 +841,28 @@ impl eframe::App for MeridianApp {
                     scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
                 }
                 Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
+                Panel::PluginManager => {
+                    let a = ui::plugin_manager_toolbar(bar, &mut self.plugin_mgr, &mut self.prefs.ofx);
+                    let b = ui::plugin_manager(body, &mut self.plugin_mgr, &mut self.prefs.ofx);
+                    plugin_rescan |= a.rescan || b.rescan;
+                    ofx_changed |= a.prefs_changed || b.prefs_changed;
+                }
                 }
             };
             self.dock.show(ui, a.dock, &mut content);
             self.dock.show_floating(ctx, self.offscreen, float_dock, &mut content);
             if let Some(ops) = details_edit {
                 self.last_edit = (self.history.generation(), ops);
+            }
+            // R31: Rescan reads every OFX plug-in again; a plug-in turned on or off changes what the choosers offer and
+            // what renders; a folder added or removed is searched.
+            if ofx_changed {
+                self.save_prefs();
+                crate::engine::ofx::set_registry(&self.plugin_mgr.cache, &self.prefs.ofx);
+                crate::engine::ofx::clear_failures();
+            }
+            if plugin_rescan || ofx_changed {
+                self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, plugin_rescan);
             }
             if console_prefs || scopes_prefs {
                 self.save_prefs();
@@ -854,7 +975,7 @@ impl eframe::App for MeridianApp {
                     s.job.cancel();
                 }
             }
-            if !v16 {
+            if !native {
                 chrome::resize_edges(ui, full);
             }
         });
@@ -863,6 +984,9 @@ impl eframe::App for MeridianApp {
             self.up_to(ctx, k);
         }
         self.show_external(ctx);
+        if self.splash.as_mut().is_some_and(|s| !s.show(ctx)) {
+            self.splash = None;
+        }
 
         // A new look (Preferences) applies live; each look keeps its own last layout.
         if self.look != t.choice {
@@ -910,6 +1034,12 @@ impl eframe::App for MeridianApp {
         // Before the media added below is offered for auto proxies: an imported project is opened, not imported media.
         self.poll_vegas(ctx);
         self.show_dialogs(ctx);
+        let overlay_dir = match (self.demo, &self.prefs.overlay_library) {
+            (true, _) => self.overlays.lib.dir.clone(),
+            (false, Some(d)) => d.clone(),
+            (false, None) => crate::overlays::default_library(),
+        };
+        ui::overlay_dialogs(ctx, &mut self.overlays, overlay_dir);
         // R8c: after every control has drawn (the FX window too), and before the plan below picks up the writes.
         ui::automation::chooser(ctx, &mut self.project, &mut self.history);
         ui::automation::end_frame(ctx, &mut self.project);
@@ -926,6 +1056,10 @@ impl eframe::App for MeridianApp {
         while !self.dragging() {
             let Some(placed) = self.file_drop.poll(&mut self.project, self.prefs.still_len, self.prefs.auto_crossfade) else { break };
             if let Some(before) = placed.before {
+                // Overlays dropped onto new tracks get their blend, in the drop's own undo step.
+                for p in crate::overlays::blend_new_tracks(&mut self.project, &before, &placed.ids, &self.overlays.lib.index) {
+                    self.overlays.lib.used(&p);
+                }
                 self.history.push(before);
             }
             if !placed.ids.is_empty() {
@@ -1044,8 +1178,8 @@ impl eframe::App for MeridianApp {
         // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
         let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
         if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
-            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending();
-            shot.tick(ctx, busy);
+            let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
+            shot.tick(ctx, busy || self.env_dialog);
         }
     }
 
@@ -1060,6 +1194,7 @@ impl eframe::App for MeridianApp {
             return;
         };
         p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
+        p.overlays_placed = true; // this layout has the Overlays window placed already (or closed on purpose)
         if let Err(e) = p.save() {
             eprintln!("Could not save the window layout: {e}");
         }

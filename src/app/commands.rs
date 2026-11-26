@@ -1,6 +1,7 @@
 //! Command execution for the app: keys (through the keymap), menu bar, context menus and toolbars all end up in
 //! `MeridianApp::exec`. Also the modal dialogs and the save prompt.
 use eframe::egui;
+use crate::ui::widgets;
 use crate::edit;
 use crate::interchange::Imported;
 use crate::project::{Project, TrackKind};
@@ -56,6 +57,7 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
+            || self.overlays.modal()
     }
 
     pub(super) fn cmd_state(&self) -> CmdState {
@@ -411,7 +413,7 @@ impl MeridianApp {
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
             hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes)
-                | if p.ofx_envelopes && theme::get().look() == UiLook::Vegas23 { crate::settings::OFX_SHOWN } else { 0 },
+                | if p.ofx_envelopes && theme::get().look().v23() { crate::settings::OFX_SHOWN } else { 0 },
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
@@ -1448,7 +1450,7 @@ impl MeridianApp {
             }
             NextFxEnvelope | PrevFxEnvelope => {
                 // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
-                let ofx = self.prefs.ofx_envelopes && theme::get().look() == UiLook::Vegas23;
+                let ofx = self.prefs.ofx_envelopes && theme::get().look().v23();
                 let all = self.sel.tracks.last().map_or(Vec::new(), |t| edit::fx_envelopes(&self.project, t, ofx));
                 let n = all.len();
                 if n == 0 {
@@ -2127,13 +2129,7 @@ impl MeridianApp {
         self.show_update(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
-            let (ok, close) = dialogs::modal(ctx, "about", "About Milan Pro", egui::vec2(360.0, 170.0), |ui| {
-                ui.label(egui::RichText::new(format!("Milan Pro v{}", env!("CARGO_PKG_VERSION"))).strong());
-                ui.label("Open-source nonlinear video editor.");
-                ui.add_space(30.0);
-                dialogs::button_row(ui, &[("OK", true)]).is_some()
-            });
-            self.about = !(ok || close);
+            self.about = !dialogs::about(ctx);
         }
         if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms(), !self.dock.timeline_top()) {
             if new.track_colors != self.prefs.track_colors {
@@ -2374,9 +2370,9 @@ impl MeridianApp {
             .collect();
         let Some((name, slot)) = &mut self.layout_as else { return };
         let (hit, close) = dialogs::modal(ctx, "save_layout_as", "Save Layout As", egui::vec2(340.0, 140.0), |ui| {
-            dialogs::row(ui, "Name:", 60.0, true, |ui| ui.add(egui::TextEdit::singleline(name).desired_width(250.0)));
+            dialogs::row(ui, "Name:", 60.0, true, |ui| widgets::edit(ui, egui::TextEdit::singleline(name).desired_width(250.0)));
             dialogs::row(ui, "Shortcut:", 60.0, true, |ui| {
-                egui::ComboBox::from_id_salt("layout_as_slot").width(250.0).selected_text(slots[*slot].as_str()).show_ui(ui, |ui| {
+                widgets::combo(ui, "layout_as_slot", 250.0, slots[*slot].as_str(), |ui| {
                     for (n, label) in slots.iter().enumerate() {
                         ui.selectable_value(slot, n, label.as_str());
                     }
@@ -2558,7 +2554,51 @@ impl MeridianApp {
     pub(super) fn open_from_env(&mut self, ctx: &egui::Context) {
         let Ok(what) = std::env::var("MILAN_DIALOG") else { return };
         match what.as_str() {
+            // The Edit menu dropped open (look screenshots).
+            "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
+            // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
+            // copy): the dialog needs an event in the clipboard.
+            "paste-attrs" => {
+                let loop_region = self.project.timeline.loop_region.take();
+                self.exec(ctx, Copy);
+                self.project.timeline.loop_region = loop_region;
+                self.message = None;
+                self.exec(ctx, PasteAttributesSelect);
+            }
+            "default-track" => {
+                self.sel.tracks = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()).into_iter().collect();
+                self.exec(ctx, DefaultTrackFx);
+            }
+            "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
+            "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
+            "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
+            "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
+            // R33a review: the FX window on the focus video event with an OFX plug-in from MILAN_OFX_DIR (the test
+            // bundle's "Test Params", else the first OFX video FX) and a missing OFX plug-in behind it (the bypassed
+            // notice and the timeline badge).
+            // R33a review: the FX window on the focus video event as it is ("fx-event"), or with a missing OFX plug-in
+            // (the bypassed notice and the timeline badge) and the first OFX video FX of MILAN_OFX_DIR (the test
+            // bundle's "Test Params": groups, hidden and greyed parameters, push buttons) selected ("fx-ofx").
+            "fx-event" | "fx-ofx" | "fx-badge" => {
+                if let Some(id) = self.focus_clip(true) {
+                    let target = edit::FxTarget::Event(id);
+                    if what != "fx-event" {
+                        let gone = crate::project::Fx { plugin: "ofx:com.example.gone@1".into(), ..crate::engine::plugins::new_fx(crate::engine::plugins::find("milan.fx.invert").expect("built in"), None) };
+                        edit::add_fx(&mut self.project, &target, gone);
+                        let ofx: Vec<_> = crate::engine::plugins::catalog(crate::engine::plugins::PluginKind::VideoFx).filter(|i| i.id.starts_with(crate::engine::ofx::PREFIX)).collect();
+                        if let Some(info) = ofx.iter().find(|i| i.name.contains("Params")).or(ofx.first()) {
+                            edit::add_fx(&mut self.project, &target, crate::engine::plugins::new_fx(info, None));
+                        }
+                        // The harness never has a modified project (a modified one would not close for the screenshot).
+                        self.project.modified = false;
+                    }
+                    if what != "fx-badge" {
+                        self.open_fx(target);
+                    }
+                }
+            }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
             // R21a: GPU acceleration of video processing.
             "prefs-video" => self.open_prefs(Some(dialogs::prefs::VIDEO)),
@@ -2593,6 +2633,13 @@ impl MeridianApp {
             }
             // R19: the Video Preview with Show Playback Statistics on (stopped: the harness never plays sound).
             "playback-stats" => self.preview_view.show_stats = true,
+            // Overlay packs: a library that is never saved, in MILAN_OVERLAY_LIBRARY (else beside the demo media), with
+            // the sample pack made once by FFmpeg; thumbnails or the details list.
+            "overlays" | "overlays-details" => {
+                let dir = std::env::var_os("MILAN_OVERLAY_LIBRARY").map_or_else(|| crate::demo::media_dir().join("overlay-packs"), std::path::PathBuf::from);
+                self.overlays.harness(&dir, what == "overlays-details");
+                self.dock.open(crate::ui::dock::Panel::Overlays);
+            }
             "props" => self.settings.open(&self.project),
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "props-audio" => self.settings.open_tab(&self.project, 1),

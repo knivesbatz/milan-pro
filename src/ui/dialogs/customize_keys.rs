@@ -5,6 +5,7 @@
 //! the next time the dialog opens. VEGAS's per-window contexts are not here: Milan Pro's keys work everywhere.
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::ui::keymap::{self, Bindings, Command, Overrides};
 use crate::ui::menus;
 use crate::ui::theme::{self, UiLook};
@@ -220,7 +221,7 @@ impl CustomizeKeys {
                 ui.label("Keyboard map:");
                 let shown = self.map.clone().unwrap_or_else(|| "[Default]".into());
                 let mut pick = None;
-                ComboBox::from_id_salt("key_map").width(260.0).selected_text(shown).show_ui(ui, |ui| {
+                widgets::combo(ui, "key_map", 260.0, shown, |ui| {
                     if ui.selectable_label(self.map.is_none(), "[Default]").clicked() {
                         pick = Some(None);
                     }
@@ -247,7 +248,7 @@ impl CustomizeKeys {
                 let mut keep = true;
                 ui.horizontal(|ui| {
                     ui.label("Save the keyboard map as:");
-                    ui.add(TextEdit::singleline(&mut name).desired_width(240.0));
+                    widgets::edit(ui, TextEdit::singleline(&mut name).desired_width(240.0));
                     if super::button(ui, "Save", !name.trim().is_empty(), true).clicked() {
                         keep = false;
                         if let Err(e) = self.save_as(&name) {
@@ -264,12 +265,11 @@ impl CustomizeKeys {
             }
             ui.horizontal(|ui| {
                 ui.label("Show commands containing:");
-                ui.add(TextEdit::singleline(&mut self.filter).desired_width(300.0));
+                widgets::edit(ui, TextEdit::singleline(&mut self.filter).desired_width(300.0));
             });
             ui.add_space(2.0);
-            let list_frame = Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(2);
             ui.horizontal_top(|ui| {
-                list_frame.show(ui, |ui| {
+                super::field_box(ui, 2, |ui| {
                     ui.set_width(360.0);
                     ScrollArea::vertical().id_salt("key_commands").max_height(330.0).auto_shrink(false).show(ui, |ui| {
                         ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
@@ -296,7 +296,7 @@ impl CustomizeKeys {
                     ui.set_width(280.0);
                     ui.label("Shortcut keys for selected command:");
                     let keys = self.sel.map(|c| self.keys_of(c)).unwrap_or_default();
-                    list_frame.show(ui, |ui| {
+                    super::field_box(ui, 2, |ui| {
                         ui.set_width(270.0);
                         ui.set_min_height(110.0);
                         ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
@@ -378,7 +378,7 @@ impl CustomizeKeys {
             (true, true) => ("Press a key".to_string(), d.text_disabled),
             (true, false) => ("Click here, then press a key".to_string(), d.text_disabled),
         };
-        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), color);
+        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, theme::get().font(12.0), color);
     }
 }
 

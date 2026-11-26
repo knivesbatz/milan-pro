@@ -53,7 +53,7 @@ pub enum Command {
     LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
     SaveLayoutAs, OrganizeLayouts, ReloadLayout,
     // Windows
-    FocusTimeline, Window(Panel), ShowWindow(Panel), PluginManager, SurroundPanner,
+    FocusTimeline, Window(Panel), ShowWindow(Panel), SurroundPanner,
     DeviceExplorer, Dashboard, MotionTracking, TextToSpeech,
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
@@ -382,7 +382,7 @@ pub const TABLE: &[Row] = &[
     (Window(Panel::Transitions), "Transitions", &["Alt+7"], None),
     (Window(Panel::VideoFx), "Video FX", &["Alt+8"], None),
     (Window(Panel::MediaGenerators), "Media Generators", &["Alt+9"], None),
-    (PluginManager, "Plug-In Manager", &["Ctrl+Alt+1"], None),
+    (Window(Panel::PluginManager), "Plug-In Manager", &["Ctrl+Alt+1"], None),
     (Window(Panel::VideoScopes), "Video Scopes", &["Ctrl+Alt+2"], None),
     (SurroundPanner, "Surround Panner", &["Ctrl+Alt+3"], None),
     (Window(Panel::MixingConsole), "Mixing Console", &["Ctrl+Alt+5"], Some(&["Ctrl+Alt+6"])),

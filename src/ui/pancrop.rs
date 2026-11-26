@@ -5,6 +5,7 @@
 //! paths. Keys are event-relative; each drag or typed value is one undo step, and the preview follows through the
 //! engine's content hash.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::decode::Thumbs;
 use crate::history::History;
 use crate::project::{Keyframe, Keyframes, Mask, MaskMode, MediaType, PanCrop, Project};
@@ -143,7 +144,11 @@ impl PanCropWin {
             let mid = Rect::from_min_max(pos2(full.min.x, bar.max.y + 4.0), pos2(full.max.x, kf_r.min.y - 5.0));
             let grid_r = mid.with_max_x(mid.min.x + 200.0);
             let ws_r = mid.with_min_x(grid_r.max.x + 5.0);
-            ui.painter().rect_filled(bar, 0.0, t.toolbar_bg);
+            if t.classic() {
+                super::widgets::metal_bar(ui.painter(), bar, &t.metal);
+            } else {
+                ui.painter().rect_filled(bar, 0.0, t.toolbar_bg);
+            }
             let mut bar_ui = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(vec2(4.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
             self.ws.toolbar(&mut bar_ui);
             if self.mask {
@@ -178,7 +183,7 @@ impl PanCropWin {
                 g.add_enabled_ui(editable, |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ComboBox::from_id_salt("pc_mask_mode").width(150.0).selected_text(format!("Mode: {:?}", m.mode)).show_ui(ui, |ui| {
+                        widgets::combo(ui, "pc_mask_mode", 150.0, format!("Mode: {:?}", m.mode), |ui| {
                             for mode in [MaskMode::Positive, MaskMode::Negative, MaskMode::Disabled] {
                                 ui.selectable_value(&mut m.mode, mode, format!("{mode:?}"));
                             }
@@ -194,10 +199,10 @@ impl PanCropWin {
                 }
                 g.horizontal(|ui| {
                     ui.add_space(14.0);
-                    if ui.add_enabled(self.path > 0, Button::new("◀")).on_hover_text("Previous path").clicked() {
+                    if widgets::push_button_enabled(ui, self.path > 0, "◀").on_hover_text("Previous path").clicked() {
                         self.path -= 1;
                     }
-                    if ui.add_enabled(self.path + 1 < n, Button::new("▶")).on_hover_text("Next path").clicked() {
+                    if widgets::push_button_enabled(ui, self.path + 1 < n, "▶").on_hover_text("Next path").clicked() {
                         self.path += 1;
                     }
                 });

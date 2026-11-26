@@ -30,9 +30,21 @@ fn tip(resp: Response, text: &str) -> Response {
     resp.on_hover_text(text)
 }
 
-/// Hover / pressed / active-toggle fill behind a button's 22×22 hit area.
+/// Hover / pressed / active-toggle fill behind a button's 22×22 hit area. Classic 2006: every button is a raised chrome
+/// bevel; hover brightens it, a press or an active toggle sinks it (CLASSIC_2006_SPEC.md §5).
 fn paint_state(p: &Painter, hit: Rect, resp: &Response, enabled: bool, active: bool) {
     let t = theme::get();
+    if t.classic() {
+        let state = if active || (enabled && resp.is_pointer_button_down_on()) {
+            if active { super::widgets::Chrome::Active } else { super::widgets::Chrome::Pressed }
+        } else if enabled && resp.hovered() {
+            super::widgets::Chrome::Hover
+        } else {
+            super::widgets::Chrome::Raised
+        };
+        super::widgets::chrome_button(p, hit, state, &t.metal);
+        return;
+    }
     let r = CornerRadius::same(t.m.widget_radius);
     if active {
         // VP16: 21×17 square; VP23: 22×18 rounded (§5.10).
@@ -84,7 +96,11 @@ fn split(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, lit: bool, active: 
     let a = ui.interact(arrow, ui.id().with((text, "arrow")), sense);
     let p = ui.painter();
     let both = main.union(arrow);
-    if active {
+    if t.classic() {
+        // One chrome button for the icon, a narrower one for the ▾.
+        paint_state(p, main, &m, enabled, active);
+        paint_state(p, Rect::from_min_max(pos2(main.max.x - 1.0, main.min.y), pos2(arrow.max.x + 1.0, main.max.y)), &a, enabled, false);
+    } else if active {
         paint_state(p, main, &m, enabled, true);
     } else if enabled && (m.hovered() || a.hovered()) {
         let pressed = m.is_pointer_button_down_on() || a.is_pointer_button_down_on();
@@ -105,7 +121,10 @@ pub fn separator(ui: &mut Ui) {
     let x = cell.center().x.floor();
     let y = Rangef::new(cell.center().y - 8.0, cell.center().y + 8.0);
     let p = ui.painter();
-    if t.look() == UiLook::Vegas16 {
+    if t.classic() {
+        // Etched: shadow line, light line, over the bar's height less 2 px.
+        super::widgets::etched_v(p, x - 1.0, Rangef::new(cell.min.y + 1.0, cell.max.y - 1.0), &t.metal);
+    } else if t.look() == UiLook::Vegas16 {
         p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x - 1.0, x), y), 0.0, t.frame);
         p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, t.button_hover_bg);
     } else {
@@ -162,6 +181,13 @@ pub fn draw_main_toolbar(ui: &mut Ui, ids: &[&'static str], project: &mut Projec
     let t = theme::get();
     let v16 = t.look() == UiLook::Vegas16;
     ui.spacing_mut().item_spacing.x = 0.0;
+    if t.classic() {
+        // Toolbar grip at the left end, then the buttons on a 23 px pitch.
+        super::widgets::grip(ui.painter(), ui.max_rect(), &t.metal);
+        ui.add_space(10.0);
+        draw_buttons(ui, ids, project, history, None);
+        return;
+    }
     // First 22 px hit area starts at x = 6 (glyph at x = 9).
     // VP23's first glyph sits 2 px further left (light2026: New at x = 9).
     ui.add_space(if v16 { 6.0 } else { 4.0 } - (t.m.button_pitch - t.m.button) * 0.5);
@@ -260,9 +286,9 @@ impl Bar {
         crate::settings::layout_key(look, if self == Bar::Main { "toolbar" } else { "timeline_toolbar" })
     }
 
-    /// The buttons VEGAS's bar has in `look` (§5.2, §5.10).
+    /// The buttons VEGAS's bar has in `look` (§5.2, §5.10); Classic 2006 holds the VEGAS 23 set.
     pub fn defaults(self, look: UiLook) -> Vec<&'static str> {
-        let v23 = look == UiLook::Vegas23;
+        let v23 = look.v23();
         let mut ids: Vec<&'static str> = match self {
             Bar::Main => vec!["New", "Open", "Save", "Render", "Properties", "Cut", "Copy", "Paste", "Undo", "Redo"],
             Bar::Timeline => TRANSPORT.to_vec(),
@@ -286,7 +312,7 @@ impl Bar {
 
     /// The buttons this bar can hold in `look`, the separator first.
     pub fn allowed(self, look: UiLook) -> impl Iterator<Item = &'static Btn> {
-        BUTTONS.iter().filter(move |b| b.look.is_none_or(|l| l == look) && (self == Bar::Timeline || !TRANSPORT.contains(&b.id)))
+        BUTTONS.iter().filter(move |b| b.look.is_none_or(|l| l == look.base()) && (self == Bar::Timeline || !TRANSPORT.contains(&b.id)))
     }
 
     /// The bar's buttons as saved in `toolbars` (ids it cannot hold dropped), else its defaults.
@@ -327,7 +353,7 @@ pub fn draw_buttons(ui: &mut Ui, ids: &[&'static str], project: &mut Project, hi
             continue;
         }
         let Some(c) = b.cmd else { continue };
-        let name = if id == "Render" && look == UiLook::Vegas23 { "Render" } else { b.name };
+        let name = if id == "Render" && look.v23() { "Render" } else { b.name };
         let text = tip(name, Some(c));
         match id {
             "Undo" | "Redo" => {

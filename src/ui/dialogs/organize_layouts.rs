@@ -2,9 +2,10 @@
 //! move up or down, delete and activate. VEGAS keeps layouts as files and assigns them to the ten menu slots; Milan
 //! Pro keeps them in the slots themselves, so Delete is VEGAS's Clear and Delete Layout in one.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::ui::dock::Layout;
 use crate::ui::keymap::{Command, shortcut_text};
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme::UiLook;
 
 pub struct OrganizeLayouts {
     /// The slots as arranged so far: each layout with the slot it was saved in.
@@ -62,10 +63,9 @@ impl OrganizeLayouts {
     pub fn show(&mut self, ctx: &Context, look: UiLook) -> Option<Organize> {
         let mut out = None;
         let (hit, close) = super::modal(ctx, "organize_layouts", "Organize Layouts", vec2(420.0, 330.0), |ui| {
-            let d = theme::get().dialog();
             ui.label("Layouts in the View › Window Layouts menu:");
             ui.horizontal_top(|ui| {
-                Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(2).show(ui, |ui| {
+                super::field_box(ui, 2, |ui| {
                     ui.set_width(280.0);
                     ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
@@ -105,7 +105,7 @@ impl OrganizeLayouts {
             ui.add_space(6.0);
             let full = self.slots[self.sel].is_some();
             super::row(ui, "Name:", 50.0, full, |ui| {
-                ui.add(TextEdit::singleline(&mut self.name).desired_width(226.0));
+                widgets::edit(ui, TextEdit::singleline(&mut self.name).desired_width(226.0));
                 if super::button(ui, "Rename", full && !self.name.trim().is_empty(), false).clicked() {
                     self.rename();
                 }

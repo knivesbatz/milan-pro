@@ -1,5 +1,6 @@
 //! Recorded Files: shown when a recording stops, with the files it made. Delete (asks first), Rename, Done.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::Project;
 
 pub struct RecordedFiles {
@@ -36,8 +37,7 @@ impl RecordedFiles {
         let (ids, sel, name, confirm) = (&self.ids, &mut self.sel, &mut self.name, &mut self.confirm);
         let (out, close) = super::modal(ctx, "recorded_files", "Recorded Files", vec2(520.0, 280.0), |ui| {
             ui.label("Recorded files:");
-            let d = crate::ui::theme::get().dialog();
-            Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+            super::field_box(ui, 4, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical().max_height(120.0).auto_shrink([false, false]).show(ui, |ui| {
                     for (k, id) in ids.iter().enumerate() {
@@ -64,7 +64,7 @@ impl RecordedFiles {
                 };
             }
             if let Some(n) = name {
-                super::row(ui, "New name:", 70.0, true, |ui| ui.add(TextEdit::singleline(n).desired_width(330.0)));
+                super::row(ui, "New name:", 70.0, true, |ui| widgets::edit(ui, TextEdit::singleline(n).desired_width(330.0)));
                 let ok = !n.trim().is_empty();
                 return match super::button_row(ui, &[("OK", ok), ("Cancel", true)]) {
                     Some(0) => Some(Recorded::Rename(id, name.take().unwrap_or_default())),

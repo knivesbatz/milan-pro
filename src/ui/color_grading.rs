@@ -2,6 +2,7 @@
 //! effect of the selected video event, the focus video track or the Video Output. The effect is added to that chain
 //! on the first edit; each gesture is one undo step. VP16 users reach the same effect through the Video FX window.
 use eframe::egui::*;
+use crate::ui::widgets;
 use std::f32::consts::TAU;
 use std::path::Path;
 use crate::edit::{self, FxTarget};
@@ -57,7 +58,7 @@ fn target(st: &ColorGrading, p: &Project, sel: &Selection) -> Option<FxTarget> {
 
 /// Toolbar: which chain is graded, and its name.
 pub fn color_grading_toolbar(ui: &mut Ui, st: &mut ColorGrading, p: &Project, sel: &Selection) {
-    ComboBox::from_id_salt("cg_target").width(120.0).selected_text(TARGETS[st.target]).show_ui(ui, |ui| {
+    widgets::combo(ui, "cg_target", 120.0, TARGETS[st.target], |ui| {
         for (k, n) in TARGETS.iter().enumerate() {
             ui.selectable_value(&mut st.target, k, *n);
         }
@@ -110,12 +111,12 @@ pub fn draw_color_grading(ui: &mut Ui, st: &mut ColorGrading, project: &mut Proj
                         ui.horizontal(|ui| {
                             ui.label(label);
                             ui.label(Path::new(&path).file_name().map_or("(none)".into(), |n| n.to_string_lossy().into_owned()));
-                            if ui.button("Browse...").clicked() {
+                            if widgets::push_button(ui, "Browse...").clicked() {
                                 if let Some(p) = rfd::FileDialog::new().add_filter("Cube LUT", &["cube"]).pick_file() {
                                     fx.text.insert(key.into(), p.display().to_string());
                                 }
                             }
-                            if ui.add_enabled(!path.is_empty(), Button::new("Clear")).clicked() {
+                            if widgets::push_button_enabled(ui, !path.is_empty(), "Clear").clicked() {
                                 fx.text.remove(key);
                             }
                         });
@@ -128,14 +129,14 @@ pub fn draw_color_grading(ui: &mut Ui, st: &mut ColorGrading, project: &mut Proj
                         let spec = info.params.iter().find(|s| s.key == key).expect("grading parameter");
                         if let ParamKind::Float { min, max, .. } = spec.kind {
                             let mut v = e.f(key);
-                            if ui.add(Slider::new(&mut v, min..=max).text(spec.name)).changed() {
+                            if widgets::slider(ui, &mut v, min..=max, widgets::Slide { text: spec.name, ..Default::default() }).changed() {
                                 set_num(&mut fx, key, v, e.f(key), key_at, fps);
                             }
                         }
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Export LUT...").clicked() {
+                        if widgets::push_button(ui, "Export LUT...").clicked() {
                             if let Some(path) = rfd::FileDialog::new().add_filter("Cube LUT", &["cube"]).set_file_name("Grade.cube").save_file() {
                                 msg = Some(match lut::export_cube(&e, &path, 33) {
                                     Ok(()) => format!("LUT exported to {}", path.display()),
@@ -143,7 +144,7 @@ pub fn draw_color_grading(ui: &mut Ui, st: &mut ColorGrading, project: &mut Proj
                                 });
                             }
                         }
-                        if ui.button("Reset All").clicked() {
+                        if widgets::push_button(ui, "Reset All").clicked() {
                             fx.params.clear();
                             fx.text.clear();
                         }
@@ -176,7 +177,7 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
     let changed = vals.iter().any(|v| *v != neutral);
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{title}{}", if changed { " *" } else { "" })).strong());
-        if ui.add_enabled(changed, Button::new("↺").small()).on_hover_text("Reset").clicked() {
+        if widgets::small_push_enabled(ui, changed, "↺").on_hover_text("Reset").clicked() {
             for k in &keys {
                 fx.params.remove(k);
             }
@@ -187,6 +188,11 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
     let (c, outer) = (rect.center(), size * 0.5 - 2.0);
     let inner = outer - 8.0;
     let p = ui.painter();
+    let classic = t.classic();
+    if classic {
+        // Classic 2006: the wheel on a sunken dark well.
+        widgets::sunken(p, rect, t.lane_bg, &t.metal);
+    }
     // Hue ring: red up, then blue and green clockwise, as `AXES`.
     let mut mesh = Mesh::default();
     let n = 60;
@@ -204,13 +210,18 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
         }
     }
     p.add(mesh);
-    p.circle_filled(c, inner, t.panel_bg.gamma_multiply(0.7));
+    p.circle_filled(c, inner, if classic { t.lane_bg } else { t.panel_bg.gamma_multiply(0.7) });
     p.hline(Rangef::new(c.x - 4.0, c.x + 4.0), c.y, Stroke::new(1.0_f32, t.text_dim));
     p.vline(c.x, Rangef::new(c.y - 4.0, c.y + 4.0), Stroke::new(1.0_f32, t.text_dim));
     let rgb = [vals[0], vals[1], vals[2]];
     let puck = puck_of(rgb, scale);
     let at = c + puck * inner;
-    p.circle(at, 4.0, Color32::WHITE, Stroke::new(1.0_f32, Color32::BLACK));
+    if classic {
+        // A 9×9 chrome knob.
+        widgets::chrome_button(p, Rect::from_center_size(at.round(), vec2(9.0, 9.0)), widgets::Chrome::Raised, &t.metal);
+    } else {
+        p.circle(at, 4.0, Color32::WHITE, Stroke::new(1.0_f32, Color32::BLACK));
+    }
     let mean = (rgb[0] + rgb[1] + rgb[2]) / 3.0;
     let new = if resp.double_clicked() {
         Some(Vec2::ZERO)
@@ -233,7 +244,7 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
         _ => 0.0..=1.0,
     };
     let mut y = vals[3];
-    if ui.add(Slider::new(&mut y, range(&keys[3])).text("Y").show_value(false)).changed() {
+    if widgets::slider(ui, &mut y, range(&keys[3]), widgets::Slide { text: "Y", no_value: true, ..Default::default() }).changed() {
         set_num(fx, &keys[3], y, vals[3], key_at, fps);
     }
     ui.horizontal(|ui| {
@@ -250,10 +261,23 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
 /// The curves editor: a click adds a point, a drag moves one (between its neighbours), a right-click removes one.
 fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
     let t = theme::get();
+    let classic = t.classic();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Curves").strong());
         for (k, name) in ["Master", "R", "G", "B"].into_iter().enumerate() {
-            if ui.selectable_label(st.channel == k, name).clicked() {
+            let selected = st.channel == k;
+            let hit = if classic {
+                // Chrome buttons, the current channel pressed in.
+                let w = ui.painter().layout_no_wrap(name.to_owned(), t.font(t.font.ui), t.text).size().x + 12.0;
+                let (r, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click());
+                let state = if selected { widgets::Chrome::Active } else if resp.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
+                widgets::chrome_button(ui.painter(), r, state, &t.metal);
+                ui.painter().text(r.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text);
+                resp
+            } else {
+                ui.selectable_label(selected, name)
+            };
+            if hit.clicked() {
                 (st.channel, st.drag) = (k, None);
             }
         }
@@ -299,18 +323,32 @@ fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
     if edited {
         fx.text.insert(key.into(), points_text(&pts));
     }
-    let p = ui.painter_at(rect);
-    p.rect_filled(rect, 0.0, t.panel_bg.gamma_multiply(0.7));
-    for k in 1..4 {
-        let f = k as f32 / 4.0;
-        p.vline(rect.min.x + f * rect.width(), rect.y_range(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
-        p.hline(rect.x_range(), rect.min.y + f * rect.height(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
+    let p = ui.painter_at(rect.expand(2.0));
+    if classic {
+        // Classic 2006: a sunken dark well with a dotted grid and chrome knobs on the curve.
+        widgets::sunken(&p, rect.expand(2.0), t.lane_bg, &t.metal);
+        for k in 1..4 {
+            let f = k as f32 / 4.0;
+            widgets::dotted(&p, pos2(rect.min.x + f * rect.width(), rect.min.y), pos2(rect.min.x + f * rect.width(), rect.max.y), t.grid_line);
+            widgets::dotted(&p, pos2(rect.min.x, rect.min.y + f * rect.height()), pos2(rect.max.x, rect.min.y + f * rect.height()), t.grid_line);
+        }
+    } else {
+        p.rect_filled(rect, 0.0, t.panel_bg.gamma_multiply(0.7));
+        for k in 1..4 {
+            let f = k as f32 / 4.0;
+            p.vline(rect.min.x + f * rect.width(), rect.y_range(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
+            p.hline(rect.x_range(), rect.min.y + f * rect.height(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
+        }
     }
     let ink = [Color32::WHITE, Color32::from_rgb(0xDC, 0x50, 0x50), Color32::from_rgb(0x50, 0xC8, 0x78), Color32::from_rgb(0x3C, 0x8C, 0xDC)][st.channel];
     let line: Vec<Pos2> = (0..=64).map(|i| i as f32 / 64.0).map(|x| to_screen((x, vfx::monotone(&pts, x).clamp(0.0, 1.0)))).collect();
     p.add(Shape::line(line, Stroke::new(1.5_f32, ink)));
     for &q in &pts {
-        p.circle(to_screen(q), 3.5, ink, Stroke::new(1.0_f32, Color32::BLACK));
+        if classic {
+            widgets::chrome_button(&p, Rect::from_center_size(to_screen(q).round(), vec2(7.0, 7.0)), widgets::Chrome::Raised, &t.metal);
+        } else {
+            p.circle(to_screen(q), 3.5, ink, Stroke::new(1.0_f32, Color32::BLACK));
+        }
     }
 }
 

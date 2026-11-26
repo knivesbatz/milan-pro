@@ -1,6 +1,7 @@
 //! File › Properties (§5.15.1 Project Properties), applied through undo history, and the app preferences file
 //! (%APPDATA%\MilanPro\prefs.json).
 use eframe::egui::{self, Ui};
+use crate::ui::widgets;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -22,6 +23,8 @@ pub struct Prefs {
     pub space_pauses: bool,
     /// VP23 Welcome screen on startup.
     pub show_welcome: bool,
+    /// Preferences › General: "Show splash screen at startup" (`ui::splash`).
+    pub show_splash: bool,
     /// Recently used project list (most recent first) and its length.
     pub recent: Vec<String>,
     pub recent_max: usize,
@@ -142,6 +145,12 @@ pub struct Prefs {
     pub media_markers: bool,
     pub marker_labels: bool,
     pub event_length: bool,
+    /// R31: the OFX plug-in folders the user added and the plug-ins turned off in the Plug-In Manager.
+    pub ofx: crate::engine::ofx::OfxPrefs,
+    /// Overlay packs: Preferences › General › the library folder (None = Documents\Milan Pro\Overlay Packs), and the
+    /// Overlays window was put once beside Media Generators in the saved last layouts.
+    pub overlay_library: Option<PathBuf>,
+    pub overlays_placed: bool,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -201,9 +210,15 @@ impl EnvView {
     }
 }
 
-/// Key of a saved layout: `slot` is "last" or a user slot number;VP23 Dark and White share one.
+/// Key of a saved layout: `slot` is "last" or a user slot number; VP23 Dark and White share one, Classic 2006 (its
+/// own metrics) has its own.
 pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
-    format!("{}:{slot}", if look == UiLook::Vegas16 { "vp16" } else { "vp23" })
+    let k = match look {
+        UiLook::Vegas16 => "vp16",
+        UiLook::Vegas23 => "vp23",
+        UiLook::Classic2006 => "c2006",
+    };
+    format!("{k}:{slot}")
 }
 
 /// The layouts to save: those on `disk` (another window may have saved some), with this window's `changed` keys
@@ -233,6 +248,7 @@ impl Default for Prefs {
             track_colors: None,
             space_pauses: false,
             show_welcome: true,
+            show_splash: true,
             recent: Vec::new(),
             recent_max: 4,
             auto_update: true,
@@ -295,6 +311,9 @@ impl Default for Prefs {
             media_markers: false,
             marker_labels: false,
             event_length: false,
+            ofx: Default::default(),
+            overlay_library: None,
+            overlays_placed: false,
         }
     }
 }
@@ -302,7 +321,7 @@ impl Default for Prefs {
 impl Prefs {
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
     pub fn float_dock(&self, look: UiLook) -> bool {
-        self.float_dock.unwrap_or(look == UiLook::Vegas23)
+        self.float_dock.unwrap_or(look.v23())
     }
 
     /// R9: the output device these preferences choose.
@@ -448,7 +467,7 @@ impl SettingsDialog {
 
     pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History) {
         let Some((d, buses)) = &mut self.draft else { return };
-        let v23 = theme::get().look() == UiLook::Vegas23;
+        let v23 = theme::get().look().v23();
         let tab = &mut self.tab;
         let changed = *d != project.settings || *buses != project.timeline.audio.buses.len();
         let (hit, close) = dialogs::modal(ctx, "project_properties", "Project Properties", egui::vec2(427.0, 696.0), |ui| {
@@ -487,10 +506,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     let current = TEMPLATES.iter().find(|t| (t.1, t.2) == (d.width, d.height) && (t.3 - d.frame_rate).abs() < 0.001);
     ui.horizontal(|ui| {
         ui.label("Template:");
-        egui::ComboBox::from_id_salt("pp_template")
-            .width(230.0)
-            .selected_text(current.map_or("(Custom)", |t| t.0))
-            .show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_template", 230.0, current.map_or("(Custom)", |t| t.0), |ui| {
                 for t in TEMPLATES {
                     if ui.selectable_label(current.is_some_and(|c| c.0 == t.0), t.0).clicked() {
                         (d.width, d.height, d.frame_rate) = (t.1, t.2, t.3);
@@ -499,7 +515,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             });
         // Match Media Settings: the first video in the project.
         let first = project.media_pool.iter().find(|m| m.width.is_some() && m.frame_rate.is_some());
-        if ui.add_enabled(first.is_some(), egui::Button::new("Match Media")).on_hover_text("Match Media Settings").clicked() {
+        if widgets::push_button_enabled(ui, first.is_some(), "Match Media").on_hover_text("Match Media Settings").clicked() {
             if let Some(m) = first {
                 (d.width, d.height) = (m.width.unwrap_or(d.width), m.height.unwrap_or(d.height));
                 d.frame_rate = m.frame_rate.unwrap_or(d.frame_rate);
@@ -508,13 +524,13 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            dialogs::row(ui, "Width:", 60.0, true, |ui| ui.add(egui::DragValue::new(&mut d.width).range(16..=8192)));
-            dialogs::row(ui, "Height:", 60.0, true, |ui| ui.add(egui::DragValue::new(&mut d.height).range(16..=8192)));
+            dialogs::row(ui, "Width:", 60.0, true, |ui| widgets::spin(ui, &mut d.width, 1.0, |d| d.range(16..=8192)));
+            dialogs::row(ui, "Height:", 60.0, true, |ui| widgets::spin(ui, &mut d.height, 1.0, |d| d.range(16..=8192)));
         });
         ui.vertical(|ui| {
             use crate::project::{FieldOrder, PARS, ROTATIONS};
             dialogs::row(ui, "Field order:", 96.0, true, |ui| {
-                egui::ComboBox::from_id_salt("pp_field").width(150.0).selected_text(d.field_order.name()).show_ui(ui, |ui| {
+                widgets::combo(ui, "pp_field", 150.0, d.field_order.name(), |ui| {
                     for f in FieldOrder::ALL {
                         ui.selectable_value(&mut d.field_order, f, f.name());
                     }
@@ -522,7 +538,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             });
             dialogs::row(ui, "Pixel aspect ratio:", 96.0, true, |ui| {
                 let sel = PARS.iter().find(|p| (p.0 - d.par).abs() < 1e-4).map_or(format!("{:.4}", d.par), |p| p.1.to_string());
-                egui::ComboBox::from_id_salt("pp_par").width(150.0).selected_text(sel).show_ui(ui, |ui| {
+                widgets::combo(ui, "pp_par", 150.0, sel, |ui| {
                     for (p, label) in PARS {
                         ui.selectable_value(&mut d.par, p, label);
                     }
@@ -530,7 +546,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
             });
             dialogs::row(ui, "Output rotation:", 96.0, true, |ui| {
                 let sel = ROTATIONS.iter().find(|r| r.0 == d.rotation).map_or("0° (original)", |r| r.1);
-                egui::ComboBox::from_id_salt("pp_rot").width(150.0).selected_text(sel).show_ui(ui, |ui| {
+                widgets::combo(ui, "pp_rot", 150.0, sel, |ui| {
                     for (r, label) in ROTATIONS {
                         ui.selectable_value(&mut d.rotation, r, label);
                     }
@@ -540,7 +556,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
     dialogs::row(ui, "Frame rate:", 70.0, true, |ui| {
         let sel = FRAME_RATES.iter().find(|f| (f.0 - d.frame_rate).abs() < 0.001).map_or(format!("{:.3}", d.frame_rate), |f| f.1.to_string());
-        egui::ComboBox::from_id_salt("pp_fps").width(140.0).selected_text(sel).show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_fps", 140.0, sel, |ui| {
             for (f, label) in FRAME_RATES {
                 ui.selectable_value(&mut d.frame_rate, f, label);
             }
@@ -564,7 +580,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     }
     // VEGAS's order: Full-resolution rendering quality, Motion blur type, Deinterlace method, then Resample mode.
     dialogs::row(ui, "Full-resolution rendering quality:", 175.0, true, |ui| {
-        egui::ComboBox::from_id_salt("pp_quality").width(200.0).selected_text(format!("{:?}", d.render_quality)).show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_quality", 200.0, format!("{:?}", d.render_quality), |ui| {
             for q in crate::decode::Quality::ALL {
                 ui.selectable_value(&mut d.render_quality, q, format!("{q:?}"));
             }
@@ -572,7 +588,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
     dialogs::row(ui, "Motion blur type:", 175.0, true, |ui| {
         use crate::project::BlurType;
-        egui::ComboBox::from_id_salt("pp_blur").width(200.0).selected_text(d.motion_blur.name()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_blur", 200.0, d.motion_blur.name(), |ui| {
             for b in BlurType::ALL {
                 ui.selectable_value(&mut d.motion_blur, b, b.name());
             }
@@ -580,7 +596,7 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
     dialogs::row(ui, "Deinterlace method:", 175.0, true, |ui| {
         use crate::project::Deinterlace;
-        egui::ComboBox::from_id_salt("pp_deint").width(200.0).selected_text(d.deinterlace.name()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_deint", 200.0, d.deinterlace.name(), |ui| {
             for m in Deinterlace::ALL {
                 ui.selectable_value(&mut d.deinterlace, m, m.name());
             }
@@ -590,21 +606,21 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         use crate::project::Resample::*;
         // VEGAS 23 calls Smart "Frame blend" and offers Optical Flow in place of Force.
         let modes = if v23 { [Smart, OpticalFlow, Disable] } else { [Smart, Force, Disable] };
-        egui::ComboBox::from_id_salt("pp_resample").width(200.0).selected_text(resample_name(d.resample, v23)).show_ui(ui, |ui| {
+        widgets::combo(ui, "pp_resample", 200.0, resample_name(d.resample, v23), |ui| {
             for m in modes {
                 ui.selectable_value(&mut d.resample, m, resample_name(m, v23));
             }
         });
     });
-    ui.checkbox(&mut d.adjust_media, "Adjust source media to better match project or render settings");
+    widgets::checkbox(ui, &mut d.adjust_media, "Adjust source media to better match project or render settings");
     ui.add_enabled_ui(false, |ui| {
         ui.label("Prerendered files folder:").on_disabled_hover_text(Later("R23").text());
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0))
+            widgets::edit(ui, egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0))
                 .on_disabled_hover_text(Later("R23").text());
-            ui.button("Browse...").on_disabled_hover_text(Later("R23").text());
+            widgets::push_button(ui, "Browse...").on_disabled_hover_text(Later("R23").text());
         });
-        ui.add(egui::Checkbox::new(&mut false, "Start all new projects with these settings")).on_disabled_hover_text(Later("R49").text());
+        widgets::checkbox(ui, &mut false, "Start all new projects with these settings").on_disabled_hover_text(Later("R49").text());
     });
 }
 
@@ -629,17 +645,17 @@ fn ruler_tab(ui: &mut Ui, d: &mut ProjectSettings) {
         dialogs::time_edit(ui, "pr_start", &mut d.ruler.offset, |t| format_time(t, s.ruler.format, &s), |x| parse_time(x, s.ruler.format, &s));
     });
     dialogs::row(ui, "Ruler time format:", 150.0, true, |ui| {
-        egui::ComboBox::from_id_salt("pr_format").width(230.0).selected_text(d.ruler.format.name()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pr_format", 230.0, d.ruler.format.name(), |ui| {
             for f in RulerFormat::ALL {
                 ui.selectable_value(&mut d.ruler.format, f, f.name());
             }
         });
     });
     ui.add_space(8.0);
-    dialogs::row(ui, "Beats per minute:", 150.0, true, |ui| ui.add(egui::DragValue::new(&mut d.ruler.tempo).range(20.0..=500.0).speed(0.1).max_decimals(3)));
-    dialogs::row(ui, "Beats per measure:", 150.0, true, |ui| ui.add(egui::DragValue::new(&mut d.ruler.beats_per_measure).range(1..=32)));
+    dialogs::row(ui, "Beats per minute:", 150.0, true, |ui| widgets::spin(ui, &mut d.ruler.tempo, 0.1, |d| d.range(20.0..=500.0).speed(0.1).max_decimals(3)));
+    dialogs::row(ui, "Beats per measure:", 150.0, true, |ui| widgets::spin(ui, &mut d.ruler.beats_per_measure, 1.0, |d| d.range(1..=32)));
     dialogs::row(ui, "Note length (one beat):", 150.0, true, |ui| {
-        egui::ComboBox::from_id_salt("pr_note").width(80.0).selected_text(d.ruler.beat_note.to_string()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pr_note", 80.0, d.ruler.beat_note.to_string(), |ui| {
             for n in [1, 2, 4, 8, 16, 32] {
                 ui.selectable_value(&mut d.ruler.beat_note, n, n.to_string());
             }
@@ -651,19 +667,19 @@ fn ruler_tab(ui: &mut Ui, d: &mut ProjectSettings) {
 fn summary_tab(ui: &mut Ui, d: &mut ProjectSettings) {
     let s = &mut d.summary;
     for (label, v) in [("Title:", &mut s.title), ("Artist:", &mut s.artist), ("Engineer:", &mut s.engineer), ("Copyright:", &mut s.copyright)] {
-        dialogs::row(ui, label, 80.0, true, |ui| ui.add(egui::TextEdit::singleline(v).desired_width(290.0)));
+        dialogs::row(ui, label, 80.0, true, |ui| widgets::edit(ui, egui::TextEdit::singleline(v).desired_width(290.0)));
     }
-    dialogs::row(ui, "Comments:", 80.0, true, |ui| ui.add(egui::TextEdit::multiline(&mut s.comments).desired_width(290.0).desired_rows(8)));
+    dialogs::row(ui, "Comments:", 80.0, true, |ui| widgets::edit(ui, egui::TextEdit::multiline(&mut s.comments).desired_width(290.0).desired_rows(8)));
 }
 
 /// `buses`: Number of stereo busses (R8a). Fewer removes the last ones: what went to them goes to the master.
 fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
     dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R10a")));
     dialogs::row(ui, "Number of stereo busses:", 150.0, true, |ui| {
-        ui.add(egui::DragValue::new(buses).range(0..=crate::project::AudioSettings::MAX_BUSES))
+        widgets::spin(ui, buses, 1.0, |d| d.range(0..=crate::project::AudioSettings::MAX_BUSES))
     });
     dialogs::row(ui, "Sample rate (Hz):", 150.0, true, |ui| {
-        egui::ComboBox::from_id_salt("pa_sr").width(200.0).selected_text(d.sample_rate.to_string()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pa_sr", 200.0, d.sample_rate.to_string(), |ui| {
             for r in SAMPLE_RATES {
                 ui.selectable_value(&mut d.sample_rate, r, r.to_string());
             }
@@ -673,7 +689,7 @@ fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
     // less than any setting); write recordings at the project depth if a user needs smaller takes.
     dialogs::row(ui, "Bit depth:", 150.0, true, |ui| {
         let name = |b: u8| if b == 32 { "32 (floating point)".to_string() } else { b.to_string() };
-        egui::ComboBox::from_id_salt("pa_bits").width(200.0).selected_text(name(d.bit_depth)).show_ui(ui, |ui| {
+        widgets::combo(ui, "pa_bits", 200.0, name(d.bit_depth), |ui| {
             for b in [8, 16, 24, 32] {
                 ui.selectable_value(&mut d.bit_depth, b, name(b));
             }
@@ -692,7 +708,12 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::VEGAS16, true, 4, true, true, 5.0));
+        // New installs (no look chosen) get Classic 2006; preferences saved by older builds keep their VEGAS look.
+        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::CLASSIC2006, true, 4, true, true, 5.0));
+        assert!(d.show_splash, "the splash is on by default");
+        let old = serde_json::from_str::<Prefs>(r#"{"look":{"look":"Vegas16","variant":"Dark"}}"#).unwrap();
+        assert_eq!(old.look, LookChoice::VEGAS16);
+        assert_eq!((layout_key(UiLook::Classic2006, "last"), layout_key(UiLook::Vegas16, 1)), ("c2006:last".to_string(), "vp16:1".to_string()));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping, d.quickfade), (true, false, crate::edit::RippleMode::Affected, false, true));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
@@ -707,7 +728,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
         // R14: old preferences dock floating windows as each look's install does, and preview externally on the first
         // secondary display at 1:1, with frames in the Video Preview window too and the output rotation applied.
-        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23));
+        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23) && d.float_dock(UiLook::Classic2006));
         assert!(d.ext_display.is_none() && !d.ext_fit && d.ext_in_window && d.ext_rotate);
         let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
@@ -831,6 +852,13 @@ mod tests {
         assert_eq!(p.loudness, crate::ui::LoudPrefs::default());
         let l = Prefs::parse(Ok(r#"{"loudness":{"mode":"Atsc","range":7,"open_editor":false}}"#.into())).unwrap().loudness;
         assert!(l.mode == crate::engine::loudness::Mode::Atsc && l.range == 7 && !l.open_editor && l.labels);
+        // R31: a file from before OFX hosting searches no extra folders and has every plug-in on; saved choices read
+        // back, and a damaged entry costs only itself.
+        assert_eq!(p.ofx, crate::engine::ofx::OfxPrefs::default());
+        let o = Prefs::parse(Ok(r#"{"ofx":{"folders":["D:\\OFX"],"disabled":["ofx:a@1"]},"quantize":false}"#.into())).unwrap();
+        assert!(!o.quantize && o.ofx.folders == [std::path::PathBuf::from(r"D:\OFX")] && o.ofx.disabled.contains("ofx:a@1"));
+        let bad = Prefs::parse(Ok(r#"{"ofx":{"folders":7},"quantize":false}"#.into())).unwrap();
+        assert!(!bad.quantize && bad.ofx == crate::engine::ofx::OfxPrefs::default());
     }
 
     /// Another window's saved slot survives this window's save; this window's changed slots win.

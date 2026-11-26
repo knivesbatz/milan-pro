@@ -6,6 +6,10 @@
 #ifndef SourceExe
   #define SourceExe "..\target\release\milan-pro.exe"
 #endif
+; The OFX plug-in host, built beside SourceExe by the same `cargo build --release`.
+#ifndef HostExe
+  #define HostExe AddBackslash(ExtractFileDir(SourceExe)) + "milan-plugin-host.exe"
+#endif
 
 [Setup]
 ; AppId must never change, or upgrades install side by side instead of replacing.
@@ -53,6 +57,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "MilanPro.exe"; Flags: ignoreversion
+; R32: runs OFX plug-ins out of process (MilanPro.exe looks for it in its own folder).
+Source: "{#HostExe}"; DestDir: "{app}"; DestName: "milan-plugin-host.exe"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 ; FFmpeg sits beside MilanPro.exe because Rust's Command searches the app's own folder before PATH.
 Source: "ffmpeg\*"; DestDir: "{app}"; Flags: ignoreversion

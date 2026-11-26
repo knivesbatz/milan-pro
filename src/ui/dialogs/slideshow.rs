@@ -6,6 +6,7 @@
 // Milan Pro's, used in turn or at random. Add them if users ask.
 use std::path::PathBuf;
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::engine::plugins::{self, PluginKind};
 
 pub struct Slideshow {
@@ -69,7 +70,7 @@ impl Slideshow {
 
     fn pictures_tab(&mut self, ui: &mut Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Add Pictures...").clicked() {
+            if widgets::push_button(ui, "Add Pictures...").clicked() {
                 let exts = crate::media::IMAGE_EXTS;
                 if let Some(paths) = rfd::FileDialog::new().add_filter("Pictures", exts).pick_files() {
                     for p in paths {
@@ -80,7 +81,7 @@ impl Slideshow {
                 }
             }
             let sel = self.selected.filter(|&i| i < self.pictures.len());
-            if ui.add_enabled(sel.is_some(), Button::new("Delete")).clicked() {
+            if widgets::push_button_enabled(ui, sel.is_some(), "Delete").clicked() {
                 if let Some(i) = sel {
                     self.pictures.remove(i);
                     self.selected = None;
@@ -88,7 +89,7 @@ impl Slideshow {
             }
             for (label, d) in [("Move Selected -1", -1i64), ("Move Selected +1", 1)] {
                 let to = sel.map(|i| i as i64 + d).filter(|&j| j >= 0 && (j as usize) < self.pictures.len());
-                if ui.add_enabled(to.is_some(), Button::new(label)).clicked() {
+                if widgets::push_button_enabled(ui, to.is_some(), label).clicked() {
                     if let (Some(i), Some(j)) = (sel, to) {
                         self.pictures.swap(i, j as usize);
                         self.selected = Some(j as usize);
@@ -100,64 +101,72 @@ impl Slideshow {
             let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
             let modified = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
             let any = self.pictures.len() > 1;
-            if ui.add_enabled(any, Button::new("Sort A to Z")).clicked() {
+            if widgets::push_button_enabled(ui, any, "Sort A to Z").clicked() {
                 self.pictures.sort_by_key(name);
             }
-            if ui.add_enabled(any, Button::new("Sort Z to A")).clicked() {
+            if widgets::push_button_enabled(ui, any, "Sort Z to A").clicked() {
                 self.pictures.sort_by_key(name);
                 self.pictures.reverse();
             }
-            if ui.add_enabled(any, Button::new("Sort New to Old")).clicked() {
+            if widgets::push_button_enabled(ui, any, "Sort New to Old").clicked() {
                 self.pictures.sort_by_key(|p| std::cmp::Reverse(modified(p)));
             }
-            if ui.add_enabled(any, Button::new("Sort Old to New")).clicked() {
+            if widgets::push_button_enabled(ui, any, "Sort Old to New").clicked() {
                 self.pictures.sort_by_key(modified);
             }
-            if ui.add_enabled(any, Button::new("Shuffle")).clicked() {
+            if widgets::push_button_enabled(ui, any, "Shuffle").clicked() {
                 self.pictures.sort_by_cached_key(|_| uuid::Uuid::new_v4());
             }
         });
         ui.add_space(4.0);
-        ScrollArea::vertical().max_height(200.0).auto_shrink([false, false]).show(ui, |ui| {
-            if self.pictures.is_empty() {
-                ui.weak("Add Pictures to begin.");
-            }
-            for (i, p) in self.pictures.iter().enumerate() {
-                let label = format!("{}  {}", i + 1, p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()));
-                if ui.selectable_label(self.selected == Some(i), label).clicked() {
-                    self.selected = Some(i);
+        let mut list = |ui: &mut Ui| {
+            ScrollArea::vertical().max_height(200.0).auto_shrink([false, false]).show(ui, |ui| {
+                if self.pictures.is_empty() {
+                    ui.weak("Add Pictures to begin.");
                 }
-            }
-        });
+                for (i, p) in self.pictures.iter().enumerate() {
+                    let label = format!("{}  {}", i + 1, p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()));
+                    if ui.selectable_label(self.selected == Some(i), label).clicked() {
+                        self.selected = Some(i);
+                    }
+                }
+            });
+        };
+        // Classic 2006: the list in a sunken white box.
+        if crate::ui::theme::get().classic() {
+            super::field_box(ui, 2, list);
+        } else {
+            list(ui);
+        }
     }
 
     fn settings_tab(&mut self, ui: &mut Ui) {
         const W: f32 = 150.0;
         super::group(ui, "Slideshow Placement");
-        ui.radio_value(&mut self.at_cursor, true, "Start at the timeline cursor");
+        widgets::radio_value(ui, &mut self.at_cursor, true, "Start at the timeline cursor");
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.at_cursor, false, "Start at:");
-            ui.add_enabled(!self.at_cursor, TextEdit::singleline(&mut self.at).desired_width(120.0));
+            widgets::radio_value(ui, &mut self.at_cursor, false, "Start at:");
+            widgets::edit_enabled(ui, !self.at_cursor, TextEdit::singleline(&mut self.at).desired_width(120.0));
         });
         super::group(ui, "Duration");
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.per_picture, true, "Each picture:");
-            ui.add_enabled(self.per_picture, TextEdit::singleline(&mut self.len).desired_width(120.0));
+            widgets::radio_value(ui, &mut self.per_picture, true, "Each picture:");
+            widgets::edit_enabled(ui, self.per_picture, TextEdit::singleline(&mut self.len).desired_width(120.0));
         });
         ui.horizontal(|ui| {
-            ui.radio_value(&mut self.per_picture, false, "Whole slideshow:");
-            ui.add_enabled(!self.per_picture, TextEdit::singleline(&mut self.total).desired_width(120.0));
+            widgets::radio_value(ui, &mut self.per_picture, false, "Whole slideshow:");
+            widgets::edit_enabled(ui, !self.per_picture, TextEdit::singleline(&mut self.total).desired_width(120.0));
         });
         super::group(ui, "Transitions");
         let names = Self::effects();
         super::row(ui, "Effects:", W - 70.0, true, |ui| {
-            ComboBox::from_id_salt("slideshow_effect").width(200.0).selected_text(names.get(self.effect).copied().unwrap_or("")).show_ui(ui, |ui| {
+            widgets::combo(ui, "slideshow_effect", 200.0, names.get(self.effect).copied().unwrap_or(""), |ui| {
                 for (k, n) in names.iter().enumerate() {
                     ui.selectable_value(&mut self.effect, k, *n);
                 }
             });
         });
-        super::row(ui, "Overlap:", W - 70.0, true, |ui| ui.add(TextEdit::singleline(&mut self.overlap).desired_width(120.0)));
+        super::row(ui, "Overlap:", W - 70.0, true, |ui| widgets::edit(ui, TextEdit::singleline(&mut self.overlap).desired_width(120.0)));
     }
 }
 

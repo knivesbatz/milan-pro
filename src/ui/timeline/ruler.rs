@@ -11,8 +11,14 @@ use super::{Geo, Rename, TlState, SNAP_PX};
 /// `crumbs`: R6b's breadcrumb runs along the top, so the time sits lower.
 pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs: bool) {
     let t = theme::get();
-    p.rect_filled(r, 0.0, t.time_display_bg);
     let v16 = t.look() == UiLook::Vegas16;
+    if t.classic() {
+        // Black LCD well sunk into the metal (Vegas 5–7).
+        crate::ui::widgets::metal(p, r, &t.metal);
+        crate::ui::widgets::sunken(p, r.shrink2(vec2(3.0, 4.0)), t.time_display_bg, &t.metal);
+    } else {
+        p.rect_filled(r, 0.0, t.time_display_bg);
+    }
     if v16 {
         let b = &t.bevel;
         let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
@@ -21,7 +27,7 @@ pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs:
         line(r.max.y - 1.0, b.time_display_bottom);
     }
     // Gripper: one column of 2 px dots on a 5 px pitch from the top (refs: VP16 ~8 dark dots, dark2026 6 light dots).
-    let (dot, n) = if v16 { (t.line_dark, 8) } else { (t.ruler_text, 6) };
+    let (dot, n) = if v16 { (t.line_dark, 8) } else if t.classic() { (t.line_dark, 0) } else { (t.ruler_text, 6) };
     let cy = r.center().y.round();
     for k in 0..n {
         let d = Rect::from_min_size(pos2(r.min.x + 3.0, r.min.y + 4.0 + 5.0 * k as f32), vec2(2.0, 2.0));
@@ -40,6 +46,9 @@ pub(super) fn band_rows(t: &Theme, band: Rect) -> (Rect, Rect, Rect) {
     let row = |y0: f32, h: f32| Rect::from_x_y_ranges(band.x_range(), Rangef::new(band.min.y + y0, band.min.y + y0 + h));
     if t.look() == UiLook::Vegas16 {
         (row(2.0, 5.0), row(8.0, 14.0), row(band.height() - 17.0, 16.0))
+    } else if t.classic() {
+        // Loop 2–8 · markers 8–22 · ruler 18 px on the band's bottom line.
+        (row(2.0, 6.0), row(8.0, 14.0), row(band.height() - 19.0, 18.0))
     } else {
         let h = band.height();
         (row(14.0, 8.0), row(0.0, 14.0), row(h - 15.0, 14.0))
@@ -364,9 +373,19 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     let band = g.band;
     let (loop_r, marker_r, ruler) = band_rows(&t, band);
     let v16 = t.look() == UiLook::Vegas16;
+    let classic = t.classic();
     let fps = project.settings.frame_rate;
-    p.rect_filled(band, 0.0, t.band_bg);
     let hline = |x: Rangef, y: f32, c: Color32| p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
+    if classic {
+        // Metal band; the ruler row is a lighter strip with an etched line above it and a shadow line under it.
+        crate::ui::widgets::metal(p, band, &t.metal);
+        p.rect_filled(ruler, 0.0, t.band_bg);
+        hline(band.x_range(), band.min.y, t.metal.light);
+        crate::ui::widgets::etched_h(p, band.x_range(), ruler.min.y - 2.0, &t.metal);
+        hline(band.x_range(), band.max.y - 1.0, t.metal.shadow);
+    } else {
+        p.rect_filled(band, 0.0, t.band_bg);
+    }
     if v16 {
         let b = &t.bevel;
         hline(band.x_range(), band.min.y, b.band_1);
@@ -374,7 +393,7 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         hline(band.x_range(), ruler.min.y - 2.0, t.band_separator);
         hline(band.x_range(), ruler.min.y - 1.0, b.band_bottom);
         hline(band.x_range(), ruler.max.y, t.line_dark);
-    } else {
+    } else if !classic {
         hline(band.x_range(), ruler.min.y - 1.0, t.line_dark);
         hline(band.x_range(), band.max.y - 1.0, t.line_dark);
     }
@@ -409,7 +428,7 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     let (a, b) = project.timeline.loop_region.unwrap_or((0.0, 0.0));
     let (xa, xb) = (g.to_x(a).floor(), g.to_x(b).floor());
     if b > a {
-        if v16 {
+        if v16 || classic {
             let cy = loop_r.center().y.floor();
             p_b.rect_filled(Rect::from_min_max(pos2(xa, cy - 1.0), pos2(xb + 1.0, cy + 2.0)), 0.0, t.loop_sel_line);
         } else {
@@ -420,7 +439,7 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     let flag = |pts: Vec<Pos2>| p_b.add(Shape::convex_polygon(pts, t.loop_flag, Stroke::NONE));
     flag(vec![pos2(xa, fy), pos2(xa + 6.0, fy), pos2(xa, fy + 6.0)]);
     flag(vec![pos2(xb + 1.0 - 6.0, fy), pos2(xb + 1.0, fy), pos2(xb + 1.0, fy + 6.0)]);
-    if v16 && b > a {
+    if (v16 || classic) && b > a {
         // Length tag: white box, black text, at the right end (§5.9.2).
         let len = if s.ruler.format == RulerFormat::TimeFrames { short_tc(b - a, fps) } else { s.ruler_len(b - a) };
         let text = format!("+{len}");
@@ -480,7 +499,7 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
             continue;
         }
         let num = (i + 1).to_string();
-        if v16 {
+        if v16 || classic {
             hline(Rangef::new(xa, xb), marker_r.max.y - 1.0, t.region_line);
         }
         for (k, x) in [xa, xb - 12.0].into_iter().enumerate() {
@@ -502,6 +521,7 @@ pub(super) fn paint_grid(p: &Painter, g: &Geo) {
     let (step, phase) = g.grid;
     let (on, off) = match t.look() {
         UiLook::Vegas16 => (2.0, 2.0),
+        UiLook::Classic2006 => (1.0, 2.0),
         _ if t.dark_mode => (1.0, 2.0),
         _ => (3.0, 3.0),
     };
@@ -550,8 +570,9 @@ pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64, ripple: bool) {
     let p = p.with_clip_rect(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(ruler.min.y, g.lanes.max.y)).intersect(p.clip_rect()));
     let col = |x0: f32, c: Color32| p.rect_filled(Rect::from_min_max(pos2(x0, ruler.min.y), pos2(x0 + 1.0, g.lanes.max.y)), 0.0, c);
     let rb = ruler.max.y;
-    if t.look() == UiLook::Vegas16 {
-        // Black line plus a 1 px shadow to its right; white 9×12 flag with two dark ticks, tip on the ruler bottom.
+    if t.look() != UiLook::Vegas23 {
+        // VP16: black line plus a 1 px shadow to its right; white 9×12 flag with two dark ticks, tip on the ruler
+        // bottom. Classic 2006: the same flag over an electric-blue line.
         col(x, line);
         col(x + 1.0, t.playhead_outline);
         let x0 = x - 4.0;

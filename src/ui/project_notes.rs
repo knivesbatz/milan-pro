@@ -2,6 +2,7 @@
 //! timeline position (a click on its time goes there) and marked Resolved when done; Add New Note (lower left) adds
 //! one at the cursor. Notes are typed text, so they stay out of the undo history (`history::restore`).
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::{Note, Project};
 use super::theme;
 
@@ -13,7 +14,7 @@ pub fn project_notes(ui: &mut Ui, project: &mut Project) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(6.0);
-            if ui.button("Add New Note").clicked() {
+            if widgets::push_button(ui, "Add New Note").clicked() {
                 project.notes.push(Note { at: project.timeline.cursor_position, ..Default::default() });
                 changed = true;
             }
@@ -28,15 +29,21 @@ pub fn project_notes(ui: &mut Ui, project: &mut Project) {
                             if ui.link(at).on_hover_text("Go to this position").clicked() {
                                 project.timeline.cursor_position = n.at;
                             }
-                            changed |= ui.checkbox(&mut n.resolved, "Resolved").changed();
-                            if ui.small_button("×").on_hover_text("Delete note").clicked() {
+                            changed |= widgets::checkbox(ui, &mut n.resolved, "Resolved").changed();
+                            if widgets::small_push(ui, "×").on_hover_text("Delete note").clicked() {
                                 gone = Some(i);
                             }
                         });
                         let color = if n.resolved { t.text_dim } else { t.text };
-                        changed |= ui.add(TextEdit::multiline(&mut n.text).desired_width(w).desired_rows(2).text_color(color).hint_text("Note")).changed();
+                        changed |= widgets::edit(ui, TextEdit::multiline(&mut n.text).desired_width(w).desired_rows(2).text_color(color).hint_text("Note")).changed();
                     });
-                    ui.separator();
+                    if t.classic() {
+                        // An etched rule between the notes.
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+                        widgets::etched_h(ui.painter(), r.x_range().shrink(4.0), r.center().y, &t.metal);
+                    } else {
+                        ui.separator();
+                    }
                 }
             });
         });

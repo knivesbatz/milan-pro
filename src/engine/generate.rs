@@ -10,7 +10,8 @@ use crate::engine::vfx::{blur, premul, transpose};
 /// Only animated noise and the credit roll change with time; everything else renders the same at every t (so it
 /// caches).
 pub fn animated(e: &FxEval) -> bool {
-    (e.id == "milan.gen.noise" && e.f("speed") > 0.0) || e.id == CREDITS
+    // An OFX generator may change with time; it is asked at each frame.
+    (e.id == "milan.gen.noise" && e.f("speed") > 0.0) || e.id == CREDITS || e.id.starts_with(crate::engine::ofx::PREFIX)
 }
 
 /// R18a: the Credit Roll scrolls over its generated media's length, which `engine::plan` adds to its values under
@@ -44,6 +45,8 @@ pub fn render(e: &FxEval, w: u32, h: u32, t: f64) -> ColorImage {
         "milan.gen.text" => text(e, w, h),
         CREDITS => credits(e, w, h, t),
         "milan.gen.test_pattern" => test_pattern(e.i("type"), w, h),
+        // R33b: an OFX generator renders in its plug-in host (transparent when it cannot).
+        id if id.starts_with(crate::engine::ofx::PREFIX) => crate::engine::ofx::generate(e, w as u32, h as u32, t),
         _ => ColorImage::new([w, h], Color32::TRANSPARENT),
     }
 }

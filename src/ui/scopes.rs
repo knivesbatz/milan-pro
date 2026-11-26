@@ -3,6 +3,7 @@
 //! Update Scopes while Playing, and each scope's own settings above it. It measures the Video Preview's composited
 //! frame (never decoding again) on its own thread, at most 10 times a second; closed, it costs nothing.
 use eframe::egui::*;
+use crate::ui::widgets;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -196,7 +197,7 @@ pub fn scopes_toolbar(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs) -> bool {
     ui.add_space(4.0);
     text_menu(ui, p.view.label(), 7.0, "Scope", |ui| {
         for v in ScopeView::ALL {
-            if ui.radio(p.view == v, v.label()).clicked() {
+            if widgets::radio(ui, p.view == v, v.label()).clicked() {
                 p.view = v;
                 ui.close_menu();
             }
@@ -232,13 +233,18 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 
     let t = theme::get();
     let rect = ui.max_rect();
-    ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+    // Classic 2006: each scope is a black well with a sunken 3D frame on the panel; the VEGAS looks are black
+    // throughout.
+    ui.painter().rect_filled(rect, 0.0, if t.classic() { t.panel_bg } else { Color32::BLACK });
     let panes = p.view.panes();
     let cells = cells(rect, panes.len());
     for (&pane, &cell) in panes.iter().zip(&cells) {
         let mut row = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(cell.min, vec2(cell.width(), t.m.button))).layout(Layout::left_to_right(Align::Center)));
         row.add_space(2.0);
         let plot = cell.with_min_y(cell.min.y + t.m.button).shrink(6.0);
+        if t.classic() {
+            super::widgets::sunken(ui.painter(), plot.expand(3.0), Color32::BLACK, &t.metal);
+        }
         match pane {
             Pane::Vector => {
                 setting(&mut row, "Vectorscope Settings", &mut p.magnified, ["Normal", "Magnified"]);
@@ -251,7 +257,7 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
             Pane::Hist => {
                 text_menu(&mut row, p.hist.label(), 7.0, "Histogram Settings", |ui| {
                     for m in HistMode::ALL {
-                        if ui.radio(p.hist == m, m.label()).clicked() {
+                        if widgets::radio(ui, p.hist == m, m.label()).clicked() {
                             p.hist = m;
                             ui.close_menu();
                         }
@@ -265,8 +271,8 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 
     if let Some(mut lv) = s.settings {
         let (hit, close) = super::dialogs::modal(&ctx, "video_scopes_settings", "Video Scopes Settings", vec2(300.0, 150.0), |ui| {
-            ui.checkbox(&mut lv.setup, "7.5 IRE Setup");
-            ui.checkbox(&mut lv.studio, "Studio RGB (16 to 235)");
+            widgets::checkbox(ui, &mut lv.setup, "7.5 IRE Setup");
+            widgets::checkbox(ui, &mut lv.studio, "Studio RGB (16 to 235)");
             ui.add_space(12.0);
             super::dialogs::button_row(ui, &[("OK", true), ("Cancel", true)])
         });
@@ -285,7 +291,7 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 fn setting(ui: &mut Ui, tip: &str, on: &mut bool, labels: [&str; 2]) {
     text_menu(ui, labels[*on as usize], 7.0, tip, |ui| {
         for (k, l) in labels.into_iter().enumerate() {
-            if ui.radio(*on == (k == 1), l).clicked() {
+            if widgets::radio(ui, *on == (k == 1), l).clicked() {
                 *on = k == 1;
                 ui.close_menu();
             }
@@ -318,7 +324,7 @@ fn line_color() -> Color32 {
 }
 
 fn label(p: &Painter, at: Pos2, align: Align2, text: impl ToString) {
-    p.text(at, align, text.to_string(), FontId::proportional(10.0), Color32::from_gray(150));
+    p.text(at, align, text.to_string(), theme::get().font(10.0), Color32::from_gray(150));
 }
 
 /// A graticule label sits above its line, or below it on the top line (where above is off the plot).

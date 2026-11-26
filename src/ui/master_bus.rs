@@ -114,7 +114,7 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
         if t.meter_unlit > 0.0 {
             paint_bar(&p, well, well.min.y, &to_y, false, t.meter_unlit);
         } else {
-            p.rect_filled(well, 0.0, t.meter_bg);
+            super::widgets::meter_well(&p, well, &t);
         }
         let lvl = lv.level[c];
         if lvl > -RANGE_DB {
@@ -160,6 +160,11 @@ pub(crate) fn paint_bar(p: &Painter, well: Rect, y: f32, to_y: &dyn Fn(f32) -> f
             p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y0, y1)), 0.0, c);
         }
     };
+    if t.classic() {
+        // Classic LED segments (the 2006 meter): lit from the bottom up to `y`.
+        super::widgets::led_bar(p, well, y, to_y, &t);
+        return;
+    }
     if v16 {
         let y6 = to_y(-6.0);
         seg(y.max(y6), well.max.y, t.meter_green);
@@ -230,7 +235,11 @@ fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, we
     let to_y = |g: f32| bottom - (bottom - top) * fader_pos(g);
     for (k, &x) in xs.iter().enumerate() {
         let ch = k.min(1);
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x.round(), x.round() + 1.0), Rangef::new(top, bottom)), 0.0, t.fader_track);
+        if t.classic() {
+            super::widgets::groove_v(&p, x.round(), Rangef::new(top, bottom), &t.metal);
+        } else {
+            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x.round(), x.round() + 1.0), Rangef::new(top, bottom)), 0.0, t.fader_track);
+        }
         let y = to_y(view.gain[ch]);
         let thumb = Rect::from_center_size(pos2(x.round() + 0.5, y.round()), if v16 { vec2(21.0, 12.0) } else { vec2(25.0, 13.0) });
         let hit = Rect::from_x_y_ranges(thumb.expand(3.0).x_range(), Rangef::new(top - 6.0, bottom + 6.0));
@@ -253,7 +262,10 @@ fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, we
         } else if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged()) {
             set(fader_gain((bottom - pos.y) / (bottom - top)), view);
         }
-        if v16 {
+        if t.classic() {
+            // The Vegas 5–7 chrome fader handle: a raised block with a dark bar across its middle.
+            super::widgets::fader_thumb(&p, thumb, &t.metal, None);
+        } else if v16 {
             // White "88": two solid white squares, each with two dark bars; a lock under the track.
             for dx in [0.0, 11.0] {
                 let sq = Rect::from_min_size(pos2(thumb.min.x + dx, thumb.min.y), vec2(10.0, 12.0));

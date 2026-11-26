@@ -1,10 +1,15 @@
 //! Screenshot + demo harness, driven by environment variables:
-//! - `MILAN_LOOK` = vegas16 | vegas23 | vegas23-white: look for this run (not persisted).
+//! - `MILAN_LOOK` = classic2006 | vegas16 | vegas23 | vegas23-white: look for this run (not persisted).
+//! - `MILAN_DIALOG=menu-edit`: the Edit menu dropped open (see `open_from_env` for the dialogs).
 //! - `MILAN_DEMO=1`: demo project on generated media (cached in %TEMP%\milan-demo); no autosave or prefs writes.
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
+//! - `MILAN_OFX_DIR=<folder>` (with `MILAN_DEMO` or `MILAN_SCREENSHOT`): the only OFX folder searched (otherwise none),
+//!   scanned before the screenshot; the user's plug-in list is never read or written.
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
+//! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
+//! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;
@@ -145,7 +150,7 @@ impl Shot {
         Self { path, start: None, quiet_since: None, requested: false }
     }
 
-    /// Call once per frame. `busy`: preview frames or waveforms still loading.
+    /// Call once per frame. `busy`: preview frames or waveforms still loading (or the harness dialog not open yet).
     pub fn tick(&mut self, ctx: &egui::Context, busy: bool) {
         ctx.request_repaint();
         let now = ctx.input(|i| i.time);
@@ -170,6 +175,9 @@ impl Shot {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
+        }
+        if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
+            eprintln!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
         }
         if busy || !sized {
             self.quiet_since = None;

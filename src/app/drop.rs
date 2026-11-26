@@ -218,6 +218,39 @@ mod tests {
         assert_eq!(p.clip(&placed.ids[0]).map(|c| c.duration), Some(4.0));
     }
 
+    /// An overlay dragged from the Overlays window (an Explorer-style file drag) and dropped below the tracks lands on a
+    /// new track with its pack's blend, all in the drop's one undo step; dropped onto an existing track, the track's
+    /// mode stays.
+    #[test]
+    fn an_overlay_drop_makes_a_blended_track_in_one_undo_step() {
+        use crate::overlays::{Index, Pack, blend_new_tracks};
+        use crate::project::Composite;
+        let ix = Index { packs: vec![Pack { name: "Light Leaks".into(), path: r"C:\Lib\Light Leaks".into(), linked: false, blend: None }], ..Default::default() };
+        let file = PathBuf::from(r"C:\Lib\Light Leaks\leak.mp4");
+        let m = MediaItem { id: "m".into(), path: file.clone(), name: "leak.mp4".into(), media_type: MediaType::Video, duration: 4.0, width: Some(1280), height: Some(720), frame_rate: Some(24.0), ..Default::default() };
+        let (mut p, mut h) = (Project::new("t"), crate::history::History::default());
+        let v1 = p.timeline.video_tracks[0].id.clone();
+        let mut fd = FileDrop::new();
+        fd.drop(vec![file.clone()], Some((None, 2.0, edit::DropMode::AcrossTime)));
+        fd.importer.sender().send(vec![(file.clone(), Ok(m))]).unwrap();
+        // As the app does: the blend goes in before the drop's undo step is pushed.
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed");
+        let before = placed.before.expect("changed");
+        assert_eq!(blend_new_tracks(&mut p, &before, &placed.ids, &ix), [file.clone()]);
+        h.push(before);
+        let r = p.find_clip(&placed.ids[0]).unwrap();
+        assert!(r.is_video && p.timeline.video_tracks.len() == 2 && p.timeline.video_tracks[r.track_idx].id != v1);
+        assert_eq!((p.timeline.video_tracks[r.track_idx].composite, p.timeline.video_tracks[0].composite), (Composite::Screen, Composite::SourceAlpha));
+        assert_eq!(h.lens(), (1, 0));
+        h.undo(&mut p);
+        assert!(p.timeline.video_tracks.len() == 1 && p.media_pool.is_empty(), "one undo takes the track, its mode and the media");
+        // Onto Video 1 itself: no new track, so its mode is the user's.
+        fd.drop(vec![file.clone()], Some((Some(v1.clone()), 0.0, edit::DropMode::AcrossTime)));
+        let placed = fd.poll(&mut p, 5.0, false).expect("placed with the earlier probe");
+        assert!(blend_new_tracks(&mut p, placed.before.as_ref().unwrap(), &placed.ids, &ix).is_empty());
+        assert_eq!(p.timeline.video_tracks[0].composite, Composite::SourceAlpha);
+    }
+
     #[test]
     fn a_probe_arriving_after_new_is_discarded() {
         let mut p = Project::new("t");

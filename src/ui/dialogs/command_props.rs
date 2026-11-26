@@ -1,6 +1,7 @@
 //! R18a: Insert › Command... (C) and a command marker's Edit: VEGAS's Command Properties: the metadata command (one of
 //! VEGAS's, or typed), its parameter, a comment and the position (in the ruler's format; the cursor for a new one).
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::CommandMarker;
 
 /// VEGAS's predefined metadata commands.
@@ -23,8 +24,8 @@ impl CommandProps {
     pub fn show(&mut self, ctx: &Context, valid: impl Fn(&str) -> bool) -> Option<bool> {
         let (hit, close) = super::modal(ctx, "command_props", "Command Properties", vec2(440.0, 228.0), |ui| {
             super::row(ui, "Command:", 90.0, true, |ui| {
-                ui.add(TextEdit::singleline(&mut self.marker.command).desired_width(250.0));
-                ComboBox::from_id_salt("command_kind").width(20.0).selected_text("").show_ui(ui, |ui| {
+                widgets::edit(ui, TextEdit::singleline(&mut self.marker.command).desired_width(250.0));
+                widgets::combo(ui, "command_kind", 20.0, "", |ui| {
                     for c in COMMANDS {
                         if ui.selectable_label(self.marker.command == *c, *c).clicked() {
                             self.marker.command = c.to_string();
@@ -32,9 +33,9 @@ impl CommandProps {
                     }
                 });
             });
-            super::row(ui, "Parameter:", 90.0, true, |ui| ui.add(TextEdit::singleline(&mut self.marker.parameter).desired_width(290.0)));
-            super::row(ui, "Comment:", 90.0, true, |ui| ui.add(TextEdit::multiline(&mut self.marker.comment).desired_rows(3).desired_width(290.0)));
-            super::row(ui, "Position:", 90.0, true, |ui| ui.add(TextEdit::singleline(&mut self.position).desired_width(140.0)));
+            super::row(ui, "Parameter:", 90.0, true, |ui| widgets::edit(ui, TextEdit::singleline(&mut self.marker.parameter).desired_width(290.0)));
+            super::row(ui, "Comment:", 90.0, true, |ui| widgets::edit(ui, TextEdit::multiline(&mut self.marker.comment).desired_rows(3).desired_width(290.0)));
+            super::row(ui, "Position:", 90.0, true, |ui| widgets::edit(ui, TextEdit::singleline(&mut self.position).desired_width(140.0)));
             ui.add_space(8.0);
             let ok = valid(&self.position) && !self.marker.command.trim().is_empty();
             super::button_row(ui, &[("OK", ok), ("Cancel", true)])

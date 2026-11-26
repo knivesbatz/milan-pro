@@ -1023,6 +1023,10 @@ pub fn draw_timeline(
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, t.frame);
+    if t.classic() {
+        // Dotted splitter between the track list and the lanes (Vegas 6).
+        super::widgets::dotted_splitter(&painter, split, false, &t.metal);
+    }
     let pl = painter.with_clip_rect(g.lanes);
     pl.rect_filled(g.lanes, 0.0, if v16 { t.frame } else { t.empty_lane_bg });
     for row in &rows {

@@ -4,6 +4,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::Project;
 use crate::render::{BUILTIN, BatchMode, JobState, Opts, RenderQueue, Template, batch, per_track};
 use crate::settings::Prefs;
@@ -47,11 +48,10 @@ impl QueueWindow {
     /// The list and its buttons; true when Close was clicked.
     fn body(&mut self, ui: &mut Ui, queue: &mut RenderQueue) -> bool {
         let t = super::theme::get();
-        let d = t.dialog();
-        Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+        super::dialogs::field_box(ui, 4, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical().id_salt("queue_list").max_height(230.0).min_scrolled_height(230.0).auto_shrink(false).show(ui, |ui| {
-                Grid::new("queue_grid").num_columns(5).striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
+                Grid::new("queue_grid").num_columns(5).striped(!crate::ui::theme::get().classic()).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
                     for h in ["#", "File", "Template", "Range", "Status"] {
                         ui.label(RichText::new(h).strong());
                     }
@@ -66,7 +66,7 @@ impl QueueWindow {
                         ui.label(&j.template.name);
                         ui.label(format!("{:.2} s to {:.2} s", j.range.0, j.range.1));
                         match queue.running(&j.id) {
-                            Some(r) => ui.add(ProgressBar::new(r.fraction()).show_percentage().desired_width(180.0)),
+                            Some(r) => widgets::progress(ui, r.fraction(), None, Some(180.0)),
                             None if matches!(j.state, JobState::Failed(_)) => ui.colored_label(t.warning_text, j.state.label()),
                             None => ui.label(j.state.label()),
                         }
@@ -85,24 +85,24 @@ impl QueueWindow {
         ui.horizontal(|ui| {
             let id = job.as_ref().map(|j| j.id.clone()).unwrap_or_default();
             let has = job.is_some();
-            if ui.add_enabled(has, Button::new("Move Up")).clicked() {
+            if widgets::push_button_enabled(ui, has, "Move Up").clicked() {
                 queue.shift(&id, -1);
             }
-            if ui.add_enabled(has, Button::new("Move Down")).clicked() {
+            if widgets::push_button_enabled(ui, has, "Move Down").clicked() {
                 queue.shift(&id, 1);
             }
             let paused = st == Some(JobState::Paused);
             let can_pause = matches!(st, Some(JobState::Queued | JobState::Paused));
-            if ui.add_enabled(can_pause, Button::new(if paused { "Resume" } else { "Pause" })).on_disabled_hover_text("A render that has started can only be cancelled.").clicked() {
+            if widgets::push_button_enabled(ui, can_pause, if paused { "Resume" } else { "Pause" }).on_disabled_hover_text("A render that has started can only be cancelled.").clicked() {
                 queue.pause(&id);
             }
-            if ui.add_enabled(matches!(st, Some(JobState::Queued | JobState::Paused | JobState::Running)), Button::new("Cancel")).clicked() {
+            if widgets::push_button_enabled(ui, matches!(st, Some(JobState::Queued | JobState::Paused | JobState::Running)), "Cancel").clicked() {
                 queue.cancel(&id);
             }
-            if ui.add_enabled(st.as_ref().is_some_and(JobState::retryable), Button::new("Retry")).clicked() {
+            if widgets::push_button_enabled(ui, st.as_ref().is_some_and(JobState::retryable), "Retry").clicked() {
                 queue.retry(&id);
             }
-            if ui.add_enabled(has && st != Some(JobState::Running), Button::new("Remove")).clicked() {
+            if widgets::push_button_enabled(ui, has && st != Some(JobState::Running), "Remove").clicked() {
                 queue.remove(&id);
                 self.sel = None;
             }
@@ -111,12 +111,12 @@ impl QueueWindow {
                     dialogs::open_file(&log);
                 }
             }
-            if st == Some(JobState::Done) && ui.button("Open Folder").clicked() {
+            if st == Some(JobState::Done) && widgets::push_button(ui, "Open Folder").clicked() {
                 dialogs::open_folder(&job.as_ref().map(|j| j.out.clone()).unwrap_or_default());
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 close = dialogs::button(ui, "Close", true, true).clicked();
-                if ui.button("Clear Finished").clicked() {
+                if widgets::push_button(ui, "Clear Finished").clicked() {
                     queue.clear_finished();
                 }
             });
@@ -167,8 +167,8 @@ impl BatchRender {
         let templates: Vec<&Template> = BUILTIN.iter().chain(&prefs.render_templates).collect();
         let (hit, close) = dialogs::modal(ctx, "batch_render", "Batch Render", vec2(560.0, 520.0), |ui| {
             dialogs::row(ui, "Base File Name:", 100.0, true, |ui| {
-                ui.add(TextEdit::singleline(&mut self.base).desired_width(ui.available_width() - 80.0));
-                if ui.button("Browse...").clicked() {
+                widgets::edit(ui, TextEdit::singleline(&mut self.base).desired_width(ui.available_width() - 80.0));
+                if widgets::push_button(ui, "Browse...").clicked() {
                     let p = PathBuf::from(&self.base);
                     let mut fd = rfd::FileDialog::new().set_file_name(p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
                     if let Some(dir) = p.parent().filter(|d| d.is_dir()) {
@@ -180,8 +180,7 @@ impl BatchRender {
                 }
             });
             ui.label("Render Templates:");
-            let d = super::theme::get().dialog();
-            Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+            super::dialogs::field_box(ui, 4, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical().id_salt("batch_tree").max_height(300.0).min_scrolled_height(300.0).auto_shrink(false).show(ui, |ui| {
                     let mut formats: Vec<String> = Vec::new();
@@ -194,7 +193,7 @@ impl BatchRender {
                         CollapsingHeader::new(f).id_salt(("batch", f)).show(ui, |ui| {
                             for t in templates.iter().filter(|t| &t.format() == f) {
                                 let mut on = self.ticked.contains(&t.name);
-                                if ui.checkbox(&mut on, &t.name).changed() {
+                                if widgets::checkbox(ui, &mut on, &t.name).changed() {
                                     if on { self.ticked.insert(t.name.clone()) } else { self.ticked.remove(&t.name) };
                                 }
                             }
@@ -204,9 +203,9 @@ impl BatchRender {
             });
             let tl = &project.timeline;
             ui.horizontal(|ui| {
-                ui.radio_value(&mut self.mode, BatchMode::Project, "Render Project");
-                ui.add_enabled_ui(tl.loop_region.is_some_and(|(a, b)| b > a), |ui| ui.radio_value(&mut self.mode, BatchMode::Selection, "Render Selection"));
-                ui.add_enabled_ui(!tl.regions.is_empty(), |ui| ui.radio_value(&mut self.mode, BatchMode::Regions, "Render Regions"));
+                widgets::radio_value(ui, &mut self.mode, BatchMode::Project, "Render Project");
+                ui.add_enabled_ui(tl.loop_region.is_some_and(|(a, b)| b > a), |ui| widgets::radio_value(ui, &mut self.mode, BatchMode::Selection, "Render Selection"));
+                ui.add_enabled_ui(!tl.regions.is_empty(), |ui| widgets::radio_value(ui, &mut self.mode, BatchMode::Regions, "Render Regions"));
             });
             if let Some(e) = &self.error {
                 ui.colored_label(super::theme::get().warning_text, e);
@@ -272,22 +271,22 @@ impl RenderTracks {
         let can_loop = project.timeline.loop_region.is_some_and(|(a, b)| b > a);
         let (hit, close) = dialogs::modal(ctx, "render_tracks", "Render Audio Tracks", vec2(500.0, 210.0), |ui| {
             dialogs::row(ui, "Output Folder:", 100.0, true, |ui| {
-                ui.add(TextEdit::singleline(&mut self.dir).desired_width(ui.available_width() - 70.0));
-                if ui.button("Browse").clicked() {
+                widgets::edit(ui, TextEdit::singleline(&mut self.dir).desired_width(ui.available_width() - 70.0));
+                if widgets::push_button(ui, "Browse").clicked() {
                     if let Some(p) = rfd::FileDialog::new().set_directory(&self.dir).pick_folder() {
                         self.dir = p.display().to_string();
                     }
                 }
             });
             dialogs::row(ui, "Template:", 100.0, true, |ui| {
-                ComboBox::from_id_salt("tracks_template").width(ui.available_width()).selected_text(self.template.clone()).show_ui(ui, |ui| {
+                widgets::combo(ui, "tracks_template", ui.available_width(), self.template.clone(), |ui| {
                     for t in &templates {
                         ui.selectable_value(&mut self.template, t.name.clone(), format!("{}  ({})", t.name, t.format()));
                     }
                 });
             });
             let mut on = self.loop_only && can_loop;
-            if ui.add_enabled(can_loop, Checkbox::new(&mut on, "Render loop region only")).changed() {
+            if widgets::checkbox_enabled(ui, can_loop, &mut on, "Render loop region only").changed() {
                 self.loop_only = on;
             }
             if let Some(e) = &self.error {

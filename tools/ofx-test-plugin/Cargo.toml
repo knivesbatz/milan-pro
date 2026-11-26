@@ -1,0 +1,15 @@
+# A tiny OFX plug-in bundle for Milan Pro's plug-in host tests (not part of the main build). Built by the ignored
+# tests in src/engine/ofx (they run `cargo build --release` here) into target/ofx-test-plugin.
+[package]
+name = "milan-ofx-test"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# Its own workspace: not a member of Milan Pro's package.
+[workspace]

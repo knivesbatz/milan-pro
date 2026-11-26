@@ -1,6 +1,7 @@
 //! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
 //! are live, and Audio has the preferred audio editor (R18a) and the loudness log option (R16c).
 use eframe::egui::{self, *};
+use crate::ui::widgets;
 use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
 use super::super::theme::{self, LookChoice, UiLook, Variant};
@@ -90,10 +91,36 @@ impl PrefsDialog {
     }
 }
 
+/// A 40×26 preview of `look` beside its radio: its toolbar band over its panel and timeline lane, with a track
+/// colour, framed in the dialog's field border (Classic 2006 paints its metal band and 3D edge).
+fn look_swatch(ui: &mut Ui, look: UiLook) {
+    use crate::ui::widgets;
+    let d = theme::get().dialog();
+    let s = theme::Theme::new(LookChoice { look, variant: Variant::Dark });
+    let (r, _) = ui.allocate_exact_size(vec2(40.0, 26.0), Sense::hover());
+    let r = widgets::px(r);
+    let p = ui.painter();
+    let bar = Rect::from_min_size(r.min, vec2(r.width(), 8.0));
+    if s.classic() {
+        widgets::metal_bar(p, bar, &s.metal);
+    } else {
+        p.rect_filled(bar, 0.0, s.toolbar_bg);
+    }
+    p.rect_filled(Rect::from_min_max(bar.left_bottom(), pos2(r.max.x, r.min.y + 16.0)), 0.0, s.panel_bg);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max), 0.0, s.lane_bg);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 6.0, r.min.y + 18.0), pos2(r.max.x - 10.0, r.max.y - 2.0)), 0.0, s.track_color(0));
+    if s.classic() {
+        widgets::bevel(p, r, false, &theme::get().dialog_metal());
+    } else {
+        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, d.field_border), StrokeKind::Inside);
+    }
+}
+
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
-        "VST Effects" => Later("R31"),
+        // R31 built the OFX folders (Plug-In Manager › Folders); VST folders come with the VST3 host.
+        "VST Effects" => Later("R34a"),
         "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
         _ => Later("R49"), // File I/O, Deprecated Features
     }
@@ -102,15 +129,14 @@ fn page_why(page: &str) -> Why {
 fn general(ui: &mut Ui, d: &mut Prefs) {
     let v16 = theme::get().look() == UiLook::Vegas16;
     ui.label("General preferences:");
-    let dd = theme::get().dialog();
-    Frame::NONE.fill(dd.field).stroke(Stroke::new(1.0_f32, dd.field_border)).inner_margin(4).show(ui, |ui| {
+    super::field_box(ui, 4, |ui| {
         ui.set_width(ui.available_width());
         ui.set_height(16.0 * 24.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.spacing_mut().interact_size.y = 16.0;
         let r49 = Later("R49").text();
-        ui.add_enabled(false, Checkbox::new(&mut false, "Automatically open last project on startup")).on_disabled_hover_text(&r49);
-        ui.add_enabled(false, Checkbox::new(&mut true, "Show logo splash screen on startup")).on_disabled_hover_text(&r49);
+        widgets::checkbox_enabled(ui, false, &mut false, "Automatically open last project on startup").on_disabled_hover_text(&r49);
+        widgets::checkbox(ui, &mut d.show_splash, "Show splash screen at startup");
         let mut pause = d.space_pauses || !v16;
         if ui
             .add_enabled(v16, Checkbox::new(&mut pause, "Make spacebar and F12 Play/Pause instead of Play/Stop"))
@@ -119,26 +145,40 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         {
             d.space_pauses = pause;
         }
-        ui.add_enabled(!v16, Checkbox::new(&mut d.show_welcome, "Show Welcome Screen on startup"))
+        widgets::checkbox_enabled(ui, !v16, &mut d.show_welcome, "Show Welcome Screen on startup")
             .on_disabled_hover_text(Fixed("the Welcome Screen belongs to the VEGAS 23 look").text());
-        ui.checkbox(&mut d.auto_update, "Check for updates automatically");
-        ui.checkbox(&mut d.nested_breadcrumb, "Show the parent timelines of a nested timeline above the track list");
+        widgets::checkbox(ui, &mut d.auto_update, "Check for updates automatically");
+        widgets::checkbox(ui, &mut d.nested_breadcrumb, "Show the parent timelines of a nested timeline above the track list");
     });
     ui.horizontal(|ui| {
         let mut on = true;
-        ui.add_enabled(false, Checkbox::new(&mut on, "Recently used project list")).on_disabled_hover_text(ALWAYS_ON.text());
-        ui.add(DragValue::new(&mut d.recent_max).range(1..=9));
+        widgets::checkbox_enabled(ui, false, &mut on, "Recently used project list").on_disabled_hover_text(ALWAYS_ON.text());
+        widgets::spin(ui, &mut d.recent_max, 1.0, |d| d.range(1..=9));
     });
     ui.add_enabled_ui(false, |ui| {
         let r49 = Later("R49").text();
         ui.label("Temporary files folder:").on_disabled_hover_text(&r49);
         ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(300.0)).on_disabled_hover_text(&r49);
-            ui.button("Browse...").on_disabled_hover_text(&r49);
+            widgets::edit(ui, TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(300.0)).on_disabled_hover_text(&r49);
+            widgets::push_button(ui, "Browse...").on_disabled_hover_text(&r49);
         });
     });
+    // Milan Pro's own: where the Overlays window keeps the packs it imports.
+    ui.label("Overlay pack library folder:");
+    ui.horizontal(|ui| {
+        let mut path = d.overlay_library.clone().unwrap_or_else(crate::overlays::default_library).display().to_string();
+        if widgets::edit(ui, TextEdit::singleline(&mut path).desired_width(300.0)).changed() {
+            d.overlay_library = (!path.trim().is_empty()).then(|| path.trim().into());
+        }
+        if widgets::push_button(ui, "Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_title("Overlay pack library folder").pick_folder() {
+                d.overlay_library = Some(p);
+            }
+        }
+    });
     if default_all(ui) {
-        (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, 4, true, false);
+        (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
+        d.overlay_library = None;
     }
 }
 
@@ -148,17 +188,17 @@ fn audio(ui: &mut Ui, d: &mut Prefs) {
     ui.label("Preferred audio editor:");
     ui.horizontal(|ui| {
         let mut path = d.audio_editor.as_ref().map_or(String::new(), |p| p.display().to_string());
-        if ui.add(TextEdit::singleline(&mut path).desired_width(320.0)).changed() {
+        if widgets::edit(ui, TextEdit::singleline(&mut path).desired_width(320.0)).changed() {
             d.audio_editor = (!path.trim().is_empty()).then(|| path.trim().into());
         }
-        if ui.button("Browse...").clicked() {
+        if widgets::push_button(ui, "Browse...").clicked() {
             if let Some(p) = rfd::FileDialog::new().add_filter("Programs", &["exe"]).pick_file() {
                 d.audio_editor = Some(p);
             }
         }
     });
     ui.add_space(8.0);
-    ui.checkbox(&mut d.loudness.open_editor, "Open editor when new loudness log is generated");
+    widgets::checkbox(ui, &mut d.loudness.open_editor, "Open editor when new loudness log is generated");
     ui.add_space(8.0);
     ui.label(format!("Milan Pro has no other settings on this page ({}).", Later("R49").phrase()));
 }
@@ -166,9 +206,9 @@ fn audio(ui: &mut Ui, d: &mut Prefs) {
 fn video(ui: &mut Ui, d: &mut Prefs) {
     // VEGAS creates proxies for 4K video automatically; Milan Pro makes that opt-in (off by default, per the plan),
     // besides Project Media › Create Video Proxy.
-    ui.checkbox(&mut d.auto_proxy, "Automatically create video proxies for 4K, HEVC and AV1 media on import");
+    widgets::checkbox(ui, &mut d.auto_proxy, "Automatically create video proxies for 4K, HEVC and AV1 media on import");
     // Milan Pro's own, off by default: compositing modes VEGAS does not have.
-    ui.checkbox(&mut d.extra_blend_modes, "Offer extra blend modes (Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color, Luminosity)")
+    widgets::checkbox(ui, &mut d.extra_blend_modes, "Offer extra blend modes (Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color, Luminosity)")
         .on_hover_text("Not VEGAS modes: a project using them looks different in VEGAS");
     // R21a: VEGAS's "GPU acceleration of video processing": Off or an adapter (Milan Pro adds Automatic, the default).
     use crate::engine::gpu;
@@ -205,7 +245,7 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
 fn preview_device(ui: &mut Ui, d: &mut Prefs, monitors: &[crate::ui::monitors::Monitor]) {
     const W: f32 = 230.0;
     super::row(ui, "Device:", 110.0, true, |ui| {
-        ComboBox::from_id_salt("ppd_device").width(W).selected_text("Windows Graphics Card").show_ui(ui, |ui| {
+        widgets::combo(ui, "ppd_device", W, "Windows Graphics Card", |ui| {
             let _ = ui.selectable_label(true, "Windows Graphics Card");
             ui.add_enabled(false, SelectableLabel::new(false, "IEEE 1394/OHCI Compatible Device")).on_disabled_hover_text(NotPlanned("R59").text());
         });
@@ -215,7 +255,7 @@ fn preview_device(ui: &mut Ui, d: &mut Prefs, monitors: &[crate::ui::monitors::M
     let auto = "Automatic (the first secondary display)";
     let shown = d.ext_display.as_deref().map_or(auto.to_string(), |n| monitors.iter().find(|m| m.name == n).map_or(format!("{n} (not connected)"), |m| m.label()));
     super::row(ui, "Display adapter:", 110.0, true, |ui| {
-        ComboBox::from_id_salt("ppd_display").width(W).selected_text(shown).show_ui(ui, |ui| {
+        widgets::combo(ui, "ppd_display", W, shown, |ui| {
             ui.selectable_value(&mut d.ext_display, None, auto);
             for m in monitors {
                 ui.selectable_value(&mut d.ext_display, Some(m.name.clone()), m.label());
@@ -225,17 +265,17 @@ fn preview_device(ui: &mut Ui, d: &mut Prefs, monitors: &[crate::ui::monitors::M
     if monitors.is_empty() {
         ui.label("No displays were found.");
     }
-    ui.add_enabled(false, Button::new("Identify Displays")).on_disabled_hover_text(Later("R49").text());
+    widgets::push_button_enabled(ui, false, "Identify Displays").on_disabled_hover_text(Later("R49").text());
     ui.add_space(6.0);
-    ui.checkbox(&mut d.ext_fit, "Scale output to fit display").on_hover_text("Off: one project pixel per display pixel, centred");
+    widgets::checkbox(ui, &mut d.ext_fit, "Scale output to fit display").on_hover_text("Off: one project pixel per display pixel, centred");
     let r49 = Later("R49").text();
-    ui.add_enabled(false, Checkbox::new(&mut false, "Apply deinterlace filter")).on_disabled_hover_text(&r49);
-    ui.add_enabled(false, Checkbox::new(&mut false, "Adjust levels from studio RGB to computer RGB")).on_disabled_hover_text(&r49);
-    ui.add_enabled(false, Checkbox::new(&mut true, "Wait for vertical sync")).on_disabled_hover_text(ALWAYS_ON.text());
-    ui.add_enabled(false, Checkbox::new(&mut true, "Optimize GPU display performance")).on_disabled_hover_text(ALWAYS_ON.text());
-    ui.add_enabled(false, Checkbox::new(&mut false, "Recompress edited frames")).on_disabled_hover_text(NotPlanned("R59").text());
-    ui.checkbox(&mut d.ext_in_window, "Display frames in Video Preview window during playback");
-    ui.checkbox(&mut d.ext_rotate, "Use project output rotation setting");
+    widgets::checkbox_enabled(ui, false, &mut false, "Apply deinterlace filter").on_disabled_hover_text(&r49);
+    widgets::checkbox_enabled(ui, false, &mut false, "Adjust levels from studio RGB to computer RGB").on_disabled_hover_text(&r49);
+    widgets::checkbox_enabled(ui, false, &mut true, "Wait for vertical sync").on_disabled_hover_text(ALWAYS_ON.text());
+    widgets::checkbox_enabled(ui, false, &mut true, "Optimize GPU display performance").on_disabled_hover_text(ALWAYS_ON.text());
+    widgets::checkbox_enabled(ui, false, &mut false, "Recompress edited frames").on_disabled_hover_text(NotPlanned("R59").text());
+    widgets::checkbox(ui, &mut d.ext_in_window, "Display frames in Video Preview window during playback");
+    widgets::checkbox(ui, &mut d.ext_rotate, "Use project output rotation setting");
     if default_all(ui) {
         (d.ext_display, d.ext_fit, d.ext_in_window, d.ext_rotate) = (None, false, true, true);
     }
@@ -259,7 +299,7 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
     use crate::audio::DeviceType;
     const DEFAULT: &str = "Windows default device";
     super::row(ui, "Audio device type:", LABEL_W, true, |ui| {
-        ComboBox::from_id_salt("pad_type").width(COMBO_W).selected_text(d.device_type.name()).show_ui(ui, |ui| {
+        widgets::combo(ui, "pad_type", COMBO_W, d.device_type.name(), |ui| {
             for k in DeviceType::ALL {
                 if !cfg!(windows) && k == DeviceType::Exclusive {
                     continue;
@@ -275,13 +315,13 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
     let mapper = d.device_type == DeviceType::SoundMapper;
     super::row(ui, "Default stereo and front playback device:", LABEL_W, !mapper, |ui| {
         if mapper {
-            ui.add_enabled_ui(false, |ui| ComboBox::from_id_salt("pad_out").width(COMBO_W).selected_text("Microsoft Sound Mapper").show_ui(ui, |_| {}).response)
+            ui.add_enabled_ui(false, |ui| widgets::combo(ui, "pad_out", COMBO_W, "Microsoft Sound Mapper", |_| {}).response)
                 .inner
                 .on_disabled_hover_text(Fixed("the Microsoft Sound Mapper plays on the Windows default device").text());
             return;
         }
         let shown = d.playback_device.clone().unwrap_or_else(|| DEFAULT.into());
-        ComboBox::from_id_salt("pad_out").width(COMBO_W).selected_text(shown).show_ui(ui, |ui| {
+        widgets::combo(ui, "pad_out", COMBO_W, shown, |ui| {
             ui.selectable_value(&mut d.playback_device, None, DEFAULT);
             for n in outputs {
                 ui.selectable_value(&mut d.playback_device, Some(n.clone()), n.as_str());
@@ -291,10 +331,7 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
     super::row(ui, "Default rear playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_rear", "None", COMBO_W, Later("R10a")));
     super::row(ui, "Default center and LFE playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_lfe", "None", COMBO_W, Later("R10a")));
     super::row(ui, "Buffer size:", LABEL_W, true, |ui| {
-        ComboBox::from_id_salt("pad_buf")
-            .width(COMBO_W)
-            .selected_text(buffer_text(d.buffer_frames))
-            .show_ui(ui, |ui| {
+        widgets::combo(ui, "pad_buf", COMBO_W, buffer_text(d.buffer_frames), |ui| {
                 for n in BUFFERS {
                     ui.selectable_value(&mut d.buffer_frames, n, buffer_text(n));
                 }
@@ -304,7 +341,7 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
     });
     super::row(ui, "Default audio recording device:", LABEL_W, true, |ui| {
         let shown = d.record_input.clone().unwrap_or_else(|| DEFAULT.into());
-        ComboBox::from_id_salt("pad_rec").width(COMBO_W).selected_text(shown).show_ui(ui, |ui| {
+        widgets::combo(ui, "pad_rec", COMBO_W, shown, |ui| {
             ui.selectable_value(&mut d.record_input, None, DEFAULT);
             for n in inputs {
                 ui.selectable_value(&mut d.record_input, Some(n.clone()), n.as_str());
@@ -312,7 +349,7 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
         });
     });
     super::row(ui, "Recording latency offset (ms):", LABEL_W, true, |ui| {
-        ui.add(DragValue::new(&mut d.record_offset_ms).range(-1000.0..=1000.0).speed(0.5).fixed_decimals(1))
+        widgets::spin(ui, &mut d.record_offset_ms, 0.5, |d| d.range(-1000.0..=1000.0).speed(0.5).fixed_decimals(1))
             .on_hover_text("Recorded events are placed this much earlier, to line up with what was playing")
     });
     if inputs.is_empty() {
@@ -333,15 +370,15 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
 fn editing(ui: &mut Ui, d: &mut Prefs) {
     ui.horizontal(|ui| {
         ui.label("New still image length (seconds):");
-        ui.add(DragValue::new(&mut d.still_len).range(0.1..=3600.0).speed(0.1).fixed_decimals(3));
+        widgets::spin(ui, &mut d.still_len, 0.1, |d| d.range(0.1..=3600.0).speed(0.1).fixed_decimals(3));
     });
     ui.horizontal(|ui| {
         ui.label("Cut-to-overlap conversion (seconds):").on_hover_text("The crossfade a transition dropped on a cut makes, centred on the cut");
-        ui.add(DragValue::new(&mut d.cut_overlap).range(0.0..=60.0).speed(0.05).fixed_decimals(3));
+        widgets::spin(ui, &mut d.cut_overlap, 0.05, |d| d.range(0.0..=60.0).speed(0.05).fixed_decimals(3));
     });
     ui.horizontal(|ui| {
         ui.label("Cursor preview duration (seconds):").on_hover_text("What Preview at Cursor (Num 0, Ctrl+Shift+Space) plays, centred on the cursor");
-        ui.add(DragValue::new(&mut d.cursor_preview).range(0.1..=60.0).speed(0.1).fixed_decimals(3));
+        widgets::spin(ui, &mut d.cursor_preview, 0.1, |d| d.range(0.1..=60.0).speed(0.1).fixed_decimals(3));
     });
     if default_all(ui) {
         (d.still_len, d.cut_overlap, d.cursor_preview) = (5.0, 1.0, 3.0);
@@ -367,7 +404,7 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
 
     super::group(ui, "Track Colors");
     let changed = super::row(ui, "      Track:", 120.0, true, |ui| {
-        ComboBox::from_id_salt("pref_track").width(200.0).selected_text(COLOR_NAMES[*track]).show_ui(ui, |ui| {
+        widgets::combo(ui, "pref_track", 200.0, COLOR_NAMES[*track], |ui| {
             for (k, n) in COLOR_NAMES.iter().enumerate() {
                 ui.selectable_value(track, k, *n);
             }
@@ -392,17 +429,20 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
     ui.add_space(4.0);
     super::row(ui, "Icon color strength:", 120.0, false, |ui| {
         let mut v = 75.0_f32;
-        ui.add(Slider::new(&mut v, 0.0..=100.0).show_value(false)).on_disabled_hover_text(&r49);
+        widgets::slider(ui, &mut v, 0.0..=100.0, widgets::Slide { no_value: true, ..Default::default() }).on_disabled_hover_text(&r49);
         ui.label("75 %");
     });
 
     // Milan Pro: which VEGAS generation the interface follows.
     super::group(ui, "Interface Look");
     ui.horizontal(|ui| {
-        for (look, label) in [(UiLook::Vegas16, "VEGAS 16"), (UiLook::Vegas23, "VEGAS 23")] {
-            if ui.radio(d.look.look == look, label).clicked() {
-                d.look = if look == UiLook::Vegas16 { LookChoice::VEGAS16 } else { LookChoice { look, variant: d.look.variant } };
+        for (look, label) in [(UiLook::Classic2006, "Classic 2006"), (UiLook::Vegas16, "VEGAS 16"), (UiLook::Vegas23, "VEGAS 23")] {
+            if widgets::radio(ui, d.look.look == look, label).clicked() {
+                // Only VEGAS 23 has interface types.
+                d.look = if look == UiLook::Vegas23 { LookChoice { look, variant: d.look.variant } } else { LookChoice { look, variant: Variant::Dark } };
             }
+            look_swatch(ui, look);
+            ui.add_space(6.0);
         }
     });
     super::group(ui, "Interface Type");
@@ -413,8 +453,8 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
         (Some(Variant::White), "White", d.look.look == UiLook::Vegas23),
     ] {
         let on = variant == Some(d.look.variant);
-        let why = if variant.is_some() { Fixed("the VEGAS 16 look has the Dark type only") } else { Later("R49") };
-        if ui.add_enabled(enabled, RadioButton::new(on, label)).on_disabled_hover_text(why.text()).clicked() {
+        let why = if variant.is_some() { Fixed("only the VEGAS 23 look has a White type") } else { Later("R49") };
+        if widgets::radio_enabled(ui, enabled, on, label).on_disabled_hover_text(why.text()).clicked() {
             if let Some(v) = variant {
                 d.look.variant = v;
             }
@@ -422,13 +462,13 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
     }
     ui.add_space(4.0);
     // The docking options (§4.3); VP23 dropped "Display timeline at bottom" (its Timeline Top layout does that).
-    ui.checkbox(&mut d.auto_hide_docks, "Automatically hide docking area");
+    widgets::checkbox(ui, &mut d.auto_hide_docks, "Automatically hide docking area");
     if v16 {
-        ui.checkbox(timeline_bottom, "Display timeline at bottom of main window");
+        widgets::checkbox(ui, timeline_bottom, "Display timeline at bottom of main window");
     }
-    ui.checkbox(&mut d.tabs_on_top, "Position tabs at top of docked windows");
+    widgets::checkbox(ui, &mut d.tabs_on_top, "Position tabs at top of docked windows");
     let mut float_dock = d.float_dock(d.look.look);
-    if ui.checkbox(&mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
+    if widgets::checkbox(ui, &mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
         d.float_dock = Some(float_dock);
     }
     if default_all(ui) {

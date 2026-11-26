@@ -4,6 +4,7 @@
 // shortcut: audio offers only Track FX (VEGAS also has Volume, Pan Type, Input monitor, Height and Automation mode);
 // add them if users ask.
 use eframe::egui::*;
+use crate::ui::widgets;
 
 pub struct DefaultTrackProps {
     /// The track the command was given on, and its kind.
@@ -29,11 +30,11 @@ impl DefaultTrackProps {
             ui.label(format!("Save these properties of the selected track as the default for new {} tracks:", if video { "video" } else { "audio" }));
             ui.add_space(4.0);
             if video {
-                ui.add_enabled(!*restore, Checkbox::new(height, "Height"));
-                ui.add_enabled(!*restore, Checkbox::new(composite, "Composite Mode"));
+                widgets::checkbox_enabled(ui, !*restore, height, "Height");
+                widgets::checkbox_enabled(ui, !*restore, composite, "Composite Mode");
             }
-            ui.add_enabled(!*restore, Checkbox::new(fx, "Track FX"));
-            ui.checkbox(restore, "Restore original defaults");
+            widgets::checkbox_enabled(ui, !*restore, fx, "Track FX");
+            widgets::checkbox(ui, restore, "Restore original defaults");
             ui.add_space(8.0);
             let any = *restore || *fx || (video && (*height || *composite));
             super::button_row(ui, &[("OK", any), ("Cancel", true)])

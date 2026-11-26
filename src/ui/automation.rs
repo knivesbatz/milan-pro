@@ -6,6 +6,7 @@
 //! UI-thread edits; the mix hears them through its plan swap, as any edit while playing.
 //! Also the FX Automation chooser (FX Automation Envelopes...).
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::edit;
 use crate::history::History;
 use crate::project::{AutoMode, EnvKind, Envelope, Project};
@@ -257,7 +258,7 @@ pub fn chooser(ctx: &Context, project: &mut Project, history: &mut History) {
                     section = if p.section.is_empty() { section } else { p.section };
                     let mut on = f.auto.contains_key(p.key);
                     let label = if section.is_empty() { p.name.to_string() } else { format!("{section}: {}", p.name) };
-                    if ui.checkbox(&mut on, label).changed() {
+                    if widgets::checkbox(ui, &mut on, label).changed() {
                         toggle = Some((f.id.clone(), p.key.to_string()));
                     }
                 }

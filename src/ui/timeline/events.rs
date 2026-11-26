@@ -82,9 +82,9 @@ fn mul(c: Color32, k: f32) -> Color32 {
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
-/// VP16 header bar height: 22 px, 16 px under 40 px events, none under 24 px.
+/// Header bar height (VP16 22 px, Classic 2006 16 px): 16 px under 40 px events, none under 24 px. VP23 has none.
 fn header_h(t: &Theme, h: f32) -> f32 {
-    if t.look() != UiLook::Vegas16 {
+    if t.look() == UiLook::Vegas23 {
         0.0
     } else if h >= 40.0 {
         t.m.event_header_h
@@ -104,7 +104,9 @@ pub(super) fn paint_event(
     wave: Option<&[Vec<f32>]>,
     thumb: &mut dyn FnMut(f64) -> Option<TextureId>,
 ) {
-    let v16 = t.look() == UiLook::Vegas16;
+    // Header-bar looks (VP16, Classic 2006) against VP23's label-and-chips.
+    let v16 = t.look() != UiLook::Vegas23;
+    let classic = t.classic();
     let r = ev.rect;
     let vis = r.intersect(p.clip_rect());
     if vis.width() <= 0.0 || vis.height() <= 0.0 {
@@ -118,7 +120,8 @@ pub(super) fn paint_event(
     if ev.is_video {
         paint_filmstrip(p, ev, v16, if v16 { body } else { r }, thumb);
     } else if let Some(chans) = wave {
-        let ink = if v16 { ev.color.lerp_to_gamma(Color32::WHITE, 0.55) } else { ev.color };
+        // Classic 2006 draws the waveform dark on the pastel event (Vegas 6); VP16 pale on the track colour.
+        let ink = if classic { mul(ev.color, 0.45) } else if v16 { ev.color.lerp_to_gamma(Color32::WHITE, 0.55) } else { ev.color };
         // One lane per channel, stacked, each around its own centre line.
         let area = body.shrink2(vec2(0.0, 2.0));
         let lane_h = area.height() / chans.len() as f32;
@@ -229,7 +232,7 @@ fn paint_hatch(p: &Painter, r: Rect, ink: Color32) {
 
 /// Width of one filmstrip frame in an event `h` px tall (`paint_filmstrip`'s cell).
 pub(super) fn thumb_w(t: &Theme, h: f32, aspect: f32) -> f32 {
-    let area_h = if t.look() == UiLook::Vegas16 { h - header_h(t, h) } else { h };
+    let area_h = if t.look() != UiLook::Vegas23 { h - header_h(t, h) } else { h };
     ((area_h - 1.0) * aspect).round().max(4.0)
 }
 
@@ -307,7 +310,7 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
 /// Fade curves (in their Fade Type shape) from the bottom corners up to the top at the fade lengths; the area above
 /// the curve is darkened. VP16: 1 px blue (white when selected); VP23: 2 px white.
 fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
-    let v16 = t.look() == UiLook::Vegas16;
+    let v16 = t.look() != UiLook::Vegas23;
     let curve = if v16 && !ev.selected { t.fade_curve } else if v16 { t.fade_curve_selected } else { t.fade_curve };
     let stroke = Stroke::new(if v16 { 1.0_f32 } else { 2.0_f32 }, curve);
     let fades = [(ev.clip.fade_in, false, ev.clip.fade_in_curve), (ev.clip.fade_out, true, ev.clip.fade_out_curve)];
@@ -352,7 +355,7 @@ pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool, generated: bool) -> Ve
     if generated {
         icons.push(Icon::GeneratedMedia);
     }
-    if t.look() == UiLook::Vegas16 {
+    if t.look() != UiLook::Vegas23 {
         let hh = header_h(t, r.height());
         let bar = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh));
         icons.truncate(if hh >= 16.0 { ((bar.width() - 28.0) / 18.0).floor().max(0.0) as usize } else { 0 });
@@ -371,13 +374,29 @@ pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool, generated: bool) -> Ve
 fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
     let icons = buttons(t, ev.rect, ev.is_video, ev.generated);
     let pi = p.with_clip_rect(bar.intersect(p.clip_rect()));
+    if t.classic() {
+        // Gradient header: the track colour lit towards white at the top, a darker rule under it (Vegas 6).
+        let vis = bar.intersect(p.clip_rect());
+        let (top, bottom) = (ev.color.lerp_to_gamma(Color32::WHITE, 0.55), ev.color.lerp_to_gamma(Color32::WHITE, 0.1));
+        let mut mesh = Mesh::default();
+        for (y, c) in [(bar.min.y, top), (bar.max.y, bottom)] {
+            mesh.colored_vertex(pos2(vis.min.x, y), c);
+            mesh.colored_vertex(pos2(vis.max.x, y), c);
+        }
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(1, 3, 2);
+        pi.add(mesh);
+        pi.rect_filled(Rect::from_x_y_ranges(bar.x_range(), Rangef::new(bar.max.y - 1.0, bar.max.y)), 0.0, mul(ev.color, 0.6));
+    }
     for (icon, r) in &icons {
         paint_icon(&pi, *r, *icon, t.look(), None);
         fx_dot(&pi, t, ev, *icon, *r);
     }
     let name_w = bar.max.x - 2.0 - 18.0 * icons.len() as f32 - bar.min.x - 6.0;
     if name_w > 8.0 {
-        paint_name(&pi, ev, pos2(bar.min.x + 4.0, bar.center().y), name_w, t.font(t.font.event_name), t.event_text);
+        // Classic 2006: black Tahoma on the light gradient.
+        let ink = if t.classic() { t.text } else { t.event_text };
+        paint_name(&pi, ev, pos2(bar.min.x + 4.0, bar.center().y), name_w, t.font(t.font.event_name), ink);
     }
 }
 
@@ -425,15 +444,23 @@ fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
         }
     }
     for (icon, c) in buttons(t, r, ev.is_video, ev.generated) {
-        pr.rect_filled(c, CornerRadius::same(2), t.event_chip_bg);
+        pr.rect_filled(c, t.radius(2), t.event_chip_bg);
         paint_icon(&pr, c.shrink(2.0), icon, t.look(), Some(t.text_bright));
         fx_dot(&pr, t, ev, icon, c);
     }
 }
 
-/// The fx button's accent dot while the event has FX.
+/// The fx button's accent dot while the event has FX; a red "!" badge (every look) when one of its OFX plug-ins is
+/// bypassed (R32: failed, crashed, turned off or missing; the FX window says why).
 fn fx_dot(p: &Painter, t: &Theme, ev: &Ev, icon: Icon, r: Rect) {
-    if icon == Icon::TrackFx && !ev.clip.fx.is_empty() {
+    if icon != Icon::TrackFx || ev.clip.fx.is_empty() {
+        return;
+    }
+    if ev.clip.fx.iter().any(|f| f.enabled && crate::engine::ofx::is_bypassed(&f.plugin)) {
+        let b = Rect::from_center_size(r.right_top() + vec2(-4.0, 4.0), vec2(9.0, 9.0));
+        p.rect_filled(b, 2.0, Color32::from_rgb(200, 32, 32));
+        p.text(b.center(), Align2::CENTER_CENTER, "!", FontId::proportional(8.0), Color32::WHITE);
+    } else {
         p.circle_filled(r.right_top() + vec2(-2.5, 2.5), 2.5, t.accent);
     }
 }
@@ -445,7 +472,7 @@ fn paint_handles(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     let xi = (area.min.x + (ev.clip.fade_in * ev.pps) as f32).min(r.max.x);
     let xo = (area.max.x - (ev.clip.fade_out * ev.pps) as f32).max(r.min.x);
-    if t.look() == UiLook::Vegas16 {
+    if t.look() != UiLook::Vegas23 {
         let arc = |c: Pos2, a0: f32, a1: f32| {
             let pts: Vec<Pos2> = (0..=8).map(|i| {
                 let a = (a0 + (a1 - a0) * i as f32 / 8.0).to_radians();
@@ -480,7 +507,7 @@ fn paint_level(p: &Painter, t: &Theme, ev: &Ev) {
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     pr.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, t.fade_handle);
     if ev.hovered && r.width() >= 40.0 {
-        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), CornerRadius::same(2), t.fade_handle);
+        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), t.radius(2), t.fade_handle);
     }
 }
 
