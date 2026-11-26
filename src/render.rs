@@ -769,11 +769,40 @@ pub struct Opts {
     /// R10a: Enable multichannel mapping (a stereo project into a 5.1 / 7.1 template): the master on channels 1 and 2,
     /// then each bus that goes to the master on the next pair.
     pub multichannel: bool,
+    /// R39: subtitles from the Titles & Text events of video track `subs_track`: also a sidecar file or an embedded
+    /// soft subtitle stream (`SubsOut`); with `subs_burn` off the track is left out of the picture.
+    pub subs: SubsOut,
+    pub subs_track: u16,
+    pub subs_burn: bool,
+}
+
+/// R39: Render As › Subtitles: burned in only (the events are video: VEGAS's way), or also as an SRT or WebVTT file
+/// beside the render, or embedded as a soft subtitle stream (MP4 / MOV `mov_text`, MKV SubRip, WebM WebVTT).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubsOut {
+    #[default]
+    BurnedIn,
+    Srt,
+    Vtt,
+    Embedded,
+}
+
+impl SubsOut {
+    pub const ALL: [SubsOut; 4] = [SubsOut::BurnedIn, SubsOut::Srt, SubsOut::Vtt, SubsOut::Embedded];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SubsOut::BurnedIn => "Burned in only (the events)",
+            SubsOut::Srt => "Also an SRT file beside the render",
+            SubsOut::Vtt => "Also a WebVTT file beside the render",
+            SubsOut::Embedded => "Also a soft subtitle stream in the file",
+        }
+    }
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { quickfade: true, stretch: false, rotate: true, markers: false, loudness_log: None, multichannel: false }
+        Self { quickfade: true, stretch: false, rotate: true, markers: false, loudness_log: None, multichannel: false, subs: SubsOut::BurnedIn, subs_track: 0, subs_burn: true }
     }
 }
 

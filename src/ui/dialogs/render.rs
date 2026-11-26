@@ -288,6 +288,39 @@ impl RenderDialog {
         widgets::checkbox_enabled(ui, stems && wide, &mut self.opts.multichannel, "Enable multichannel mapping")
             .on_hover_text("The master on channels 1 and 2, then each bus that goes to the master on the next pair (Bus A on 3 and 4, Bus B on 5 and 6, ...), as far as the format has channels.")
             .on_disabled_hover_text("Needs a stereo project with busses and a 5.1 or 7.1 template; a surround project renders its channels as they are.");
+        // R39: subtitles from a track's Titles & Text events: burned in (they are video), or also as a file or a stream.
+        let tracks = crate::interchange::subtitles::text_tracks(project);
+        if !tracks.is_empty() && self.chosen.video.is_some() {
+            if !tracks.iter().any(|t| t.0 == self.opts.subs_track as usize) {
+                self.opts.subs_track = tracks[0].0 as u16;
+            }
+            let embeddable = crate::interchange::subtitles::embed_codec(self.chosen.ext()).is_some();
+            if self.opts.subs == crate::render::SubsOut::Embedded && !embeddable {
+                self.opts.subs = crate::render::SubsOut::BurnedIn;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Subtitles:");
+                let cur = self.opts.subs;
+                widgets::combo(ui, "render_subs", 250.0, cur.name(), |ui| {
+                    for s in crate::render::SubsOut::ALL {
+                        let ok = s != crate::render::SubsOut::Embedded || embeddable;
+                        ui.add_enabled_ui(ok, |ui| ui.selectable_value(&mut self.opts.subs, s, s.name()))
+                            .response
+                            .on_disabled_hover_text("MP4, MOV, MKV and WebM hold a subtitle stream; this format does not.");
+                    }
+                });
+                let name = |k: u16| tracks.iter().find(|t| t.0 == k as usize).map_or(String::new(), |t| t.1.clone());
+                widgets::combo(ui, "render_subs_track", 170.0, name(self.opts.subs_track), |ui| {
+                    for (i, n) in &tracks {
+                        ui.selectable_value(&mut self.opts.subs_track, *i as u16, n);
+                    }
+                })
+                .response
+                .on_hover_text("The track whose Titles & Text events are the subtitles");
+            });
+            widgets::checkbox_enabled(ui, self.opts.subs != crate::render::SubsOut::BurnedIn, &mut self.opts.subs_burn, "Burn the subtitles into the picture")
+                .on_hover_text("Off: the subtitle track is left out of the picture, so they are only in the file or stream");
+        }
         *changed |= ui
             .checkbox(&mut prefs.render_background, "Render in the background (keep editing; progress in the status bar)")
             .on_hover_text("Renders a copy of the project as it is when Render is clicked: later edits do not change the file.")

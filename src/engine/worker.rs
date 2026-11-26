@@ -1458,7 +1458,7 @@ pub(crate) mod tests {
         let hash = plan::range_hash(&vp, 60, 120);
         let file = folder.join(format!("{hash:016x}.{}", t.ext()));
         std::fs::create_dir_all(&folder).unwrap();
-        let job = crate::engine::render::start(&p, &t, file.clone(), (2.0, 4.0), crate::render::Opts { stretch: false, rotate: false, markers: false, loudness_log: None, quickfade: false, multichannel: false }, egui::Context::default());
+        let job = crate::engine::render::start(&p, &t, file.clone(), (2.0, 4.0), crate::render::Opts { stretch: false, rotate: false, markers: false, loudness_log: None, quickfade: false, multichannel: false, ..crate::render::Opts::default() }, egui::Context::default());
         while job.status() == crate::render::Status::Running {
             std::thread::sleep(Duration::from_millis(20));
         }

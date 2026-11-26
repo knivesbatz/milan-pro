@@ -148,6 +148,9 @@ pub struct CmdState {
     pub pair: Option<u32>,
     pub pairs: u32,
     pub audio_streams: u32,
+    /// R39: a video track holds Titles & Text events (Export › Subtitles); the project has a named region.
+    pub subtitle_tracks: bool,
+    pub named_regions: bool,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
     /// Options › Audio Follows Video Velocity (the project's).
@@ -301,6 +304,10 @@ impl CmdState {
             InsertTime | ResizeGenerated => true,
             // R10b: on the focus audio track, or the first.
             SurroundPanner => self.any_tracks,
+            // R39.
+            InsertSubtitles => true,
+            InsertSubtitlesRegions => self.named_regions,
+            ExportSubtitles => self.subtitle_tracks,
             Window(p) | ShowWindow(p) => p.in_look(self.look),
             _ => false,
         }
@@ -667,8 +674,11 @@ const IMPORT: &[M] = &[
     X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
     X("&EDL Text File (*.txt)...", Later("R28")),
     X("&Broadcast Wave Format...", NotPlanned("R57")),
-    X("&Closed Captioning...", Later("R39")),
+    X("&Closed Captioning...", CAPTIONS),
 ];
+
+/// R39: CEA-608/708 is not supported.
+const CAPTIONS: Why = Fixed("not supported: FFmpeg has no CEA-608/708 encoder and reads captions only from a video stream's side data, which the decode does not keep; use Insert › Subtitles from File");
 
 const AAF: Why = Fixed("not feasible: no Rust AAF library (OTIO route in batch R29)");
 
@@ -679,6 +689,8 @@ const EXPORT: &[M] = &[
     X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
     X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
     X("&EDL Text File (*.txt)...", Later("R28")),
+    S,
+    C("&Subtitles (*.srt, *.vtt)...", ExportSubtitles),
 ];
 
 pub const FILE: &[M] = &[
@@ -1004,8 +1016,8 @@ pub const INSERT: &[M] = &[
     V23(&C("Adjustment Event", InsertAdjustmentEvent)),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
     V23(&C("&Slideshow...", InsertSlideshow)),
-    V23(&X("Insert Subtitles from Files...", Later("R39"))),
-    V23(&X("Insert Subtitles from Regions...", Later("R39"))),
+    C("S&ubtitles from File...", InsertSubtitles),
+    C("Subtitles from Re&gions", InsertSubtitlesRegions),
     S,
     C("Audio Tra&nsition...", InsertAudioTransition),
     S,
@@ -2068,6 +2080,8 @@ mod tests {
             rollback: true,
             audio_streams: 3,
             pairs: 3,
+            subtitle_tracks: true,
+            named_regions: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

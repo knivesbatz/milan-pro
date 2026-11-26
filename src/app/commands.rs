@@ -57,6 +57,8 @@ impl MeridianApp {
             || self.expand_ask.is_some()
             || self.command_props.is_some()
             || self.slideshow.is_some()
+            || self.subs_import.is_some()
+            || self.subs_export.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
             || self.archive.is_some()
@@ -147,6 +149,8 @@ impl MeridianApp {
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
             pair: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| c.pair),
             pairs: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map_or(0, |c| edit::channel_pairs(&self.project, c)),
+            subtitle_tracks: !crate::interchange::subtitles::text_tracks(&self.project).is_empty(),
+            named_regions: self.project.timeline.regions.iter().any(|r| r.end > r.start && !r.name.trim().is_empty()),
             audio_streams: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| edit::media_of(&self.project, c)).map_or(0, |m| m.audio_streams),
             quickfade: self.prefs.quickfade,
             audio_follows_velocity: tl.audio_follows_velocity,
@@ -369,6 +373,49 @@ impl MeridianApp {
     /// R18b: Insert › Slideshow (Create: the pictures are imported, then laid out as one undo step) and Insert › Audio
     /// Transition (OK: the cut, crossfade or edge at the cursor on each audio track with a selected event, else each
     /// selected audio track; one undo step).
+    /// R39: Insert › Subtitles from File (Insert: the cues as Titles & Text events, one undo step) and File › Export ›
+    /// Subtitles (Export...: a file name, then the track's events as SRT or WebVTT).
+    fn show_subtitles(&mut self, ctx: &egui::Context) {
+        use crate::interchange::subtitles;
+        let s = self.project.settings.clone();
+        let tracks: Vec<String> = self.project.timeline.video_tracks.iter().enumerate().map(|(i, t)| if t.name.is_empty() { format!("Track {}", i + 1) } else { format!("Track {}: {}", i + 1, t.name) }).collect();
+        if let Some(ok) = self.subs_import.as_mut().and_then(|d| d.show(ctx, &tracks, |t| s.ruler_time(t))) {
+            if let Some(d) = self.subs_import.take().filter(|_| ok) {
+                if let Some(Ok(subs)) = &d.subs {
+                    let at = if d.at_cursor { self.project.timeline.cursor_position } else { 0.0 };
+                    let mut n = 0;
+                    let mut err = None;
+                    self.edit(|p| match subtitles::insert(p, subs, d.target(), at, d.styles) {
+                        Ok(ids) => {
+                            n = ids.len();
+                            true
+                        }
+                        Err(e) => {
+                            err = Some(e);
+                            false
+                        }
+                    });
+                    self.message = Some(err.unwrap_or_else(|| format!("Inserted {n} subtitles as Titles & Text events")));
+                }
+            }
+        }
+        let offered = subtitles::text_tracks(&self.project);
+        if let Some(ok) = self.subs_export.as_mut().and_then(|d| d.show(ctx, &offered)) {
+            if let Some(d) = self.subs_export.take().filter(|_| ok) {
+                let Some(&(track, _)) = offered.get(d.track) else { return };
+                let name = format!("{}.{}", self.project.name, d.format.ext());
+                let filter = if d.format == subtitles::Format::Vtt { ("WebVTT", "vtt") } else { ("SubRip", "srt") };
+                if let Some(path) = rfd::FileDialog::new().add_filter(filter.0, &[filter.1]).set_file_name(name).save_file() {
+                    let cues = subtitles::cues_of(&self.project, track, (0.0, f64::INFINITY));
+                    self.message = Some(match std::fs::write(&path, subtitles::write(&cues, d.format)) {
+                        Ok(()) => format!("Exported {} subtitles to {}", cues.len(), path.display()),
+                        Err(e) => format!("Cannot write {}: {e}", path.display()),
+                    });
+                }
+            }
+        }
+    }
+
     fn show_r18b(&mut self, ctx: &egui::Context) {
         let s = self.project.settings.clone();
         if let Some(ok) = self.slideshow.as_mut().and_then(|d| d.show(ctx, |x| s.parse_ruler_len(x), |x| s.parse_ruler_time(x).is_some())) {
@@ -920,6 +967,22 @@ impl MeridianApp {
             }
             // R30
             ArchiveProject => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
+            // R39.
+            InsertSubtitles => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"]).pick_file() {
+                    self.subs_import = Some(dialogs::SubtitleImport::new(Some(path)));
+                }
+            }
+            InsertSubtitlesRegions => {
+                let subs = crate::interchange::subtitles::regions(&self.project);
+                let mut n = 0;
+                self.edit(|p| {
+                    n = crate::interchange::subtitles::insert(p, &subs, crate::interchange::subtitles::Target::NewTrack, 0.0, false).map_or(0, |ids| ids.len());
+                    n > 0
+                });
+                self.message = Some(format!("Inserted {n} subtitles from the regions"));
+            }
+            ExportSubtitles => self.subs_export = Some(dialogs::SubtitleExport::new()),
             ImportMediaFromProject => {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).pick_file() {
                     self.media_from = Some(dialogs::MediaFromProject::new(path));
@@ -2157,6 +2220,7 @@ impl MeridianApp {
         self.take_chooser = None;
         self.default_track = None;
         (self.slideshow, self.audio_transition) = (None, None);
+        (self.subs_import, self.subs_export) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
         (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
@@ -2347,6 +2411,7 @@ impl MeridianApp {
             }
         }
         self.show_r18b(ctx);
+        self.show_subtitles(ctx);
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_customize(ctx);
@@ -3035,6 +3100,12 @@ impl MeridianApp {
                 }
                 self.project.timeline.cursor_position = 3.0;
                 self.project.modified = false; // the harness closes without a save prompt
+            }
+            // R39 review: Insert Subtitles from File on an ASS file written beside the demo media.
+            "subtitles" => {
+                let path = crate::demo::media_dir().join("Milan Demo subtitles.ass");
+                let _ = std::fs::write(&path, crate::interchange::subtitles::DEMO_ASS);
+                self.subs_import = Some(dialogs::SubtitleImport::new(Some(path)));
             }
             "slideshow" => {
                 self.exec(ctx, InsertSlideshow);

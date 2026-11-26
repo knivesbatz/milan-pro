@@ -245,6 +245,9 @@ pub struct MeridianApp {
     command_props: Option<crate::ui::dialogs::CommandProps>,
     /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
     slideshow: Option<crate::ui::dialogs::Slideshow>,
+    /// R39: Insert › Subtitles from File and File › Export › Subtitles, open.
+    subs_import: Option<crate::ui::dialogs::SubtitleImport>,
+    subs_export: Option<crate::ui::dialogs::SubtitleExport>,
     audio_transition: Option<crate::ui::dialogs::AudioTransition>,
     /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
     /// crash-report offer, the diagnostic report and the roll-back offer.
@@ -580,6 +583,8 @@ impl MeridianApp {
             audio_edits: Default::default(),
             command_props: None,
             slideshow: None,
+            subs_import: None,
+            subs_export: None,
             archive: None,
             media_from: None,
             prerender: None,

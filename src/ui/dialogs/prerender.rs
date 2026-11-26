@@ -90,7 +90,7 @@ impl PrerenderDlg {
         let codec = prerender::codec_name(&t.resolved().0.video.as_ref().map_or(String::new(), |v| v.codec.clone()));
         let entry = Entry { file: file.clone(), a, b, fps: vp.fps, fps_str: vp.fps_str.clone(), w: vp.w, h: vp.h, hash, template: t.name.clone(), codec, made: crate::render::utc(std::time::SystemTime::now()) };
         let range = (crate::project::frame_time(a, vp.fps), crate::project::frame_time(b, vp.fps));
-        let opts = Opts { quickfade: prefs.quickfade, stretch: false, rotate: false, markers: false, loudness_log: None, multichannel: false };
+        let opts = Opts { quickfade: prefs.quickfade, stretch: false, rotate: false, markers: false, loudness_log: None, multichannel: false, ..Opts::default() };
         let job = crate::engine::render::start(project, &t, file, range, opts, ctx.clone());
         self.state = State::Running { job, at, entry };
     }

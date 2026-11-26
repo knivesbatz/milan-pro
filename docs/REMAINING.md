@@ -276,8 +276,8 @@ What matters most:
 | 7.51 | OpenEXR sequences | MISSING | → R38 |
 | 7.52 | Image sequences | MISSING | No sequence detection or `image2` demuxer use. → R38 |
 | 7.53 | Other production image formats (DPX, TGA, PSD, HDR, JPEG 2000) | PARTIAL | TGA and PSD are listed. DPX, JP2 and Radiance HDR are not in `IMAGE_EXTS`. → R38 |
-| 7.54 | Subtitles | MISSING | `-sn` everywhere. "Insert Subtitles from Files/Regions" is greyed (`menus.rs:718-719`). → R39 |
-| 7.55 | Closed captions | MISSING | "Import > Closed Captioning..." is greyed (`menus.rs:411`). → R39 |
+| 7.54 | Subtitles | DONE | R39 (`interchange/subtitles.rs`, `ui/dialogs/subtitles.rs`): Insert › Subtitles from File... reads SRT, WebVTT and ASS / SSA into Titles & Text events (the Subtitle preset, or the ASS styles: font, size, colours, outline, shadow, alignment, margins, `{\anN}`) on a new top track or a chosen one, at the file's times or from the cursor; Insert › Subtitles from Regions; File › Export › Subtitles... writes a track's Titles & Text events as SRT or WebVTT; Render As burns them in (they are video) and can also write an SRT / WebVTT file beside the render or embed a soft stream (`mov_text` in MP4 / MOV, SubRip in MKV, WebVTT in WebM), with the burn-in optional. Tests `srt_round_trip`, `webvtt_reads_and_writes`, `ass_imports_with_styles_mapped`, `srt_import_then_export_is_exact`, `subtitles_render_as_a_sidecar_and_a_soft_stream` (ignored, FFmpeg) |
+| 7.55 | Closed captions | NOT FEASIBLE | CEA-608/708: the bundled FFmpeg has no CEA-608/708 encoder, and its decoder finds them only in a video stream's side data (A53), which Milan Pro's decode does not keep. Import › Closed Captioning says so; captions are made as subtitles (7.54) and delivered as SRT / WebVTT sidecars or soft streams |
 | 7.56 | Alpha channels | DONE | `has_alpha` probe and premultiply (`media.rs:131`, `vdecode.rs`) |
 | 7.57 | High bit-depth footage | PARTIAL | Decodes, but the pipeline is 8-bit RGBA (`FEATURE_PLAN.md` 1.10). ProRes renders 10-bit from 8-bit. → R40b |
 | 7.58 | HDR media | MISSING | Transfer (PQ/HLG) and BT.2020 are not probed. HDR sources are converted as if SDR, which washes them out. That breaks the "never incorrectly interpret" rule. → R40a |
@@ -1889,6 +1889,15 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R39: Subtitles and closed captions (M-L)
 
+**Status: DONE**, closed captions NOT FEASIBLE (below). As VEGAS has it, a subtitle is a Titles & Text event: there is no subtitle track type.
+- `interchange/subtitles.rs` reads SubRip (.srt; `<i>`, `<b>`, `<u>`, `<font>` and `{\anN}` tags left out), WebVTT (.vtt; NOTE / STYLE / REGION blocks skipped, tags left out, entities decoded) and Advanced SubStation Alpha (.ass, .ssa: PlayRes, [V4+ Styles] / [V4 Styles], Dialogue lines; override blocks left out, \N line breaks), UTF-8 with or without a BOM (other bytes as Latin-1), and writes SRT and WebVTT. Times are kept to the millisecond, so SRT import → export is text- and time-exact.
+- Insert › Subtitles from File... (`ui/dialogs/subtitles.rs`): the file's cues listed, at the file's times or from the cursor, on a new "Subtitles" video track at the top or a chosen one; each cue is a Titles & Text event with media of its own, the Subtitle preset or (ASS, on by default) its style: font, size (of PlayResY), primary / outline / back colours, outline width, shadow, the numpad alignment and margins. Bold, italic, karaoke, drawings and per-character overrides are not drawn (Titles & Text has one font and style per event); an ASS opaque box (BorderStyle 3) is drawn as an outline.
+- Insert › Subtitles from Regions: each named region becomes a subtitle on a new track.
+- File › Export › Subtitles...: a track's Titles & Text events (muted ones left out) as SRT or WebVTT.
+- Render As › Subtitles: Burned in only (default: the events are video), or also an SRT / WebVTT file beside the render, or a soft subtitle stream (stream copy remux after the render: `mov_text` in MP4 / MOV, SubRip in MKV, WebVTT in WebM); "Burn the subtitles into the picture" can be turned off, which leaves the track out of the picture. Cues are clipped to the rendered range and counted from its start.
+- Closed captions are NOT FEASIBLE with the bundled FFmpeg: it has no CEA-608/708 encoder, and its decoder reads them only from a video stream's A53 side data, which Milan Pro's frame decode does not keep (`movie=...[out+subcc]` needs a lavfi source per file outside the decode path, and no test sample is available without downloading one). Import › Closed Captioning... says so.
+- Tests: `srt_round_trip`, `webvtt_reads_and_writes`, `ass_imports_with_styles_mapped`, `srt_import_then_export_is_exact` (pure); `subtitles_render_as_a_sidecar_and_a_soft_stream` (ignored, FFmpeg: an MP4 probes with a `mov_text` stream, an MKV with SubRip, the sidecar SRT equals the export).
+
 **Scope**
 - Import SRT, VTT and ASS (Insert > Subtitles from Files) as text events on a subtitle video track (`milan.gen.text` "Subtitle" preset) or as regions.
 - Insert Subtitles from Regions.
@@ -2253,7 +2262,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 | AAF (9.6) | No Rust AAF library; the AAF SDK is a large C++/COM structured-storage codebase | OTIO plus the external `otio-aaf-adapter` route documented in INTERCHANGE.md (R29) |
 | VST2 (10.11) | Steinberg no longer licenses the VST2 SDK | VST3 (R34) and CLAP (R35) hosting; stated in COMPATIBILITY.md (R55) |
 | RAW video (7.19) | R3D, BRAW and ARRIRAW decoders are proprietary SDKs, not redistributable with an MIT project; FFmpeg has none | Documented in FORMAT_SUPPORT.md; optional user-installed BRAW SDK study (R41) |
-| CEA-608/708 caption embedding (part of 7.55) | The bundled FFmpeg has no 608/708 encoder | Caption import (608 extraction) plus SCC/SRT sidecar export (R39) |
+| CEA-608/708 captions (7.55) | The bundled FFmpeg has no 608/708 encoder; its decoder reads them only from a video stream's A53 side data, which the decode does not keep | Subtitles as Titles & Text events with SRT / WebVTT export, sidecars and soft streams (R39, DONE) |
 | ACES/OpenColorIO pipeline (part of 7.57/7.58) | OCIO is C++ with no Rust port | LUT-based transforms plus a 16f pipeline (R40b) |
 | ASIO output (part of 12.19) | The ASIO SDK licence forbids redistribution | WASAPI exclusive low-latency path (R9, DONE: `wasapi.rs`); documented in `docs/COMPATIBILITY.md` |
 | Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | R46: minisign verification is built and waits on the maintainer's key pair (SECURITY.md); the Authenticode step is wired and waits on the certificate secrets |

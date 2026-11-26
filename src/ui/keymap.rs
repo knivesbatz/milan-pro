@@ -143,6 +143,8 @@ pub enum Command {
     /// R18b: Insert › Adjustment Event and Slideshow... (VEGAS 23), Audio Transition... and Time...; Tools › Scripting ›
     /// Resize Generated Media.
     InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated,
+    /// R39: Insert › Subtitles from File... / from Regions; File › Export › Subtitles....
+    InsertSubtitles, InsertSubtitlesRegions, ExportSubtitles,
 }
 
 use Command::*;

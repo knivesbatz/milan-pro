@@ -182,6 +182,18 @@ struct Log {
 /// whatever happens.
 fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, ctl: &Ctl) -> Result<(), String> {
     let (began, clock) = (std::time::SystemTime::now(), std::time::Instant::now());
+    // R39: soft subtitles only: the subtitle track is left out of the picture.
+    let soft = opts.subs != crate::render::SubsOut::BurnedIn && !opts.subs_burn;
+    let unburned;
+    let p = match p.timeline.video_tracks.get(opts.subs_track as usize).filter(|_| soft && t.video.is_some()) {
+        Some(_) => {
+            let mut q = p.clone();
+            q.timeline.video_tracks[opts.subs_track as usize].muted = true;
+            unburned = q;
+            &unburned
+        }
+        None => p,
+    };
     let (part, tmp, meta) = (partial(out), temp_file("f32"), temp_file("ffmeta"));
     ctl.set_temp(vec![part.clone(), tmp.clone(), meta.clone()]);
     let mut log = Log::default();
@@ -212,6 +224,8 @@ fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, 
         }
         (r, ..) => r,
     };
+    // R39: the subtitles beside the file or in it, counted from the start of the range.
+    let r = r.and_then(|()| subtitles_out(p, t, out, range, opts));
     let status = match &r {
         Ok(()) => "Done".to_string(),
         Err(_) if ctl.cancelled() => "Cancelled".to_string(),
@@ -221,6 +235,30 @@ fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, 
         ctl.set_log(path);
     }
     r
+}
+
+/// R39: Render As › Subtitles: the cues of `opts.subs_track` over `range` as an SRT / WebVTT file beside `out`, or
+/// embedded in it. Nothing for Burned in, an image sequence or a track without Titles & Text events.
+fn subtitles_out(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts) -> Result<(), String> {
+    use crate::interchange::subtitles::{self, Format};
+    use crate::render::SubsOut;
+    if opts.subs == SubsOut::BurnedIn || t.sequence() {
+        return Ok(());
+    }
+    let cues = subtitles::cues_of(p, opts.subs_track as usize, range);
+    if cues.is_empty() {
+        return Ok(());
+    }
+    let side = |f: Format| {
+        let path = out.with_extension(f.ext());
+        std::fs::write(&path, subtitles::write(&cues, f)).map_err(|e| format!("The render is done, but its subtitles {} could not be written: {e}", path.display()))
+    };
+    match opts.subs {
+        SubsOut::Srt => side(Format::Srt),
+        SubsOut::Vtt => side(Format::Vtt),
+        SubsOut::Embedded => subtitles::embed(out, &cues, "und"),
+        SubsOut::BurnedIn => Ok(()),
+    }
 }
 
 /// The first line of `ffmpeg -version`, asked once.
@@ -742,6 +780,52 @@ mod tests {
         let l: Vec<f32> = src.chunks_exact(2).map(|f| f[0]).collect();
         close(&fl, &l, "front-left pan point");
         assert!(pcm.chunks_exact(6).all(|f| f[1..].iter().all(|v| v.abs() < 1e-6)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored --test-threads=1 subtitles_render`
+    /// R39 acceptance: a track of subtitles (Titles & Text events from an SRT) renders burned in, and also as an SRT beside
+    /// the file (equal to File › Export › Subtitles over the range), as a `mov_text` stream in an MP4 and a SubRip stream
+    /// in an MKV.
+    #[test]
+    #[ignore]
+    fn subtitles_render_as_a_sidecar_and_a_soft_stream() {
+        use crate::interchange::subtitles::{self, Format, Target};
+        use crate::render::SubsOut;
+        let dir = r10_dir("subs");
+        let mut p = Project::new("subs");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 240, 30.0);
+        let srt = "1\n00:00:00,500 --> 00:00:01,250\nFirst line\n\n2\n00:00:01,500 --> 00:00:02,750\nSecond, two\nlines ✓\n\n";
+        let subs = subtitles::parse(srt, Format::Srt).unwrap();
+        subtitles::insert(&mut p, &subs, Target::NewTrack, 0.0, false).unwrap();
+        let find = |n: &str| BUILTIN.iter().find(|t| t.name == n).unwrap();
+        let run = |t: &str, name: &str, subs: SubsOut| {
+            let out = dir.join(name);
+            let opts = Opts { subs, subs_track: 0, ..Opts::default() };
+            let job = start(&p, find(t), out.clone(), (0.0, 3.0), opts, egui::Context::default());
+            assert_eq!(wait(&job), Status::Done, "{t}: {:?}", job.log().map(|l| std::fs::read_to_string(l).unwrap_or_default()));
+            out
+        };
+        let codec = |f: &Path| {
+            let mut cmd = crate::proc::ffprobe();
+            cmd.args(["-v", "error", "-select_streams", "s", "-show_entries", "stream=codec_name", "-of", "csv=p=0"]).arg(f);
+            String::from_utf8_lossy(&cmd.output().unwrap().stdout).trim().to_string()
+        };
+        let mp4 = run("MP4 H.264 (AAC)", "soft.mp4", SubsOut::Embedded);
+        assert_eq!(codec(&mp4), "mov_text");
+        assert!(crate::media::probe_media(&mp4).unwrap().width == Some(320), "still a video");
+        let mkv = run("FFV1 MKV archive", "soft.mkv", SubsOut::Embedded);
+        assert_eq!(codec(&mkv), "subrip");
+        let side = run("MP4 H.264 (AAC)", "side.mp4", SubsOut::Srt);
+        assert_eq!(codec(&side), "");
+        let written = std::fs::read_to_string(side.with_extension("srt")).unwrap();
+        assert_eq!(written, subtitles::write_srt(&subtitles::cues_of(&p, 0, (0.0, 3.0))));
+        assert_eq!(written, srt);
+        // The stream reads back as the same cues (FFmpeg's own SubRip out of the MKV).
+        let mut cmd = crate::proc::ffmpeg();
+        cmd.args(["-v", "error", "-i"]).arg(&mkv).args(["-map", "0:s:0", "-f", "srt", "-"]);
+        let back = subtitles::parse(&String::from_utf8_lossy(&cmd.output().unwrap().stdout), Format::Srt).unwrap();
+        assert_eq!(back.cues, subs.cues);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
