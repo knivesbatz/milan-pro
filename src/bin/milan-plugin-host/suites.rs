@@ -325,15 +325,16 @@ pub static PROPERTY_SUITE: OfxPropertySuiteV1 = OfxPropertySuiteV1 {
 
 // ---------------------------------------------------------------- effects, clips, parameters
 
-/// The picture being rendered, in shared memory: bottom row first (OFX's origin), RGBA.
+/// The pictures of the frame being rendered, in shared memory: bottom row first (OFX's origin), RGBA.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Frame {
     pub live: bool,
-    pub src: usize,
+    /// The inputs (Source; or SourceFrom and SourceTo); 0 = not there.
+    pub src: [usize; 2],
     pub dst: usize,
     pub w: u32,
     pub h: u32,
-    pub float: bool,
+    pub depth: crate::proto::Depth,
     pub scale: f64,
     pub par: f64,
     pub time: f64,
@@ -344,6 +345,16 @@ impl Frame {
     pub fn rod(&self) -> OfxRectD {
         let s = self.scale.max(1e-6);
         OfxRectD { x1: 0.0, y1: 0.0, x2: self.w as f64 * self.par / s, y2: self.h as f64 / s }
+    }
+
+    /// Where clip `name`'s pixels are (0: it has none in this frame).
+    pub fn data(&self, name: &str) -> usize {
+        match name {
+            "Output" => self.dst,
+            "Source" | "SourceFrom" => self.src[0],
+            "SourceTo" => self.src[1],
+            _ => 0,
+        }
     }
 }
 
@@ -534,18 +545,14 @@ unsafe extern "C" fn clip_get_image(c: OfxImageClipHandle, _t: OfxTime, _region:
     let f = *lock(&unsafe { &*(c.effect as *const Effect) }.frame);
     // shortcut: every time gives the frame being rendered (no temporal access: Milan Pro says so in its host
     // properties); fetch other frames when a plug-in needs them.
-    let data = match c.name.as_str() {
-        "Output" => f.dst,
-        "Source" => f.src,
-        _ => 0,
-    };
+    let data = f.data(&c.name);
     if !f.live || data == 0 {
         return kOfxStatFailed;
     }
-    let bpp = if f.float { 16 } else { 4 };
+    let bpp = f.depth.bpp();
     let p = Box::new(Props::default());
     p.s(kOfxPropType, kOfxTypeImage);
-    p.s(kOfxImageEffectPropPixelDepth, if f.float { kOfxBitDepthFloat } else { kOfxBitDepthByte });
+    p.st(kOfxImageEffectPropPixelDepth, f.depth.ofx());
     p.s(kOfxImageEffectPropComponents, kOfxImageComponentRGBA);
     p.s(kOfxImageEffectPropPreMultiplication, kOfxImagePreMultiplied);
     p.d(kOfxImageEffectPropRenderScale, &[f.scale, f.scale]);
@@ -799,8 +806,8 @@ unsafe fn set_value(h: OfxParamHandle, a: [u64; 4]) -> OfxStatus {
         }
         Class::None => return kOfxStatErrUnsupported,
     };
-    // shortcut: a plug-in's own change is kept in this host (not written back to the project) and does not call
-    // instanceChanged with kOfxChangePluginEdited; do both if a plug-in needs to see its own edits echoed.
+    // The host reports the change to Milan after the action (`Host::outcome`).
+    // shortcut: no instanceChanged with kOfxChangePluginEdited; add it if a plug-in needs to see its own edits echoed.
     *lock(&p.value) = new;
     kOfxStatOK
 }
@@ -1092,27 +1099,114 @@ pub fn log(s: String) {
     }
 }
 
-unsafe fn message_text(kind: *const c_char, id: *const c_char, fmt: *const c_char) -> String {
-    // shortcut: the printf format is logged as it is (its arguments are not formatted).
-    let t = |p| unsafe { name(p) }.unwrap_or("").to_string();
-    let (kind, id, fmt) = (t(kind), t(id), t(fmt));
-    format!("{}: {}{}", kind.trim_start_matches("OfxMessage"), if id.is_empty() { String::new() } else { format!("[{id}] ") }, fmt.chars().take(500).collect::<String>())
+/// `fmt` with its printf arguments, read from the variadic slots `a` (Win64: one 8-byte slot each, a double as its
+/// bits). Flags and widths are dropped; a precision applies to floats and strings; when the slots run out the rest of
+/// the format is kept as it is.
+unsafe fn format_c(fmt: &[u8], a: &[u64]) -> String {
+    let (mut out, mut i, mut next) = (Vec::new(), 0, 0);
+    // A width or precision: digits, or `*` (a slot). None when the slots ran out.
+    let number = |i: &mut usize, next: &mut usize| -> Option<Option<usize>> {
+        if fmt.get(*i) == Some(&b'*') {
+            *i += 1;
+            *next += 1;
+            return Some(Some(*a.get(*next - 1)? as u32 as usize));
+        }
+        let from = *i;
+        while fmt.get(*i).is_some_and(u8::is_ascii_digit) {
+            *i += 1;
+        }
+        Some(std::str::from_utf8(&fmt[from..*i]).ok().and_then(|s| s.parse().ok()))
+    };
+    while i < fmt.len() {
+        if fmt[i] != b'%' {
+            out.push(fmt[i]);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < fmt.len() && b"-+ #0".contains(&fmt[i]) {
+            i += 1;
+        }
+        let mut prec = None;
+        let mut ok = number(&mut i, &mut next).is_some();
+        if ok && fmt.get(i) == Some(&b'.') {
+            i += 1;
+            match number(&mut i, &mut next) {
+                Some(p) => prec = Some(p.unwrap_or(0)),
+                None => ok = false,
+            }
+        }
+        let from = i;
+        while i < fmt.len() && (b"hlLqjzt".contains(&fmt[i]) || fmt[i..].starts_with(b"I64")) {
+            i += if fmt[i] == b'I' { 3 } else { 1 };
+        }
+        let (long, wide) = (fmt[from..i].iter().any(|c| b"lLqjztI".contains(c)), fmt[from..i].contains(&b'l'));
+        let conv = fmt.get(i).copied();
+        if conv == Some(b'%') {
+            out.push(b'%');
+            i += 1;
+            continue;
+        }
+        let (Some(conv), true, Some(&v)) = (conv, ok, a.get(next)) else {
+            // No slot left (or a cut format): keep the rest as written.
+            i = start;
+            break;
+        };
+        (i, next) = (i + 1, next + 1);
+        let text = match conv {
+            b'd' | b'i' if long => (v as i64).to_string(),
+            b'd' | b'i' => (v as u32 as i32).to_string(),
+            b'u' if long => v.to_string(),
+            b'u' => (v as u32).to_string(),
+            b'x' => format!("{:x}", if long { v } else { v as u32 as u64 }),
+            b'X' => format!("{:X}", if long { v } else { v as u32 as u64 }),
+            b'c' => char::from_u32(v as u32).unwrap_or('?').to_string(),
+            b'p' => format!("{v:#x}"),
+            b'f' | b'F' => format!("{:.*}", prec.unwrap_or(6), f64::from_bits(v)),
+            b'e' | b'E' => format!("{:.*e}", prec.unwrap_or(6), f64::from_bits(v)),
+            b'g' | b'G' => f64::from_bits(v).to_string(),
+            b's' | b'S' if v == 0 => "(null)".into(),
+            b's' if !wide => {
+                // SAFETY: the plug-in's format says this slot is a NUL-terminated string.
+                let s = unsafe { CStr::from_ptr(v as *const c_char) }.to_string_lossy();
+                prec.map_or_else(|| s.to_string(), |n| s.chars().take(n).collect())
+            }
+            b's' | b'S' => {
+                let p = v as *const u16;
+                // SAFETY: as above, a NUL-terminated wide string.
+                let n = (0..prec.unwrap_or(4096)).take_while(|&k| unsafe { *p.add(k) } != 0).count();
+                String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) })
+            }
+            _ => String::from_utf8_lossy(&fmt[start..i]).into_owned(),
+        };
+        out.extend(text.bytes());
+    }
+    out.extend(&fmt[i.min(fmt.len())..]);
+    String::from_utf8_lossy(&out).chars().take(2000).collect()
 }
 
-unsafe extern "C" fn message(_h: *mut c_void, kind: *const c_char, id: *const c_char, fmt: *const c_char) -> OfxStatus {
-    log(unsafe { message_text(kind, id, fmt) });
+/// A plug-in's message, worded as it sent it: "Error: [id] text". The eight slots after the format are the caller's
+/// variadic arguments.
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn message(_h: *mut c_void, kind: *const c_char, id: *const c_char, fmt: *const c_char, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64, a6: u64, a7: u64) -> OfxStatus {
+    let t = |p| unsafe { name(p) }.unwrap_or("").to_string();
+    let (kind, id) = (t(kind), t(id));
+    let text = if fmt.is_null() { String::new() } else { unsafe { format_c(CStr::from_ptr(fmt).to_bytes(), &[a0, a1, a2, a3, a4, a5, a6, a7]) } };
+    log(format!("{}: {}{text}", kind.trim_start_matches("OfxMessage"), if id.is_empty() { String::new() } else { format!("[{id}] ") }));
     // No dialogs in a background host: a question is answered No.
-    if unsafe { name(kind) } == Some("OfxMessageQuestion") { kOfxStatReplyNo } else { kOfxStatOK }
+    if kind == "OfxMessageQuestion" { kOfxStatReplyNo } else { kOfxStatOK }
 }
 
 unsafe extern "C" fn clear_persistent(_h: *mut c_void) -> OfxStatus {
     kOfxStatOK
 }
 
-type MsgFixed = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char) -> OfxStatus;
+type MsgFixed = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char, u64, u64, u64, u64, u64, u64, u64, u64) -> OfxStatus;
 type MsgVar = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, *const c_char, ...) -> OfxStatus;
 
-// SAFETY: as for the parameter suite (four register arguments, the variadic ones are not read).
+// SAFETY: as for the parameter suite. When the caller passed fewer than eight variadic arguments the remaining slots
+// are other words of its stack frame; `format_c` uses only as many as the format asks for.
 pub static MESSAGE_SUITE_V1: OfxMessageSuiteV1 = OfxMessageSuiteV1 { message: unsafe { std::mem::transmute::<MsgFixed, MsgVar>(message) } };
 pub static MESSAGE_SUITE_V2: OfxMessageSuiteV2 = OfxMessageSuiteV2 {
     message: unsafe { std::mem::transmute::<MsgFixed, MsgVar>(message) },
@@ -1198,8 +1292,8 @@ pub fn host_props() -> Box<Props> {
     p.i(kOfxImageEffectPropSupportsTiles, 0);
     p.i(kOfxImageEffectPropTemporalClipAccess, 0);
     p.set(kOfxImageEffectPropSupportedComponents, V::S(vec![kOfxImageComponentRGBA.to_owned()]));
-    p.set(kOfxImageEffectPropSupportedContexts, V::S(vec![kOfxImageEffectContextFilter.to_owned(), kOfxImageEffectContextGeneral.to_owned()]));
-    p.set(kOfxImageEffectPropSupportedPixelDepths, V::S(vec![kOfxBitDepthByte.to_owned(), kOfxBitDepthFloat.to_owned()]));
+    p.set(kOfxImageEffectPropSupportedContexts, V::S([kOfxImageEffectContextFilter, kOfxImageEffectContextGeneral, kOfxImageEffectContextTransition, kOfxImageEffectContextGenerator].map(CStr::to_owned).to_vec()));
+    p.set(kOfxImageEffectPropSupportedPixelDepths, V::S([kOfxBitDepthByte, kOfxBitDepthShort, kOfxBitDepthHalf, kOfxBitDepthFloat].map(CStr::to_owned).to_vec()));
     p.i(kOfxImageEffectPropSupportsMultipleClipDepths, 0);
     p.i(kOfxImageEffectPropSupportsMultipleClipPARs, 0);
     p.i(kOfxImageEffectPropSetableFrameRate, 0);
@@ -1278,6 +1372,20 @@ mod tests {
             assert_eq!((s.paramGetValue)(h, &mut p as *mut *const c_char), kOfxStatOK);
             assert_eq!(CStr::from_ptr(p).to_str().unwrap(), "hello");
         }
+    }
+
+    /// A plug-in's message arrives as it worded it: the printf arguments are formatted from the variadic slots.
+    #[test]
+    fn messages_are_formatted() {
+        let take = || std::mem::take(&mut *lock(&MESSAGES));
+        take();
+        unsafe {
+            let m = MESSAGE_SUITE_V1.message;
+            assert_eq!(m(std::ptr::null_mut(), kOfxMessageError.as_ptr(), c"render".as_ptr(), c"%s".as_ptr(), c"No Vulkan physical device is available.".as_ptr()), kOfxStatOK);
+            assert_eq!(m(std::ptr::null_mut(), kOfxMessageMessage.as_ptr(), c"".as_ptr(), c"%d of %5.1f%% done (%s, %lld, 0x%x) %.3s".as_ptr(), -3 as c_int, 12.25f64, c"x y".as_ptr(), 1i64 << 40, 255u32, c"abcdef".as_ptr()), kOfxStatOK);
+            assert_eq!(m(std::ptr::null_mut(), kOfxMessageQuestion.as_ptr(), std::ptr::null::<c_char>(), c"Plain 100%% text".as_ptr()), kOfxStatReplyNo);
+        }
+        assert_eq!(take(), ["Error: [render] No Vulkan physical device is available.", "Message: -3 of 12.2% done (x y, 1099511627776, 0xff) abc", "Question: Plain 100% text"]);
     }
 
     #[test]

@@ -4,18 +4,27 @@ use std::collections::HashMap;
 use std::ffi::{CStr, c_int};
 use std::path::{Path, PathBuf};
 use crate::ofx::*;
-use crate::proto::{PVal, ParamDesc, PluginDesc, Render, Reply};
+use crate::proto::{Depth, Outcome, PVal, ParamDesc, ParamState, PluginDesc, Render, Reply};
 use crate::suites::{self, Class, Effect, Frame, PV, Props, V, class, cstring, lock};
+
+const TRANSITION: &str = "OfxImageEffectContextTransition";
+const GENERATOR: &str = "OfxImageEffectContextGenerator";
+/// The contexts Milan runs, in the order it prefers them for a plug-in that has several.
+const CONTEXTS: [&str; 4] = ["OfxImageEffectContextFilter", "OfxImageEffectContextGeneral", TRANSITION, GENERATOR];
 
 /// At most this many plug-in instances live in one host; the least recently used goes first.
 const MAX_INSTANCES: usize = 16;
 
 struct Instance {
     effect: Box<Effect>,
-    /// The values Milan last sent: only a change from these is applied (a plug-in's own edits stay otherwise).
+    /// What Milan and the instance both hold, per parameter (as Milan stores it): a value Milan sends that differs is
+    /// applied; a value the plug-in set that differs is reported.
     sent: HashMap<String, PVal>,
-    began: bool,
+    /// The render scale of the sequence begun (None: none).
+    began: Option<f64>,
     used: u64,
+    /// The parameters' run-time state as last reported to Milan.
+    state: Vec<ParamState>,
 }
 
 pub struct Host {
@@ -26,7 +35,7 @@ pub struct Host {
     loaded: Vec<Result<(), String>>,
     /// Per plug-in index: the describe and the context descriptor, kept for its instances.
     descs: HashMap<u32, (Box<Effect>, Box<Effect>, PluginDesc)>,
-    instances: HashMap<(String, u32, bool), Instance>,
+    instances: HashMap<(String, u32, Depth), Instance>,
     shm: Option<Shm>,
     clock: u64,
 }
@@ -54,9 +63,11 @@ impl Host {
         if let Some((p, _)) = &self.lib {
             return if p == binary { Reply::Loaded(self.plugins.len() as u32) } else { Reply::Error("this host has another binary loaded".into()) };
         }
-        // SAFETY: loading the plug-in runs its initialisers; that is what this isolated process is for.
-        let lib = match unsafe { libloading::Library::new(binary) } {
-            Ok(l) => l,
+        // SAFETY: loading the plug-in runs its initialisers; that is what this isolated process is for. The altered
+        // search path finds the DLLs a plug-in ships beside its binary (as other OFX hosts load them).
+        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 8;
+        let lib = match unsafe { libloading::os::windows::Library::load_with_flags(binary, if binary.is_absolute() { LOAD_WITH_ALTERED_SEARCH_PATH } else { 0 }) } {
+            Ok(l) => libloading::Library::from(l),
             Err(e) => return Reply::Error(format!("cannot load {}: {e}", binary.display())),
         };
         unsafe {
@@ -141,7 +152,7 @@ impl Host {
             s => return Err(format!("its describe action failed ({}){}", status(s), messages())),
         }
         let contexts = desc.props.get_s(kOfxImageEffectPropSupportedContexts);
-        let context = ["OfxImageEffectContextFilter", "OfxImageEffectContextGeneral"].into_iter().find(|c| contexts.iter().any(|x| x == c)).unwrap_or("");
+        let context = CONTEXTS.into_iter().find(|c| contexts.iter().any(|x| x == c)).unwrap_or("");
         let mut out = PluginDesc {
             index,
             id,
@@ -176,75 +187,173 @@ impl Host {
     }
 
     pub fn render(&mut self, r: &Render) -> Reply {
-        match self.render_inner(r) {
-            Ok(()) => Reply::Rendered,
+        match self.with_instance(r, true, |h, i, f| h.frame(r, i, f)) {
+            Ok(o) => Reply::Rendered(o),
             Err(e) => Reply::Error(e),
         }
     }
 
-    fn render_inner(&mut self, r: &Render) -> Result<(), String> {
-        let px = r.w as u64 * r.h as u64 * if r.float { 16 } else { 4 };
-        if r.w == 0 || r.h == 0 || px > r.out || r.out.checked_add(px).is_none_or(|end| end > r.shm_size) {
+    /// A push button was clicked (`button` "": only make the instance, so Milan learns its starting values). The
+    /// button's own failure is the plug-in's message, not a reason to bypass it.
+    pub fn button(&mut self, r: &Render, button: &str) -> Reply {
+        let index = r.index;
+        let run = |h: &Host, i: &mut Instance, f: &Frame| {
+            if button.is_empty() {
+                return Ok(());
+            }
+            let e = &*i.effect;
+            // SAFETY: parameters live as long as their effect.
+            match e.params.find(button).map(|p| unsafe { &*p }) {
+                Some(p) if p.kind == "OfxParamTypePushButton" => {}
+                _ => return Err(format!("the plug-in has no button \"{button}\"")),
+            }
+            let st = h.changed(index, e, &[button.to_string()], f);
+            if !matches!(st, kOfxStatOK | kOfxStatReplyDefault) && lock(&suites::MESSAGES).is_empty() {
+                suites::log(format!("Error: the button did not work ({})", status(st)));
+            }
+            Ok(())
+        };
+        match self.with_instance(r, false, run) {
+            Ok(o) => Reply::Rendered(o),
+            Err(e) => Reply::Error(e),
+        }
+    }
+
+    /// Run `run` on the instance `r` names (made if needed, with Milan's values applied), then report what the plug-in
+    /// changed. `picture`: the request carries a frame in shared memory.
+    fn with_instance(&mut self, r: &Render, picture: bool, run: impl FnOnce(&Host, &mut Instance, &Frame) -> Result<(), String>) -> Result<Outcome, String> {
+        // Messages from before this request belong to nothing.
+        lock(&suites::MESSAGES).clear();
+        let n = r.w as u64 * r.h as u64 * r.depth.bpp() as u64;
+        if r.w == 0 || r.h == 0 || r.inputs > 2 {
             return Err("bad frame size".into());
         }
-        if self.shm.as_ref().is_none_or(|s| s.name != r.shm || s.size != r.shm_size) {
-            self.shm = None; // unmap the old view first
-            self.shm = Some(Shm::open(&r.shm, r.shm_size)?);
+        let mut base = 0usize;
+        if picture {
+            if n * r.inputs as u64 > r.out || r.out.checked_add(n).is_none_or(|end| end > r.shm_size) {
+                return Err("bad frame size".into());
+            }
+            if self.shm.as_ref().is_none_or(|s| s.name != r.shm || s.size != r.shm_size) {
+                self.shm = None; // unmap the old view first
+                self.shm = Some(Shm::open(&r.shm, r.shm_size)?);
+            }
+            base = self.shm.as_ref().expect("mapped").ptr as usize;
         }
-        let base = self.shm.as_ref().expect("mapped").ptr;
         let ctx = self.describe_inner(r.index)?;
         if ctx.context.is_empty() {
-            return Err("no Filter or General context".into());
+            return Err("no context Milan Pro runs".into());
         }
         let (scale, time) = (r.scale.clamp(1e-3, 1.0), r.time);
         suites::NOW.store(time.to_bits(), std::sync::atomic::Ordering::Relaxed);
-        let frame = Frame { live: false, src: base as usize, dst: base as usize + r.out as usize, w: r.w, h: r.h, float: r.float, scale, par: if r.par > 0.0 { r.par } else { 1.0 }, time };
-        let key = (r.instance.clone(), r.index, r.float);
+        let src = [0, 1].map(|k| if picture && k < r.inputs as usize { base + k * n as usize } else { 0 });
+        let frame = Frame { live: false, src, dst: if picture { base + r.out as usize } else { 0 }, w: r.w, h: r.h, depth: r.depth, scale, par: if r.par > 0.0 { r.par } else { 1.0 }, time };
+        let key = (r.instance.clone(), r.index, r.depth);
         self.clock += 1;
-        let fresh = !self.instances.contains_key(&key);
-        if fresh {
-            self.evict();
-            let inst = self.create(r, &ctx.context, frame)?;
-            self.instances.insert(key.clone(), inst);
-        }
-        let index = r.index;
-        let clock = self.clock;
-        let inst = self.instances.get_mut(&key).expect("just made");
-        inst.used = clock;
-        let e = &*inst.effect as *const Effect;
-        // SAFETY: the instance's effect lives in `self.instances` for this whole call.
-        let e = unsafe { &*e };
-        set_frame_props(e, &frame);
-        *lock(&e.frame) = frame;
-        // Parameters Milan changed since it last sent them: set, then instance changed (not for a new instance).
-        let changed: Vec<String> = r.params.iter().filter(|(k, v)| inst.sent.get(k) != Some(v)).map(|(k, _)| k.clone()).collect();
+        let (mut inst, fresh) = match self.instances.remove(&key) {
+            Some(i) => (i, false),
+            None => {
+                self.evict();
+                (self.create(r, &ctx.context, frame)?, true)
+            }
+        };
+        inst.used = self.clock;
+        set_frame_props(&inst.effect, &frame);
+        *lock(&inst.effect.frame) = frame;
+        self.apply_values(r, &ctx.context, &mut inst, &frame);
+        let res = run(self, &mut inst, &frame);
+        let out = self.outcome(&mut inst, &ctx.context, fresh && !r.restored);
+        self.instances.insert(key, inst);
+        res.map(|_| out)
+    }
+
+    /// Milan's values into the instance: those that differ from what it holds are set, then instance changed runs for
+    /// them. Nothing for a new FX Milan holds no values of yet (`restored` false): the plug-in's starting values stand.
+    fn apply_values(&self, r: &Render, context: &str, inst: &mut Instance, f: &Frame) {
+        let e = &*inst.effect;
+        let mut changed = Vec::new();
         for (k, v) in &r.params {
-            if changed.contains(k) {
+            // The host animates a transition's own parameter: no instance changed for it.
+            if context == TRANSITION && k == "Transition" {
+                set_param(e, k, v);
+            } else if r.restored && inst.sent.get(k).is_some_and(|s| s != v) {
                 set_param(e, k, v);
                 inst.sent.insert(k.clone(), v.clone());
+                changed.push(k.clone());
             }
         }
-        let began = std::mem::replace(&mut inst.began, true);
-        if !fresh && !changed.is_empty() {
-            let reason = Props::default();
-            reason.s(kOfxPropChangeReason, kOfxChangeUserEdited);
-            self.call(index, kOfxActionBeginInstanceChanged, e.handle(), Some(&reason), None);
-            for k in &changed {
-                let a = Props::default();
-                a.s(kOfxPropType, kOfxTypeParameter);
-                a.st(kOfxPropName, k);
-                a.s(kOfxPropChangeReason, kOfxChangeUserEdited);
-                a.d(kOfxPropTime, &[time]);
-                a.d(kOfxImageEffectPropRenderScale, &[scale, scale]);
-                self.call(index, kOfxActionInstanceChanged, e.handle(), Some(&a), None);
-            }
-            self.call(index, kOfxActionEndInstanceChanged, e.handle(), Some(&reason), None);
+        if !changed.is_empty() {
+            self.changed(r.index, e, &changed, f);
         }
+    }
+
+    /// Begin, instance changed for each of `names` (as a user's edit), end. The last status of the changed actions.
+    fn changed(&self, index: u32, e: &Effect, names: &[String], f: &Frame) -> OfxStatus {
+        let reason = Props::default();
+        reason.s(kOfxPropChangeReason, kOfxChangeUserEdited);
+        self.call(index, kOfxActionBeginInstanceChanged, e.handle(), Some(&reason), None);
+        let mut st = kOfxStatOK;
+        for k in names {
+            let a = Props::default();
+            a.s(kOfxPropType, kOfxTypeParameter);
+            a.st(kOfxPropName, k);
+            a.s(kOfxPropChangeReason, kOfxChangeUserEdited);
+            a.d(kOfxPropTime, &[f.time]);
+            a.d(kOfxImageEffectPropRenderScale, &[f.scale, f.scale]);
+            st = self.call(index, kOfxActionInstanceChanged, e.handle(), Some(&a), None);
+        }
+        self.call(index, kOfxActionEndInstanceChanged, e.handle(), Some(&reason), None);
+        st
+    }
+
+    /// What the plug-in changed since Milan's values went in: its own parameter edits (every value for a new
+    /// instance), the parameters' hidden / enabled / label / options when they changed, and its messages. Values are
+    /// kept as Milan stores them (32-bit floats), in the instance too, so both sides hold the same numbers.
+    fn outcome(&self, inst: &mut Instance, context: &str, initial: bool) -> Outcome {
+        let mut out = Outcome { initial, messages: std::mem::take(&mut *lock(&suites::MESSAGES)), ..Default::default() };
+        let params = lock(&inst.effect.params.params);
+        let mut state = Vec::with_capacity(params.len());
+        for p in params.iter() {
+            state.push(ParamState {
+                name: p.name.clone(),
+                secret: p.props.i0(kOfxParamPropSecret).unwrap_or(0) != 0,
+                enabled: p.props.i0(kOfxParamPropEnabled).unwrap_or(1) != 0,
+                label: Some(p.props.s0(kOfxPropLabel)).filter(|l| !l.is_empty()).unwrap_or_else(|| p.name.clone()),
+                options: p.props.get_s(kOfxParamPropChoiceOption),
+            });
+            if class(&p.kind) == Class::None || (context == TRANSITION && p.name == "Transition") {
+                continue;
+            }
+            let mut v = lock(&p.value);
+            let cur = stored(&p.kind, &v);
+            if let (PV::N(x), PVal::N(q)) = (&mut *v, &cur) {
+                x.clone_from(q);
+            }
+            if initial || inst.sent.get(&p.name) != Some(&cur) {
+                inst.sent.insert(p.name.clone(), cur.clone());
+                out.edits.push((p.name.clone(), cur));
+            }
+        }
+        if state != inst.state {
+            out.state = Some(state.clone());
+            inst.state = state;
+        }
+        out
+    }
+
+    /// The render action sequence for the frame in shared memory.
+    fn frame(&self, r: &Render, inst: &mut Instance, f: &Frame) -> Result<(), String> {
+        let e = &*inst.effect;
+        // A sequence is one render scale: a new preview size ends it and begins another.
+        if let Some(old) = inst.began.filter(|s| *s != f.scale) {
+            self.end_sequence(r.index, e, old);
+            inst.began = None;
+        }
+        let begin = inst.began.replace(f.scale).is_none();
         // The pictures are in place from here until the render returns.
         lock(&e.frame).live = true;
-        // SAFETY: the output region is inside the mapping (checked above).
-        unsafe { std::ptr::write_bytes(frame.dst as *mut u8, 0, px as usize) };
-        let res = self.render_actions(index, e, &frame, !began);
+        // SAFETY: the output region is inside the mapping (checked by `with_instance`).
+        unsafe { std::ptr::write_bytes(f.dst as *mut u8, 0, f.w as usize * f.h as usize * f.depth.bpp()) };
+        let res = self.render_actions(r.index, e, f, begin);
         lock(&e.frame).live = false;
         res
     }
@@ -273,9 +382,11 @@ impl Host {
         self.call(index, kOfxImageEffectActionGetRegionOfDefinition, e.handle(), Some(&a), Some(&out));
         a.d(c"OfxImageEffectPropRegionOfInterest", &rod);
         let out = Props::default();
-        out.d(c"OfxImageClipPropRoI_Source", &rod);
+        for c in lock(&e.clips).iter().filter(|c| c.name != "Output") {
+            out.d(&cstring(&format!("OfxImageClipPropRoI_{}", c.name)), &rod);
+        }
         self.call(index, kOfxImageEffectActionGetRegionsOfInterest, e.handle(), Some(&a), Some(&out));
-        // Identity: the source passes through.
+        // Identity: one of the inputs passes through.
         let a = Props::default();
         a.d(kOfxPropTime, &[f.time]);
         a.s(kOfxImageEffectPropFieldToRender, kOfxImageFieldNone);
@@ -284,11 +395,15 @@ impl Host {
         let out = Props::default();
         out.st(kOfxPropName, "");
         out.d(kOfxPropTime, &[f.time]);
-        if self.call(index, kOfxImageEffectActionIsIdentity, e.handle(), Some(&a), Some(&out)) == kOfxStatOK && out.s0(kOfxPropName) == "Source" {
-            let n = f.w as usize * f.h as usize * if f.float { 16 } else { 4 };
-            // SAFETY: both regions are inside the mapping and do not overlap.
-            unsafe { std::ptr::copy_nonoverlapping(f.src as *const u8, f.dst as *mut u8, n) };
-            return Ok(());
+        if self.call(index, kOfxImageEffectActionIsIdentity, e.handle(), Some(&a), Some(&out)) == kOfxStatOK {
+            let name = out.s0(kOfxPropName);
+            let from = f.data(&name);
+            if from != 0 && name != "Output" {
+                let n = f.w as usize * f.h as usize * f.depth.bpp();
+                // SAFETY: both regions are inside the mapping and do not overlap.
+                unsafe { std::ptr::copy_nonoverlapping(from as *const u8, f.dst as *mut u8, n) };
+                return Ok(());
+            }
         }
         a.i(kOfxImageEffectPropSequentialRenderStatus, 0);
         a.i(kOfxImageEffectPropInteractiveRenderStatus, 0);
@@ -299,7 +414,7 @@ impl Host {
         }
     }
 
-    /// A new instance of plug-in `r.index` with Milan's values (no instance changed for them, as for a loaded project).
+    /// A new instance of plug-in `r.index`, as its create instance action leaves it.
     fn create(&mut self, r: &Render, context: &str, f: Frame) -> Result<Instance, String> {
         let (_, ctx, _) = self.descs.get(&r.index).ok_or("not described")?;
         let props = ctx.props.copy();
@@ -311,6 +426,12 @@ impl Host {
         props.d(kOfxImageEffectInstancePropEffectDuration, &[1e6]);
         props.i(kOfxImageEffectInstancePropSequentialRender, 0);
         let e = Effect::new(props);
+        let connected: &[&str] = match context {
+            TRANSITION => &["SourceFrom", "SourceTo", "Output"],
+            GENERATOR => &["Output"],
+            // Only the source and the output (a General-context mask or extra input is not connected).
+            _ => &["Source", "Output"],
+        };
         for c in lock(&ctx.clips).iter() {
             let p = c.props.copy();
             p.d(kOfxImageEffectPropFrameRate, &[if r.fps > 0.0 { r.fps } else { 30.0 }]);
@@ -319,8 +440,7 @@ impl Host {
             p.d(kOfxImageEffectPropUnmappedFrameRate, &[if r.fps > 0.0 { r.fps } else { 30.0 }]);
             p.s(kOfxImageClipPropFieldOrder, kOfxImageFieldNone);
             p.i(kOfxImageClipPropContinuousSamples, 0);
-            // Only the source and the output are connected (a General-context mask or extra input is not).
-            p.i(kOfxImageClipPropConnected, matches!(c.name.as_str(), "Source" | "Output") as c_int);
+            p.i(kOfxImageClipPropConnected, connected.contains(&c.name.as_str()) as c_int);
             e.add_clip(&c.name, p);
         }
         {
@@ -330,11 +450,6 @@ impl Host {
             }
         }
         set_frame_props(&e, &f);
-        let mut sent = HashMap::new();
-        for (k, v) in &r.params {
-            set_param(&e, k, v);
-            sent.insert(k.clone(), v.clone());
-        }
         let index = r.index;
         match self.call(index, kOfxActionCreateInstance, e.handle(), None, None) {
             kOfxStatOK | kOfxStatReplyDefault => {}
@@ -345,7 +460,7 @@ impl Host {
         let out = Props::default();
         for c in lock(&e.clips).iter() {
             out.s(&cstring(&format!("OfxImageClipPropComponents_{}", c.name)), kOfxImageComponentRGBA);
-            out.s(&cstring(&format!("OfxImageClipPropDepth_{}", c.name)), if f.float { kOfxBitDepthFloat } else { kOfxBitDepthByte });
+            out.st(&cstring(&format!("OfxImageClipPropDepth_{}", c.name)), f.depth.ofx());
             out.d(&cstring(&format!("OfxImageClipPropPAR_{}", c.name)), &[f.par]);
         }
         out.d(kOfxImageEffectPropFrameRate, &[if r.fps > 0.0 { r.fps } else { 30.0 }]);
@@ -353,7 +468,20 @@ impl Host {
         out.i(kOfxImageClipPropContinuousSamples, 0);
         out.i(kOfxImageEffectFrameVarying, 0);
         self.call(index, kOfxImageEffectActionGetClipPreferences, e.handle(), None, Some(&out));
-        Ok(Instance { effect: e, sent, began: false, used: self.clock })
+        // What the instance holds now: Milan's values are compared with these.
+        let sent = lock(&e.params.params).iter().filter(|p| class(&p.kind) != Class::None).map(|p| (p.name.clone(), stored(&p.kind, &lock(&p.value)))).collect();
+        // The parameters as described: a change the plug-in made while creating the instance is reported.
+        let state = self.descs.get(&index).map(|d| d.2.params.iter().map(|p| ParamState { name: p.name.clone(), secret: p.secret, enabled: p.enabled, label: p.label.clone(), options: p.options.clone() }).collect()).unwrap_or_default();
+        Ok(Instance { effect: e, sent, began: None, used: self.clock, state })
+    }
+
+    fn end_sequence(&self, index: u32, e: &Effect, scale: f64) {
+        let a = Props::default();
+        a.d(kOfxImageEffectPropFrameRange, &[0.0, 0.0]);
+        a.d(kOfxImageEffectPropFrameStep, &[1.0]);
+        a.i(kOfxPropIsInteractive, 0);
+        a.d(kOfxImageEffectPropRenderScale, &[scale, scale]);
+        self.call(index, kOfxImageEffectActionEndSequenceRender, e.handle(), Some(&a), None);
     }
 
     fn evict(&mut self) {
@@ -366,13 +494,8 @@ impl Host {
     }
 
     fn destroy(&self, index: u32, i: Instance) {
-        if i.began {
-            let a = Props::default();
-            a.d(kOfxImageEffectPropFrameRange, &[0.0, 0.0]);
-            a.d(kOfxImageEffectPropFrameStep, &[1.0]);
-            a.i(kOfxPropIsInteractive, 0);
-            a.d(kOfxImageEffectPropRenderScale, &[1.0, 1.0]);
-            self.call(index, kOfxImageEffectActionEndSequenceRender, i.effect.handle(), Some(&a), None);
+        if let Some(scale) = i.began {
+            self.end_sequence(index, &i.effect, scale);
         }
         self.call(index, kOfxActionDestroyInstance, i.effect.handle(), None, None);
     }
@@ -392,10 +515,9 @@ fn set_frame_props(e: &Effect, f: &Frame) {
     e.props.d(kOfxImageEffectPropProjectExtent, &[rod.x2, rod.y2]);
     e.props.d(kOfxImageEffectPropProjectOffset, &[0.0, 0.0]);
     e.props.d(kOfxImageEffectPropProjectPixelAspectRatio, &[f.par]);
-    let depth = if f.float { kOfxBitDepthFloat } else { kOfxBitDepthByte };
     for c in lock(&e.clips).iter() {
         for k in [kOfxImageEffectPropPixelDepth, kOfxImageClipPropUnmappedPixelDepth] {
-            c.props.s(k, depth);
+            c.props.st(k, f.depth.ofx());
         }
         for k in [kOfxImageEffectPropComponents, kOfxImageClipPropUnmappedComponents] {
             c.props.s(k, kOfxImageComponentRGBA);
@@ -421,6 +543,15 @@ fn set_param(e: &Effect, k: &str, v: &PVal) {
     *lock(&p.value) = new;
 }
 
+/// A parameter's value as Milan stores it: numbers as 32-bit floats (integers rounded), finite; strings as they are.
+fn stored(kind: &str, v: &PV) -> PVal {
+    let int = matches!(class(kind), Class::Int(_));
+    match v {
+        PV::N(x) => PVal::N(x.iter().map(|&d| if d.is_finite() { (if int { d.round() } else { d }).clamp(-f32::MAX as f64, f32::MAX as f64) as f32 as f64 } else { 0.0 }).collect()),
+        PV::S(s) => PVal::S(s.to_string_lossy().into_owned()),
+    }
+}
+
 fn param_desc(name: &str, kind: &str, p: &Props) -> ParamDesc {
     let first = |k: &CStr| p.get_d(k).first().copied();
     let lo = first(kOfxParamPropDisplayMin).or(first(kOfxParamPropMin)).unwrap_or(0.0);
@@ -438,6 +569,9 @@ fn param_desc(name: &str, kind: &str, p: &Props) -> ParamDesc {
         secret: p.i0(kOfxParamPropSecret).unwrap_or(0) != 0,
         multiline: p.s0(kOfxParamPropStringMode) == "OfxParamStringIsMultiLine",
         hint: p.s0(kOfxParamPropHint),
+        enabled: p.i0(kOfxParamPropEnabled).unwrap_or(1) != 0,
+        open: p.i0(kOfxParamPropGroupOpen).unwrap_or(1) != 0,
+        children: p.get_s(kOfxParamPropPageChild),
     }
 }
 
