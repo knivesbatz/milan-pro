@@ -8,7 +8,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 ## Features
 
-- Three interface looks: Classic 2006, and two modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
+- VEGAS Pro menus, shortcuts and window layouts
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
@@ -19,9 +19,9 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON); interchange with other editors: VEGAS Pro (via script), OpenTimelineIO (lossless for Milan's own files), CMX 3600 and VEGAS EDLs, FCP7 XML (Premiere Pro, DaVinci Resolve), FCPXML 1.10; AAF through OpenTimelineIO's adapter (`docs/INTERCHANGE.md`)
 
-## Looks
+## Interface
 
-Milan Pro starts in the **Classic 2006** look: the brushed-metal, 3D-bevelled chrome of the 2005–2007 Windows video editors (Tahoma 8 pt, raised toolbars, sunken white lists, Windows 2000 dialogs and controls, a black LCD time display) on the VEGAS 23 window layout, with every menu, shortcut and docking area working as before. **Options > Preferences > Display > Interface Look** switches to the VEGAS 16 or VEGAS 23 (dark or white) looks, which are drawn as those applications are; the choice is kept in the preferences, and window layouts are saved per look. `docs/CLASSIC_2006_SPEC.md` and `docs/VEGAS_UI_SPEC.md` describe each look pixel by pixel.
+Milan Pro looks like a mid-2000s Windows video editor (brushed-metal toolbars, 3D-bevelled controls, Tahoma 8 pt, classic Windows dialogs and a black LCD time display) laid out as VEGAS Pro is, with its menus, shortcuts and docking areas (`docs/UI_SPEC.md`).
 
 ## Overlay packs
 
@@ -85,7 +85,7 @@ Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/
 | `src/project.rs` | Project, timeline, track, event and media data model |
 | `src/edit.rs`, `src/history.rs` | Editing operations and undo |
 | `src/engine/` | Render plan, decoders, compositor, audio mixer, render |
-| `src/ui/` | Looks, menus, dock windows and the custom-painted timeline |
+| `src/ui/` | Theme, menus, dock windows and the custom-painted timeline |
 | `docs/FEATURE_PLAN.md` | Engine design and the feature batches |
 
 ## Roadmap

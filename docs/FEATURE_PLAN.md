@@ -929,7 +929,7 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
    - Transport: the Normal split button gets ▾ Normal / Slip / Slide / Time Stretch; the Envelope and Selection buttons become live radios; Zoom stays inert.
    - Rubber band:
      - `TlState.rubber: Option<(Pos2, bool additive)>`;
-     - starts on an empty-lane drag when the tool is Selection, or when the look is VP23 and the tool is Normal;
+     - starts on an empty-lane drag when the tool is Selection, or when the tool is Normal;
      - the VP16 Normal empty-lane drag still makes a time selection;
      - painted as a dashed 1 px accent rectangle;
      - on release, selects the events whose rects intersect it (union with the old selection when Ctrl is held);
@@ -1281,7 +1281,7 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
 ### Batch 11: Dock window layouts
 
 **Scope**
-- Restore the last layout per look at the next launch.
+- Restore the last layout at the next launch.
 - User layout slots 0-9 with names.
 - Optional: a tab-overflow scroller.
 
@@ -1294,7 +1294,6 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
 - `Layout { name, groups, height: Option<f32>, track_list_w }`.
 - `Dock::layout()` and `Dock::apply(&Layout, look)`. `apply` sanitises the layout:
   - drops duplicate panels;
-  - drops panels the look lacks (ColorGrading in VP16);
   - drops empty groups;
   - clamps widths to at least `MIN_W`;
   - fixes `active`;
@@ -1311,7 +1310,6 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
 - `Layout` serde round-trip.
 - `apply()` removes duplicates, ColorGrading under VP16, empty groups and widths below the minimum, and keeps every other panel exactly once.
 - `SaveLayoutUser(3)`, then a move, then `LayoutUser(3)` restores the groups.
-- A look change keeps each look's own layout.
 - Corrupt `layouts` falls back to the default.
 - Keymap: Alt+D 5 → `LayoutUser(5)` and Ctrl+Alt+D 5 → `SaveLayoutUser(5)`.
 

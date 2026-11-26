@@ -1,8 +1,13 @@
-# Milan Pro: VEGAS look specification ("VEGAS 16" and "VEGAS 23")
+# Milan Pro: VEGAS Pro layout and workflow reference (VEGAS 16 and VEGAS 23)
+
+> **Note (2026-11-26):** Milan Pro draws one look of its own (`UI_SPEC.md`) on the VEGAS 23 window layout and workflow
+> this document describes: menus, keys, docking areas, windows, dialogs and commands. The VEGAS 16 and VEGAS 23 pixel
+> specifications below (colours, metrics, fonts, the custom title bar) are historical: they described looks Milan Pro
+> no longer draws.
 
 Status: implementation spec, v1 (2026-11-11). Target: `eframe 0.31` / egui, Windows first.
 
-This document tells an engineer how to make Milan Pro look and behave like MAGIX/Sony VEGAS Pro 16 (2018) and VEGAS Pro 23 (2025). Both looks are selectable at runtime. Everything here can be built without further research. Proprietary bitmaps, icons and logos must **not** be copied. Section 8 describes every icon as original vector shapes to draw with `egui::Painter`.
+This document tells an engineer how to make Milan Pro look and behave like MAGIX/Sony VEGAS Pro 16 (2018) and VEGAS Pro 23 (2025). Both looks were selectable at runtime up to Milan Pro 0.8.0. Everything here can be built without further research. Proprietary bitmaps, icons and logos must **not** be copied. Section 8 describes every icon as original vector shapes to draw with `egui::Painter`.
 
 **Evidence tags used throughout**
 
