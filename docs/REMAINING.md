@@ -293,7 +293,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 8.1 | Native `.veg` projects | NOT FEASIBLE | Undocumented, version-specific binary chunk format with no public parser (`FEATURE_PLAN.md:1811`). Deliverables: the script route (`tools/vegas/Export to Milan Pro.cs`, done), a `.veg` media scan (`interchange.rs`, done), and a research note `docs/research/VEG_FORMAT.md` (R27). |
+| 8.1 | Native `.veg` projects | NOT FEASIBLE | Undocumented, version-specific binary chunk format with no public parser (`FEATURE_PLAN.md:1811`). Deliverables, all done: the script route both ways (`tools/vegas/Export to Milan Pro.cs` R25, `Import from Milan Pro.cs` R26), the `.veg` media scan (`interchange/vegas.rs::scan_veg`) and the research note `docs/research/VEG_FORMAT.md` (R27: no sample `.veg` exists on this machine; the recommendation is the script route). |
 | 8.2 | Project metadata | DONE | `VegasExport.name`, `project` (`interchange.rs:13-37`) |
 | 8.3 | Media references | DONE | Including offline items with warnings (`interchange.rs:226-236`) |
 | 8.4 | Track organization | DONE | |
@@ -1679,6 +1679,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R27: `.veg` format research (M, RESEARCH-ONLY)
 
+**Status: DONE.** `docs/research/VEG_FORMAT.md`: no `.veg` exists on this machine (every fixed drive searched read-only), so the container could not be observed and nothing is guessed; the note records what the media scan reads, what the scripting assembly reveals about saving (`SaveProject`, `BeginWrite(ProjectSaveType)`, `ArchiveProject`), the estimate for a reverse-engineered reader and the recommendation (the script route, now both ways). Linked from `docs/INTERCHANGE.md`; the `.veg`-picked explanation in Import › VEGAS Project is verified (`poll_vegas`).
+
 **Deliverable:** `docs/research/VEG_FORMAT.md`. It documents:
 - the chunk/GUID container structure observed in sample `.veg` files the user provides (VEGAS 15);
 - what the existing media scan reads;
@@ -2191,7 +2193,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 
 | Item | Reason | Deliverable (batch) |
 |---|---|---|
-| Native `.veg` read/write (8.1) | Undocumented, versioned binary format with no public spec or parser; writing would produce files VEGAS might reject (the brief forbids fake `.veg`) | Script import (done), script export back into VEGAS (R26), research note (R27), media scan (done) |
+| Native `.veg` read/write (8.1) | Undocumented, versioned binary format with no public spec or parser; writing would produce files VEGAS might reject (the brief forbids fake `.veg`) | Script import (R25, done), script export back into VEGAS (R26, done), research note (R27, done: `docs/research/VEG_FORMAT.md`), media scan (done) |
 | AAF (9.6) | No Rust AAF library; the AAF SDK is a large C++/COM structured-storage codebase | OTIO plus the external `otio-aaf-adapter` route documented in INTERCHANGE.md (R29) |
 | VST2 (10.11) | Steinberg no longer licenses the VST2 SDK | VST3 (R34) and CLAP (R35) hosting; stated in COMPATIBILITY.md (R55) |
 | RAW video (7.19) | R3D, BRAW and ARRIRAW decoders are proprietary SDKs, not redistributable with an MIT project; FFmpeg has none | Documented in FORMAT_SUPPORT.md; optional user-installed BRAW SDK study (R41) |

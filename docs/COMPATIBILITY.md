@@ -27,7 +27,7 @@ Other limits:
 ## VEGAS projects
 
 Projects move between VEGAS Pro and Milan Pro through VEGAS's own scripting API, in both directions, never through
-`.veg` files (`docs/INTERCHANGE.md`). The scripts in `tools/vegas` compile against
+`.veg` files (`docs/INTERCHANGE.md`, `docs/research/VEG_FORMAT.md`). The scripts in `tools/vegas` compile against
 VEGAS Pro 15's `ScriptPortal.Vegas.dll`; the `(VEGAS 13)` copies use the `Sony.Vegas` namespace of VEGAS Pro 13 and
 earlier. They have not been run inside VEGAS by the developers: the user's VEGAS 15 pass is the acceptance test.
 

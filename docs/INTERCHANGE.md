@@ -5,7 +5,7 @@ come with batches R28 and R29 and will be added here.
 
 ## VEGAS Pro, both ways (through VEGAS's scripting API)
 
-Milan Pro never reads or writes `.veg` files (R27 researches the format). Instead two C# scripts in
+Milan Pro never reads or writes `.veg` files (`docs/research/VEG_FORMAT.md` says why). Instead two C# scripts in
 `tools/vegas` (installed next to `MilanPro.exe` in `vegas\`; the `(VEGAS 13)` copies for VEGAS Pro 13 and earlier)
 move a project through VEGAS's own API, and one JSON file (`<name>.milan.json`, format `milan-vegas` version 2) is
 the common form. Both scripts compile against VEGAS 15's `ScriptPortal.Vegas.dll`; running them inside VEGAS has
