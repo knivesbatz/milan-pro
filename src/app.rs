@@ -175,6 +175,8 @@ pub struct MeridianApp {
     shortcuts_open: bool,
     /// Help › Unfinished Features.
     unfinished_open: bool,
+    /// R47: View › Command Palette.
+    palette: ui::palette::Palette,
     /// Go to Time / Set Time at Cursor.
     time_entry: Option<crate::ui::dialogs::TimeEntry>,
     /// J/L shuttle rate (0 = off; 1 = normal playback).
@@ -540,6 +542,7 @@ impl MeridianApp {
             splash: ui::splash::Splash::wanted(prefs.show_splash, offscreen).then(ui::splash::Splash::new),
             shortcuts_open: false,
             unfinished_open: false,
+            palette: Default::default(),
             time_entry: None,
             shuttle: 0.0,
             shuttle_audio: None,

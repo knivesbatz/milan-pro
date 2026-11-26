@@ -41,6 +41,7 @@ impl MeridianApp {
             || self.welcome.is_some()
             || self.shortcuts_open
             || self.unfinished_open
+            || self.palette.open
             || self.time_entry.is_some()
             || self.event_props.is_some()
             || self.take_chooser.is_some()
@@ -526,6 +527,7 @@ impl MeridianApp {
         use edit::FxTarget;
         let p = &self.project;
         let clip = self.focus_clip(true);
+        let aclip = self.focus_clip(false);
         let (at, track, xfade, cut, len) = (self.quantized(p.timeline.cursor_position), self.focus_of(true), self.prefs.auto_crossfade, self.prefs.cut_overlap, self.prefs.still_len);
         let (mut target, mut inserted) = (None, None);
         self.edit(|p| {
@@ -547,8 +549,8 @@ impl MeridianApp {
                     let id = track.and_then(|i| p.timeline.video_tracks.get(i)).map(|t| t.id.clone());
                     id.filter(|id| edit::set_compositor(p, std::slice::from_ref(id), &d.fx)).map(FxTarget::Compositor)
                 }
-                // No chooser offers audio FX.
-                PluginKind::AudioFx => None,
+                // No chooser offers audio FX; the command palette (R47) does: on the focus audio event.
+                PluginKind::AudioFx => aclip.map(FxTarget::Event).filter(|t| edit::add_fx(p, t, d.fx.clone())),
             };
             target.is_some()
         });
@@ -557,6 +559,7 @@ impl MeridianApp {
         }
         match target {
             Some(t) => self.open_fx(t),
+            None if d.kind == PluginKind::AudioFx => self.message = Some("Select an unlocked audio event first.".into()),
             None => self.message = Some("Select an unlocked video event (or, for generated media, an unlocked video track) first.".into()),
         }
     }
@@ -965,6 +968,7 @@ impl MeridianApp {
                 self.customize_bar = Some(dialogs::CustomizeToolbar::new(bar, bar.buttons(&self.prefs.toolbars, st.look), st.look));
             }
             UnfinishedFeatures => self.unfinished_open = true,
+            CommandPalette => self.palette.open_with(""),
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
             // R46: Help › Roll Back to Previous Version: the kept installer, after the save prompt.
@@ -2355,6 +2359,7 @@ impl MeridianApp {
         self.show_r18b(ctx);
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
+        self.show_palette(ctx);
         self.show_customize(ctx);
         self.show_layout_as(ctx);
         if let Some(ok) = self.event_props.as_mut().and_then(|ep| ep.show(ctx, &self.project)) {
@@ -2484,6 +2489,19 @@ impl MeridianApp {
                 }
                 self.save_prefs();
             }
+        }
+    }
+
+    /// R47: the command palette; the row chosen runs as its menu row or chooser tile would.
+    fn show_palette(&mut self, ctx: &egui::Context) {
+        let st = self.cmd_state();
+        match self.palette.show(ctx, &st) {
+            Some(ui::palette::Action::Run(c)) => self.exec(ctx, c),
+            Some(ui::palette::Action::Plugin(info)) => {
+                let d = ui::PluginDrag { kind: info.kind, name: info.name.to_string(), fx: crate::engine::plugins::new_fx(info, None) };
+                self.apply_plugin(d);
+            }
+            None => {}
         }
     }
 
@@ -3073,6 +3091,8 @@ impl MeridianApp {
             "customize-toolbar" => self.exec(ctx, CustomizeToolbar),
             "customize-timeline-toolbar" => self.exec(ctx, CustomizeTimelineToolbar),
             "unfinished" => self.unfinished_open = true,
+            // R47: the palette on "tm" (Track Motion first).
+            "palette" => self.palette.open_with("tm"),
             "event-props" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
             "event-props-media" => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)).map(|e| e.media_tab()),
             "take-chooser" => self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, false)),
