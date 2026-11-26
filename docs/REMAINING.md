@@ -59,13 +59,13 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 1.1 | Locate VEGAS, exact version and components | PARTIAL | `docs/VEGAS_UI_SPEC.md:2478` names VEGAS Pro 15.0 build 177. There is no component inventory; section 4 below is the first. → R52 |
+| 1.1 | Locate VEGAS, exact version and components | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 1: VEGAS Pro 15.0 build 177, the program folder and the shared plug-in folder, component by component. |
 | 1.2 | Study interface, layout, menus, toolbars, timeline, preview, media, audio, FX, transitions, render | DONE | `docs/VEGAS_UI_SPEC.md` (2522 lines; measured [L] from the VP15 install plus VP16/VP23 references) |
-| 1.3 | Examine settings and supported project, media and plug-in formats | MISSING | Not documented. FileIO plug-ins, render formats and project formats are unlisted. → R52 |
-| 1.4 | Identify installed video and audio plug-ins and their formats | PARTIAL | `FEATURE_PLAN.md:1812-1813` says "no third-party OFX installed". That is wrong: `HitFilmVegasBasic.ofx` (FXHOME, 7 effects) is installed. Audio DX plug-ins are not mentioned. → R52, R31 |
-| 1.5 | Research integration points, SDKs, plug-in standards, interop | PARTIAL | `FEATURE_PLAN.md` section 3 has a few lines. Not documented: the .NET scripting API (`ScriptPortal.Vegas.dll`), the OFX host, VST via `sfvstwrap.dll`/`sfvstserver.exe`, DirectX audio, FileIO SDK, AAF (`AAFCOAPI.dll`, `ProjectInterchange.dll`). → R52 |
-| 1.6 | Detailed reference document | PARTIAL | The UI spec covers the interface only. → R52 |
-| 1.7 | `REFERENCE_ANALYSIS.md` | MISSING | → R52 |
+| 1.3 | Examine settings and supported project, media and plug-in formats | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 3 (project files), 4 (media formats per FileIO plug-in), 5 (render formats) and 9 (settings pages). |
+| 1.4 | Identify installed video and audio plug-ins and their formats | DONE | (R52, R31) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6: the 7 OFX bundles (HitFilm Vegas Basic is FXHOME's, third party), the DirectX audio plug-ins, the legacy video plug-ins; `FEATURE_PLAN.md` corrected. |
+| 1.5 | Research integration points, SDKs, plug-in standards, interop | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6-8: OFX with VEGAS's extensions, VST through `sfvstwrap`/`sfvstserver.exe`, DirectX audio, the .NET script API, the FileIO SDK, external control drivers, AAF, EDL, XML. |
+| 1.6 | Detailed reference document | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md), with the UI spec for the interface. |
+| 1.7 | `REFERENCE_ANALYSIS.md` | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) |
 | 1.8 | Observe the installed app's real behaviour | PARTIAL | The UI spec measured the VP15 exe resources and pixels. `FEATURE_PLAN.md:1817-1827` lists 10 behaviours still to confirm in VEGAS. → R55 |
 
 ### 2.2 Section 2: repository
@@ -330,15 +330,15 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 10.1 | Inventory video effect plug-ins | PARTIAL | Raw inventory in section 4.2 of this file; not in a doc. → R52 |
-| 10.2 | Inventory audio effect plug-ins | PARTIAL | Section 4.2 (11 DX DLLs). → R52 |
-| 10.3 | Inventory transitions | PARTIAL | Section 4.2 (28 OFX transitions in Vfx1). → R52 |
-| 10.4 | Inventory generators | PARTIAL | Section 4.2 (6 generators). → R52 |
-| 10.5 | Third-party plug-in formats | PARTIAL | Section 4.2 (OFX: HitFilm; VST folders empty). → R52 |
-| 10.6 | Plug-in SDKs | MISSING | → R52 |
-| 10.7 | Documented host interfaces | MISSING | → R52 |
-| 10.8 | Plug-in dependencies | MISSING | The HitFilm bundle has its own resources and licence check; to be tested in R33c. → R52 |
-| 10.9 | Research the actual plug-in standards VEGAS 15 uses | PARTIAL | `FEATURE_PLAN.md:1812-1813` only → R52 |
+| 10.1 | Inventory video effect plug-ins | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1, and `docs/compat/ofx-vegas15.md` per plug-in. |
+| 10.2 | Inventory audio effect plug-ins | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 1.2 and 6.3, and `docs/compat/dx-audio.md`. |
+| 10.3 | Inventory transitions | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (the transitions bundle). |
+| 10.4 | Inventory generators | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (the generators). |
+| 10.5 | Third-party plug-in formats | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6.1-6.5 (OFX: HitFilm; VST folders empty). |
+| 10.6 | Plug-in SDKs | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 7 (the .NET script API, the FileIO SDK, the OFX SDK, external control). |
+| 10.7 | Documented host interfaces | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6 and 7. |
+| 10.8 | Plug-in dependencies | DONE | (R52, R33c) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (proDAD Mercalli for Stabilize, the HitFilm licence folder, VEGAS's private suites), tested in `docs/compat/ofx-vegas15.md`. |
+| 10.9 | Research the actual plug-in standards VEGAS 15 uses | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6; `FEATURE_PLAN.md:1813` corrected. |
 | 10.10 | OpenFX | MISSING | → R33a-c |
 | 10.11 | VST2 | NOT FEASIBLE | Steinberg stopped licensing the VST2 SDK (2018); new hosts cannot get a licence, and clean-room headers carry legal risk. Deliverable: stated in COMPATIBILITY.md with the VST3/CLAP alternative (R55). |
 | 10.12 | VST3 | DONE | (R34a-b) `engine/aplug`, `src/bin/milan-plugin-host/vst3.rs`: scan (IPluginFactory, moduleinfo.json cross-check), IComponent/IAudioProcessor at 48 kHz float with 1024-frame blocks, IEditController parameters as `ParamSpec`s with keyframes and automation, program lists, latency → PDC in the mixer, tail, IPlugView editor windows, `.vstpreset`. Tests `aplug::tests::*`. |
@@ -2139,6 +2139,8 @@ Each crate gets its own tests. `egui` types in the engine (`ColorImage`, `Color3
 **Acceptance:** CI is green with all gates; a deliberately unformatted file fails CI.
 
 ### R52: REFERENCE_ANALYSIS.md (M)
+
+**Status: DONE.** [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md): the installation (program folder and shared plug-ins), what the interface was measured from, project files, media formats per FileIO plug-in, render formats, plug-in standards, SDKs and integration points, interoperability (with R28/R29 now built), settings pages, the open behaviours, and section 11, which maps VEGAS's model (tracks, events, takes, envelopes, busses, FX chains, Pan/Crop, Track Motion, the project and render pipeline, windows and docking) onto Milan Pro's data model and engine, with the deliberate differences. Section 12 lists the corrections; `FEATURE_PLAN.md:1813` (HitFilm) is corrected. Written from files and documentation only: VEGAS was not launched, and nothing of it is reproduced.
 
 **Scope:** the reference document the brief asked for first. It covers:
 - the VEGAS Pro 15.0 build 177 install (section 4.1 here, expanded);
