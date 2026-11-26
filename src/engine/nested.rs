@@ -212,7 +212,7 @@ pub fn frame(path: &Path, t: f64, w: u32, h: u32, q: crate::decode::Quality) -> 
     let mut wk = crate::engine::worker::Worker::new();
     wk.set_plan(c.video.clone());
     // A missing file inside it leaves the rest drawn, as the timeline preview does.
-    let img = wk.frame(plan::frame_at(t.max(0.0), c.video.fps), w, h, q, None).0;
+    let img = wk.frame(plan::frame_at(t.max(0.0), c.video.fps), w, h, q, None).0.image();
     Ok(Arc::try_unwrap(img).unwrap_or_else(|a| (*a).clone()))
 }
 
@@ -256,11 +256,12 @@ pub fn reload() {
 mod tests {
     use super::*;
     use crate::decode::Quality;
+    use crate::engine::picture::Picture;
     use crate::engine::plan::{FramePlan, Item, Nested};
     use crate::engine::plugins::{find, new_fx};
     use crate::engine::worker::Worker;
     use crate::project::{Clip, Curve, Keyframe, Keyframes, Motion, TrackKind};
-    use eframe::egui::{Color32, ColorImage};
+    use eframe::egui::Color32;
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("milan-nested-{name}-{}", std::process::id()));
@@ -300,7 +301,7 @@ mod tests {
         p.media_pool.push(m);
     }
 
-    fn frame(p: &Project, t: f64) -> (Arc<ColorImage>, Option<String>) {
+    fn frame(p: &Project, t: f64) -> (Arc<Picture>, Option<String>) {
         let mut wk = Worker::new();
         wk.set_plan(Arc::new(plan::compile(p)));
         wk.frame(plan::frame_at(t, 30.0), 64, 36, Quality::Good, None)
@@ -418,7 +419,7 @@ mod tests {
     }
 
     /// `p`'s frame at `t`, full size (320x180), from a fresh engine.
-    fn full(p: &Project, t: f64) -> Arc<ColorImage> {
+    fn full(p: &Project, t: f64) -> Arc<Picture> {
         let mut wk = Worker::new();
         wk.set_plan(Arc::new(plan::compile(p)));
         wk.frame(plan::frame_at(t, 30.0), 320, 180, Quality::Good, None).0

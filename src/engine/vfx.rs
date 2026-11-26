@@ -32,6 +32,11 @@ impl ColorOp {
         Self { m: Some(m), mix, ..Self::tone(|_, x| x) }
     }
 
+    /// Changes nothing (an HSL Adjust at its defaults, a mix of 0).
+    pub fn is_identity(&self) -> bool {
+        self.mix <= 0.0 || (self.m.is_none() && self.lut.iter().all(|l| l.iter().enumerate().all(|(i, v)| *v as usize == i)))
+    }
+
     fn pixel(&self, p: Color32) -> Color32 {
         let [r, g, b, a] = p.to_array();
         if a == 0 {
@@ -55,7 +60,7 @@ impl ColorOp {
 }
 
 pub fn color_op(img: &mut ColorImage, op: &ColorOp, k: usize) {
-    if op.mix <= 0.0 {
+    if op.is_identity() {
         return;
     }
     let w = img.size[0];
@@ -137,38 +142,17 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
         return;
     }
     let hf = h as f32;
-    let px = |v: f32| (v * hf).round().max(0.0) as usize;
+    if let Some(op) = color_op_for(e) {
+        return color_op(img, &op, k);
+    }
     match e.id {
-        "milan.fx.brightness_contrast" => {
-            let (b, c, mid) = (e.f("brightness"), e.f("contrast"), e.f("center"));
-            let slope = if c >= 0.0 { 1.0 / (1.0 - 0.99 * c) } else { 1.0 + c };
-            color_op(img, &ColorOp::tone(|_, x| (x - mid) * slope + mid + b), k);
+        "milan.fx.gaussian_blur" => {
+            let (fx, fy) = blur_radii(e, h);
+            soft_blur(img, fx, fy, k)
         }
-        "milan.fx.levels" => {
-            let (i0, i1, g, o0, o1) = (e.f("in_start"), e.f("in_end"), e.f("gamma"), e.f("out_start"), e.f("out_end"));
-            color_op(img, &ColorOp::tone(|_, x| o0 + (o1 - o0) * ((x - i0) / (i1 - i0).max(1e-6)).clamp(0.0, 1.0).powf(1.0 / g)), k);
-        }
-        "milan.fx.invert" => color_op(img, &ColorOp { mix: e.f("amount"), ..ColorOp::tone(|_, x| 1.0 - x) }, k),
-        "milan.fx.black_white" => color_op(img, &ColorOp::matrix([LUMA; 3], e.f("blend")), k),
-        "milan.fx.sepia" => {
-            const SEPIA: M3 = [[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]];
-            color_op(img, &ColorOp::matrix(SEPIA, e.f("amount")), k);
-        }
-        "milan.fx.hsl" => {
-            if let Some(m) = hsl(e.f("hue"), e.f("saturation"), e.f("luminance")) {
-                color_op(img, &ColorOp::matrix(m, 1.0), k);
-            }
-        }
-        "milan.fx.color_corrector" => {
-            let (s, g, gain, off) = (e.f("saturation"), e.f("gamma"), e.f("gain"), e.f("offset"));
-            let op = ColorOp::tone(|_, x| ((x + off) * gain).clamp(0.0, 1.0).powf(1.0 / g));
-            color_op(img, &ColorOp { m: (s != 1.0).then(|| saturation(s)), ..op }, k);
-        }
-        "milan.fx.gaussian_blur" => soft_blur(img, e.f("h_range") * hf, e.f("v_range") * hf, k),
         "milan.fx.sharpen" => {
-            // Under a pixel (a small radius in a small preview): a 1 px unsharp mask at that share of the amount.
-            let r = e.f("radius") * hf;
-            sharpen(img, e.f("amount") * r.min(1.0), if r > 0.0 { px(e.f("radius")).max(1) } else { 0 }, e.f("threshold"), k)
+            let (amount, r, threshold) = sharpen_params(e, h);
+            sharpen(img, amount, r, threshold, k)
         }
         "milan.fx.vignette" => vignette(img, e, k),
         "milan.fx.mirror" => mirror(img, e.i("direction"), e.f("position"), k),
@@ -184,11 +168,7 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
                 }
             });
         }
-        "milan.fx.chroma_key" => chroma_key(img, e, px(e.f("blur")), k),
-        "milan.fx.exposure" => {
-            let (gain, off, g) = (2f32.powf(e.f("exposure")), e.f("offset"), 1.0 / e.f("gamma").max(0.01));
-            color_op(img, &ColorOp::tone(|_, x| to_srgb((to_linear(x) * gain + off).max(0.0).powf(g))), k);
-        }
+        "milan.fx.chroma_key" => chroma_key(img, e, px_of(e.f("blur"), h), k),
         "milan.fx.cookie_cutter" => cookie_cutter(img, e, k),
         "milan.fx.bezier_mask" => bezier_mask(img, e, k),
         GRADING => Grade::new(e).apply(img, k),
@@ -196,6 +176,56 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
         id if id.starts_with(crate::engine::ofx::PREFIX) => crate::engine::ofx::apply(img, e),
         _ => {}
     }
+}
+
+/// R21b: the `ColorOp` a colour plug-in compiles to (the GPU applies its LUT and matrix too); None for other ids.
+pub fn color_op_for(e: &FxEval) -> Option<ColorOp> {
+    Some(match e.id {
+        "milan.fx.brightness_contrast" => {
+            let (b, c, mid) = (e.f("brightness"), e.f("contrast"), e.f("center"));
+            let slope = if c >= 0.0 { 1.0 / (1.0 - 0.99 * c) } else { 1.0 + c };
+            ColorOp::tone(|_, x| (x - mid) * slope + mid + b)
+        }
+        "milan.fx.levels" => {
+            let (i0, i1, g, o0, o1) = (e.f("in_start"), e.f("in_end"), e.f("gamma"), e.f("out_start"), e.f("out_end"));
+            ColorOp::tone(|_, x| o0 + (o1 - o0) * ((x - i0) / (i1 - i0).max(1e-6)).clamp(0.0, 1.0).powf(1.0 / g))
+        }
+        "milan.fx.invert" => ColorOp { mix: e.f("amount"), ..ColorOp::tone(|_, x| 1.0 - x) },
+        "milan.fx.black_white" => ColorOp::matrix([LUMA; 3], e.f("blend")),
+        "milan.fx.sepia" => {
+            const SEPIA: M3 = [[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]];
+            ColorOp::matrix(SEPIA, e.f("amount"))
+        }
+        // At its defaults nothing changes (an identity op).
+        "milan.fx.hsl" => hsl(e.f("hue"), e.f("saturation"), e.f("luminance")).map_or_else(|| ColorOp::tone(|_, x| x), |m| ColorOp::matrix(m, 1.0)),
+        "milan.fx.color_corrector" => {
+            let (s, g, gain, off) = (e.f("saturation"), e.f("gamma"), e.f("gain"), e.f("offset"));
+            let op = ColorOp::tone(|_, x| ((x + off) * gain).clamp(0.0, 1.0).powf(1.0 / g));
+            ColorOp { m: (s != 1.0).then(|| saturation(s)), ..op }
+        }
+        "milan.fx.exposure" => {
+            let (gain, off, g) = (2f32.powf(e.f("exposure")), e.f("offset"), 1.0 / e.f("gamma").max(0.01));
+            ColorOp::tone(|_, x| to_srgb((to_linear(x) * gain + off).max(0.0).powf(g)))
+        }
+        _ => return None,
+    })
+}
+
+/// A size in fractions of the picture height, in whole pixels.
+pub(crate) fn px_of(v: f32, h: usize) -> usize {
+    (v * h as f32).round().max(0.0) as usize
+}
+
+/// Gaussian Blur: the radii in (fractional) pixels for a picture `h` tall.
+pub(crate) fn blur_radii(e: &FxEval, h: usize) -> (f32, f32) {
+    (e.f("h_range") * h as f32, e.f("v_range") * h as f32)
+}
+
+/// Sharpen: (amount, radius in pixels, threshold). Under a pixel (a small radius in a small preview): a 1 px unsharp
+/// mask at that share of the amount.
+pub(crate) fn sharpen_params(e: &FxEval, h: usize) -> (f32, usize, f32) {
+    let r = e.f("radius") * h as f32;
+    (e.f("amount") * r.min(1.0), if r > 0.0 { px_of(e.f("radius"), h).max(1) } else { 0 }, e.f("threshold"))
 }
 
 /// sRGB to linear light, 0..1.
@@ -459,7 +489,7 @@ fn crop(img: &mut ColorImage, e: &FxEval, k: usize) {
 }
 
 /// BT.601 chroma of straight RGB 0..1.
-fn cbcr(c: [f32; 3]) -> (f32, f32) {
+pub(crate) fn cbcr(c: [f32; 3]) -> (f32, f32) {
     (-0.168736 * c[0] - 0.331264 * c[1] + 0.5 * c[2], 0.5 * c[0] - 0.418688 * c[1] - 0.081312 * c[2])
 }
 
@@ -627,18 +657,37 @@ impl Grade {
         self.look.as_ref().map_or(c, |l| l.apply(c))
     }
 
-    fn apply(&self, img: &mut ColorImage, k: usize) {
+    /// The grade as the passes it runs, in order (R21b: the GPU runs the same): the input LUT, the tone curve, the
+    /// colour matrix, the look LUT.
+    pub fn steps(&self) -> Vec<GradeStep> {
+        let mut v = Vec::new();
         if let Some(l) = &self.input {
-            cube_img(img, l, k);
+            v.push(GradeStep::Cube(l.clone()));
         }
-        color_op(img, &ColorOp::tone(|c, x| self.tone(c, x)), k);
+        v.push(GradeStep::Op(ColorOp::tone(|c, x| self.tone(c, x))));
         if let Some(m) = self.m {
-            color_op(img, &ColorOp::matrix(m, 1.0), k);
+            v.push(GradeStep::Op(ColorOp::matrix(m, 1.0)));
         }
         if let Some(l) = &self.look {
-            cube_img(img, l, k);
+            v.push(GradeStep::Cube(l.clone()));
+        }
+        v
+    }
+
+    fn apply(&self, img: &mut ColorImage, k: usize) {
+        for step in self.steps() {
+            match step {
+                GradeStep::Cube(l) => cube_img(img, &l, k),
+                GradeStep::Op(op) => color_op(img, &op, k),
+            }
         }
     }
+}
+
+/// One pass of a `Grade`.
+pub enum GradeStep {
+    Cube(Arc<Cube>),
+    Op(ColorOp),
 }
 
 #[cfg(test)]

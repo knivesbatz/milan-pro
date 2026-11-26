@@ -11,6 +11,7 @@ use crate::decode::Quality;
 use crate::engine::cache::ByteLru;
 use crate::engine::composite::{self, Sources};
 use crate::engine::{generate, lut};
+use crate::engine::picture::Picture;
 use crate::engine::plan::{self, SrcAt, VideoPlan};
 use crate::engine::vdecode::{DecoderPool, Pull};
 use crate::engine::{Played, Shown, Stats, VCmd};
@@ -52,7 +53,7 @@ pub struct Worker {
     pool: DecoderPool,
     sources: ByteLru<SrcKey, Arc<ColorImage>>,
     /// A light Dynamic RAM Preview: frames keyed by what they show, so edits need no invalidation.
-    composites: ByteLru<(u64, u32, u32, Quality), Arc<ColorImage>>,
+    composites: ByteLru<(u64, u32, u32, Quality), Arc<Picture>>,
     failed: HashMap<Arc<str>, (String, Instant)>,
     /// Each layer's picture in the last composed frame.
     held: HashMap<HeldKey, Arc<ColorImage>>,
@@ -265,7 +266,7 @@ impl Worker {
     }
 
     /// Frame `n` at `w` x `h`, from the composite cache or composed now. Also returns the first decode error.
-    pub fn frame(&mut self, n: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> (Arc<ColorImage>, Option<String>) {
+    pub fn frame(&mut self, n: i64, w: u32, h: u32, q: Quality, deadline: Option<Instant>) -> (Arc<Picture>, Option<String>) {
         self.take_stills();
         let fp = plan::frame_plan(&self.plan, n);
         self.check_files(&fp, w, h);
@@ -298,23 +299,33 @@ impl Worker {
             exact: true,
             err: None,
         };
-        let (wu, hu, bilinear) = (w as usize, h as usize, q != Quality::Draft);
+        let (wu, hu, bilinear, k) = (w as usize, h as usize, q != Quality::Draft, self.k);
+        // R21a: on the GPU when Preferences › Video chose one, renders too (so a render shows what was previewed); a
+        // frame the GPU cannot do composes on the CPU.
+        let compositor = crate::engine::gpu::compositor();
+        let compose = |fp: &plan::FramePlan, live: &mut Live| {
+            compositor.compose(fp, live, wu, hu, bilinear, k).unwrap_or_else(|| {
+                live.drawn.clear(); // a GPU attempt may have drawn some layers already
+                Picture::cpu(Arc::new(composite::compose(fp, live, wu, hu, bilinear, k)))
+            })
+        };
         let img = Arc::new(if subs.is_empty() {
-            composite::compose(&fp, &mut live, wu, hu, bilinear, self.k)
+            compose(&fp, &mut live)
         } else {
+            // Motion blur / supersampling: the mean of the sub-frames, on the CPU (each read back from the GPU).
             let mut frames = Vec::new();
             for s in &subs {
                 live.drawn.clear(); // each sub-frame draws the same layers: they hold the same pictures
-                frames.push(composite::compose(s, &mut live, wu, hu, bilinear, self.k));
+                frames.push((*compose(s, &mut live).image()).clone());
             }
-            composite::mean(&frames, &fp.samples.iter().map(|s| s.1).collect::<Vec<_>>())
+            Picture::cpu(Arc::new(composite::mean(&frames, &fp.samples.iter().map(|s| s.1).collect::<Vec<_>>())))
         });
         let (exact, mut err, shown) = (live.exact, live.err, live.shown);
         // A LUT that cannot load draws ungraded: say so in the preview, and fail a render like a missing file.
         err = err.or_else(|| fp.fx().into_iter().find_map(lut::error));
         self.held = shown;
         if exact && err.is_none() {
-            self.composites.insert(key, img.clone(), w as usize * h as usize * 4);
+            self.composites.insert(key, img.clone(), img.bytes());
         }
         (img, err)
     }

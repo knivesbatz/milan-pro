@@ -167,6 +167,7 @@ fn leak_info(d: &AudioDesc) -> (&'static PluginInfo, Vec<(AParam, usize)>) {
             let params: Vec<ParamSpec> = sp.into_iter().map(|x| x.1).collect();
             let info = Box::leak(Box::new(PluginInfo {
                 id: leak(&id_of(d)),
+                gpu: None, // audio: the GPU compositor (R21b) has nothing to run
                 name: leak(if d.name.is_empty() { &d.id } else { &d.name }),
                 kind: PluginKind::AudioFx,
                 group: leak(if d.vendor.is_empty() { if d.format == "clap" { "CLAP" } else { "VST3" } } else { &d.vendor }),

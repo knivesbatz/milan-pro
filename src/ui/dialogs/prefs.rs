@@ -17,7 +17,7 @@ const ROWS23: &[&[&str]] = &[
     &["File I/O", "Deprecated Features"],
 ];
 const GENERAL: usize = 0;
-const VIDEO: usize = 1;
+pub const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
 pub const AUDIO: usize = 3;
 pub const AUDIO_DEVICE: usize = 4;
@@ -211,8 +211,33 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
     // Milan Pro's own, off by default: compositing modes VEGAS does not have.
     widgets::checkbox(ui, &mut d.extra_blend_modes, "Offer extra blend modes (Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color, Luminosity)")
         .on_hover_text("Not VEGAS modes: a project using them looks different in VEGAS");
+    // R21a: VEGAS's "GPU acceleration of video processing": Off or an adapter (Milan Pro adds Automatic, the default).
+    use crate::engine::gpu;
+    ui.add_space(6.0);
+    let adapters = gpu::adapters();
+    if adapters.is_none() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250)); // the list arrives from a background thread
+    }
+    let auto = "Automatic (the best adapter)";
+    let shown = match d.gpu.as_str() {
+        "" => auto.to_string(),
+        n if n == gpu::OFF || adapters.as_ref().is_none_or(|a| a.iter().any(|x| x == n)) => n.to_string(),
+        n => format!("{n} (not found)"),
+    };
+    super::row(ui, "GPU acceleration of video processing:", 230.0, true, |ui| {
+        ComboBox::from_id_salt("pv_gpu").width(180.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.gpu, gpu::OFF.to_string(), gpu::OFF);
+            ui.selectable_value(&mut d.gpu, String::new(), auto);
+            for n in adapters.iter().flatten() {
+                ui.selectable_value(&mut d.gpu, n.clone(), n.as_str());
+            }
+        })
+        .response
+        .on_hover_text("Compositing on the graphics card (Vulkan). Without one, or Off, the CPU composites; the picture is the same either way.")
+    });
+    ui.label(gpu::status());
     if default_all(ui) {
-        (d.auto_proxy, d.extra_blend_modes) = (false, false);
+        (d.auto_proxy, d.extra_blend_modes, d.gpu) = (false, false, String::new());
     }
 }
 

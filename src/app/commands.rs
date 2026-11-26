@@ -2189,6 +2189,7 @@ impl MeridianApp {
             if rescan {
                 self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
             }
+            crate::engine::gpu::choose(&self.prefs.gpu);
         }
         self.show_organize(ctx);
         if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {
@@ -2683,6 +2684,8 @@ impl MeridianApp {
                 }
             }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
+            // R21a: GPU acceleration of video processing.
+            "prefs-video" => self.open_prefs(Some(dialogs::prefs::VIDEO)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),
             // R14: the Preview Device page; a floating Trimmer and the external preview (off-screen in the harness).
             "prefs-preview" => self.open_prefs(Some(dialogs::prefs::PREVIEW_DEVICE)),

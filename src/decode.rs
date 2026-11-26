@@ -1,6 +1,7 @@
 //! Preview: the timeline picture from the video engine, or single RGBA frames of one media (the Trimmer)
 //! decoded by ffmpeg on a worker thread; and event thumbnails.
-use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
+use eframe::egui::{self, ColorImage, TextureHandle, TextureId, TextureOptions};
+use crate::engine::picture::Picture;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -89,19 +90,51 @@ impl Isolate {
 }
 
 /// The frame of `img` as the preview shows it (`isolate`), into texture `slot`.
-fn upload(ctx: &egui::Context, slot: &mut Option<TextureHandle>, name: &str, img: &Arc<ColorImage>, isolate: Isolate) {
-    let data = egui::ImageData::Color(if isolate == Isolate::None { img.clone() } else { Arc::new(isolate.apply(img)) });
+/// R21c: what a preview paints: a texture egui holds (a CPU frame, uploaded), or a frame the GPU composed, registered
+/// with the painter as it is (`gpu::Output::register`, no copy) and freed when the next frame replaces it.
+pub enum PreviewTex {
+    Managed(TextureHandle),
+    /// The picture stays alive (its texture is not reused) while the painter shows it.
+    Native { id: TextureId, _keep: Arc<Picture> },
+}
+
+impl PreviewTex {
+    pub fn id(&self) -> TextureId {
+        match self {
+            PreviewTex::Managed(t) => t.id(),
+            PreviewTex::Native { id, .. } => *id,
+        }
+    }
+}
+
+impl Drop for PreviewTex {
+    fn drop(&mut self) {
+        if let PreviewTex::Native { id, .. } = self {
+            crate::engine::gpu::unregister(*id);
+        }
+    }
+}
+
+fn upload(ctx: &egui::Context, slot: &mut Option<PreviewTex>, name: &str, pic: &Arc<Picture>, isolate: Isolate) {
+    if isolate == Isolate::None {
+        if let Some(id) = pic.gpu().and_then(|out| out.register()) {
+            *slot = Some(PreviewTex::Native { id, _keep: pic.clone() });
+            return;
+        }
+    }
+    let img = pic.image();
+    let data = egui::ImageData::Color(if isolate == Isolate::None { img } else { Arc::new(isolate.apply(&img)) });
     match slot {
-        Some(t) => t.set(data, TextureOptions::LINEAR),
-        None => *slot = Some(ctx.load_texture(name, data, TextureOptions::LINEAR)),
+        Some(PreviewTex::Managed(t)) => t.set(data, TextureOptions::LINEAR),
+        _ => *slot = Some(PreviewTex::Managed(ctx.load_texture(name, data, TextureOptions::LINEAR))),
     }
 }
 
 /// R16b: Split-Screen View › FX Bypassed: a second engine composing the timeline without video FX, and its frame.
 struct Bypass {
     engine: VideoEngine,
-    image: Option<Arc<ColorImage>>,
-    texture: Option<TextureHandle>,
+    image: Option<Arc<Picture>>,
+    texture: Option<PreviewTex>,
 }
 
 /// Auto as the size it picks: the largest of Full / Half / Quarter that fits the display, as VEGAS reports it.
@@ -350,9 +383,9 @@ pub struct Preview {
     min_id: u64,
     /// One past the newest request whose result arrived.
     done_id: u64,
-    pub texture: Option<TextureHandle>,
+    pub texture: Option<PreviewTex>,
     /// The frame behind `texture`, for snapshots.
-    pub image: Option<Arc<ColorImage>>,
+    pub image: Option<Arc<Picture>>,
     pub error: Option<String>,
     /// The timeline preview's engine; None for a single-media preview (the Trimmer).
     engine: Option<VideoEngine>,
@@ -432,7 +465,7 @@ impl Preview {
 
     /// R17b: the external monitor's picture: the full frame while the grid shows with Show Full Frame on, else the
     /// Video Preview's.
-    pub fn external_texture(&self) -> Option<&TextureHandle> {
+    pub fn external_texture(&self) -> Option<&PreviewTex> {
         match &self.full {
             Some(f) => f.texture.as_ref(),
             None => self.texture.as_ref(),
@@ -440,7 +473,7 @@ impl Preview {
     }
 
     /// R16b: the FX Bypassed frame's texture, while Split-Screen View › FX Bypassed is on.
-    pub fn bypass_texture(&self) -> Option<&TextureHandle> {
+    pub fn bypass_texture(&self) -> Option<&PreviewTex> {
         self.bypass.as_ref()?.texture.as_ref()
     }
 
@@ -580,7 +613,7 @@ impl Preview {
         self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)).chain(self.full.as_mut().map(|b| &mut b.engine))
     }
 
-    fn set_image(&mut self, ctx: &egui::Context, img: Arc<ColorImage>) {
+    fn set_image(&mut self, ctx: &egui::Context, img: Arc<Picture>) {
         upload(ctx, &mut self.texture, "preview_frame", &img, self.shown_isolate);
         self.image = Some(img);
     }
@@ -636,7 +669,7 @@ impl Preview {
             match r.image {
                 Ok(img) => {
                     self.error = None;
-                    self.set_image(ctx, Arc::new(img));
+                    self.set_image(ctx, Arc::new(Picture::cpu(Arc::new(img))));
                 }
                 Err(e) => {
                     self.error = Some(e);

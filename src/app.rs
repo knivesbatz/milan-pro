@@ -365,6 +365,13 @@ impl MeridianApp {
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
+        // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
+        // opens the chosen adapter on a background thread; without one the CPU composes.
+        #[cfg(feature = "wgpu")]
+        if let Some(rs) = &cc.wgpu_render_state {
+            crate::engine::gpu::attach(rs);
+        }
+        crate::engine::gpu::choose(&prefs.gpu);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
@@ -908,7 +915,9 @@ impl eframe::App for MeridianApp {
                     self.preview.visible |= !self.playing || self.prefs.scopes.while_playing;
                     scopes_prefs |= ui::scopes_toolbar(bar, &mut self.scopes, &mut self.prefs.scopes);
                     let split = self.preview_view.split_snapshot();
-                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
+                    // R21c: the scopes read the frame's pixels (a frame the GPU composed is read back once).
+                    let frame = self.preview.image.as_ref().map(|p| p.image());
+                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, frame.as_ref(), split, self.playing);
                 }
                 Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
                 Panel::PluginManager => {
@@ -1255,7 +1264,20 @@ impl eframe::App for MeridianApp {
 
     /// The window layout comes back at the next launch. Only the layout is written, over what is on disk, so
     /// another window's preferences (recent projects) are kept.
+    #[cfg(feature = "glow")]
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.exit();
+    }
+
+    #[cfg(not(feature = "glow"))]
+    fn on_exit(&mut self) {
+        self.exit();
+    }
+}
+
+impl MeridianApp {
+    /// `App::on_exit` (its signature depends on the painter feature).
+    fn exit(&mut self) {
         // R34b: plug-in editor windows close with Milan (their hosts die with it too, in the Job Object).
         crate::engine::aplug::close_editors();
         if self.demo || self.shot.is_some() {
