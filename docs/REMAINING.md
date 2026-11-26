@@ -496,16 +496,16 @@ What matters most:
 | 16.6 | Release notes | DONE | |
 | 16.7 | Download progress | DONE | `State::Downloading` |
 | 16.8 | Update verification | DONE | SHA-256 against the API digest or the `.sha256` asset (`updater.rs:72-83, 255-270`); re-hashed before launch (`updater.rs:278`) |
-| 16.9 | Signed release artifacts where practical | MISSING | No Authenticode signature and no detached signature. The SHA-256 comes from the same release, so it proves integrity, not authorship. → R46 |
+| 16.9 | Signed release artifacts where practical | PARTIAL | R46: `release.yml` signs the `.sha256` with minisign when the `MINISIGN_SECRET_KEY` secret exists and uploads the `.minisig`; the app verifies it with `updater::MINISIGN_PUBLIC_KEY` (empty until the maintainer generates the key pair, SECURITY.md; then SHA-256 only, said in the dialog). Authenticode: `signtool` steps gated on the certificate secrets; certificate pending (user action) |
 | 16.10 | Integrity verification | DONE | |
-| 16.11 | Safe installation | PARTIAL | Silent Inno Setup waits on the `MilanProRunning` mutex (`installer/milan-pro.iss:84`). No recovery if Setup fails. → R46 |
-| 16.12 | Rollback / recovery from failed updates | MISSING | → R46 |
-| 16.13 | Update settings | PARTIAL | Auto-check toggle and skip-version only (`prefs.rs`). → R46 |
-| 16.14 | Stable and optional preview channels | MISSING | Pre-releases are always rejected (`updater.rs:112`). → R46 |
+| 16.11 | Safe installation | DONE | Silent Inno Setup waits on the `MilanProRunning` mutex; a failed or aborted Setup brings the old Milan Pro back (`DeinitializeSetup`). R46: the relaunch passes `--after-update` and a version that fails to start twice offers the roll back |
+| 16.12 | Rollback / recovery from failed updates | DONE | R46: with "Keep the previous version's installer" on, the current version's installer is fetched from its own release before an update (verified like an update) into `%LOCALAPPDATA%\MilanPro\updates\previous\` with its `.sha256`; Help › Roll Back to Previous Version runs it silently (`updater::{keep_current, rollback_target}`); `updates\starting.json` counts the starts after an update and the third try offers the roll back (`start_marker`, cleared by the first frame) |
+| 16.13 | Update settings | DONE | R46: Preferences › Update: channel, auto-check, skipped version with Clear, keep previous version; the log and crash-report options (R44) share the page |
+| 16.14 | Stable and optional preview channels | DONE | R46: `updater::Channel`: Stable reads `/releases/latest`; Preview reads `/releases` and takes pre-releases and pre-release tags (`Version` orders them as semver does); `release.yml` publishes a `-` tag as a pre-release |
 | 16.15 | Updates cannot corrupt an open project | DONE | Install goes through the save prompt (`commands.rs:1345-1349`) |
 | 16.16 | Updates cannot interrupt an ongoing export | DONE | R12: Install and restart (and Exit, and closing the window) while a render runs or waits asks first (`ui/render_queue.rs::guard`): an update only waits for the queue to finish or is not installed now; Exit may also cancel the renders or keep them for the next start (`exit_and_update_guards`). R46's recording guard is separate |
 | 16.17 | Separate, maintainable component | PARTIAL | A self-contained module, `src/updater.rs`, not a crate. → R50 |
-| 16.18 | Never install unverified packages | PARTIAL | Hash-verified, but not authenticated (see 16.9). → R46 |
+| 16.18 | Never install unverified packages | PARTIAL | Hash-verified always; authenticated by minisign once the key is compiled in (16.9). A release whose signature is missing or wrong is then refused, and the API digest is no longer trusted alone |
 | 16.19 | Best implementation researched for this framework and deployment | DONE | `README.md` "Updates", `FEATURE_PLAN.md` batch 18 |
 
 ### 2.17 Section 16: performance and hardware
@@ -584,7 +584,7 @@ What matters most:
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
 | VEGAS project import/interchange | PARTIAL | R25-R30 |
-| Automatic GitHub updater | PARTIAL | R46 |
+| Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
 | Complete technical documentation | MISSING | R52-R56 |
@@ -2016,6 +2016,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R46: Updater hardening (M-L)
 
+**Status: DONE** (two maintainer actions outstanding: generate the minisign key pair and obtain a code-signing certificate, both in SECURITY.md). Built as designed below. `MINISIGN_PUBLIC_KEY` is empty in this tree, so updates are checked by SHA-256 alone and the dialog says so; with a key, the `.sha256` must carry a verifying `.minisig` and the API digest is ignored. The roll-back copy is fetched after the update's own download (a failure only adds a note to the Ready state). The failed-start offer and Help › Roll Back share one dialog; with no kept installer it explains the preference instead. The recording guard is in the update dialog (`install_guard`); a render keeps R12's wait/cancel guard. `release.yml` signs with minisign and signtool only when the secrets exist and publishes `-` tags as pre-releases. Harness: the Update page is `MILAN_DIALOG=prefs-update`. Tests: `updater::tests::{prerelease_versions_order, release_list_per_channel, bad_signature_is_rejected_when_a_key_is_configured (minisign's test vector; a release without a signature is refused before any download), install_guard_blocks_a_running_job, rollback_marker_counts_failed_starts}`.
+
 **Scope**
 - Channels: Preferences > General, "Update channel: Stable / Preview". Preview reads `/releases` (not `/latest`) and accepts `prerelease: true`.
 - Authenticity: `minisign-verify` (MIT, no dependencies).
@@ -2200,7 +2202,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 | CEA-608/708 caption embedding (part of 7.55) | The bundled FFmpeg has no 608/708 encoder | Caption import (608 extraction) plus SCC/SRT sidecar export (R39) |
 | ACES/OpenColorIO pipeline (part of 7.57/7.58) | OCIO is C++ with no Rust port | LUT-based transforms plus a 16f pipeline (R40b) |
 | ASIO output (part of 12.19) | The ASIO SDK licence forbids redistribution | WASAPI exclusive low-latency path (R9, DONE: `wasapi.rs`); documented in `docs/COMPATIBILITY.md` |
-| Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | minisign signature verification now, plus the Authenticode step wired and waiting on secrets (R46) |
+| Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | R46: minisign verification is built and waits on the maintainer's key pair (SECURITY.md); the Authenticode step is wired and waits on the certificate secrets |
 | VEGAS-licensed plug-ins (OFX first-party, DX audio) in Milan | Licence ties them to VEGAS; host checks are likely | Tested and reported per plug-in (R33c, R35), never claimed without a passing test (R55) |
 
 ---

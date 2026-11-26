@@ -48,7 +48,7 @@ pub use render::{RenderDialog, open_file, open_folder};
 pub use shortcuts::shortcuts_window;
 pub use take_chooser::TakeChooser;
 pub use unfinished::unfinished_window;
-pub use update::{UpdateResult, update_window};
+pub use update::{UpdateResult, rollback_window, update_window};
 pub use welcome::{Welcome, WelcomeResult};
 
 use eframe::egui::*;

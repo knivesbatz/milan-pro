@@ -49,6 +49,12 @@ fn main() -> eframe::Result<()> {
     logger::init(if files { logger::logs_dir() } else { None }, logger::level_from_name(prefs.as_ref().map_or("info", |p| p.log_level.as_str())));
     logger::install_crash_hooks(if files { logger::crashes_dir() } else { None });
     log::info!("Milan Pro {} starting ({})", updater::CURRENT, std::env::args().skip(1).collect::<Vec<_>>().join(" "));
+    // R46: Setup's relaunch passes --after-update; a version that fails to start twice is offered a roll back.
+    if files {
+        if let Some(dir) = updater::updates_dir() {
+            launch.rollback_offer = updater::start_marker(&dir, updater::CURRENT, std::env::args().any(|a| a == "--after-update"));
+        }
+    }
     let look = launch.look.unwrap_or_else(|| prefs.as_ref().map(|p| p.look).unwrap_or_default());
     launch.look = Some(look);
     // VP23 draws its own 32 px title bar (4.6); VP16 and Classic 2006 use the OS title bar. The app switches

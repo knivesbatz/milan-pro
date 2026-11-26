@@ -10,6 +10,11 @@ permissions:
 jobs:
   installer:
     runs-on: windows-latest
+    # R46: signing runs only when the secrets exist (SECURITY.md). A job-level env is what a step's `if` can read.
+    env:
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+      CODE_SIGN_PFX_BASE64: ${{ secrets.CODE_SIGN_PFX_BASE64 }}
+      CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,24 +30,66 @@ jobs:
       - run: choco install innosetup -y --no-progress
       - run: ./installer/fetch-ffmpeg.ps1
         shell: pwsh
+      # Authenticode (certificate pending: the step is skipped until CODE_SIGN_PFX_BASE64 and CODE_SIGN_PASSWORD exist).
+      - name: Sign the executables (Authenticode)
+        if: env.CODE_SIGN_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:CODE_SIGN_PASSWORD target\release\milan-pro.exe target\release\milan-plugin-host.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+          Remove-Item $pfx
       - name: Build installer
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" installer\milan-pro.iss
+      - name: Sign the installer (Authenticode)
+        if: env.CODE_SIGN_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODE_SIGN_PFX_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          $setup = Get-ChildItem release\MilanPro-*-Setup.exe
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:CODE_SIGN_PASSWORD $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed" }
+          Remove-Item $pfx
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem release\MilanPro-*-Setup.exe
+          # Checksum the in-app updater checks the download against (sha256sum format, LF). With a signing key compiled
+          # into the app this file is the only accepted source of the hash, so it is what gets signed below.
+          $hash = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLower()
+          [IO.File]::WriteAllText("$($setup.FullName).sha256", "$hash  $($setup.Name)`n")
+      # minisign (SECURITY.md): the secret is the whole minisign.key file, made with -W (no password) so this runs unattended.
+      - name: Sign the checksum (minisign)
+        if: env.MINISIGN_SECRET_KEY != ''
+        shell: pwsh
+        run: |
+          choco install minisign -y --no-progress
+          $key = Join-Path $env:RUNNER_TEMP 'minisign.key'
+          [IO.File]::WriteAllText($key, $env:MINISIGN_SECRET_KEY)
+          $sha = Get-ChildItem release\MilanPro-*-Setup.exe.sha256
+          minisign -S -s $key -m $sha.FullName -t "Milan Pro ${{ github.ref_name }}"
+          if ($LASTEXITCODE -ne 0) { throw "minisign failed" }
+          Remove-Item $key
       - name: Upload to release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $setup = Get-ChildItem release\MilanPro-*-Setup.exe
-          # Checksum the in-app updater falls back to when the API gives no asset digest (sha256sum format, LF).
-          $hash = (Get-FileHash -Algorithm SHA256 $setup.FullName).Hash.ToLower()
-          $sha = "$($setup.FullName).sha256"
-          [IO.File]::WriteAllText($sha, "$hash  $($setup.Name)`n")
-          # A draft until both files are up: a published release without its Setup.exe is what update checks see.
+          $files = @($setup.FullName, "$($setup.FullName).sha256")
+          if (Test-Path "$($setup.FullName).sha256.minisig") { $files += "$($setup.FullName).sha256.minisig" }
+          # A draft until every file is up: a published release without its Setup.exe is what update checks see.
+          # A pre-release tag (v0.8.0-beta.1) is published as a pre-release: only the Preview channel offers it.
+          $pre = if ("${{ github.ref_name }}" -match '-') { '--prerelease' } else { $null }
           gh release view "${{ github.ref_name }}" *> $null
-          if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --draft --title "Milan Pro ${{ github.ref_name }}" --generate-notes }
-          gh release upload "${{ github.ref_name }}" $setup.FullName $sha --clobber
+          if ($LASTEXITCODE -ne 0) { gh release create "${{ github.ref_name }}" --draft $pre --title "Milan Pro ${{ github.ref_name }}" --generate-notes }
+          gh release upload "${{ github.ref_name }}" @files --clobber
           if ($LASTEXITCODE -ne 0) { throw "Upload failed: the release stays a draft" }
           gh release edit "${{ github.ref_name }}" --draft=false

@@ -206,8 +206,25 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
 fn update(ui: &mut Ui, d: &mut Prefs) {
     ui.label("Updates:");
     super::field_box(ui, 4, |ui| {
+        use crate::updater::Channel;
         ui.set_width(ui.available_width());
         widgets::checkbox(ui, &mut d.auto_update, "Check for updates automatically at startup");
+        ui.horizontal(|ui| {
+            ui.label("Update channel:");
+            widgets::radio_value(ui, &mut d.update_channel, Channel::Stable, "Stable");
+            widgets::radio_value(ui, &mut d.update_channel, Channel::Preview, "Preview (pre-releases too)");
+        });
+        ui.horizontal(|ui| {
+            match &d.skipped_update {
+                Some(v) => ui.label(format!("Skipped version: {v}")),
+                None => ui.label("Skipped version: none"),
+            };
+            if widgets::push_button_enabled(ui, d.skipped_update.is_some(), "Clear").clicked() {
+                d.skipped_update = None;
+            }
+        });
+        widgets::checkbox(ui, &mut d.keep_previous, "Keep the previous version's installer (Help › Roll Back to Previous Version)");
+        ui.label(RichText::new(format!("Kept in {}", crate::updater::previous_dir().map(|p| p.display().to_string()).unwrap_or_default())).small());
     });
     ui.add_space(8.0);
     ui.label("Logging and crash reports:");
@@ -238,6 +255,7 @@ fn update(ui: &mut Ui, d: &mut Prefs) {
     });
     if default_all(ui) {
         (d.auto_update, d.log_level, d.crash_privacy) = (true, "info".into(), false);
+        (d.update_channel, d.keep_previous) = (Default::default(), false);
     }
 }
 

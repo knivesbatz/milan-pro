@@ -122,6 +122,7 @@ impl MeridianApp {
             armed: self.focus_of(false).is_some_and(|i| tl.audio_tracks[i].armed),
             any_armed: tl.audio_tracks.iter().any(|t| t.armed),
             recording: self.rec_start.is_some(),
+            rollback: self.rel.previous.is_some(),
             input_level: self.input.as_ref().map(|_| self.input_level),
             edge_mode: self.sel.edge.is_some(),
             mute_audio: self.mute_audio,
@@ -885,7 +886,9 @@ impl MeridianApp {
             }
             UnfinishedFeatures => self.unfinished_open = true,
             About => self.about = true,
-            CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
+            CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
+            // R46: Help › Roll Back to Previous Version: the kept installer, after the save prompt.
+            RollBack => self.rel.rollback = Some(false),
             // R44: a folder of system info, FFmpeg details, preferences, logs and crash reports.
             DiagnosticReport => self.rel.diagnostics = Some(dialogs::Diagnostics::start(ctx, self.prefs.crash_privacy)),
             // Edit
@@ -2432,7 +2435,13 @@ impl MeridianApp {
         use crate::updater::State;
         self.updater.poll(ctx, self.prefs.skipped_update.as_deref());
         let mut auto_check = self.prefs.auto_update;
-        let mut res = dialogs::update_window(ctx, &mut self.updater, &mut auto_check);
+        // R46: the roll-back copy follows the preference; no install while recording (a render is R12's guard below).
+        self.updater.keep_previous = self.prefs.keep_previous.then(crate::updater::previous_dir).flatten();
+        let blocked = crate::updater::install_guard(false, self.rec_start.is_some());
+        if matches!(self.updater.state, State::Ready(..)) && self.rel.previous.is_none() {
+            self.rel.previous = crate::updater::previous_dir().and_then(|d| crate::updater::rollback_target(&d));
+        }
+        let mut res = dialogs::update_window(ctx, &mut self.updater, &mut auto_check, blocked);
         if self.updater.auto {
             // MILAN_UPDATE_AUTO (end-to-end test): install without clicks; any other outcome ends the run.
             match &self.updater.state {
@@ -2984,7 +2993,7 @@ impl MeridianApp {
                 let lines = ["Track 1, event at 00:00:01;00: event FX (VEGAS Gaussian Blur)", r"Media offline: D:\Footage\interview.mxf (file not found)"];
                 self.vegas_report = Some((IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
             }
-            "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
+            "update" => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
             m => {
                 if let Some(k) = m.strip_prefix("menu:").and_then(|k| k.parse::<usize>().ok()) {
                     menus::request_open(ctx, k);

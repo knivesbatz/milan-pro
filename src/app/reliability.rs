@@ -4,6 +4,7 @@
 use eframe::egui;
 use std::path::PathBuf;
 use crate::project::CorruptOffer;
+use crate::ui::MenuAction;
 use crate::ui::dialogs::{self, CorruptChoice, CrashChoice, DiagAction, RecoverChoice};
 use super::MeridianApp;
 
@@ -22,12 +23,17 @@ pub struct Rel {
     /// R44: the newest crash report not offered yet, and Help › Create Diagnostic Report, open.
     pub crash_offer: Option<PathBuf>,
     pub diagnostics: Option<dialogs::Diagnostics>,
+    /// R46: the Roll Back dialog, open (true: offered because this version failed to start twice), the installer it
+    /// would run, and whether the first frame has cleared the start marker.
+    pub rollback: Option<bool>,
+    pub previous: Option<crate::updater::Previous>,
+    pub started: bool,
 }
 
 impl Rel {
     /// A modal of this module is open (keys go to it, not the timeline).
     pub fn modal(&self) -> bool {
-        self.save_version.is_some() || self.corrupt.is_some() || self.open_notes.is_some() || self.recover.is_some() || self.crash_offer.is_some() || self.diagnostics.is_some()
+        self.save_version.is_some() || self.corrupt.is_some() || self.open_notes.is_some() || self.recover.is_some() || self.crash_offer.is_some() || self.diagnostics.is_some() || self.rollback.is_some()
     }
 }
 
@@ -54,6 +60,29 @@ impl MeridianApp {
     }
 
     pub(super) fn show_reliability(&mut self, ctx: &egui::Context) {
+        if !self.rel.started {
+            // R46: the first frame: this version starts, so the start marker goes.
+            self.rel.started = true;
+            if self.rel.autosave {
+                if let Some(d) = crate::updater::updates_dir() {
+                    crate::updater::start_ok(&d);
+                }
+            }
+        }
+        if let Some(failed) = self.rel.rollback {
+            match dialogs::rollback_window(ctx, self.rel.previous.as_ref(), failed) {
+                Some(true) => {
+                    self.rel.rollback = None;
+                    if let Some(p) = self.rel.previous.clone() {
+                        log::info!("rolling back to {} with {}", p.version, p.exe.display());
+                        self.install_on_exit = Some((p.exe, p.sha256));
+                        self.request(ctx, MenuAction::Exit);
+                    }
+                }
+                Some(false) => self.rel.rollback = None,
+                None => {}
+            }
+        }
         if let Some(report) = self.rel.crash_offer.clone() {
             if let Some(choice) = dialogs::crash_offer_window(ctx, &report) {
                 match choice {

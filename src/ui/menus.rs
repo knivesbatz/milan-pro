@@ -74,6 +74,8 @@ pub struct CmdState {
     pub quantize: bool,
     /// An event is on the clipboard.
     pub clipboard: bool,
+    /// R46: an earlier version's installer is kept (Help › Roll Back to Previous Version).
+    pub rollback: bool,
     /// A time selection exists.
     pub selection: bool,
     pub looping: bool,
@@ -192,6 +194,7 @@ impl CmdState {
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
+            RollBack => self.rollback,
             Welcome => v23,
             OpenRecent(i) => i < self.recent.len(),
             Undo | UndoAll => self.can_undo,
@@ -1214,6 +1217,7 @@ pub const HELP: &[M] = &[
     S,
     C("Check for &Updates...", CheckForUpdates),
     C("Create &Diagnostic Report...", DiagnosticReport),
+    C("&Roll Back to Previous Version...", RollBack),
     V23(&X("Download User Manual", Later("R53"))),
     S,
     C("About Milan Pro...", About),
@@ -2035,6 +2039,7 @@ mod tests {
             multicam_create: true,
             multicam_track: true,
             multicam: true,
+            rollback: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

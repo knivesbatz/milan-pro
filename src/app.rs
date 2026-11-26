@@ -378,7 +378,7 @@ impl MeridianApp {
         let mut updater = crate::updater::Updater::from_env();
         if updater.auto || (prefs.auto_update && !launch.demo && launch.screenshot.is_none()) {
             // Off the startup path: the check waits a few seconds on its own thread.
-            updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }));
+            updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }), prefs.update_channel);
         }
         let (mut project, mut sel, mut message) = (Project::new("Untitled"), Selection::default(), None);
         if launch.demo {
@@ -567,6 +567,9 @@ impl MeridianApp {
         if app.rel.autosave {
             app.offer_recovery();
             app.offer_crash_report();
+            // R46: the kept installer Help › Roll Back would run, and the offer after two failed starts.
+            app.rel.previous = crate::updater::previous_dir().and_then(|d| crate::updater::rollback_target(&d));
+            app.rel.rollback = launch.rollback_offer.then_some(true);
         }
         if !launch.demo {
             app.prefs.overlays_placed = true;

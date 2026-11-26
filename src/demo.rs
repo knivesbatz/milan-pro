@@ -27,6 +27,8 @@ pub struct Launch {
     pub screenshot: Option<PathBuf>,
     pub panels: Vec<String>,
     pub drop_at: Option<egui::Pos2>,
+    /// R46: this version failed to start twice since the update (`updater::start_marker`): offer a roll back.
+    pub rollback_offer: bool,
 }
 
 impl Launch {
@@ -41,6 +43,7 @@ impl Launch {
                 let (x, y) = v.split_once(',')?;
                 Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
             }),
+            rollback_offer: false,
         }
     }
 }

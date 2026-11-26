@@ -40,6 +40,10 @@ pub struct Prefs {
     pub log_level: String,
     pub crash_privacy: bool,
     pub crash_seen: Option<String>,
+    /// R46: Preferences › Update: the channel (Stable, or Preview with pre-releases) and whether the current version's
+    /// installer is kept in `%LOCALAPPDATA%\MilanPro\updates\previous\` before an update, for Help › Roll Back.
+    pub update_channel: crate::updater::Channel,
+    pub keep_previous: bool,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
@@ -265,6 +269,8 @@ impl Default for Prefs {
             log_level: "info".into(),
             crash_privacy: false,
             crash_seen: None,
+            update_channel: Default::default(),
+            keep_previous: false,
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
