@@ -3,12 +3,10 @@
 //! the dialog goes; Close ends it.
 use eframe::egui::*;
 use crate::ui::icons::paint_icon;
-use crate::ui::theme::UiLook;
 use crate::ui::toolbar::{Bar, SEP, btn};
 
 pub struct CustomizeToolbar {
     pub bar: Bar,
-    pub look: UiLook,
     /// The bar's buttons as arranged so far.
     pub list: Vec<&'static str>,
     avail: Option<&'static str>,
@@ -16,13 +14,13 @@ pub struct CustomizeToolbar {
 }
 
 impl CustomizeToolbar {
-    pub fn new(bar: Bar, list: Vec<&'static str>, look: UiLook) -> Self {
-        Self { bar, look, list, avail: None, cur: None }
+    pub fn new(bar: Bar, list: Vec<&'static str>) -> Self {
+        Self { bar, list, avail: None, cur: None }
     }
 
     /// The buttons that can be added: the separator, then those the bar lacks.
     pub fn available(&self) -> Vec<&'static str> {
-        self.bar.allowed(self.look).map(|b| b.id).filter(|id| *id == SEP || !self.list.contains(id)).collect()
+        self.bar.allowed().map(|b| b.id).filter(|id| *id == SEP || !self.list.contains(id)).collect()
     }
 
     /// Add the chosen available button before the selected one (at the end with none), and select it.
@@ -51,9 +49,9 @@ impl CustomizeToolbar {
         }
     }
 
-    /// VEGAS's buttons for this bar and look.
+    /// VEGAS's buttons for this bar.
     pub fn reset(&mut self) {
-        self.list = self.bar.defaults(self.look);
+        self.list = self.bar.defaults();
         self.cur = None;
     }
 
@@ -62,7 +60,7 @@ impl CustomizeToolbar {
         let before = self.list.clone();
         let title = if self.bar == Bar::Main { "Customize Toolbar" } else { "Customize Timeline Toolbar" };
         let (close, x) = super::modal(ctx, "customize_toolbar", title, vec2(620.0, 420.0), |ui| {
-            let (mut close, look) = (false, self.look);
+            let mut close = false;
             ui.horizontal_top(|ui| {
                 // One list: rows of glyph and name; the selected row's index.
                 let list = |ui: &mut Ui, salt: &str, ids: &[&'static str], sel: Option<usize>| -> Option<usize> {
@@ -77,7 +75,7 @@ impl CustomizeToolbar {
                                     let r = ui.selectable_label(sel == Some(k), format!("       {}", b.name));
                                     if *id != SEP {
                                         let g = Rect::from_center_size(pos2(r.rect.min.x + 12.0, r.rect.center().y), Vec2::splat(16.0));
-                                        paint_icon(ui.painter(), g, b.icon, look, None);
+                                        paint_icon(ui.painter(), g, b.icon, None);
                                     }
                                     if r.clicked() {
                                         hit = Some(k);
@@ -141,11 +139,11 @@ mod tests {
     /// Add, remove, reorder and reset, and the bar reads back what was saved (without ids it cannot hold).
     #[test]
     fn toolbar_add_remove_reorder_and_reset() {
-        let mut d = CustomizeToolbar::new(Bar::Main, Bar::Main.defaults(UiLook::Vegas23), UiLook::Vegas23);
+        let mut d = CustomizeToolbar::new(Bar::Main, Bar::Main.defaults());
         assert_eq!(d.list, ["New", "Open", "Save", "Render", "Properties", "Cut", "Copy", "Paste", "Undo", "Redo"]);
         let avail = d.available();
         assert!(avail[0] == SEP && avail.contains(&"Split") && !avail.contains(&"Save"));
-        assert!(!avail.contains(&"Play") && !avail.contains(&"Tutorials"), "no play buttons on the main bar; Tutorials is VEGAS 16's");
+        assert!(!avail.contains(&"Play"), "no play buttons on the main bar");
         d.cur = Some(2);
         d.avail = Some("Split");
         d.add();
@@ -164,19 +162,17 @@ mod tests {
         d.cur = Some(0);
         d.remove();
         assert_eq!((d.list[0], d.cur), ("Split", Some(0)));
-        let saved = BTreeMap::from([(Bar::Main.key(UiLook::Vegas23), d.list.iter().map(|s| s.to_string()).chain(["Nope".into(), "Play".into()]).collect())]);
-        assert_eq!(Bar::Main.buttons(&saved, UiLook::Vegas23), d.list);
-        assert_eq!(Bar::Main.buttons(&saved, UiLook::Vegas16), Bar::Main.defaults(UiLook::Vegas16), "each look has its own bar");
+        let saved = BTreeMap::from([(Bar::Main.key(), d.list.iter().map(|s| s.to_string()).chain(["Nope".into(), "Play".into()]).collect())]);
+        assert_eq!(Bar::Main.buttons(&saved), d.list);
+        assert_eq!(Bar::Timeline.buttons(&saved), Bar::Timeline.defaults(), "each bar has its own key");
         d.reset();
-        assert_eq!(d.list, Bar::Main.defaults(UiLook::Vegas23));
-        // The timeline bar holds the play buttons; VEGAS 16's has no Smart Split or Color Grading.
-        let t16 = Bar::Timeline.defaults(UiLook::Vegas16);
-        assert!(t16.starts_with(&["Record", "Loop"]) && !t16.contains(&"SmartSplit") && *t16.last().unwrap() == "IgnoreGrouping");
-        assert!(Bar::Timeline.defaults(UiLook::Vegas23).ends_with(&["OpenParent", "OpenNested", "CreateNested"]));
-        for look in [UiLook::Vegas16, UiLook::Vegas23] {
-            for bar in [Bar::Main, Bar::Timeline] {
-                assert!(bar.defaults(look).iter().all(|id| bar.allowed(look).any(|b| b.id == *id)), "{bar:?} {look:?}");
-            }
+        assert_eq!(d.list, Bar::Main.defaults());
+        // The timeline bar holds the play buttons, Smart Split and the nested timeline buttons.
+        let tl = Bar::Timeline.defaults();
+        assert!(tl.starts_with(&["Record", "Loop"]) && tl.contains(&"SmartSplit"));
+        assert!(tl.ends_with(&["OpenParent", "OpenNested", "CreateNested"]));
+        for bar in [Bar::Main, Bar::Timeline] {
+            assert!(bar.defaults().iter().all(|id| bar.allowed().any(|b| b.id == *id)), "{bar:?}");
         }
     }
 }

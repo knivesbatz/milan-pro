@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use crate::audio::Ring;
 use crate::engine::loudness::{Meter, Mode, Readings};
 use super::menus;
-use super::theme::{self, UiLook};
+use super::theme;
 
 /// Options › Loudness Meters › True Peak Range: the bottom of the true-peak scale (to 0 dB).
 pub const TP_RANGES: [f64; 8] = [-12.0, -24.0, -42.0, -60.0, -78.0, -90.0, -120.0, -138.0];
@@ -204,11 +204,7 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
         }
         painter.text(pos2(rect.min.x + 8.0, top), Align2::LEFT_TOP, *label, small.clone(), t.text_dim);
         let bx = Rect::from_min_size(pos2(rect.min.x + 8.0, top + 13.0), vec2(stats_w - 16.0, 20.0));
-        if t.classic() {
-            super::widgets::sunken(&painter, bx, t.meter_bg, &t.metal);
-        } else {
-            painter.rect_filled(bx, 2.0, t.meter_bg);
-        }
+        super::widgets::sunken(&painter, bx, t.meter_bg, &t.metal);
         painter.text(bx.right_center() - vec2(38.0, 0.0), Align2::RIGHT_CENTER, value, font.clone(), t.text);
         painter.text(bx.right_center() - vec2(34.0, 0.0), Align2::LEFT_CENTER, *unit, small.clone(), t.text_dim);
         if let Some(on) = lamp {
@@ -273,7 +269,6 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
     let bottom = TP_RANGES[(p.range as usize).min(TP_RANGES.len() - 1)];
     let ty = |db: f64| area.max.y - area.height() * ((db - bottom) / -bottom).clamp(0.0, 1.0) as f32;
     let tx = bars_end + 24.0 + if p.labels { 24.0 } else { 0.0 };
-    let v16 = t.look() == UiLook::Vegas16;
     for (c, name) in ["L", "R"].iter().enumerate() {
         let well = Rect::from_min_size(pos2(tx + c as f32 * (bar_w + 4.0), area.min.y), vec2(bar_w, area.height()));
         if well.max.x > rect.max.x {
@@ -282,7 +277,7 @@ pub fn loudness_meters(ui: &mut Ui, l: &mut Loudness, ring: &Arc<Ring>, p: &Loud
         super::widgets::meter_well(&painter, well, &t);
         let v = r.true_peak[c];
         if v.is_finite() && v > bottom {
-            super::master_bus::paint_bar(&painter, well, ty(v.min(0.0)), &|d: f32| ty(d as f64), v16, 1.0);
+            super::master_bus::paint_bar(&painter, well, ty(v.min(0.0)), &|d: f32| ty(d as f64));
         }
         if v > p.mode.max_true_peak() {
             painter.rect_filled(Rect::from_min_size(well.min, vec2(bar_w, 4.0)), 0.0, t.meter_red);

@@ -1,11 +1,11 @@
-//! Events on the lanes (§5.9.4): VP16 header bar + track-colour body, VP23 name label + bottom-right chips;
+//! Events on the lanes (§5.9.4): a gradient header bar with the name and buttons over the track-colour body;
 //! filmstrip thumbnails, waveforms, fade curves and handles, selection outline.
 use eframe::egui::*;
 use crate::audio::PEAKS_PER_SEC;
 use crate::edit;
 use crate::project::Clip;
 use crate::ui::icons::{Icon, paint_icon};
-use crate::ui::theme::{Theme, UiLook};
+use crate::ui::theme::Theme;
 
 pub(super) struct Ev<'a> {
     /// Whole event, [start, end] × [lane top + 1, lane bottom − 2]; may extend past the visible lanes.
@@ -39,8 +39,6 @@ pub(super) struct Ev<'a> {
     /// R18a: View › Event Media Markers: the media's markers as (timeline time, name), and Show Marker Labels.
     pub marks: Vec<(f64, &'a str)>,
     pub labels: bool,
-    /// R18a: View › Event Length (VEGAS 23): the event's length, shown at its top right.
-    pub length: Option<String>,
 }
 
 /// R18a: where media `m`'s markers (seconds into its file) show in event `c`, on each pass of a looping event.
@@ -82,11 +80,9 @@ fn mul(c: Color32, k: f32) -> Color32 {
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
-/// Header bar height (VP16 22 px, Classic 2006 16 px): 16 px under 40 px events, none under 24 px. VP23 has none.
+/// Header bar height (16 px): 16 px under 40 px events too, none under 24 px.
 fn header_h(t: &Theme, h: f32) -> f32 {
-    if t.look() == UiLook::Vegas23 {
-        0.0
-    } else if h >= 40.0 {
+    if h >= 40.0 {
         t.m.event_header_h
     } else if h >= 24.0 {
         16.0
@@ -104,9 +100,6 @@ pub(super) fn paint_event(
     wave: Option<&[Vec<f32>]>,
     thumb: &mut dyn FnMut(f64) -> Option<TextureId>,
 ) {
-    // Header-bar looks (VP16, Classic 2006) against VP23's label-and-chips.
-    let v16 = t.look() != UiLook::Vegas23;
-    let classic = t.classic();
     let r = ev.rect;
     let vis = r.intersect(p.clip_rect());
     if vis.width() <= 0.0 || vis.height() <= 0.0 {
@@ -114,14 +107,13 @@ pub(super) fn paint_event(
     }
     let hh = header_h(t, r.height());
     let body = r.with_min_y(r.min.y + hh);
-    let base = if !v16 && !ev.is_video { mul(ev.color, 0.5) } else { ev.color };
-    p.rect_filled(r, 0.0, base);
+    p.rect_filled(r, 0.0, ev.color);
 
     if ev.is_video {
-        paint_filmstrip(p, ev, v16, if v16 { body } else { r }, thumb);
+        paint_filmstrip(p, ev, body, thumb);
     } else if let Some(chans) = wave {
-        // Classic 2006 draws the waveform dark on the pastel event (Vegas 6); VP16 pale on the track colour.
-        let ink = if classic { mul(ev.color, 0.45) } else if v16 { ev.color.lerp_to_gamma(Color32::WHITE, 0.55) } else { ev.color };
+        // The waveform dark on the pastel event (Vegas 6).
+        let ink = mul(ev.color, 0.45);
         // One lane per channel, stacked, each around its own centre line.
         let area = body.shrink2(vec2(0.0, 2.0));
         let lane_h = area.height() / chans.len() as f32;
@@ -129,7 +121,7 @@ pub(super) fn paint_event(
             let lane = Rect::from_x_y_ranges(area.x_range(), Rangef::new(area.min.y + lane_h * k as f32, area.min.y + lane_h * (k + 1) as f32));
             if chans.len() > 1 {
                 let line = Rect::from_x_y_ranges(lane.x_range(), Rangef::new(lane.center().y.round(), lane.center().y.round() + 1.0));
-                p.rect_filled(line.intersect(p.clip_rect()), 0.0, mul(ev.color, if v16 { 0.75 } else { 0.8 }));
+                p.rect_filled(line.intersect(p.clip_rect()), 0.0, mul(ev.color, 0.75));
             }
             paint_wave(p, ev, lane.shrink2(vec2(0.0, 1.0)), peaks, ink);
         }
@@ -145,17 +137,13 @@ pub(super) fn paint_event(
     if r.width() >= 3.0 {
         p.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(r.max.y - 1.0, r.max.y)), 0.0, mul(ev.color, 0.73));
     }
-    paint_fades(p, t, ev, if v16 { body } else { r });
+    paint_fades(p, t, ev, body);
 
-    if v16 {
-        if hh > 0.0 {
-            paint_header16(p, t, ev, Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh)));
-        }
-    } else {
-        paint_label23(p, t, ev);
+    if hh > 0.0 {
+        paint_header(p, t, ev, Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh)));
     }
     if ev.hovered {
-        paint_handles(p, t, ev, if v16 { body } else { r });
+        paint_handles(p, t, ev, body);
     }
     paint_level(p, t, ev);
     if ev.selected {
@@ -232,26 +220,21 @@ fn paint_hatch(p: &Painter, r: Rect, ink: Color32) {
 
 /// Width of one filmstrip frame in an event `h` px tall (`paint_filmstrip`'s cell).
 pub(super) fn thumb_w(t: &Theme, h: f32, aspect: f32) -> f32 {
-    let area_h = if t.look() != UiLook::Vegas23 { h - header_h(t, h) } else { h };
+    let area_h = h - header_h(t, h);
     ((area_h - 1.0) * aspect).round().max(4.0)
 }
 
 /// Filmstrip: as many unstretched frames as fit, abutting from the start; the leftover at the end shows the track
 /// colour. Stills show one image at the start.
-fn paint_filmstrip(p: &Painter, ev: &Ev, v16: bool, area: Rect, thumb: &mut dyn FnMut(f64) -> Option<TextureId>) {
+fn paint_filmstrip(p: &Painter, ev: &Ev, area: Rect, thumb: &mut dyn FnMut(f64) -> Option<TextureId>) {
     let h = area.height() - 1.0;
     if h < 8.0 {
         return;
     }
     let w = (h * ev.aspect).round().max(4.0);
     let ew = area.width();
-    // VP16: contiguous whole frames from the start, the leftover shows the track colour, stills show one image.
-    // VP23: frames (stills too) repeat across the full width, the last one cropped.
-    let n = match (v16, ev.still) {
-        (true, true) => 1,
-        (true, false) => ((ew / w).floor() as i64).max(1),
-        (false, _) => ((ew / w).ceil() as i64).max(1),
-    };
+    // Contiguous whole frames from the start, the leftover shows the track colour, stills show one image.
+    let n = if ev.still { 1 } else { ((ew / w).floor() as i64).max(1) };
     let step = w;
     let vis = p.clip_rect();
     let (k0, k1) = if n > 1 {
@@ -308,11 +291,10 @@ fn paint_wave(p: &Painter, ev: &Ev, area: Rect, peaks: &[f32], ink: Color32) {
 }
 
 /// Fade curves (in their Fade Type shape) from the bottom corners up to the top at the fade lengths; the area above
-/// the curve is darkened. VP16: 1 px blue (white when selected); VP23: 2 px white.
+/// the curve is darkened: 1 px blue (white when selected).
 fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
-    let v16 = t.look() != UiLook::Vegas23;
-    let curve = if v16 && !ev.selected { t.fade_curve } else if v16 { t.fade_curve_selected } else { t.fade_curve };
-    let stroke = Stroke::new(if v16 { 1.0_f32 } else { 2.0_f32 }, curve);
+    let curve = if !ev.selected { t.fade_curve } else { t.fade_curve_selected };
+    let stroke = Stroke::new(1.0_f32, curve);
     let fades = [(ev.clip.fade_in, false, ev.clip.fade_in_curve), (ev.clip.fade_out, true, ev.clip.fade_out_curve)];
     for (len, out, shape) in fades {
         let w = (len * ev.pps) as f32;
@@ -345,7 +327,7 @@ fn paint_fades(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
 }
 
 /// The event's buttons where they sit in event rect `r`, right to left (⋯, fx, Pan/Crop on video, Generated Media on
-/// generated events): VP16 16 px glyphs on an 18 px pitch in the header bar, VP23 20×20 chips at the bottom right.
+/// generated events): 16 px glyphs on an 18 px pitch in the header bar.
 /// Ones that don't fit are left out.
 pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool, generated: bool) -> Vec<(Icon, Rect)> {
     let mut icons = vec![Icon::More, Icon::TrackFx];
@@ -355,47 +337,37 @@ pub(super) fn buttons(t: &Theme, r: Rect, is_video: bool, generated: bool) -> Ve
     if generated {
         icons.push(Icon::GeneratedMedia);
     }
-    if t.look() != UiLook::Vegas23 {
-        let hh = header_h(t, r.height());
-        let bar = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh));
-        icons.truncate(if hh >= 16.0 { ((bar.width() - 28.0) / 18.0).floor().max(0.0) as usize } else { 0 });
-        let at = |k: usize| Rect::from_center_size(pos2(bar.max.x - 2.0 - 18.0 * (k + 1) as f32 + 9.0, bar.center().y), vec2(16.0, 16.0));
-        icons.into_iter().enumerate().map(|(k, i)| (i, at(k))).collect()
-    } else {
-        if r.height() < 46.0 || r.width() < 22.0 * icons.len() as f32 + 30.0 {
-            icons.truncate(if r.height() >= 24.0 && r.width() >= 60.0 { 1 } else { 0 });
-        }
-        let at = |k: usize| Rect::from_min_size(pos2(r.max.x - 2.0 - 20.0 - 22.0 * k as f32, r.max.y - 2.0 - 20.0), vec2(20.0, 20.0));
-        icons.into_iter().enumerate().map(|(k, i)| (i, at(k))).collect()
-    }
+    let hh = header_h(t, r.height());
+    let bar = Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + hh));
+    icons.truncate(if hh >= 16.0 { ((bar.width() - 28.0) / 18.0).floor().max(0.0) as usize } else { 0 });
+    let at = |k: usize| Rect::from_center_size(pos2(bar.max.x - 2.0 - 18.0 * (k + 1) as f32 + 9.0, bar.center().y), vec2(16.0, 16.0));
+    icons.into_iter().enumerate().map(|(k, i)| (i, at(k))).collect()
 }
 
-/// VP16 header bar: name at x+4 (white, 12 px, truncated) and right-aligned glyph buttons on an 18 px pitch.
-fn paint_header16(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
+/// The header bar: name at x+4 (truncated) and right-aligned glyph buttons on an 18 px pitch.
+fn paint_header(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
     let icons = buttons(t, ev.rect, ev.is_video, ev.generated);
     let pi = p.with_clip_rect(bar.intersect(p.clip_rect()));
-    if t.classic() {
-        // Gradient header: the track colour lit towards white at the top, a darker rule under it (Vegas 6).
-        let vis = bar.intersect(p.clip_rect());
-        let (top, bottom) = (ev.color.lerp_to_gamma(Color32::WHITE, 0.55), ev.color.lerp_to_gamma(Color32::WHITE, 0.1));
-        let mut mesh = Mesh::default();
-        for (y, c) in [(bar.min.y, top), (bar.max.y, bottom)] {
-            mesh.colored_vertex(pos2(vis.min.x, y), c);
-            mesh.colored_vertex(pos2(vis.max.x, y), c);
-        }
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(1, 3, 2);
-        pi.add(mesh);
-        pi.rect_filled(Rect::from_x_y_ranges(bar.x_range(), Rangef::new(bar.max.y - 1.0, bar.max.y)), 0.0, mul(ev.color, 0.6));
+    // Gradient header: the track colour lit towards white at the top, a darker rule under it (Vegas 6).
+    let vis = bar.intersect(p.clip_rect());
+    let (top, bottom) = (ev.color.lerp_to_gamma(Color32::WHITE, 0.55), ev.color.lerp_to_gamma(Color32::WHITE, 0.1));
+    let mut mesh = Mesh::default();
+    for (y, c) in [(bar.min.y, top), (bar.max.y, bottom)] {
+        mesh.colored_vertex(pos2(vis.min.x, y), c);
+        mesh.colored_vertex(pos2(vis.max.x, y), c);
     }
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(1, 3, 2);
+    pi.add(mesh);
+    pi.rect_filled(Rect::from_x_y_ranges(bar.x_range(), Rangef::new(bar.max.y - 1.0, bar.max.y)), 0.0, mul(ev.color, 0.6));
     for (icon, r) in &icons {
-        paint_icon(&pi, *r, *icon, t.look(), None);
+        paint_icon(&pi, *r, *icon, None);
         fx_dot(&pi, t, ev, *icon, *r);
     }
     let name_w = bar.max.x - 2.0 - 18.0 * icons.len() as f32 - bar.min.x - 6.0;
     if name_w > 8.0 {
-        // Classic 2006: black Tahoma on the light gradient.
-        let ink = if t.classic() { t.text } else { t.event_text };
+        // Black Tahoma on the light gradient.
+        let ink = t.text;
         paint_name(&pi, ev, pos2(bar.min.x + 4.0, bar.center().y), name_w, t.font(t.font.event_name), ink);
     }
 }
@@ -418,39 +390,7 @@ fn paint_name(p: &Painter, ev: &Ev, left_center: Pos2, w: f32, font: FontId, col
     size
 }
 
-/// VP23: name label box at the top-left and the 20×20 chips at the bottom-right.
-fn paint_label23(p: &Painter, t: &Theme, ev: &Ev) {
-    let r = ev.rect;
-    let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
-    if r.height() >= 20.0 && r.width() >= 16.0 {
-        let font = t.font(t.font.event_name);
-        let galley = p.layout_no_wrap(label(ev.clip), font, t.event_text);
-        let bw = (galley.size().x + 8.0).min(r.width());
-        let b = Rect::from_min_size(r.min, vec2(bw, 20.0));
-        pr.rect_filled(b, 0.0, t.event_label_bg);
-        pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
-        let name_w = bw;
-        pr.with_clip_rect(b.shrink(1.0).intersect(pr.clip_rect())).galley(pos2(b.min.x + 4.0, b.center().y - galley.size().y * 0.5), galley, t.event_text);
-        // R18a: View › Event Length: the length in a box like the name's at the top right, where it fits beside it.
-        if let Some(len) = &ev.length {
-            let g = p.layout_no_wrap(len.clone(), t.font(t.font.event_name), t.event_text);
-            let lw = g.size().x + 8.0;
-            if r.width() >= name_w + lw + 4.0 {
-                let b = Rect::from_min_size(pos2(r.max.x - lw, r.min.y), vec2(lw, 20.0));
-                pr.rect_filled(b, 0.0, t.event_label_bg);
-                pr.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.event_label_border), StrokeKind::Inside);
-                pr.galley(pos2(b.min.x + 4.0, b.center().y - g.size().y * 0.5), g, t.event_text);
-            }
-        }
-    }
-    for (icon, c) in buttons(t, r, ev.is_video, ev.generated) {
-        pr.rect_filled(c, t.radius(2), t.event_chip_bg);
-        paint_icon(&pr, c.shrink(2.0), icon, t.look(), Some(t.text_bright));
-        fx_dot(&pr, t, ev, icon, c);
-    }
-}
-
-/// The fx button's accent dot while the event has FX; a red "!" badge (every look) when one of its OFX plug-ins is
+/// The fx button's accent dot while the event has FX; a red "!" badge when one of its OFX plug-ins is
 /// bypassed (R32: failed, crashed, turned off or missing; the FX window says why).
 fn fx_dot(p: &Painter, t: &Theme, ev: &Ev, icon: Icon, r: Rect) {
     if icon != Icon::TrackFx || ev.clip.fx.is_empty() {
@@ -465,37 +405,21 @@ fn fx_dot(p: &Painter, t: &Theme, ev: &Ev, icon: Icon, r: Rect) {
     }
 }
 
-/// Hover handles: fade handles at the top corners (VP16 blue quarter-arcs, VP23 cyan 7×7 triangles) and the
-/// VP23 "II" trim grips at mid-height.
+/// Hover handles: blue quarter-arc fade handles at the top corners.
 fn paint_handles(p: &Painter, t: &Theme, ev: &Ev, area: Rect) {
     let r = ev.rect;
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     let xi = (area.min.x + (ev.clip.fade_in * ev.pps) as f32).min(r.max.x);
     let xo = (area.max.x - (ev.clip.fade_out * ev.pps) as f32).max(r.min.x);
-    if t.look() != UiLook::Vegas23 {
-        let arc = |c: Pos2, a0: f32, a1: f32| {
-            let pts: Vec<Pos2> = (0..=8).map(|i| {
-                let a = (a0 + (a1 - a0) * i as f32 / 8.0).to_radians();
-                c + vec2(a.cos(), a.sin()) * 5.0
-            }).collect();
-            pr.add(Shape::line(pts, Stroke::new(2.0_f32, t.fade_handle)));
-        };
-        arc(pos2(xi, r.min.y), 0.0, 90.0);
-        arc(pos2(xo, r.min.y), 90.0, 180.0);
-    } else {
-        let y = r.min.y;
-        pr.add(Shape::convex_polygon(vec![pos2(xi, y), pos2(xi + 7.0, y), pos2(xi, y + 7.0)], t.fade_handle, Stroke::NONE));
-        pr.add(Shape::convex_polygon(vec![pos2(xo - 7.0, y), pos2(xo, y), pos2(xo, y + 7.0)], t.fade_handle, Stroke::NONE));
-        if r.height() >= 18.0 {
-            for x in [r.min.x + 1.0, r.max.x - 7.0] {
-                let g = Rect::from_min_size(pos2(x, r.center().y - 7.0), vec2(6.0, 14.0));
-                pr.rect_filled(g, 0.0, t.event_chip_bg);
-                for dx in [1.5, 3.5] {
-                    pr.rect_filled(Rect::from_min_size(pos2(g.min.x + dx, g.min.y + 3.0), vec2(1.0, 8.0)), 0.0, t.text_bright);
-                }
-            }
-        }
-    }
+    let arc = |c: Pos2, a0: f32, a1: f32| {
+        let pts: Vec<Pos2> = (0..=8).map(|i| {
+            let a = (a0 + (a1 - a0) * i as f32 / 8.0).to_radians();
+            c + vec2(a.cos(), a.sin()) * 5.0
+        }).collect();
+        pr.add(Shape::line(pts, Stroke::new(2.0_f32, t.fade_handle)));
+    };
+    arc(pos2(xi, r.min.y), 0.0, 90.0);
+    arc(pos2(xo, r.min.y), 90.0, 180.0);
 }
 
 /// Level line (gain or opacity) across the event while it is hovered or below full level, with the 12×5 pill handle
@@ -507,7 +431,7 @@ fn paint_level(p: &Painter, t: &Theme, ev: &Ev) {
     let pr = p.with_clip_rect(r.intersect(p.clip_rect()));
     pr.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, t.fade_handle);
     if ev.hovered && r.width() >= 40.0 {
-        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), t.radius(2), t.fade_handle);
+        pr.rect_filled(Rect::from_center_size(pos2(r.center().x, y + 2.0), vec2(12.0, 5.0)), 0.0, t.fade_handle);
     }
 }
 

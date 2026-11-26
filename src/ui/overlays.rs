@@ -153,9 +153,9 @@ pub fn draw_overlays_toolbar(ui: &mut Ui, v: &mut OverlaysView) {
         ui.painter().rect_filled(rect, CornerRadius::same(t.m.widget_radius), t.button_hover_bg);
     }
     let icon = Rect::from_min_size(pos2(rect.min.x + 3.0, rect.center().y - 8.0), vec2(16.0, 16.0));
-    paint_icon(ui.painter(), icon, Icon::Import, t.look(), None);
+    paint_icon(ui.painter(), icon, Icon::Import, None);
     ui.painter().text(pos2(icon.max.x + 4.0, rect.center().y), Align2::LEFT_CENTER, "Import Pack...", t.font(t.font.ui), t.text);
-    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(16.0, 16.0)), Icon::DropDown, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(16.0, 16.0)), Icon::DropDown, None);
     let resp = resp.on_hover_text("Import an overlay pack");
     let mut pick = None;
     chrome::with_menu_style(ui.ctx(), &t, || {
@@ -208,7 +208,7 @@ pub fn draw_overlays_toolbar(ui: &mut Ui, v: &mut OverlaysView) {
         arrow_menu(ui, &m, &mut views);
     }
     let (icon, _) = ui.allocate_exact_size(vec2(22.0, t.m.button), Sense::hover());
-    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, None);
     widgets::search_field(ui, &mut v.query, "Search overlays and tags", 150.0);
     for j in &v.lib.jobs {
         ui.add_space(10.0);
@@ -295,7 +295,7 @@ pub fn draw_overlays(ui: &mut Ui, v: &mut OverlaysView, project: &mut Project, h
 
 fn tree(ui: &mut Ui, v: &mut OverlaysView, cmds: &mut Vec<Cmd>) {
     let t = theme::get();
-    let bin = if t.look() == theme::UiLook::Vegas16 { Icon::MediaBin } else { Icon::TrackVideo };
+    let bin = Icon::TrackVideo;
     for (icon, label, n) in [(bin, "All Overlays", Node::All), (Icon::Favorite, "Favorites", Node::Favorites), (bin, "Recent", Node::Recent)] {
         let (r, _) = widgets::tree_row(ui, 0, None, Some(icon), label, v.node == n);
         if r.clicked() {
@@ -338,14 +338,14 @@ fn tree(ui: &mut Ui, v: &mut OverlaysView, cmds: &mut Vec<Cmd>) {
 fn badge(p: &Painter, bl: Pos2, text: &str) {
     let t = theme::get();
     let r = Rect::from_min_max(bl - vec2(0.0, 14.0), bl + vec2(14.0, 0.0));
-    p.rect_filled(r, t.radius(2), Color32::from_black_alpha(170));
+    p.rect_filled(r, 0.0, Color32::from_black_alpha(170));
     p.text(r.center(), Align2::CENTER_CENTER, text, t.font(11.0), Color32::WHITE);
 }
 
-/// Tiles as Media Generators': VP16 100×60 thumbnails, VP23 120×75; only those on screen are probed and decoded.
+/// Tiles as Media Generators': 120×75 thumbnails; only those on screen are probed and decoded.
 fn grid(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], thumbs: &mut Thumbs, cmds: &mut Vec<Cmd>) {
     let t = theme::get();
-    let (thumb, gap) = if t.look() == theme::UiLook::Vegas16 { (vec2(100.0, 60.0), 16.0) } else { (vec2(120.0, 75.0), 12.0) };
+    let (thumb, gap) = (vec2(120.0, 75.0), 12.0);
     let tile = thumb + vec2(16.0, 36.0);
     let width = ui.available_width().max(tile.x + gap);
     let cols = (((width - gap) / (tile.x + gap)).floor() as usize).max(1);
@@ -381,7 +381,7 @@ fn grid(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], thumbs: &mut Thumbs,
         let fav = v.lib.index.favorites.contains(&path);
         if fav || resp.hovered() {
             let star = Rect::from_min_size(pos2(th.max.x - 17.0, th.min.y + 1.0), vec2(16.0, 16.0));
-            paint_icon(ui.painter(), star, Icon::Favorite, t.look(), Some(if fav { t.accent } else { t.text_dim }));
+            paint_icon(ui.painter(), star, Icon::Favorite, Some(if fav { t.accent } else { t.text_dim }));
             if ui.interact(star, resp.id.with("fav"), Sense::click()).on_hover_text(if fav { "Remove from Favorites" } else { "Add to Favorites" }).clicked() {
                 cmds.push(Cmd::Favorite(path.clone()));
             }
@@ -430,7 +430,7 @@ fn details(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], fps: f64, cmds: &
         widgets::row_cells(ui, r.rect, &COLS, &values, if selected { Color32::WHITE } else { t.text });
         if ix.favorites.contains(&it.path) {
             let star = Rect::from_min_size(pos2(r.rect.min.x + COLS[0].1 - 22.0, r.rect.center().y - 8.0), vec2(16.0, 16.0));
-            paint_icon(ui.painter(), star, Icon::Favorite, t.look(), Some(if selected { Color32::WHITE } else { t.accent }));
+            paint_icon(ui.painter(), star, Icon::Favorite, Some(if selected { Color32::WHITE } else { t.accent }));
         }
         item_interaction(ui, v, &r, &it.path, cmds);
     }
@@ -753,7 +753,7 @@ mod tests {
         assert!(!place_in_layout(&mut l), "once");
         let mut none: Layout = serde_json::from_str(r#"{"name":"","groups":[{"tabs":["Trimmer"],"active":0,"width":0}],"height":null,"track_list_w":200}"#).unwrap();
         assert!(!place_in_layout(&mut none) && none.groups[0].tabs == [Panel::Trimmer]);
-        let t = theme::Theme::new(theme::LookChoice::VEGAS23);
+        let t = theme::Theme::new();
         let mut d = super::super::dock::Dock::new(&t);
         let mut b = d.layout("");
         assert!(!place_in_layout(&mut b));

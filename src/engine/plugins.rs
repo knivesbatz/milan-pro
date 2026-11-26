@@ -91,9 +91,9 @@ pub struct PluginInfo {
     /// The VEGAS name without "VEGAS ".
     pub name: &'static str,
     pub kind: PluginKind,
-    /// VP16 chooser folder (`Milan\{group}`).
+    /// Grouping (`Milan\{group}`), shown in the chooser's description strip.
     pub group: &'static str,
-    /// VP23 chooser chip.
+    /// Chooser chip.
     pub category: &'static str,
     pub desc: &'static str,
     pub params: &'static [ParamSpec],

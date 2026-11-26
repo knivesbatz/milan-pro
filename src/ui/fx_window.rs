@@ -85,12 +85,9 @@ pub fn animated(fx: &Fx) -> bool {
     fx.params.values().any(|k| k.keys.len() > 1 || k.keys.iter().any(|k| k.t != 0.0))
 }
 
-/// VP23 draws widgets flat and borderless: give slider rails, check boxes and fields a visible fill and edge here.
+/// Give slider rails, check boxes and fields a visible fill and edge in the FX window.
 pub fn field_style(ui: &mut Ui) {
     let t = super::theme::get();
-    if t.look() == super::theme::UiLook::Vegas16 {
-        return;
-    }
     let w = &mut ui.visuals_mut().widgets;
     (w.inactive.bg_fill, w.inactive.weak_bg_fill) = (t.input_bg, t.input_bg);
     w.inactive.bg_stroke = Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.5));

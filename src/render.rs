@@ -367,7 +367,7 @@ impl Template {
         self.container == "image"
     }
 
-    /// The format heading the VP16 tree groups templates under: "MP4 (H.264 / AAC)".
+    /// The format heading of a template: "MP4 (H.264 / AAC)".
     pub fn format(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         parts.extend(self.video.as_ref().and_then(|v| v.codec()).map(|c| c.label));
@@ -376,7 +376,7 @@ impl Template {
         if parts.is_empty() || (parts.len() == 1 && parts[0] == c) { c.to_string() } else { format!("{c} ({})", parts.join(" / ")) }
     }
 
-    /// The template's place in the VP23 Usecase tree: 0 YouTube, 1 Social Media, 2 Web & Streaming, 3 Video VFX &
+    /// The template's place in the Usecase tree: 0 YouTube, 1 Social Media, 2 Web & Streaming, 3 Video VFX &
     /// Master, 4 Image Compositing, 5 DVD & Blu-ray, 6 Audio Mix & Master, 7 Podcast & Audio Streaming.
     pub fn usecase(&self) -> usize {
         let Some(v) = &self.video else {

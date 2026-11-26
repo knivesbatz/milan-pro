@@ -11,7 +11,7 @@ use crate::ui::dialogs::{self, UpdateResult, WelcomeResult};
 use crate::ui::dock::{Area, Dock, LayoutRef, Panel};
 use crate::ui::keymap::{Command, Command::*, Scope};
 use crate::ui::menus::{self, CmdState};
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme;
 use crate::ui::{self, MenuAction, Playback};
 use super::MeridianApp;
 
@@ -71,7 +71,6 @@ impl MeridianApp {
         let clip = self.sel.clips.last().and_then(|id| self.project.clip(id));
         let tl = &self.project.timeline;
         CmdState {
-            look: theme::get().look(),
             can_undo: self.history.can_undo(),
             can_redo: self.history.can_redo(),
             clip: clip.is_some(),
@@ -99,7 +98,6 @@ impl MeridianApp {
             open_panels: Panel::ALL.into_iter().filter(|p| self.dock.is_open(*p)).collect(),
             quality: Some(self.preview.quality),
             recent: self.prefs.recent.clone(),
-            space_pauses: self.prefs.space_pauses,
             tool: self.tool,
             in_group: self.project.find_clips(&self.sel.clips).iter().any(|r| tl.tracks(r.is_video)[r.track_idx].clips[r.clip_idx].group.is_some()),
             last_edit: !self.post_edit_ops().is_empty(),
@@ -122,7 +120,7 @@ impl MeridianApp {
                 .focus_clip(true)
                 .and_then(|id| self.project.clip(&id))
                 .is_some_and(|c| [&c.transition, &c.transition_out].into_iter().flatten().any(|t| !t.progress.is_empty())),
-            layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(theme::get().look(), n)).map(|l| l.name.clone())),
+            layouts: std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(n)).map(|l| l.name.clone())),
             layout: self.layout,
             bypass_audio_fx: self.bypass_audio_fx,
             armed: self.focus_of(false).is_some_and(|i| tl.audio_tracks[i].armed),
@@ -421,14 +419,13 @@ impl MeridianApp {
             show_envelopes: p.show_envelopes,
             lock_envelopes: p.lock_envelopes,
             hidden_envs: crate::settings::EnvView::bits(&p.hidden_envelopes)
-                | if p.ofx_envelopes && theme::get().look().v23() { crate::settings::OFX_SHOWN } else { 0 },
+                | if p.ofx_envelopes { crate::settings::OFX_SHOWN } else { 0 },
             cut_overlap: p.cut_overlap,
             wave_zoom: self.wave_zoom,
             video_bus: p.video_bus,
             bus_tracks: p.bus_tracks,
             media_markers: p.media_markers,
             marker_labels: p.marker_labels,
-            event_length: p.event_length,
         }
     }
 
@@ -588,8 +585,7 @@ impl MeridianApp {
         let blocked = ctx.wants_keyboard_input() || menus::any_open(ctx) || self.modal_open();
         // Over the Trimmer, Project Media's items or a Pan/Crop / Track Motion window, plain keys (Delete) are that window's.
         let over_dock = ui::over_plain_key_area(ctx) | ui::over_tool_window(ctx);
-        let look = theme::get().look();
-        for c in self.keymap.poll(ctx, look, Scope { blocked, over_dock }) {
+        for c in self.keymap.poll(ctx, Scope { blocked, over_dock }) {
             self.exec(ctx, c);
         }
         // R17b: Ctrl+1-9 crossfade into a take in multicamera editing (Ctrl, as Ctrl+click does in VEGAS).
@@ -777,12 +773,12 @@ impl MeridianApp {
         }
     }
 
-    /// Load a built-in layout, or user slot `n` of this look if it is saved; it becomes the current layout.
+    /// Load a built-in layout, or user slot `n` if it is saved; it becomes the current layout.
     fn load_layout(&mut self, l: LayoutRef) {
         let t = theme::get();
         match l {
             LayoutRef::Builtin(b) => self.dock = Dock::builtin(b, &t),
-            LayoutRef::User(n) => match self.prefs.layouts.get(&layout_key(t.look(), n)) {
+            LayoutRef::User(n) => match self.prefs.layouts.get(&layout_key(n)) {
                 Some(saved) => self.dock.apply(saved, &t),
                 None => return,
             },
@@ -790,19 +786,17 @@ impl MeridianApp {
         self.layout = Some(l);
     }
 
-    /// Preferences, on page `page` (`dialogs::prefs::DISPLAY`...; screenshot harness) or the last one. The VP16 Display
-    /// page shows where the dock area is.
+    /// Preferences, on page `page` (`dialogs::prefs::DISPLAY`...; screenshot harness) or the last one.
     pub(super) fn open_prefs(&mut self, page: Option<usize>) {
         match page {
             None => self.prefs_dlg.open(&self.prefs),
             Some(k) => self.prefs_dlg.open_on(&self.prefs, k),
         }
-        self.prefs_dlg.timeline_bottom = !self.dock.timeline_top();
     }
 
-    /// Keep the dock as user layout `n` of this look, named `name` (else the slot's name, else "Layout n").
+    /// Keep the dock as user layout `n`, named `name` (else the slot's name, else "Layout n").
     fn save_layout(&mut self, n: usize, name: Option<String>) {
-        let key = layout_key(theme::get().look(), n);
+        let key = layout_key(n);
         let name = name.or_else(|| self.prefs.layouts.get(&key).map(|l| l.name.clone())).unwrap_or_else(|| format!("Layout {n}"));
         self.prefs.layouts.insert(key.clone(), self.dock.layout(&name));
         self.layouts_changed.insert(key);
@@ -834,7 +828,6 @@ impl MeridianApp {
         if changes_tracks && self.dragging() {
             return;
         }
-        let v16 = st.look == UiLook::Vegas16;
         let frame = 1.0 / self.project.settings.frame_rate.max(1.0);
         let exact_frame = 1.0 / crate::project::exact_fps(self.project.settings.frame_rate.max(1.0));
         match c {
@@ -961,11 +954,11 @@ impl MeridianApp {
             // The screenshot harness lists no keyboard maps and saves none.
             CustomizeKeyboard => {
                 let dir = if self.demo { None } else { crate::settings::keyboard_dir() };
-                self.customize_keys = Some(dialogs::CustomizeKeys::new(&self.prefs.keys, self.prefs.key_map.clone(), st.look, dir));
+                self.customize_keys = Some(dialogs::CustomizeKeys::new(&self.prefs.keys, self.prefs.key_map.clone(), dir));
             }
             CustomizeToolbar | CustomizeTimelineToolbar => {
                 let bar = if c == CustomizeToolbar { ui::Bar::Main } else { ui::Bar::Timeline };
-                self.customize_bar = Some(dialogs::CustomizeToolbar::new(bar, bar.buttons(&self.prefs.toolbars, st.look), st.look));
+                self.customize_bar = Some(dialogs::CustomizeToolbar::new(bar, bar.buttons(&self.prefs.toolbars)));
             }
             UnfinishedFeatures => self.unfinished_open = true,
             CommandPalette => self.palette.open_with(""),
@@ -1321,20 +1314,9 @@ impl MeridianApp {
                 self.take_chooser = self.sel.clips.last().and_then(|id| dialogs::TakeChooser::open(&self.project, id, c == DeleteTake));
             }
             // Playback
-            PlayStop | PlayAnyWindow if v16 && !self.prefs.space_pauses => {
-                if self.playing {
-                    self.project.timeline.cursor_position = self.play_start;
-                }
-                self.playing = !self.playing;
-                self.shuttle = 0.0;
-            }
             PlayStop | PlayAnyWindow | PlayPause => {
                 self.playing = !self.playing;
                 self.shuttle = 0.0;
-            }
-            SpacePlayPause => {
-                self.prefs.space_pauses = !self.prefs.space_pauses;
-                self.save_prefs();
             }
             PlayFromStart | Stop | Loop | GoToStart | GoToEnd | PrevFrame | NextFrame => {
                 let cmd = match c {
@@ -1553,7 +1535,7 @@ impl MeridianApp {
             }
             NextFxEnvelope | PrevFxEnvelope => {
                 // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
-                let ofx = self.prefs.ofx_envelopes && theme::get().look().v23();
+                let ofx = self.prefs.ofx_envelopes;
                 let all = self.sel.tracks.last().map_or(Vec::new(), |t| edit::fx_envelopes(&self.project, t, ofx));
                 let n = all.len();
                 if n == 0 {
@@ -1820,7 +1802,7 @@ impl MeridianApp {
                 self.project.mark_modified();
             }
             PreviewQuality(q) => self.preview.quality = q,
-            LayoutDefault | LayoutVp14 | LayoutAudio | LayoutColor | LayoutSource | LayoutTimelineTop => {
+            LayoutDefault | LayoutAudio | LayoutColor | LayoutSource | LayoutTimelineTop => {
                 if let Some(b) = c.builtin_layout() {
                     self.load_layout(LayoutRef::Builtin(b));
                 }
@@ -1833,8 +1815,7 @@ impl MeridianApp {
                 }
             }
             OrganizeLayouts => {
-                let look = theme::get().look();
-                self.organize = Some(dialogs::OrganizeLayouts::new(std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(look, n)).cloned())));
+                self.organize = Some(dialogs::OrganizeLayouts::new(std::array::from_fn(|n| self.prefs.layouts.get(&layout_key(n)).cloned())));
             }
             SaveLayoutUser(n) => self.save_layout(n, None),
             // Save Layout saves over the slot last loaded or saved; without one it asks, as Save Layout As does.
@@ -2249,20 +2230,15 @@ impl MeridianApp {
         if self.about {
             self.about = !dialogs::about(ctx);
         }
-        if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms(), !self.dock.timeline_top()) {
+        if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms()) {
             if new.track_colors != self.prefs.track_colors {
                 theme::set_palette(ctx, new.palette());
             }
             if new.record_input != self.prefs.record_input && self.rec_start.is_none() {
                 (self.input, self.input_failed) = (None, false); // the meter reopens on the new input
             }
-            // VP16 Display: "Display timeline at bottom of main window" moves the dock area (kept in the layout).
-            if theme::get().look() == UiLook::Vegas16 && self.prefs_dlg.timeline_bottom == self.dock.timeline_top() {
-                self.dock.set_timeline_top(!self.prefs_dlg.timeline_bottom);
-            }
             // R34a: new VST folders are searched.
             let rescan = new.ofx.vst_folders != self.prefs.ofx.vst_folders;
-            self.look = new.look;
             self.prefs = new;
             self.save_prefs();
             // R44: the logger follows the preferences at once.
@@ -2458,11 +2434,10 @@ impl MeridianApp {
         }
     }
 
-    /// View › Window Layouts › Organize Layouts: OK writes this look's slots 0-9 as arranged (renamed, moved,
+    /// View › Window Layouts › Organize Layouts: OK writes the slots 0-9 as arranged (renamed, moved,
     /// deleted); Activate loads the selected one now.
     fn show_organize(&mut self, ctx: &egui::Context) {
-        let look = theme::get().look();
-        let Some(r) = self.organize.as_mut().and_then(|d| d.show(ctx, look)) else { return };
+        let Some(r) = self.organize.as_mut().and_then(|d| d.show(ctx)) else { return };
         match r {
             dialogs::Organize::Activate(l, from) => {
                 self.dock.apply(&l, &theme::get());
@@ -2473,7 +2448,7 @@ impl MeridianApp {
                 let Some(d) = self.organize.take() else { return };
                 // Only the slots that changed, so another window's newer save of an untouched slot is kept.
                 for (n, slot) in d.slots.iter().enumerate() {
-                    let key = layout_key(look, n);
+                    let key = layout_key(n);
                     if self.prefs.layouts.get(&key) == slot.as_ref().map(|s| &s.0) {
                         continue;
                     }
@@ -2517,8 +2492,8 @@ impl MeridianApp {
         let Some(d) = &mut self.customize_bar else { return };
         let (changed, close) = d.show(ctx);
         if changed {
-            let key = d.bar.key(d.look);
-            if d.list == d.bar.defaults(d.look) {
+            let key = d.bar.key();
+            if d.list == d.bar.defaults() {
                 self.prefs.toolbars.remove(&key);
             } else {
                 self.prefs.toolbars.insert(key, d.list.iter().map(|s| s.to_string()).collect());
@@ -2535,12 +2510,11 @@ impl MeridianApp {
         if self.layout_as.is_none() {
             return;
         }
-        let look = theme::get().look();
         // As VEGAS: the slot is picked by the Alt+D, n shortcut that loads it.
         let slots: Vec<String> = (0..10)
             .map(|n| {
-                let name = self.prefs.layouts.get(&layout_key(look, n)).map_or("<EMPTY>", |l| l.name.as_str());
-                format!("{}  {name}", crate::ui::keymap::shortcut_text(LayoutUser(n), look))
+                let name = self.prefs.layouts.get(&layout_key(n)).map_or("<EMPTY>", |l| l.name.as_str());
+                format!("{}  {name}", crate::ui::keymap::shortcut_text(LayoutUser(n)))
             })
             .collect();
         let Some((name, slot)) = &mut self.layout_as else { return };
@@ -2735,12 +2709,11 @@ impl MeridianApp {
     pub(super) fn open_from_env(&mut self, ctx: &egui::Context) {
         let Ok(what) = std::env::var("MILAN_DIALOG") else { return };
         match what.as_str() {
-            // The Edit menu dropped open (look screenshots).
+            // The Edit menu dropped open.
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
             // R44/R46 review: Preferences on Milan Pro's own Update page.
-            "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab(crate::ui::theme::get().look()))),
-            // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
+            "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab())),
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
             // copy): the dialog needs an event in the clipboard.
             "paste-attrs" => {
@@ -3114,7 +3087,6 @@ impl MeridianApp {
             "compositors" => self.exec(ctx, ShowWindow(crate::ui::dock::Panel::Compositors)),
             "layout-as" => self.exec(ctx, SaveLayoutAs),
             // R13: the built-in layouts, the dock commands and Organize Layouts (with two demo slots, never saved).
-            "layout-classic" => self.exec(ctx, LayoutVp14),
             "layout-audio" => self.exec(ctx, LayoutAudio),
             "layout-color" => self.exec(ctx, LayoutColor),
             // R16b: every scope at once in the Color Correction layout; the Video Scopes Settings dialog; Split-Screen
@@ -3139,9 +3111,8 @@ impl MeridianApp {
             "timeline-max" => self.exec(ctx, MaximizeTimeline),
             "tabs-top" => self.prefs.tabs_on_top = true,
             "organize-layouts" => {
-                let look = theme::get().look();
-                self.prefs.layouts.insert(layout_key(look, 1), Dock::builtin(crate::ui::dock::Builtin::AudioMixing, &theme::get()).layout("Mixing"));
-                self.prefs.layouts.insert(layout_key(look, 4), self.dock.layout("Editing"));
+                self.prefs.layouts.insert(layout_key(1), Dock::builtin(crate::ui::dock::Builtin::AudioMixing, &theme::get()).layout("Mixing"));
+                self.prefs.layouts.insert(layout_key(4), self.dock.layout("Editing"));
                 self.exec(ctx, OrganizeLayouts);
             }
             "archive" => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),

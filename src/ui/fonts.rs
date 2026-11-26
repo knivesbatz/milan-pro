@@ -1,20 +1,32 @@
-//! Segoe UI (VEGAS looks, §3) and Tahoma (Classic 2006, CLASSIC_2006_SPEC.md §3) loaded at runtime from the Windows
-//! fonts folder; never redistributed. Missing files fall back to Segoe UI, then egui's bundled fonts.
+//! Tahoma (UI_SPEC.md §3) loaded at runtime from the Windows fonts folder; never redistributed. Missing files fall back
+//! to Segoe UI, then egui's bundled fonts.
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub const SEMIBOLD: &str = "semibold";
-pub const BOLD: &str = "bold";
-/// Classic 2006 text face (Tahoma 8 pt = 11 px) and its bold.
+/// The text face (Tahoma 8 pt = 11 px) and its bold.
 pub const TAHOMA: &str = "tahoma";
 pub const TAHOMA_BOLD: &str = "tahoma-bold";
 
 /// `install` has bound the named families; before that (tests with a bare context) the theme uses egui's own.
+#[cfg(not(test))]
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(not(test))]
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Relaxed)
+}
+
+// Tests run in parallel, each on its own thread with its own context: one that installed the fonts must not send the
+// bare contexts of the others to families they lack.
+#[cfg(test)]
+thread_local! {
+    static INSTALLED: AtomicBool = const { AtomicBool::new(false) };
+}
+
+#[cfg(test)]
+pub fn installed() -> bool {
+    INSTALLED.with(|i| i.load(Ordering::Relaxed))
 }
 
 pub fn install(ctx: &egui::Context) {
@@ -27,19 +39,7 @@ pub fn install(ctx: &egui::Context) {
         defs.font_data.insert("segoe".into(), Arc::new(FontData::from_owned(bytes.clone())));
         defs.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "segoe".into());
     }
-    // Semibold/bold families fall back to regular Segoe, then egui's fonts (symbols, emoji).
-    for (family, file) in [(SEMIBOLD, "seguisb.ttf"), (BOLD, "segoeuib.ttf")] {
-        let mut list = fallback.clone();
-        if regular.is_some() {
-            list.insert(0, "segoe".into());
-        }
-        if let Some(bytes) = load(file) {
-            defs.font_data.insert(family.into(), Arc::new(FontData::from_owned(bytes)));
-            list.insert(0, family.into());
-        }
-        defs.families.insert(FontFamily::Name(family.into()), list);
-    }
-    // Tahoma for the Classic 2006 look; its bold falls back to regular Tahoma, both to Segoe UI, then egui's fonts.
+    // Tahoma; its bold falls back to regular Tahoma, both to Segoe UI, then egui's fonts.
     let tahoma = load("tahoma.ttf");
     for (family, file) in [(TAHOMA, None), (TAHOMA_BOLD, Some("tahomabd.ttf"))] {
         let mut list = fallback.clone();
@@ -59,5 +59,8 @@ pub fn install(ctx: &egui::Context) {
         defs.families.insert(FontFamily::Name(family.into()), list);
     }
     ctx.set_fonts(defs);
+    #[cfg(not(test))]
     INSTALLED.store(true, Ordering::Relaxed);
+    #[cfg(test)]
+    INSTALLED.with(|i| i.store(true, Ordering::Relaxed));
 }

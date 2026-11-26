@@ -51,7 +51,7 @@ impl QueueWindow {
         super::dialogs::field_box(ui, 4, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical().id_salt("queue_list").max_height(230.0).min_scrolled_height(230.0).auto_shrink(false).show(ui, |ui| {
-                Grid::new("queue_grid").num_columns(5).striped(!crate::ui::theme::get().classic()).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
+                Grid::new("queue_grid").num_columns(5).striped(false).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
                     for h in ["#", "File", "Template", "Range", "Status"] {
                         ui.label(RichText::new(h).strong());
                     }

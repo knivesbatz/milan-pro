@@ -4,7 +4,7 @@ use eframe::egui::*;
 use crate::project::*;
 use crate::render::content_end;
 use crate::ui::icons::{Icon, paint_icon};
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme;
 use super::{BASE_PPS, Geo, MIN_TRACK_H, TlState, set_zoom, track_h};
 
 #[derive(Clone, Copy, Debug)]
@@ -41,13 +41,8 @@ fn h_parts(g: &Geo, total: f64) -> HParts {
     let plus = cell(minus.min.x - 19.0, 19.0);
     let right = cell(plus.min.x - 16.0, 16.0);
     let left = cell(r.min.x, 16.0);
-    // VP16: 15 px thumb under a 1 px edge (native y 554–569); Classic 2006: the full 16 px; VP23: inset 2 px.
-    let (top, bottom) = match theme::get().look() {
-        UiLook::Vegas16 => (1.0, 0.0),
-        UiLook::Classic2006 => (0.0, 0.0),
-        UiLook::Vegas23 => (2.0, 2.0),
-    };
-    let track = Rect::from_min_max(pos2(left.max.x, r.min.y + top), pos2(right.min.x, r.max.y - bottom));
+    // The thumb takes the bar's full 16 px.
+    let track = Rect::from_min_max(pos2(left.max.x, r.min.y), pos2(right.min.x, r.max.y));
     let view = g.lanes.width() as f64 / g.pps;
     let tw = track.width() as f64;
     let x0 = track.min.x + (g.scroll_x / total * tw) as f32;
@@ -178,56 +173,13 @@ fn v_parts(g: &Geo, content: f32, scroll_y: f32) -> VParts {
 
 pub(super) fn paint(p: &Painter, g: &Geo, content: f32, project: &Project, scroll_y: f32) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     let h = h_parts(g, h_total(g, project));
-    let ink = t.scroll_arrow;
-    if t.classic() {
-        paint_classic(p, &t, g, &h, &v_parts(g, content, scroll_y));
-        return;
-    }
-    p.rect_filled(g.hscroll, 0.0, t.scroll_track);
-    if v16 {
-        p.rect_filled(Rect::from_x_y_ranges(g.hscroll.x_range(), Rangef::new(g.hscroll.min.y, g.hscroll.min.y + 1.0)), 0.0, Color32::from_gray(0x3E));
-    }
-    p.rect_filled(h.thumb, CornerRadius::same(if v16 { 0 } else { 2 }), t.scroll_thumb);
-    if v16 {
-        // 2 px zoom handles at the thumb ends.
-        for x in [h.thumb.min.x + 2.0, h.thumb.max.x - 3.0] {
-            p.rect_filled(Rect::from_min_size(pos2(x, h.thumb.min.y + 3.0), vec2(1.0, h.thumb.height() - 6.0)), 0.0, ink);
-        }
-    }
-    let tri = |c: Pos2, dir: f32| {
-        let pts = vec![c + vec2(-2.0 * dir, -4.0), c + vec2(2.0 * dir, 0.0), c + vec2(-2.0 * dir, 4.0)];
-        p.add(Shape::convex_polygon(pts, ink, Stroke::NONE));
-    };
-    tri(h.left.center(), -1.0);
-    tri(h.right.center(), 1.0);
-    p.rect_filled(Rect::from_min_max(h.plus.min, h.zoom.max), 0.0, t.toolbar_bg);
-    let s = Stroke::new(2.0_f32, ink);
-    let c = h.plus.center().round();
-    p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], s);
-    p.line_segment([c - vec2(0.0, 4.0), c + vec2(0.0, 4.0)], s);
-    let c = h.minus.center().round();
-    p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], s);
-    paint_icon(p, h.zoom.shrink(1.0), Icon::Search, t.look(), Some(ink));
-
-    // Vertical bar.
-    let v = v_parts(g, content, scroll_y);
-    p.rect_filled(g.vscroll, 0.0, t.band_bg);
-    p.rect_filled(Rect::from_min_max(pos2(g.vscroll.min.x, g.lanes.min.y), pos2(g.vscroll.max.x, g.lanes.max.y)), 0.0, t.scroll_track);
-    p.rect_filled(v.corner, 0.0, if v16 { t.scroll_thumb } else { t.toolbar_bg });
-    paint_icon(p, v.corner.shrink(1.0), Icon::InsertMarker, t.look(), None);
-    p.rect_filled(v.thumb, CornerRadius::same(if v16 { 0 } else { 2 }), t.scroll_thumb);
-    let c = v.plus.center().round();
-    p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], s);
-    p.line_segment([c - vec2(0.0, 4.0), c + vec2(0.0, 4.0)], s);
-    let c = v.minus.center().round();
-    p.line_segment([c - vec2(4.0, 0.0), c + vec2(4.0, 0.0)], s);
+    paint_bars(p, &t, g, &h, &v_parts(g, content, scroll_y));
 }
 
-/// Classic 2006 scrollbars (Windows 2000 / Vegas 6): flat grey tracks, raised chrome arrow buttons with black
+/// The scrollbars (Windows 2000 / Vegas 6): flat grey tracks, raised chrome arrow buttons with black
 /// triangles, a chrome thumb with two grip lines, chrome + / − / magnifier buttons.
-fn paint_classic(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: &VParts) {
+fn paint_bars(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: &VParts) {
     use crate::ui::widgets::{Chrome, arrow, chrome_button};
     let (m, ink) = (&t.metal, t.scroll_arrow);
     let btn = |r: Rect| chrome_button(p, r, Chrome::Raised, m);
@@ -259,13 +211,13 @@ fn paint_classic(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, 
     btn(h.minus);
     minus(h.minus);
     btn(h.zoom);
-    paint_icon(p, h.zoom.shrink(2.0), Icon::Search, t.look(), Some(ink));
+    paint_icon(p, h.zoom.shrink(2.0), Icon::Search, Some(ink));
 
     // Vertical bar.
     crate::ui::widgets::metal(p, g.vscroll, m);
     p.rect_filled(Rect::from_min_max(pos2(g.vscroll.min.x, g.lanes.min.y), pos2(g.vscroll.max.x, g.lanes.max.y)), 0.0, t.scroll_track);
     btn(v.corner);
-    paint_icon(p, v.corner.shrink(2.0), Icon::InsertMarker, t.look(), None);
+    paint_icon(p, v.corner.shrink(2.0), Icon::InsertMarker, None);
     btn(v.thumb);
     if v.thumb.height() >= 14.0 {
         let c = v.thumb.center().floor();

@@ -132,7 +132,7 @@ pub(super) fn hit(g: &Geo, rows: &[Row], project: &Project, p: Pos2, hidden: u16
     })
 }
 
-/// VP16 default envelope colours (spec §2) of the kinds without a theme colour, the same in both looks.
+/// VEGAS default envelope colours (spec §2) of the kinds without a theme colour.
 const VELOCITY: Color32 = Color32::from_rgb(0x6A, 0xD3, 0x7F);
 const FADE_TO_COLOR: Color32 = Color32::from_rgb(0xFF, 0x45, 0x3F);
 // shortcut: VEGAS's FX envelope colour was not measured; amber keeps it apart from the others. Use it once measured.

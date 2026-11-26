@@ -1,11 +1,10 @@
-//! View › Window Layouts › Organize Layouts... (R13): this look's user slots 0-9 (Alt+D, 0-9) as a list, to rename,
+//! View › Window Layouts › Organize Layouts... (R13): the user slots 0-9 (Alt+D, 0-9) as a list, to rename,
 //! move up or down, delete and activate. VEGAS keeps layouts as files and assigns them to the ten menu slots; Milan
 //! Pro keeps them in the slots themselves, so Delete is VEGAS's Clear and Delete Layout in one.
 use eframe::egui::*;
 use crate::ui::widgets;
 use crate::ui::dock::Layout;
 use crate::ui::keymap::{Command, shortcut_text};
-use crate::ui::theme::UiLook;
 
 pub struct OrganizeLayouts {
     /// The slots as arranged so far: each layout with the slot it was saved in.
@@ -60,7 +59,7 @@ impl OrganizeLayouts {
         self.name.clear();
     }
 
-    pub fn show(&mut self, ctx: &Context, look: UiLook) -> Option<Organize> {
+    pub fn show(&mut self, ctx: &Context) -> Option<Organize> {
         let mut out = None;
         let (hit, close) = super::modal(ctx, "organize_layouts", "Organize Layouts", vec2(420.0, 330.0), |ui| {
             ui.label("Layouts in the View › Window Layouts menu:");
@@ -72,7 +71,7 @@ impl OrganizeLayouts {
                         ui.spacing_mut().interact_size.y = 20.0;
                         for n in 0..10 {
                             let name = self.slots[n].as_ref().map_or("<EMPTY>", |s| s.0.name.as_str());
-                            let label = format!("{}    {name}", shortcut_text(Command::LayoutUser(n), look));
+                            let label = format!("{}    {name}", shortcut_text(Command::LayoutUser(n)));
                             let r = ui.selectable_label(self.sel == n, label);
                             if r.clicked() {
                                 self.select(n);
@@ -126,11 +125,11 @@ impl OrganizeLayouts {
 mod tests {
     use super::*;
     use crate::ui::dock::Dock;
-    use crate::ui::theme::{LookChoice, Theme};
+    use crate::ui::theme::Theme;
 
     #[test]
     fn rename_move_and_delete_keep_where_each_came_from() {
-        let t = Theme::new(LookChoice::VEGAS16);
+        let t = Theme::new();
         let l = |n: &str| Dock::new(&t).layout(n);
         let mut d = OrganizeLayouts::new(std::array::from_fn(|n| match n {
             2 => Some(l("Two")),

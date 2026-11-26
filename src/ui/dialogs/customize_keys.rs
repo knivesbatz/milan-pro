@@ -1,30 +1,31 @@
 //! Options › Customize Keyboard (R15), as VEGAS's: the keyboard map ([Default] or a map saved as an .ini file, with
 //! Save As and Delete), the commands filtered by "Show commands containing", the selected command's keys with Remove
 //! and Reset, and a Shortcut keys box that takes the next key pressed, says which command has it and Adds it (the
-//! other command loses it). It edits the current look's keys; OK keeps them. A map copied into the maps folder is listed
+//! other command loses it). OK keeps the keys. A map copied into the maps folder is listed
 //! the next time the dialog opens. VEGAS's per-window contexts are not here: Milan Pro's keys work everywhere.
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
 use crate::ui::widgets;
 use crate::ui::keymap::{self, Bindings, Command, Overrides};
 use crate::ui::menus;
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme;
 
 const HEADER: &str = "Milan Pro Keyboard Map";
+/// The section of the changed keys. Maps saved by 0.8.0 kept them per look: their `[vp23]` section (the keys of its
+/// default look) is read as this one, a `[vp16]` one is skipped.
+const KEYS: &str = "Keys";
+const KEYS_080: &str = "vp23";
 
-/// A keyboard map file: its name, then each look's changed keys as `Command=Key` lines (one line per key; `Command=`
-/// for a command with none).
+/// A keyboard map file: its name, then the changed keys as `Command=Key` lines (one line per key; `Command=` for a
+/// command with none).
 pub fn write_map(name: &str, keys: &Overrides) -> String {
-    let mut s = format!("[{HEADER}]\r\nName={name}\r\n");
-    for (look, cmds) in keys {
-        s += &format!("[{look}]\r\n");
-        for (c, ks) in cmds {
-            if ks.is_empty() {
-                s += &format!("{c}=\r\n");
-            }
-            for k in ks {
-                s += &format!("{c}={k}\r\n");
-            }
+    let mut s = format!("[{HEADER}]\r\nName={name}\r\n[{KEYS}]\r\n");
+    for (c, ks) in keys {
+        if ks.is_empty() {
+            s += &format!("{c}=\r\n");
+        }
+        for k in ks {
+            s += &format!("{c}={k}\r\n");
         }
     }
     s
@@ -42,8 +43,8 @@ pub fn read_map(text: &str) -> (Option<String>, Overrides) {
                 if k == "Name" && !v.trim().is_empty() {
                     name = Some(v.trim().to_string());
                 }
-            } else if !section.is_empty() {
-                let ks = keys.entry(section.clone()).or_default().entry(k.trim().to_string()).or_default();
+            } else if section == KEYS || section == KEYS_080 {
+                let ks = keys.entry(k.trim().to_string()).or_default();
                 if !v.is_empty() {
                     ks.push(v.to_string());
                 }
@@ -70,8 +71,7 @@ fn list_maps(dir: Option<&Path>) -> Vec<(String, PathBuf)> {
 }
 
 pub struct CustomizeKeys {
-    look: UiLook,
-    /// Every look's keys as edited, and this look's keys with them applied.
+    /// The keys as edited, and the bindings with them applied.
     pub keys: Overrides,
     binds: Bindings,
     /// The keyboard map chosen (None = [Default]).
@@ -93,15 +93,14 @@ pub struct CustomizeKeys {
 
 impl CustomizeKeys {
     /// `dir` holds the keyboard maps (None: none are listed or saved).
-    pub fn new(keys: &Overrides, map: Option<String>, look: UiLook, dir: Option<PathBuf>) -> Self {
+    pub fn new(keys: &Overrides, map: Option<String>, dir: Option<PathBuf>) -> Self {
         Self {
-            look,
             keys: keys.clone(),
-            binds: keymap::bindings(keys, look),
+            binds: keymap::bindings(keys),
             map,
             maps: list_maps(dir.as_deref()),
             dir,
-            commands: menus::named_commands(look),
+            commands: menus::named_commands(),
             filter: String::new(),
             sel: None,
             reveal: false,
@@ -130,17 +129,12 @@ impl CustomizeKeys {
 
     /// Give `c` exactly `keys`; keys equal to the defaults leave no override.
     fn set(&mut self, c: Command, keys: Vec<String>) {
-        let look = keymap::look_name(self.look);
-        let mine = self.keys.entry(look.to_string()).or_default();
-        if keys.iter().eq(keymap::default_keys(c, self.look)) {
-            mine.remove(&keymap::name(c));
+        if keys.iter().eq(keymap::default_keys(c)) {
+            self.keys.remove(&keymap::name(c));
         } else {
-            mine.insert(keymap::name(c), keys);
+            self.keys.insert(keymap::name(c), keys);
         }
-        if mine.is_empty() {
-            self.keys.remove(look);
-        }
-        self.binds = keymap::bindings(&self.keys, self.look);
+        self.binds = keymap::bindings(&self.keys);
     }
 
     /// Bind `key` to `c`, taking it (and any key it clashes with) from the commands that have it.
@@ -167,16 +161,16 @@ impl CustomizeKeys {
     /// `c` gets its default keys back (from whichever commands took them).
     pub fn reset(&mut self, c: Command) {
         self.set(c, Vec::new());
-        for k in keymap::default_keys(c, self.look) {
+        for k in keymap::default_keys(c) {
             self.add(c, k);
         }
     }
 
-    /// [Default]: every look's keys as the table has them.
+    /// [Default]: the keys as the table has them.
     pub fn reset_all(&mut self) {
         self.keys.clear();
         self.map = None;
-        self.binds = keymap::bindings(&self.keys, self.look);
+        self.binds = keymap::bindings(&self.keys);
     }
 
     pub fn load_map(&mut self, name: &str, file: &Path) {
@@ -184,7 +178,7 @@ impl CustomizeKeys {
             Ok(text) => {
                 self.keys = read_map(&text).1;
                 self.map = Some(name.to_string());
-                self.binds = keymap::bindings(&self.keys, self.look);
+                self.binds = keymap::bindings(&self.keys);
             }
             Err(e) => self.error = Some(format!("Could not read {}: {e}", file.display())),
         }
@@ -388,7 +382,7 @@ mod tests {
     use Command::*;
 
     fn dialog(dir: Option<PathBuf>) -> CustomizeKeys {
-        CustomizeKeys::new(&Overrides::new(), None, UiLook::Vegas23, dir)
+        CustomizeKeys::new(&Overrides::new(), None, dir)
     }
 
     /// Rebinding takes the key from its old command; Remove, Reset (the default comes back from whoever took it) and
@@ -399,7 +393,7 @@ mod tests {
         d.add(Split, "Ctrl+O");
         assert_eq!(d.keys_of(Split), ["S", "Ctrl+O"]);
         assert!(d.keys_of(Open).is_empty(), "Open loses Ctrl+O");
-        assert_eq!(d.keys["vp23"].len(), 2);
+        assert_eq!(d.keys.len(), 2);
         d.add(Split, "Alt+D");
         assert!(d.keys_of(LayoutDefault).is_empty() && d.keys_of(LayoutUser(3)).is_empty(), "the Alt+D chords go");
         d.remove(Split, 0);
@@ -427,7 +421,6 @@ mod tests {
         d.add(Undo, "=");
         d.remove(Undo, 0);
         d.remove(Undo, 0);
-        d.keys.entry("vp16".into()).or_default().insert("Save".into(), vec!["F4".into()]);
         let text = write_map("My Keys: v2", &d.keys);
         assert_eq!(read_map(&text), (Some("My Keys: v2".to_string()), d.keys.clone()));
         d.save_as("My Keys: v2").unwrap();
@@ -444,7 +437,10 @@ mod tests {
         assert!(e.maps.is_empty() && e.map.is_none() && !p.exists());
         assert!(e.save_as("  ").is_err() && dialog(None).save_as("x").is_err());
         let _ = std::fs::remove_dir(&dir);
-        // Unknown lines are skipped; a map without a name is listed by its file name.
-        assert_eq!(read_map("junk\n[vp23]\nSplit=F5\n=x\n[Other]\n").1["vp23"]["Split"], ["F5"]);
+        // Unknown lines and sections are skipped; a map saved by 0.8.0 keeps its VEGAS 23 keys, not its VEGAS 16 ones.
+        let m = read_map("junk\n[Keys]\nSplit=F5\n=x\n[Other]\nUndo=F6\n").1;
+        assert!(m["Split"] == ["F5"] && !m.contains_key("Undo"), "{m:?}");
+        let old = "[Milan Pro Keyboard Map]\r\nName=Old\r\n[vp16]\r\nSave=F4\r\n[vp23]\r\nSplit=Ctrl+K\r\nUndo=\r\n";
+        assert_eq!(read_map(old), (Some("Old".to_string()), Overrides::from([("Split".to_string(), vec!["Ctrl+K".to_string()]), ("Undo".to_string(), vec![])])));
     }
 }

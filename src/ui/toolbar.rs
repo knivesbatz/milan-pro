@@ -7,8 +7,8 @@ use super::EditTool;
 use super::dock::Panel;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
-use super::menus::{Later, NotPlanned, Why, send};
-use super::theme::{self, UiLook};
+use super::menus::{NotPlanned, Why, send};
+use super::theme;
 use super::transport::Playback;
 
 const HINT: &str = "milan_status_hint";
@@ -30,30 +30,18 @@ fn tip(resp: Response, text: &str) -> Response {
     resp.on_hover_text(text)
 }
 
-/// Hover / pressed / active-toggle fill behind a button's 22×22 hit area. Classic 2006: every button is a raised chrome
-/// bevel; hover brightens it, a press or an active toggle sinks it (CLASSIC_2006_SPEC.md §5).
+/// The chrome behind a button's 22×22 hit area: every button is a raised chrome bevel; hover brightens it, a press or
+/// an active toggle sinks it (UI_SPEC.md §5).
 fn paint_state(p: &Painter, hit: Rect, resp: &Response, enabled: bool, active: bool) {
     let t = theme::get();
-    if t.classic() {
-        let state = if active || (enabled && resp.is_pointer_button_down_on()) {
-            if active { super::widgets::Chrome::Active } else { super::widgets::Chrome::Pressed }
-        } else if enabled && resp.hovered() {
-            super::widgets::Chrome::Hover
-        } else {
-            super::widgets::Chrome::Raised
-        };
-        super::widgets::chrome_button(p, hit, state, &t.metal);
-        return;
-    }
-    let r = CornerRadius::same(t.m.widget_radius);
-    if active {
-        // VP16: 21×17 square; VP23: 22×18 rounded (§5.10).
-        p.rect_filled(Rect::from_center_size(hit.center(), vec2(t.m.toggle_w, t.m.toggle_h)), r, t.button_active_bg);
-    } else if enabled && resp.is_pointer_button_down_on() {
-        p.rect_filled(hit, r, t.button_active_bg);
+    let state = if active || (enabled && resp.is_pointer_button_down_on()) {
+        if active { super::widgets::Chrome::Active } else { super::widgets::Chrome::Pressed }
     } else if enabled && resp.hovered() {
-        p.rect_filled(hit, r, t.button_hover_bg);
-    }
+        super::widgets::Chrome::Hover
+    } else {
+        super::widgets::Chrome::Raised
+    };
+    super::widgets::chrome_button(p, hit, state, &t.metal);
 }
 
 /// One `button_pitch`-wide cell: 22×22 hit area with a 16 px vector glyph (§5.2).
@@ -74,7 +62,7 @@ fn button(ui: &mut Ui, icon: Icon, text: &str, clickable: bool, lit: bool, activ
     let hit = Rect::from_center_size(cell.center(), Vec2::splat(t.m.button));
     paint_state(ui.painter(), hit, &resp, clickable, active);
     let tint = (!lit).then_some(t.icon_disabled);
-    paint_icon(ui.painter(), Rect::from_center_size(hit.center(), Vec2::splat(t.m.icon)), icon, t.look(), tint);
+    paint_icon(ui.painter(), Rect::from_center_size(hit.center(), Vec2::splat(t.m.icon)), icon, tint);
     tip(resp, text)
 }
 
@@ -86,8 +74,8 @@ pub fn split_button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, active: 
 fn split(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, lit: bool, active: bool) -> (Response, Response) {
     let t = theme::get();
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    // 39 px (VP16) / 41 px (VP23, light2026: undo 215 -> redo 256).
-    let w = if t.look() == UiLook::Vegas16 { 39.0 } else { 41.0 };
+    // 41 px (VEGAS 23, light2026: undo 215 -> redo 256).
+    let w = 41.0;
     let (cell, _) = ui.allocate_exact_size(vec2(w, t.m.button), Sense::hover());
     let pad = (t.m.button_pitch - t.m.button) * 0.5;
     let main = Rect::from_min_size(cell.min + vec2(pad, 0.0), Vec2::splat(t.m.button));
@@ -95,41 +83,25 @@ fn split(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, lit: bool, active: 
     let m = ui.interact(main, ui.id().with((text, "main")), sense);
     let a = ui.interact(arrow, ui.id().with((text, "arrow")), sense);
     let p = ui.painter();
-    let both = main.union(arrow);
-    if t.classic() {
-        // One chrome button for the icon, a narrower one for the ▾.
-        paint_state(p, main, &m, enabled, active);
-        paint_state(p, Rect::from_min_max(pos2(main.max.x - 1.0, main.min.y), pos2(arrow.max.x + 1.0, main.max.y)), &a, enabled, false);
-    } else if active {
-        paint_state(p, main, &m, enabled, true);
-    } else if enabled && (m.hovered() || a.hovered()) {
-        let pressed = m.is_pointer_button_down_on() || a.is_pointer_button_down_on();
-        p.rect_filled(both, CornerRadius::same(t.m.widget_radius), if pressed { t.button_active_bg } else { t.button_hover_bg });
-    }
+    // One chrome button for the icon, a narrower one for the ▾.
+    paint_state(p, main, &m, enabled, active);
+    paint_state(p, Rect::from_min_max(pos2(main.max.x - 1.0, main.min.y), pos2(arrow.max.x + 1.0, main.max.y)), &a, enabled, false);
     let tint = (!lit).then_some(t.icon_disabled);
-    paint_icon(p, Rect::from_center_size(main.center(), Vec2::splat(t.m.icon)), icon, t.look(), tint);
-    paint_icon(p, Rect::from_center_size(arrow.center(), Vec2::splat(t.m.icon)), Icon::DropDown, t.look(), tint);
+    paint_icon(p, Rect::from_center_size(main.center(), Vec2::splat(t.m.icon)), icon, tint);
+    paint_icon(p, Rect::from_center_size(arrow.center(), Vec2::splat(t.m.icon)), Icon::DropDown, tint);
     (tip(m, text), tip(a, text))
 }
 
-/// Separator between button groups: 2 px dark/light lines (VP16) or 1 px line (VP23), 16 px tall.
+/// Separator between button groups: an etched line, 16 px tall.
 pub fn separator(ui: &mut Ui) {
     let t = theme::get();
-    // 7 px (VP16) / 8 px (VP23: light2026 transport separators).
-    let w = if t.look() == UiLook::Vegas16 { 7.0 } else { 8.0 };
+    // 8 px (VEGAS 23: light2026 transport separators).
+    let w = 8.0;
     let (cell, _) = ui.allocate_exact_size(vec2(w, t.m.button), Sense::hover());
     let x = cell.center().x.floor();
-    let y = Rangef::new(cell.center().y - 8.0, cell.center().y + 8.0);
     let p = ui.painter();
-    if t.classic() {
-        // Etched: shadow line, light line, over the bar's height less 2 px.
-        super::widgets::etched_v(p, x - 1.0, Rangef::new(cell.min.y + 1.0, cell.max.y - 1.0), &t.metal);
-    } else if t.look() == UiLook::Vegas16 {
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x - 1.0, x), y), 0.0, t.frame);
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, t.button_hover_bg);
-    } else {
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, t.button_group_sep);
-    }
+    // Etched: shadow line, light line, over the bar's height less 2 px.
+    super::widgets::etched_v(p, x - 1.0, Rangef::new(cell.min.y + 1.0, cell.max.y - 1.0), &t.metal);
 }
 
 /// Popup under a ▾ (or any button) that opens on click; closes when an item is clicked.
@@ -159,7 +131,7 @@ pub fn text_menu(ui: &mut Ui, text: &str, gap: f32, tip_text: &str, add_contents
     ui.painter().galley(pos2(rect.min.x + 4.0, rect.center().y - galley.size().y * 0.5), galley, t.text);
     // The ▾ glyph's visible part starts 5.5 px into its 16 px cell.
     let arrow = Rect::from_min_size(pos2(rect.min.x + 4.0 + tw + gap - 5.5, rect.center().y - 8.0), Vec2::splat(t.m.icon));
-    paint_icon(ui.painter(), arrow, Icon::DropDown, t.look(), None);
+    paint_icon(ui.painter(), arrow, Icon::DropDown, None);
     tip(r.inner.response, tip_text);
 }
 
@@ -179,50 +151,39 @@ fn history_popup(ui: &mut Ui, arrow: &Response, steps: usize, verb: &str) -> Opt
 /// Main toolbar (§5.2): `ui` is a left-to-right row over the toolbar body; `ids` its buttons (`bar_buttons`).
 pub fn draw_main_toolbar(ui: &mut Ui, ids: &[&'static str], project: &mut Project, history: &History) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     ui.spacing_mut().item_spacing.x = 0.0;
-    if t.classic() {
-        // Toolbar grip at the left end, then the buttons on a 23 px pitch.
-        super::widgets::grip(ui.painter(), ui.max_rect(), &t.metal);
-        ui.add_space(10.0);
-        draw_buttons(ui, ids, project, history, None);
-        return;
-    }
-    // First 22 px hit area starts at x = 6 (glyph at x = 9).
-    // VP23's first glyph sits 2 px further left (light2026: New at x = 9).
-    ui.add_space(if v16 { 6.0 } else { 4.0 } - (t.m.button_pitch - t.m.button) * 0.5);
+    // Toolbar grip at the left end, then the buttons on a 23 px pitch.
+    super::widgets::grip(ui.painter(), ui.max_rect(), &t.metal);
+    ui.add_space(10.0);
     draw_buttons(ui, ids, project, history, None);
 }
 
 // ---- R15: the buttons a toolbar holds (Options › Customize Toolbar, Customize Timeline Toolbar) ----
 
 /// A button a toolbar can hold: its id in the preferences, glyph, name (the tooltip, with the command's key) and the
-/// command it sends; `look` limits it to one look, and `inert` draws it lit with nothing behind it yet.
+/// command it sends; `inert` draws it lit with nothing behind it yet.
 pub struct Btn {
     pub id: &'static str,
     pub icon: Icon,
     pub name: &'static str,
     pub cmd: Option<Command>,
-    look: Option<UiLook>,
     inert: Option<Why>,
 }
 
 const fn b(id: &'static str, icon: Icon, name: &'static str, cmd: Command) -> Btn {
-    Btn { id, icon, name, cmd: Some(cmd), look: None, inert: None }
+    Btn { id, icon, name, cmd: Some(cmd), inert: None }
 }
 
 const fn play(id: &'static str, icon: Icon, name: &'static str) -> Btn {
-    Btn { id, icon, name, cmd: None, look: None, inert: None }
+    Btn { id, icon, name, cmd: None, inert: None }
 }
-
-const V23: Option<UiLook> = Some(UiLook::Vegas23);
 
 /// A separator between button groups.
 pub const SEP: &str = "|";
 
 /// Every button, in the order Customize Toolbar lists them.
 pub const BUTTONS: &[Btn] = &[
-    Btn { id: SEP, icon: Icon::More, name: "Separator", cmd: None, look: None, inert: None },
+    Btn { id: SEP, icon: Icon::More, name: "Separator", cmd: None, inert: None },
     b("New", Icon::New, "New Empty Project", Command::NewEmpty),
     b("Open", Icon::Open, "Open", Command::Open),
     b("Save", Icon::Save, "Save", Command::Save),
@@ -233,8 +194,6 @@ pub const BUTTONS: &[Btn] = &[
     b("Paste", Icon::Paste, "Paste", Command::Paste),
     b("Undo", Icon::Undo, "Undo", Command::Undo),
     b("Redo", Icon::Redo, "Redo", Command::Redo),
-    Btn { id: "Tutorials", icon: Icon::Tutorials, name: "Interactive Tutorials", cmd: None, look: Some(UiLook::Vegas16), inert: Some(Later("R53")) },
-    Btn { look: Some(UiLook::Vegas16), inert: Some(Later("R53")), ..b("WhatsThis", Icon::WhatsThis, "What's This? Help", Command::WhatsThis) },
     play("Record", Icon::Record, "Record"),
     play("Loop", Icon::Loop, "Loop Playback"),
     play("PlayFromStart", Icon::PlayFromStart, "Play From Start"),
@@ -248,13 +207,13 @@ pub const BUTTONS: &[Btn] = &[
     b("NormalTool", Icon::NormalEdit, "Normal Edit Tool", Command::NormalTool),
     b("EnvelopeTool", Icon::EnvelopeEdit, "Envelope Edit Tool", Command::Tool(EditTool::Envelope)),
     b("SelectionTool", Icon::SelectionEdit, "Selection Edit Tool", Command::Tool(EditTool::Selection)),
-    Btn { id: "ZoomTool", icon: Icon::ZoomEdit, name: "Zoom Edit Tool", cmd: None, look: None, inert: Some(NotPlanned("R58")) },
+    Btn { id: "ZoomTool", icon: Icon::ZoomEdit, name: "Zoom Edit Tool", cmd: None, inert: Some(NotPlanned("R58")) },
     b("Delete", Icon::Delete, "Delete", Command::Delete),
     b("Trim", Icon::Trim, "Trim to Time Selection", Command::Trim),
     b("TrimStart", Icon::TrimStart, "Trim Start", Command::TrimStart),
     b("TrimEnd", Icon::TrimEnd, "Trim End", Command::TrimEnd),
     b("Split", Icon::Split, "Split", Command::Split),
-    Btn { look: V23, ..b("SmartSplit", Icon::SmartSplit, "Smart Split", Command::SmartSplit) },
+    b("SmartSplit", Icon::SmartSplit, "Smart Split", Command::SmartSplit),
     b("Lock", Icon::Lock, "Lock", Command::EventLock),
     b("InsertMarker", Icon::InsertMarker, "Insert Marker", Command::InsertMarker),
     b("InsertRegion", Icon::InsertRegion, "Insert Region", Command::InsertRegion),
@@ -263,10 +222,10 @@ pub const BUTTONS: &[Btn] = &[
     b("AutoRipple", Icon::AutoRipple, "Auto Ripple", Command::AutoRipple),
     b("LockEnvelopes", Icon::LockEnvelopes, "Lock Envelopes to Events", Command::LockEnvelopes),
     b("IgnoreGrouping", Icon::IgnoreGrouping, "Ignore Event Grouping", Command::IgnoreGrouping),
-    Btn { look: V23, ..b("ColorGrading", Icon::ColorGrading, "Color Grading", Command::Window(Panel::ColorGrading)) },
-    Btn { look: V23, ..b("OpenParent", Icon::OpenParent, "Open Parent Timeline", Command::NestedParent) },
-    Btn { look: V23, ..b("OpenNested", Icon::OpenNested, "Open Nested Timeline", Command::NestedOpen) },
-    Btn { look: V23, ..b("CreateNested", Icon::CreateNested, "Create Nested Timeline", Command::NestedCreate) },
+    b("ColorGrading", Icon::ColorGrading, "Color Grading", Command::Window(Panel::ColorGrading)),
+    b("OpenParent", Icon::OpenParent, "Open Parent Timeline", Command::NestedParent),
+    b("OpenNested", Icon::OpenNested, "Open Nested Timeline", Command::NestedOpen),
+    b("CreateNested", Icon::CreateNested, "Create Nested Timeline", Command::NestedCreate),
 ];
 
 /// The play buttons, in `transport::Cmd::ALL` order: only the timeline toolbar, which has the play state, holds them.
@@ -281,45 +240,36 @@ pub enum Bar {
 }
 
 impl Bar {
-    /// Its key in `Prefs::toolbars` for `look` (VEGAS 23 Dark and White share one).
-    pub fn key(self, look: UiLook) -> String {
-        crate::settings::layout_key(look, if self == Bar::Main { "toolbar" } else { "timeline_toolbar" })
+    /// Its key in `Prefs::toolbars`.
+    pub fn key(self) -> String {
+        crate::settings::layout_key(if self == Bar::Main { "toolbar" } else { "timeline_toolbar" })
     }
 
-    /// The buttons VEGAS's bar has in `look` (§5.2, §5.10); Classic 2006 holds the VEGAS 23 set.
-    pub fn defaults(self, look: UiLook) -> Vec<&'static str> {
-        let v23 = look.v23();
+    /// The buttons VEGAS 23's bar has (VEGAS_UI_SPEC.md §5.2, §5.10).
+    pub fn defaults(self) -> Vec<&'static str> {
         let mut ids: Vec<&'static str> = match self {
             Bar::Main => vec!["New", "Open", "Save", "Render", "Properties", "Cut", "Copy", "Paste", "Undo", "Redo"],
             Bar::Timeline => TRANSPORT.to_vec(),
         };
         if self == Bar::Main {
-            if !v23 {
-                ids.extend(["Tutorials", "WhatsThis"]);
-            }
             return ids;
         }
         ids.extend([SEP, "NormalTool", "EnvelopeTool", "SelectionTool", "ZoomTool", SEP, "Delete", "Trim", "TrimStart", "TrimEnd", "Split"]);
-        if v23 {
-            ids.push("SmartSplit");
-        }
-        ids.extend(["Lock", SEP, "InsertMarker", "InsertRegion", SEP, "Snapping", "AutoCrossfade", "AutoRipple", "LockEnvelopes", "IgnoreGrouping"]);
-        if v23 {
-            ids.extend([SEP, "ColorGrading", SEP, "OpenParent", "OpenNested", "CreateNested"]);
-        }
+        ids.extend(["SmartSplit", "Lock", SEP, "InsertMarker", "InsertRegion", SEP, "Snapping", "AutoCrossfade", "AutoRipple", "LockEnvelopes", "IgnoreGrouping"]);
+        ids.extend([SEP, "ColorGrading", SEP, "OpenParent", "OpenNested", "CreateNested"]);
         ids
     }
 
-    /// The buttons this bar can hold in `look`, the separator first.
-    pub fn allowed(self, look: UiLook) -> impl Iterator<Item = &'static Btn> {
-        BUTTONS.iter().filter(move |b| b.look.is_none_or(|l| l == look.base()) && (self == Bar::Timeline || !TRANSPORT.contains(&b.id)))
+    /// The buttons this bar can hold, the separator first.
+    pub fn allowed(self) -> impl Iterator<Item = &'static Btn> {
+        BUTTONS.iter().filter(move |b| self == Bar::Timeline || !TRANSPORT.contains(&b.id))
     }
 
     /// The bar's buttons as saved in `toolbars` (ids it cannot hold dropped), else its defaults.
-    pub fn buttons(self, toolbars: &std::collections::BTreeMap<String, Vec<String>>, look: UiLook) -> Vec<&'static str> {
-        match toolbars.get(&self.key(look)) {
-            Some(ids) => ids.iter().filter_map(|id| self.allowed(look).find(|b| b.id == id).map(|b| b.id)).collect(),
-            None => self.defaults(look),
+    pub fn buttons(self, toolbars: &std::collections::BTreeMap<String, Vec<String>>) -> Vec<&'static str> {
+        match toolbars.get(&self.key()) {
+            Some(ids) => ids.iter().filter_map(|id| self.allowed().find(|b| b.id == id).map(|b| b.id)).collect(),
+            None => self.defaults(),
         }
     }
 }
@@ -330,9 +280,8 @@ pub fn btn(id: &str) -> Option<&'static Btn> {
 
 /// Draws `ids` left to right; `playback` (the timeline toolbar's) runs the play buttons.
 pub fn draw_buttons(ui: &mut Ui, ids: &[&'static str], project: &mut Project, history: &History, mut playback: Option<&mut Playback<'_>>) {
-    let look = theme::get().look();
     let st = super::menus::state(ui.ctx());
-    let tip = |name: &str, c: Option<Command>| match c.map(|c| super::keymap::shortcut_text(c, look)).filter(|k| !k.is_empty()) {
+    let tip = |name: &str, c: Option<Command>| match c.map(super::keymap::shortcut_text).filter(|k| !k.is_empty()) {
         Some(k) => format!("{name} ({k})"),
         None => name.to_string(),
     };
@@ -353,7 +302,8 @@ pub fn draw_buttons(ui: &mut Ui, ids: &[&'static str], project: &mut Project, hi
             continue;
         }
         let Some(c) = b.cmd else { continue };
-        let name = if id == "Render" && look.v23() { "Render" } else { b.name };
+        // The VEGAS 23 tooltip; Customize Toolbar lists it by its command, Render As.
+        let name = if id == "Render" { "Render" } else { b.name };
         let text = tip(name, Some(c));
         match id {
             "Undo" | "Redo" => {

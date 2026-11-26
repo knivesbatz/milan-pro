@@ -185,12 +185,9 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     let film = Rect::from_min_max(pos2(rect.min.x + 4.0, rect.max.y - bottom_h - transport_h - film_h), pos2(rect.max.x - 4.0, rect.max.y - bottom_h - transport_h));
     let wave = Rect::from_min_max(pos2(film.min.x, film.min.y - wave_h), pos2(film.max.x, film.min.y));
     let monitor = Rect::from_min_max(rect.min, pos2(rect.max.x, wave.min.y - 4.0));
-    let classic = t.classic();
-    if classic {
-        // Classic 2006: the strips in a sunken well, the transport and read-outs on a metal bar (as the Video Preview).
-        super::widgets::metal_bar(&p, Rect::from_min_max(pos2(rect.min.x, film.max.y + 3.0), rect.max), &t.metal);
-        super::widgets::sunken(&p, wave.union(film).expand(2.0), t.lane_bg, &t.metal);
-    }
+    // The strips in a sunken well, the transport and read-outs on a metal bar (as the Video Preview).
+    super::widgets::metal_bar(&p, Rect::from_min_max(pos2(rect.min.x, film.max.y + 3.0), rect.max), &t.metal);
+    super::widgets::sunken(&p, wave.union(film).expand(2.0), t.lane_bg, &t.metal);
 
     // Monitor: letterboxed frame from the trimmer's own decoder.
     let pw = m.width.unwrap_or(1920);
@@ -289,20 +286,18 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     let font = t.font(t.font.transport_time);
     let items = [(Icon::LengthCursor, a), (Icon::LengthSelEnd, b), (Icon::LengthLength, b - a)];
     let x0 = (rect.center().x - 1.5 * 130.0).round();
-    // Classic 2006: cyan LCD digits in a sunken black well, as the Video Preview's status strip.
-    let ink = if classic { t.time_display_text } else { t.text };
-    if classic {
-        let well = Rect::from_center_size(pos2(rect.center().x, y), vec2(3.0 * 130.0 + 4.0, bottom_h - 4.0));
-        super::widgets::sunken(&p, well, t.time_display_bg, &t.metal);
-    }
+    // Cyan LCD digits in a sunken black well, as the Video Preview's status strip.
+    let ink = t.time_display_text;
+    let well = Rect::from_center_size(pos2(rect.center().x, y), vec2(3.0 * 130.0 + 4.0, bottom_h - 4.0));
+    super::widgets::sunken(&p, well, t.time_display_bg, &t.metal);
     for (k, (icon, v)) in items.into_iter().enumerate() {
         let x = x0 + k as f32 * 130.0;
-        paint_icon(&p, Rect::from_min_size(pos2(x, y - 7.0), vec2(14.0, 14.0)), icon, t.look(), classic.then_some(ink));
+        paint_icon(&p, Rect::from_min_size(pos2(x, y - 7.0), vec2(14.0, 14.0)), icon, Some(ink));
         p.text(pos2(x + 20.0, y), Align2::LEFT_CENTER, format_timecode(v, fps), font.clone(), ink);
     }
 }
 
-/// VP16 ▶ ❚❚ ■ · Add to Timeline · ≡ (full set behind More).
+/// ▶ ❚❚ ■ · Add to Timeline · ≡ (full set behind More).
 fn transport(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, history: &mut History, idx: usize, m: &MediaItem, row: Rect, still_len: f64, xfade: bool) {
     let t = theme::get();
     let r = Rect::from_center_size(row.center(), vec2(5.0 * t.m.button_pitch, t.m.button));

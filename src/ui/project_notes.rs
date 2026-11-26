@@ -37,13 +37,9 @@ pub fn project_notes(ui: &mut Ui, project: &mut Project) {
                         let color = if n.resolved { t.text_dim } else { t.text };
                         changed |= widgets::edit(ui, TextEdit::multiline(&mut n.text).desired_width(w).desired_rows(2).text_color(color).hint_text("Note")).changed();
                     });
-                    if t.classic() {
-                        // An etched rule between the notes.
-                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-                        widgets::etched_h(ui.painter(), r.x_range().shrink(4.0), r.center().y, &t.metal);
-                    } else {
-                        ui.separator();
-                    }
+                    // An etched rule between the notes.
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
+                    widgets::etched_h(ui.painter(), r.x_range().shrink(4.0), r.center().y, &t.metal);
                 }
             });
         });

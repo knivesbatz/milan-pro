@@ -683,7 +683,7 @@ pub struct Track {
     pub solo: bool,
     pub locked: bool,
     pub visible: bool,
-    /// Pixels; 0 = the look's default for this track type.
+    /// Pixels; 0 = the default for this track type.
     pub height: f32,
     pub volume: f32,
     pub pan: f32,
@@ -1642,7 +1642,7 @@ impl Track {
             solo: false,
             locked: false,
             visible: true,
-            height: 0.0, // 0 = the look's default height (VP16 64 / 68 px, VP23 52 px)
+            height: 0.0, // 0 = the default height (`Metrics::video_track_h`, `audio_track_h`)
             volume: 1.0,
             pan: 0.0,
             composite: Composite::default(),

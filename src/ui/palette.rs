@@ -2,14 +2,14 @@
 //! (named by its menu path, `menus::named_commands`, and by its `keymap::TABLE` row), every plug-in the choosers
 //! offer, the saved window layouts and the recent projects. Typing filters by fuzzy subsequence (`score`); Enter runs
 //! the top row, ↑ ↓ pick another, Esc closes. Rows show their shortcut; rows the app cannot run now are greyed and say
-//! why on hover (R0), the same `Why` the menus give. The default key is `KEY`, a chord no VEGAS row uses in either
-//! look (a test keeps it so); Options › Customize Keyboard rebinds it like any command. Drawn with the dialogs' frame,
-//! so it follows all three looks (Classic 2006 gets the Windows 2000 caption and sunken list box).
+//! why on hover (R0), the same `Why` the menus give. The default key is `KEY`, a chord no VEGAS row uses (a test keeps
+//! it so); Options › Customize Keyboard rebinds it like any command. Drawn with the dialogs' frame (the Windows 2000
+//! caption and a sunken list box).
 use eframe::egui::*;
 use super::dialogs;
 use super::keymap::{self, Command};
 use super::menus::{self, CmdState};
-use super::theme::{self, UiLook};
+use super::theme;
 use super::widgets;
 use crate::engine::plugins::{self, PluginInfo, PluginKind};
 
@@ -63,7 +63,6 @@ fn why_disabled(c: Command, st: &CmdState) -> String {
         Paste | PasteInsert | PasteRepeat | PasteAttributes | PasteAttributesSelect => "The clipboard holds no events",
         OpenRecent(_) => "No such recent project",
         LayoutUser(_) => "This layout slot is empty",
-        Window(p) | ShowWindow(p) if !p.in_look(st.look) => "Not a window of this look",
         RollBack => "No earlier version is kept",
         _ if !st.clip && !st.tracks_sel => "Needs a selected event or track",
         _ if !st.clip => "Needs a selected event",
@@ -76,12 +75,12 @@ fn clean(path: &str) -> String {
     path.trim_end_matches("...").to_string()
 }
 
-/// Every row the palette offers for `look` in the state `st`, in menu order: commands, then plug-ins, then layouts
+/// Every row the palette offers in the state `st`, in menu order: commands, then plug-ins, then layouts
 /// and recent projects.
-pub fn items(look: UiLook, st: &CmdState) -> Vec<Item> {
+pub fn items(st: &CmdState) -> Vec<Item> {
     use Command::*;
     let mut out = Vec::new();
-    for (path, c) in menus::named_commands(look) {
+    for (path, c) in menus::named_commands() {
         // Layouts and recent projects get their own rows below, with their names.
         if matches!(c, CommandPalette | LayoutUser(_) | SaveLayoutUser(_) | OpenRecent(_)) {
             continue;
@@ -96,7 +95,7 @@ pub fn items(look: UiLook, st: &CmdState) -> Vec<Item> {
             label,
             group,
             alias,
-            shortcut: keymap::shortcut_text(c, look),
+            shortcut: keymap::shortcut_text(c),
             action: Action::Run(c),
             enabled,
             why: if enabled { String::new() } else { why_disabled(c, st) },
@@ -128,7 +127,7 @@ pub fn items(look: UiLook, st: &CmdState) -> Vec<Item> {
             label: name.clone(),
             group: "Layout".into(),
             alias: format!("User layout {n}"),
-            shortcut: keymap::shortcut_text(LayoutUser(n), look),
+            shortcut: keymap::shortcut_text(LayoutUser(n)),
             action: Action::Run(LayoutUser(n)),
             enabled: true,
             why: String::new(),
@@ -255,8 +254,7 @@ impl Palette {
         if !self.open {
             return None;
         }
-        let look = st.look;
-        let items = items(look, st);
+        let items = items(st);
         let order = rank(&items, &self.query);
         // Keys the list takes before the text box sees them.
         let (down, up, pgdn, pgup, enter) = ctx.input_mut(|i| {
@@ -320,8 +318,6 @@ impl Palette {
                             if self.reveal {
                                 resp.scroll_to_me(None);
                             }
-                        } else if resp.hovered() && !t.classic() {
-                            ui.painter().rect_filled(rect, 0.0, d.button_hover);
                         }
                         let ink = match (selected, it.enabled) {
                             (true, true) => d.accent_text,
@@ -366,7 +362,7 @@ impl Palette {
                 let shown = if order.len() == items.len() { format!("{} commands", items.len()) } else { format!("{} of {}", order.len(), items.len()) };
                 ui.label(RichText::new(shown).color(d.text_disabled));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let key = keymap::shortcut_text(Command::CommandPalette, look);
+                    let key = keymap::shortcut_text(Command::CommandPalette);
                     let hint = if key.is_empty() { "Enter runs   ↑ ↓ pick   Esc closes".to_string() } else { format!("Enter runs   ↑ ↓ pick   Esc closes   {key} opens") };
                     ui.label(RichText::new(hint).color(d.text_disabled));
                 });
@@ -392,14 +388,14 @@ mod tests {
     use super::*;
     use keymap::{Overrides, TABLE, bindings, conflicts, default_keys};
 
-    fn state(look: UiLook) -> CmdState {
-        CmdState { look, video_track_focus: true, any_tracks: true, recent: vec!["C:\\work\\Reel.mnle".into()], layouts: [Some("Grading".into()), None, None, None, None, None, None, None, None, None], ..Default::default() }
+    fn state() -> CmdState {
+        CmdState { video_track_focus: true, any_tracks: true, recent: vec!["C:\\work\\Reel.mnle".into()], layouts: [Some("Grading".into()), None, None, None, None, None, None, None, None, None], ..Default::default() }
     }
 
     /// "tm" puts Track Motion first; whole words and prefixes rank above scattered letters; a stale query matches nothing.
     #[test]
     fn ranking_puts_the_obvious_command_first() {
-        let it = items(UiLook::Vegas23, &state(UiLook::Vegas23));
+        let it = items(&state());
         let first = |q: &str| it[rank(&it, q)[0]].label.clone();
         assert_eq!(first("tm"), "Track Motion");
         assert_eq!(first("track motion"), "Track Motion");
@@ -418,46 +414,42 @@ mod tests {
         assert_eq!(score("", "abc"), Some(0));
     }
 
-    /// Every command of both looks is a row (the palette itself and the per-slot rows aside), with its shortcut; a
+    /// Every command is a row (the palette itself and the per-slot rows aside), with its shortcut; a
     /// greyed row says why; plug-ins of every kind are rows.
     #[test]
     fn every_command_and_plugin_is_a_row() {
-        for look in [UiLook::Vegas16, UiLook::Vegas23, UiLook::Classic2006] {
-            let st = state(look);
-            let it = items(look, &st);
-            for (_, c) in menus::named_commands(look) {
-                if matches!(c, Command::CommandPalette | Command::LayoutUser(_) | Command::SaveLayoutUser(_) | Command::OpenRecent(_)) {
-                    continue;
-                }
-                let row = it.iter().find(|i| i.action == Action::Run(c)).unwrap_or_else(|| panic!("{c:?} has no row in {look:?}"));
-                assert_eq!(row.shortcut, keymap::shortcut_text(c, look));
-                assert_eq!(row.enabled, st.enabled(c));
-                assert_eq!(row.why.is_empty(), row.enabled, "{c:?}: {:?}", row.why);
+        let st = state();
+        let it = items(&st);
+        for (_, c) in menus::named_commands() {
+            if matches!(c, Command::CommandPalette | Command::LayoutUser(_) | Command::SaveLayoutUser(_) | Command::OpenRecent(_)) {
+                continue;
             }
-            let undo = it.iter().find(|i| i.action == Action::Run(Command::Undo)).unwrap();
-            assert_eq!((undo.group.as_str(), undo.enabled, undo.why.as_str()), ("Edit", false, "Nothing to undo"));
-            let tts = it.iter().find(|i| i.action == Action::Run(Command::TextToSpeech)).unwrap();
-            assert!(tts.why.contains("R59"), "{}", tts.why);
-            for kind in [PluginKind::VideoFx, PluginKind::Transition, PluginKind::Generator, PluginKind::AudioFx] {
-                let n = plugins::catalog(kind).count();
-                assert_eq!(it.iter().filter(|i| matches!(i.action, Action::Plugin(p) if p.kind == kind)).count(), n);
-            }
-            let afx = it.iter().find(|i| matches!(i.action, Action::Plugin(p) if p.kind == PluginKind::AudioFx)).unwrap();
-            assert_eq!((afx.enabled, afx.why.as_str()), (false, "Select an audio event first"));
+            let row = it.iter().find(|i| i.action == Action::Run(c)).unwrap_or_else(|| panic!("{c:?} has no row"));
+            assert_eq!(row.shortcut, keymap::shortcut_text(c));
+            assert_eq!(row.enabled, st.enabled(c));
+            assert_eq!(row.why.is_empty(), row.enabled, "{c:?}: {:?}", row.why);
         }
+        let undo = it.iter().find(|i| i.action == Action::Run(Command::Undo)).unwrap();
+        assert_eq!((undo.group.as_str(), undo.enabled, undo.why.as_str()), ("Edit", false, "Nothing to undo"));
+        let tts = it.iter().find(|i| i.action == Action::Run(Command::TextToSpeech)).unwrap();
+        assert!(tts.why.contains("R59"), "{}", tts.why);
+        for kind in [PluginKind::VideoFx, PluginKind::Transition, PluginKind::Generator, PluginKind::AudioFx] {
+            let n = plugins::catalog(kind).count();
+            assert_eq!(it.iter().filter(|i| matches!(i.action, Action::Plugin(p) if p.kind == kind)).count(), n);
+        }
+        let afx = it.iter().find(|i| matches!(i.action, Action::Plugin(p) if p.kind == PluginKind::AudioFx)).unwrap();
+        assert_eq!((afx.enabled, afx.why.as_str()), (false, "Select an audio event first"));
     }
 
-    /// The default chord is in the table, is the same in both looks and clashes with no other row's key or chord start.
+    /// The default chord is in the table and clashes with no other row's key or chord start.
     #[test]
-    fn default_key_collides_with_nothing_in_either_look() {
-        for look in [UiLook::Vegas16, UiLook::Vegas23] {
-            assert_eq!(default_keys(Command::CommandPalette, look), &[KEY]);
-            let b = bindings(&Overrides::new(), look);
-            assert_eq!(conflicts(&b, KEY, Command::CommandPalette), vec![], "{look:?}");
-            for row in TABLE.iter().filter(|r| r.0 != Command::CommandPalette) {
-                for k in default_keys(row.0, look) {
-                    assert_ne!(*k, KEY, "{:?} also has {KEY} in {look:?}", row.0);
-                }
+    fn default_key_collides_with_nothing() {
+        assert_eq!(default_keys(Command::CommandPalette), &[KEY]);
+        let b = bindings(&Overrides::new());
+        assert_eq!(conflicts(&b, KEY, Command::CommandPalette), vec![]);
+        for row in TABLE.iter().filter(|r| r.0 != Command::CommandPalette) {
+            for k in default_keys(row.0) {
+                assert_ne!(*k, KEY, "{:?} also has {KEY}", row.0);
             }
         }
     }
@@ -468,7 +460,7 @@ mod tests {
         let ctx = Context::default();
         let mut pal = Palette::default();
         pal.open_with("tm");
-        let st = state(UiLook::Classic2006);
+        let st = state();
         let mut got = None;
         let _ = ctx.run(RawInput::default(), |ctx| {
             got = pal.show(ctx, &st);

@@ -1,11 +1,10 @@
-//! Original vector icons (spec §8), drawn with egui::Painter on a 16×16 grid.
-//! VP16 = coloured, slightly raised (1 px dark shade lower-right); VP23 = flat monochrome lines; Classic 2006 = the
-//! coloured shapes as 2006 pixel art: 1 px strokes snapped to the pixel grid, a 1 px dark outline round every fill,
-//! colours quantised to a 24-colour period palette (CLASSIC_2006_SPEC.md §7).
+//! Original vector icons (VEGAS_UI_SPEC.md §8), drawn with egui::Painter on a 16×16 grid: coloured shapes as 2006
+//! pixel art, 1 px strokes snapped to the pixel grid, a 1 px dark outline round every fill, colours quantised to a
+//! 24-colour period palette (UI_SPEC.md §7).
 //! No bitmaps: shapes and meaning match VEGAS, proportions are our own.
-use eframe::egui::{Align2, Color32, CornerRadius, FontFamily, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2};
+use eframe::egui::{Align2, Color32, FontFamily, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2};
 use super::fonts;
-use super::theme::{self, Theme, UiLook};
+use super::theme::{self, Theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
@@ -130,27 +129,18 @@ impl Icon {
 }
 
 /// Paint `icon` centred in `rect` (scaled to its shorter side / 16).
-/// `tint`: draw every part in this colour (disabled, or white on an active fill); None = look colours.
-pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, look: UiLook, tint: Option<Color32>) {
+/// `tint`: draw every part in this colour (disabled, or white on an active fill); None = the icon's own colours.
+pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, tint: Option<Color32>) {
     let t = theme::get();
     let side = rect.width().min(rect.height());
     let s = side / 16.0;
     let o = (rect.center() - vec2(side, side) * 0.5).round();
-    let v16 = look == UiLook::Vegas16;
-    let c06 = look == UiLook::Classic2006;
-    let stroke = if c06 { 1.0 } else if v16 { 1.5 } else { 1.25 };
     let mirror = matches!(icon, Icon::Redo | Icon::GoToEnd | Icon::NextFrame | Icon::TrimEnd | Icon::Forward);
-    // Classic 2006 draws the coloured (VP16) shapes, in its own pixel-art rendering.
-    let pen = Pen { p: painter, o, s, w: stroke * s, force: tint, strength: t.icon_color_strength, mirror, t: &t, v16: v16 || c06, c06 };
-    // VP16 raised look: the same shape in a dark shade 1 px down-right, then the icon on top.
-    if v16 && tint.is_none() && t.icon_shadow.a() > 0 && !matches!(icon, Icon::Logo | Icon::FaderThumb) {
-        let shadow = Pen { o: o + vec2(1.0, 1.0), force: Some(t.icon_shadow.gamma_multiply(0.8)), ..pen };
-        draw(&shadow, icon);
-    }
+    let pen = Pen { p: painter, o, s, w: s, force: tint, mirror, t: &t };
     draw(&pen, icon);
 }
 
-/// Classic 2006 icon palette (CLASSIC_2006_SPEC.md §7): the 16 VGA colours less the garish ones, plus the Windows
+/// Icon palette (UI_SPEC.md §7): the 16 VGA colours less the garish ones, plus the Windows
 /// 2000/XP icon tones (folder yellows, document cream, steel blues, leaf greens, two more greys). Every icon colour is
 /// snapped to its nearest member.
 const PALETTE_2006: [u32; 24] = [
@@ -179,13 +169,8 @@ struct Pen<'a> {
     s: f32,
     w: f32,
     force: Option<Color32>,
-    strength: f32,
     mirror: bool,
     t: &'a Theme,
-    /// Coloured shapes (VP16 and Classic 2006) rather than VP23's monochrome lines.
-    v16: bool,
-    /// Classic 2006 rendering: pixel-snapped 1 px strokes, outlined fills, period palette.
-    c06: bool,
 }
 
 type P = (f32, f32);
@@ -198,56 +183,36 @@ impl Pen<'_> {
         let x = if self.mirror { 16.0 - x } else { x };
         self.o + vec2(x, y) * self.s
     }
-    /// A stroke vertex: on pixel centres in Classic 2006, so 1 px lines stay crisp.
+    /// A stroke vertex: on pixel centres, so 1 px lines stay crisp.
     fn at_s(&self, p: P) -> Pos2 {
-        let q = self.at(p);
-        if self.c06 { q.floor() + vec2(0.5, 0.5) } else { q }
+        self.at(p).floor() + vec2(0.5, 0.5)
     }
-    /// A fill vertex: on pixel edges in Classic 2006.
+    /// A fill vertex: on pixel edges.
     fn at_f(&self, p: P) -> Pos2 {
-        let q = self.at(p);
-        if self.c06 { q.round() } else { q }
+        self.at(p).round()
     }
-    /// Look colour: forced tint, else VP16 colours toned down by "Icon color strength"; Classic 2006 snaps the
-    /// colour to its palette.
+    /// The forced tint, else the colour snapped to the palette.
     fn c(&self, c: Color32) -> Color32 {
-        if let Some(f) = self.force {
-            return f;
-        }
-        if self.c06 {
-            return quantize_2006(c);
-        }
-        if self.strength >= 1.0 {
-            return c;
-        }
-        let l = (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) as u8;
-        Color32::from_gray(l).lerp_to_gamma(c, self.strength)
-    }
-    /// Coloured in VP16, plain ink in VP23.
-    fn c16(&self, c: Color32) -> Color32 {
-        if self.v16 { self.c(c) } else { self.ink() }
+        self.force.unwrap_or_else(|| quantize_2006(c))
     }
     fn ink(&self) -> Color32 {
         self.c(self.t.icon)
     }
-    /// White "paper" of pages, sheets and pointers: the VP16 icon white, white in Classic 2006 (whose ink is black).
+    /// White "paper" of pages, sheets and pointers (the ink is black).
     fn paper(&self) -> Color32 {
-        if self.c06 { self.c(Color32::WHITE) } else { self.t.icon }
+        self.c(Color32::WHITE)
     }
     /// The surface the icon sits on (for hollow cut-outs).
     fn bg(&self) -> Color32 {
-        if self.c06 {
-            return self.force.map_or(self.t.metal.face, |f| f);
-        }
-        self.force.map_or(self.t.toolbar_bg, |_| self.c(self.t.toolbar_bg))
+        self.force.unwrap_or(self.t.metal.face)
     }
-    /// Classic 2006 stroke width: whole pixels.
+    /// Stroke width: whole pixels.
     fn sw(&self, k: f32) -> f32 {
-        if self.c06 { (self.w * k).round().max(1.0) } else { self.w * k }
+        (self.w * k).round().max(1.0)
     }
-    /// Classic 2006 outline stroke of a fill (none when tinted: a disabled icon is one flat colour).
+    /// The outline stroke of a fill (none when tinted: a disabled icon is one flat colour).
     fn outline(&self) -> Option<Stroke> {
-        (self.c06 && self.force.is_none()).then(|| Stroke::new(1.0_f32, OUTLINE_2006))
+        self.force.is_none().then(|| Stroke::new(1.0_f32, OUTLINE_2006))
     }
     fn line(&self, pts: &[P], c: Color32) {
         self.line_w(pts, c, 1.0);
@@ -282,28 +247,20 @@ impl Pen<'_> {
             }
         }
     }
-    fn fill_round(&self, x: f32, y: f32, w: f32, h: f32, rad: f32, c: Color32) {
-        let rad = if self.c06 { 0.0 } else { rad };
-        self.p.rect_filled(self.r(x, y, w, h), CornerRadius::same((rad * self.s) as u8), self.c(c));
+    /// A filled box (the rounded VEGAS shapes, square here).
+    fn fill_round(&self, x: f32, y: f32, w: f32, h: f32, _rad: f32, c: Color32) {
+        self.p.rect_filled(self.r(x, y, w, h), 0.0, self.c(c));
         if let Some(o) = self.outline() {
             self.p.rect_stroke(self.r(x, y, w, h), 0.0, o, StrokeKind::Inside);
         }
     }
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color32) {
-        if self.c06 {
-            let r = Rect::from_two_pos(self.at_s((x, y)), self.at_s((x + w, y + h)));
-            self.p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, self.c(c)), StrokeKind::Middle);
-            return;
-        }
-        self.p.rect_stroke(self.r(x, y, w, h), 0.0, Stroke::new(self.w, self.c(c)), StrokeKind::Middle);
+        let r = Rect::from_two_pos(self.at_s((x, y)), self.at_s((x + w, y + h)));
+        self.p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, self.c(c)), StrokeKind::Middle);
     }
-    fn rect_round(&self, x: f32, y: f32, w: f32, h: f32, rad: f32, c: Color32) {
-        if self.c06 {
-            self.rect(x, y, w, h, c);
-            return;
-        }
-        let cr = CornerRadius::same((rad * self.s) as u8);
-        self.p.rect_stroke(self.r(x, y, w, h), cr, Stroke::new(self.w, self.c(c)), StrokeKind::Middle);
+    /// An outlined box (the rounded VEGAS shapes, square here).
+    fn rect_round(&self, x: f32, y: f32, w: f32, h: f32, _rad: f32, c: Color32) {
+        self.rect(x, y, w, h, c);
     }
     fn circle(&self, c: P, r: f32, col: Color32) {
         self.p.circle_stroke(self.at_s(c), r * self.s, Stroke::new(self.sw(1.0), self.c(col)));
@@ -327,10 +284,9 @@ impl Pen<'_> {
             .collect();
         self.line_w(&pts, col, k);
     }
-    fn text(&self, c: P, s: &str, size: f32, family: &str, col: Color32) {
-        // Classic 2006 letters in Tahoma Bold.
-        let family = if self.c06 { fonts::TAHOMA_BOLD } else { family };
-        let fam = if family.is_empty() || !fonts::installed() { FontFamily::Proportional } else { FontFamily::Name(family.into()) };
+    /// Letters in Tahoma Bold.
+    fn text(&self, c: P, s: &str, size: f32, col: Color32) {
+        let fam = if !fonts::installed() { FontFamily::Proportional } else { FontFamily::Name(fonts::TAHOMA_BOLD.into()) };
         self.p.text(self.at(c), Align2::CENTER_CENTER, s, FontId::new(size * self.s, fam), self.c(col));
     }
     /// Classic arrow pointer with its tip at (x, y), `k` = size factor (1 = 13 px tall).
@@ -342,7 +298,7 @@ impl Pen<'_> {
     /// Small yellow "?" badge (Tutorials, What's This).
     fn help_badge(&self) {
         self.dot((12.0, 12.0), 3.8, hex(0xF0C800));
-        self.text((12.0, 12.2), "?", 7.0, fonts::BOLD, hex(0x1E1E1E));
+        self.text((12.0, 12.2), "?", 7.0, hex(0x1E1E1E));
     }
     fn speaker(&self, x: f32, c: Color32) {
         self.fill(x, 6.0, 3.0, 4.0, c);
@@ -359,16 +315,9 @@ impl Pen<'_> {
     }
     fn floppy(&self) {
         let body = [(2.0, 2.0), (12.0, 2.0), (14.0, 4.0), (14.0, 14.0), (2.0, 14.0)];
-        if self.v16 {
-            self.poly(&body, hex(0x3C78C8));
-            self.fill(5.0, 2.0, 6.0, 4.0, hex(0xD0D0D0));
-            self.fill(4.0, 9.0, 8.0, 5.0, hex(0xFFFFFF));
-        } else {
-            // Solid disk: shutter notch at the top, dark hub in the middle (dark2026).
-            self.poly(&body, self.ink());
-            self.fill(5.0, 2.0, 5.5, 3.0, self.bg());
-            self.dot((8.0, 9.5), 2.4, self.bg());
-        }
+        self.poly(&body, hex(0x3C78C8));
+        self.fill(5.0, 2.0, 6.0, 4.0, hex(0xD0D0D0));
+        self.fill(4.0, 9.0, 8.0, 5.0, hex(0xFFFFFF));
     }
     fn magnifier(&self) {
         self.circle((6.5, 6.5), 4.5, self.ink());
@@ -415,12 +364,8 @@ impl Pen<'_> {
     /// White sheet with a folded top-right corner (Render As, Copy, Paste, Import).
     fn sheet(&self, x: f32, y: f32, w: f32, h: f32) {
         let pts = [(x, y), (x + w - 3.0, y), (x + w, y + 3.0), (x + w, y + h), (x, y + h)];
-        if self.v16 {
-            self.poly(&pts, self.paper());
-            self.poly(&[(x + w - 3.0, y), (x + w, y + 3.0), (x + w - 3.0, y + 3.0)], hex(0x9A9A9A));
-        } else {
-            self.closed(&pts, self.ink());
-        }
+        self.poly(&pts, self.paper());
+        self.poly(&[(x + w - 3.0, y), (x + w, y + 3.0), (x + w - 3.0, y + 3.0)], hex(0x9A9A9A));
     }
 }
 
@@ -435,49 +380,28 @@ fn draw(p: &Pen, icon: Icon) {
     match icon {
         New => {
             let page = [(3.0, 1.0), (10.0, 1.0), (13.0, 4.0), (13.0, 15.0), (3.0, 15.0)];
-            if p.v16 {
-                p.poly(&page, p.paper());
-                p.poly(&[(10.0, 1.0), (13.0, 4.0), (10.0, 4.0)], hex(0x9A9A9A));
-            } else {
-                // Solid page, the folded corner cut out (dark2026).
-                p.poly(&page, ink);
-                p.line(&[(10.0, 1.5), (10.0, 4.0), (12.5, 4.0)], p.bg());
-            }
+            p.poly(&page, p.paper());
+            p.poly(&[(10.0, 1.0), (13.0, 4.0), (10.0, 4.0)], hex(0x9A9A9A));
         }
-        Folder if p.v16 => {
-            // VP16 bin folder: tall, bright yellow, darker spine (c_pm).
+        Folder => {
+            // Bin folder: tall, bright yellow, darker spine (c_pm).
             p.fill(3.0, 0.5, 10.0, 15.5, hex(0xF8D775));
             p.fill(11.0, 9.0, 2.0, 7.0, hex(0xD8B048));
             p.fill(3.0, 0.5, 1.0, 15.5, hex(0xE8C45E));
         }
-        Folder if !p.v16 => {
-            // VP23 bin node: outline folder (spec 5.4).
-            p.closed(&[(1.5, 3.0), (6.0, 3.0), (7.5, 5.0), (14.5, 5.0), (14.5, 13.5), (1.5, 13.5)], ink);
-        }
-        Open | Folder => {
-            let (body, flap) = (p.c16(hex(0xD8B45A)), p.c16(hex(0xA88A3C)));
+        Open => {
+            let (body, flap) = (p.c(hex(0xD8B45A)), p.c(hex(0xA88A3C)));
             p.poly(&[(1.0, 3.0), (6.0, 3.0), (7.5, 5.0), (1.0, 5.0)], flap);
-            if icon == Folder || !p.v16 {
-                p.fill(1.0, 5.0, 14.0, 9.0, body);
-            } else if p.v16 {
-                p.fill(1.0, 5.0, 13.0, 9.0, flap);
-                p.poly(&[(3.5, 8.0), (15.5, 8.0), (13.5, 14.0), (1.0, 14.0)], body);
-            }
+            p.fill(1.0, 5.0, 13.0, 9.0, flap);
+            p.poly(&[(3.5, 8.0), (15.5, 8.0), (13.5, 14.0), (1.0, 14.0)], body);
         }
         Save | SnapshotSave => p.floppy(),
         Render => {
-            if p.v16 {
-                // Grey sheet with a darker export arrow leaving it to the upper right (n16_top).
-                p.poly(&[(1.5, 2.0), (8.5, 2.0), (11.5, 5.0), (11.5, 15.0), (1.5, 15.0)], hex(0xB4B4B4));
-                let a = p.c(hex(0x6E6E6E));
-                p.line_w(&[(6.0, 10.5), (11.5, 5.0)], a, 1.8);
-                p.arrow_head_k((15.0, 1.5), (0.707, -0.707), a, 1.5);
-            } else {
-                // Open box with an out-arrow (open chevron head).
-                p.line(&[(7.5, 3.0), (2.5, 3.0), (2.5, 13.5), (13.0, 13.5), (13.0, 8.5)], ink);
-                p.line(&[(7.0, 9.0), (14.0, 2.0)], ink);
-                p.line(&[(9.5, 2.0), (14.0, 2.0), (14.0, 6.5)], ink);
-            }
+            // Grey sheet with a darker export arrow leaving it to the upper right (n16_top).
+            p.poly(&[(1.5, 2.0), (8.5, 2.0), (11.5, 5.0), (11.5, 15.0), (1.5, 15.0)], hex(0xB4B4B4));
+            let a = p.c(hex(0x6E6E6E));
+            p.line_w(&[(6.0, 10.5), (11.5, 5.0)], a, 1.8);
+            p.arrow_head_k((15.0, 1.5), (0.707, -0.707), a, 1.5);
         }
         Properties => {
             // Solid gear with a dark hub (n16_top, dark2026).
@@ -490,52 +414,38 @@ fn draw(p: &Pen, icon: Icon) {
             p.dot((8.0, 8.0), 2.2, p.bg());
         }
         Cut => {
-            let blade = p.c16(hex(0xC8C8C8));
+            let blade = p.c(hex(0xC8C8C8));
             p.line(&[(6.3, 10.0), (11.0, 1.5)], blade);
             p.line(&[(9.7, 10.0), (5.0, 1.5)], blade);
-            let loops = p.c16(hex(0xE05A6E));
+            let loops = p.c(hex(0xE05A6E));
             p.circle((4.8, 12.3), 2.5, loops);
             p.circle((11.2, 12.3), 2.5, loops);
         }
         Copy | SnapshotCopy => {
-            if p.v16 && icon == Copy {
+            if icon == Copy {
                 // Blue sheet behind a white one.
                 p.fill(2.0, 1.5, 8.0, 10.0, hex(0x5DB0E6));
                 p.sheet(6.0, 4.5, 8.5, 10.5);
-            } else if p.v16 {
+            } else {
                 p.page(2.0, 1.5, 8.0, 10.0, true);
                 p.page(6.0, 4.5, 8.0, 10.0, true);
-            } else {
-                // Two solid pages, the front one set off by a background gap.
-                p.fill(2.0, 1.5, 8.0, 10.0, ink);
-                p.fill(5.0, 3.5, 10.0, 12.0, p.bg());
-                p.poly(&[(6.0, 4.5), (11.5, 4.5), (14.0, 7.0), (14.0, 15.0), (6.0, 15.0)], ink);
             }
         }
         Paste => {
-            if p.v16 {
-                // Green clipboard outline, white sheet on it.
-                let g = hex(0x5AC878);
-                p.rect(2.0, 3.0, 9.5, 11.5, g);
-                p.fill(4.5, 1.0, 4.5, 3.0, g);
-                p.sheet(7.0, 6.5, 7.5, 8.5);
-            } else {
-                // Clipboard: board outline, solid clip, three text lines.
-                p.rect(2.5, 2.5, 11.0, 12.5, ink);
-                p.fill(5.0, 1.0, 6.0, 3.0, ink);
-                for y in [7.0, 9.5, 12.0] {
-                    p.line(&[(5.0, y), (11.0, y)], ink);
-                }
-            }
+            // Green clipboard outline, white sheet on it.
+            let g = hex(0x5AC878);
+            p.rect(2.0, 3.0, 9.5, 11.5, g);
+            p.fill(4.5, 1.0, 4.5, 3.0, g);
+            p.sheet(7.0, 6.5, 7.5, 8.5);
         }
         Undo | Redo => {
             // Hook arrow: head pointing left at the top, the shaft bends round the right side and back
-            // (Redo is mirrored). VP16 draws it bold, VP23 as a thin line.
-            let k = if p.v16 { 1.5 } else { 1.0 };
+            // (Redo is mirrored).
+            let k = 1.5;
             p.line_w(&[(4.5, 5.0), (9.0, 5.0)], ink, k);
             p.arc((9.0, 9.0), 4.0, 270.0, 450.0, ink, k);
             p.line_w(&[(9.0, 13.0), (5.0, 13.0)], ink, k);
-            p.arrow_head_k((1.5, 5.0), (-1.0, 0.0), ink, if p.v16 { 1.3 } else { 1.1 });
+            p.arrow_head_k((1.5, 5.0), (-1.0, 0.0), ink, 1.3);
         }
         Tutorials => {
             p.fill_round(4.0, 7.0, 7.0, 6.5, 2.0, p.paper());
@@ -547,28 +457,16 @@ fn draw(p: &Pen, icon: Icon) {
             p.help_badge();
         }
         Record => {
-            if p.v16 {
-                p.fill_round(5.5, 1.0, 5.0, 8.0, 2.5, hex(0xE0505A));
-                p.arc((8.0, 6.5), 4.0, 0.0, 180.0, ink, 1.0);
-                p.line(&[(8.0, 10.5), (8.0, 14.0)], ink);
-                p.line(&[(5.0, 14.5), (11.0, 14.5)], ink);
-            } else {
-                p.dot((8.0, 8.0), 5.0, hex(0xFF7B5F));
-            }
+            p.fill_round(5.5, 1.0, 5.0, 8.0, 2.5, hex(0xE0505A));
+            p.arc((8.0, 6.5), 4.0, 0.0, 180.0, ink, 1.0);
+            p.line(&[(8.0, 10.5), (8.0, 14.0)], ink);
+            p.line(&[(5.0, 14.5), (11.0, 14.5)], ink);
         }
-        Loop if p.v16 => {
+        Loop => {
             // Circular arrow with a blue tick at the top (c_transport).
             p.arc((8.0, 9.0), 5.0, -60.0, 220.0, ink, 1.2);
             p.arrow_head((3.2, 5.6), (0.64, -0.77), ink);
             p.line_w(&[(8.0, 1.0), (8.0, 5.5)], p.c(hex(0x3C8CDC)), 1.3);
-        }
-        Loop => {
-            p.line(&[(9.0, 4.0), (4.5, 4.0)], ink);
-            p.arc((4.5, 8.0), 4.0, 270.0, 90.0, ink, 1.0);
-            p.line(&[(7.0, 12.0), (11.5, 12.0)], ink);
-            p.arc((11.5, 8.0), 4.0, 90.0, -90.0, ink, 1.0);
-            p.arrow_head((12.0, 4.0), (1.0, 0.0), ink);
-            p.arrow_head((4.0, 12.0), (-1.0, 0.0), ink);
         }
         PlayFromStart => {
             p.fill(3.0, 3.0, 2.0, 10.0, ink);
@@ -589,16 +487,6 @@ fn draw(p: &Pen, icon: Icon) {
             p.fill(10.0, 4.0, 1.2, 8.0, ink);
             p.fill(12.4, 4.0, 1.2, 8.0, ink);
         }
-        NormalEdit if !p.v16 => {
-            // Plain outlined arrow (dark2026).
-            p.closed(&[(3.5, 1.5), (3.5, 13.5), (6.5, 10.5), (9.0, 15.0), (10.8, 14.2), (8.5, 9.8), (12.5, 9.8)], ink);
-        }
-        EnvelopeEdit if !p.v16 => p.node_pair(1.0, ink),
-        SelectionEdit if !p.v16 => p.dashed_rect(2.0, 2.0, 12.0, 12.0, 2.0, 1.5, ink),
-        ZoomEdit if !p.v16 => {
-            p.circle((7.0, 7.0), 5.0, ink);
-            p.line(&[(10.6, 10.6), (14.5, 14.5)], ink);
-        }
         NormalEdit => {
             p.pointer(2.0, 1.0, 0.95, p.paper());
             p.line(&[(11.0, 10.0), (10.0, 10.0), (10.0, 14.5), (11.0, 14.5)], ink);
@@ -606,7 +494,7 @@ fn draw(p: &Pen, icon: Icon) {
         }
         EnvelopeEdit => {
             p.pointer(1.5, 0.5, 0.85, p.paper());
-            let c = p.c16(hex(0x3C78C8));
+            let c = p.c(hex(0x3C78C8));
             p.line(&[(7.5, 14.0), (11.0, 10.0), (15.0, 12.5)], c);
             p.fill(10.0, 9.0, 2.0, 2.0, ink);
             p.fill(14.0, 11.5, 2.0, 2.0, ink);
@@ -625,7 +513,7 @@ fn draw(p: &Pen, icon: Icon) {
         }
         Search => p.magnifier(),
         Delete => {
-            let c = p.c16(hex(0xE04040));
+            let c = p.c(hex(0xE04040));
             p.line_w(&[(3.5, 3.5), (12.5, 12.5)], c, 1.4);
             p.line_w(&[(12.5, 3.5), (3.5, 12.5)], c, 1.4);
         }
@@ -635,7 +523,7 @@ fn draw(p: &Pen, icon: Icon) {
             p.line(&[(13.0, 3.0), (15.0, 3.0), (15.0, 13.0), (13.0, 13.0)], ink);
         }
         TrimStart | TrimEnd => {
-            let h = p.c16(hex(0xD04040));
+            let h = p.c(hex(0xD04040));
             p.rect(1.5, 4.0, 6.5, 8.0, h);
             for k in 0..3 {
                 let x = 1.5 + k as f32 * 2.5;
@@ -645,14 +533,9 @@ fn draw(p: &Pen, icon: Icon) {
             p.rect(11.5, 4.0, 3.0, 8.0, ink);
         }
         Split | SmartSplit => {
-            if p.v16 {
-                let b = hex(0x3C78C8);
-                p.fill_round(1.0, 5.0, 6.0, 6.0, 2.0, b);
-                p.fill_round(9.0, 5.0, 6.0, 6.0, 2.0, b);
-            } else {
-                p.rect_round(1.0, 5.0, 5.5, 6.0, 2.0, ink);
-                p.rect_round(9.5, 5.0, 5.5, 6.0, 2.0, ink);
-            }
+            let b = hex(0x3C78C8);
+            p.fill_round(1.0, 5.0, 6.0, 6.0, 2.0, b);
+            p.fill_round(9.0, 5.0, 6.0, 6.0, 2.0, b);
             p.line(&[(8.0, 2.0), (8.0, 14.0)], ink);
             if icon == SmartSplit {
                 p.line(&[(13.0, 0.5), (13.0, 4.5)], ink);
@@ -663,33 +546,21 @@ fn draw(p: &Pen, icon: Icon) {
             p.arc((8.0, 7.0), 3.0, 180.0, 360.0, ink, 1.0);
             p.line(&[(5.0, 7.0), (5.0, 8.0)], ink);
             p.line(&[(11.0, 7.0), (11.0, 8.0)], ink);
-            if p.v16 {
-                p.fill(4.0, 8.0, 8.0, 6.0, hex(0xDCDCDC));
-            } else {
-                p.rect(4.0, 8.0, 8.0, 6.0, ink);
-            }
+            p.fill(4.0, 8.0, 8.0, 6.0, hex(0xDCDCDC));
         }
         InsertMarker => {
             // Speech-bubble tag: square flag with its tail down the left edge (olive 16, orange 23).
-            let c = p.c(if p.v16 { hex(0xBDAB5A) } else { hex(0xF08C28) });
+            let c = p.c(hex(0xBDAB5A));
             p.fill(3.0, 2.5, 10.5, 8.5, c);
             p.poly(&[(3.0, 11.0), (6.5, 11.0), (3.0, 14.5)], c);
         }
-        InsertRegion if p.v16 => {
+        InsertRegion => {
             // Green double flag: one block on two legs with a notch between them (c_transport).
             let c = p.c(hex(0x79B27B));
             p.fill(2.0, 2.5, 12.0, 6.5, c);
             p.fill(2.0, 9.0, 2.0, 5.5, c);
             p.fill(12.0, 9.0, 2.0, 5.5, c);
             p.poly(&[(6.5, 9.0), (9.5, 9.0), (8.0, 7.0)], p.bg());
-        }
-        InsertRegion => {
-            // Two small green flags on short poles (dark2026).
-            let c = p.c(hex(0x28DC64));
-            p.fill(1.5, 5.0, 5.5, 4.5, c);
-            p.fill(1.5, 5.0, 1.0, 6.5, c);
-            p.fill(9.0, 5.0, 5.5, 4.5, c);
-            p.fill(13.5, 5.0, 1.0, 6.5, c);
         }
         Snapping => {
             let body = p.c(hex(0xD03030));
@@ -700,15 +571,9 @@ fn draw(p: &Pen, icon: Icon) {
             p.line_w(&[(3.5, 12.0), (3.5, 14.5)], tip, 1.7);
             p.line_w(&[(12.5, 12.0), (12.5, 14.5)], tip, 1.7);
         }
-        AutoCrossfade if !p.v16 => {
-            // Bow tie: solid left triangle, outlined right one meeting at the centre.
-            p.poly(&[(1.5, 2.5), (8.0, 8.0), (1.5, 13.5)], ink);
-            p.closed(&[(14.5, 2.5), (8.0, 8.0), (14.5, 13.5)], ink);
-            p.line(&[(1.5, 2.5), (14.5, 13.5)], ink);
-        }
         AutoCrossfade => {
             p.rect(1.0, 3.0, 14.0, 10.0, ink);
-            let c = p.c16(hex(0x3C78C8));
+            let c = p.c(hex(0x3C78C8));
             p.line(&[(1.0, 13.0), (15.0, 3.0)], c);
             p.line(&[(1.0, 3.0), (15.0, 13.0)], c);
         }
@@ -718,21 +583,15 @@ fn draw(p: &Pen, icon: Icon) {
                 p.arrow_head((x + 7.0, y), (1.0, 0.0), ink);
             }
         }
-        LockEnvelopes if !p.v16 => {
-            // Node pair with a padlock at the lower right.
-            p.node_pair(0.8, ink);
-            p.arc((12.0, 9.5), 1.8, 180.0, 360.0, ink, 0.9);
-            p.fill(9.5, 9.5, 5.0, 5.0, ink);
-        }
         LockEnvelopes => {
             p.rect(1.0, 8.0, 11.0, 6.0, ink);
-            p.line(&[(1.0, 12.5), (5.0, 10.0), (12.0, 11.0)], p.c16(hex(0x3C78C8)));
+            p.line(&[(1.0, 12.5), (5.0, 10.0), (12.0, 11.0)], p.c(hex(0x3C78C8)));
             p.arc((13.0, 3.5), 1.6, 180.0, 360.0, ink, 0.8);
             p.fill(10.8, 3.5, 4.4, 3.5, ink);
         }
         IgnoreGrouping => {
             // Two grouped boxes (one solid, one dotted) and a pointer over them (c_transport, dark2026).
-            p.fill(1.0, 2.0, 6.0, 6.0, p.c16(hex(0x5DB0E6)));
+            p.fill(1.0, 2.0, 6.0, 6.0, p.c(hex(0x5DB0E6)));
             p.dashed_rect(8.5, 2.0, 6.0, 6.0, 1.0, 1.0, ink);
             p.pointer(8.0, 6.5, 0.7, p.paper());
         }
@@ -774,39 +633,14 @@ fn draw(p: &Pen, icon: Icon) {
             p.arrow_head((12.0, 8.0), (1.0, 0.0), y);
         }
         More => {
-            if p.v16 {
-                for y in [3.0, 7.0, 11.0] {
-                    p.fill(3.0, y, 10.0, 2.0, ink);
-                }
-            } else {
-                for x in [3.0, 7.0, 11.0] {
-                    p.fill(x, 7.0, 2.0, 2.0, ink);
-                }
+            for y in [3.0, 7.0, 11.0] {
+                p.fill(3.0, y, 10.0, 2.0, ink);
             }
-        }
-        Mute | Solo if p.c06 => {
-            // Classic 2006: a bold black letter on the (bevelled) button; Mute's letter is struck through when the
-            // button is drawn tinted, so the glyph stays one colour.
-            p.text((8.0, 8.5), if icon == Mute { "M" } else { "S" }, t.font.mute_solo + 1.0, fonts::TAHOMA_BOLD, ink);
         }
         Mute | Solo => {
-            let size = t.font.mute_solo;
-            if p.v16 {
-                let mute = icon == Mute;
-                p.dot((8.0, 8.0), 7.5, if mute { t.mute_badge } else { t.solo_badge });
-                let fg = if mute { hex(0xFFFFFF) } else { hex(0x1E1E1E) };
-                p.text((8.0, 8.0), if mute { "M" } else { "S!" }, size, fonts::BOLD, fg);
-                if mute {
-                    // Small circle-slash on the top-right of the badge (c_trackhdr).
-                    p.dot((12.5, 3.5), 3.2, hex(0xFFFFFF));
-                    p.circle((12.5, 3.5), 2.2, hex(0x3C3C3C));
-                    p.line_w(&[(11.0, 5.0), (14.0, 2.0)], hex(0x3C3C3C), 0.6);
-                }
-            } else {
-                p.text((8.0, 8.0), if icon == Mute { "M" } else { "S" }, size, fonts::BOLD, ink);
-            }
+            // A bold black letter on the (bevelled) button.
+            p.text((8.0, 8.5), if icon == Mute { "M" } else { "S" }, t.font.mute_solo + 1.0, ink);
         }
-        TrackFx if !p.v16 => p.text((8.0, 8.0), "fx", 13.0, fonts::BOLD, ink),
         TrackFx => {
             p.line(&[(3.5, 14.0), (5.5, 5.0), (6.5, 2.8), (9.0, 2.2)], ink);
             p.line(&[(3.5, 7.0), (8.5, 7.0)], ink);
@@ -830,50 +664,31 @@ fn draw(p: &Pen, icon: Icon) {
             p.circle((8.0, 8.0), 2.5, ink);
         }
         TrackVideo => {
-            if p.v16 {
-                // Upright film frame with sprocket holes down both sides (c_trackhdr).
-                p.fill(3.0, 1.0, 10.0, 14.0, ink);
-                for y in [2.5, 6.5, 10.5] {
-                    for x in [4.0, 10.5] {
-                        p.p.rect_filled(p.r(x, y, 1.5, 2.0), 0.0, hex(0x3C3C3C));
-                    }
+            // Upright film frame with sprocket holes down both sides (c_trackhdr).
+            p.fill(3.0, 1.0, 10.0, 14.0, ink);
+            for y in [2.5, 6.5, 10.5] {
+                for x in [4.0, 10.5] {
+                    p.p.rect_filled(p.r(x, y, 1.5, 2.0), 0.0, hex(0x3C3C3C));
                 }
-            } else {
-                p.rect(2.0, 2.0, 12.0, 12.0, ink);
-                p.line(&[(8.0, 2.0), (8.0, 14.0)], ink);
-                p.line(&[(2.0, 8.0), (14.0, 8.0)], ink);
             }
         }
         TrackAudio => {
-            if p.v16 {
-                p.speaker(3.0, ink);
-            } else {
-                p.dot((5.5, 12.0), 2.5, ink);
-                p.line(&[(7.8, 12.0), (7.8, 2.0), (12.5, 4.5), (12.5, 6.5)], ink);
-            }
+            p.speaker(3.0, ink);
         }
         ExpandKeyframes => {
             p.line(&[(4.5, 4.0), (8.0, 7.0), (11.5, 4.0)], ink);
             p.line(&[(4.5, 8.0), (8.0, 11.0), (11.5, 8.0)], ink);
         }
-        FaderThumb if p.c06 => {
+        FaderThumb => {
             // Chrome handle with a centre line (the track sliders paint theirs with `widgets::thumb`).
             p.fill(3.0, 1.0, 10.0, 14.0, t.metal.face);
             p.line(&[(4.0, 1.5), (12.0, 1.5)], t.metal.light);
             p.line(&[(3.5, 1.5), (3.5, 14.5)], t.metal.light);
             p.fill(7.5, 4.0, 1.0, 8.0, t.metal.dark);
         }
-        FaderThumb => {
-            let (x, w) = if p.v16 { (0.0, 16.0) } else { (2.0, 12.0) };
-            p.fill(x, 2.0, w, 12.0, t.fader_thumb);
-            p.fill(6.5, 5.0, 1.0, 6.0, t.fader_thumb_bar);
-            p.fill(8.5, 5.0, 1.0, 6.0, t.fader_thumb_bar);
-        }
         PanThumb => p.poly(&[(3.0, 4.0), (13.0, 4.0), (8.0, 12.0)], t.fader_thumb),
-        // The time-display / rate thumb and the fx letters keep their look-neutral drawing; the Classic 2006 outline
-        // pass handles the rest.
         Downmix => {
-            let a = p.c16(hex(0xF0C800));
+            let a = p.c(hex(0xF0C800));
             p.line(&[(8.0, 2.0), (8.0, 14.0)], ink);
             p.line(&[(1.0, 8.0), (4.5, 8.0)], a);
             p.arrow_head((7.0, 8.0), (1.0, 0.0), a);
@@ -882,7 +697,7 @@ fn draw(p: &Pen, icon: Icon) {
         }
         Dim => {
             p.speaker(1.0, ink);
-            p.poly(&[(10.0, 9.0), (15.0, 9.0), (12.5, 13.0)], p.c16(hex(0x3C78C8)));
+            p.poly(&[(10.0, 9.0), (15.0, 9.0), (12.5, 13.0)], p.c(hex(0x3C78C8)));
         }
         InsertBus => {
             for y in [3.0, 8.0, 13.0] {
@@ -927,25 +742,18 @@ fn draw(p: &Pen, icon: Icon) {
             p.line(&[(12.0, 4.0), (4.0, 12.0)], ink);
         }
         Logo => {
-            // Original Milan Pro monogram (never the VEGAS "V"); Classic 2006 shows the brand's metallic chrome M
-            // (assets/brand/milan-pro-256.png), tinted when the icon is.
+            // The brand's metallic chrome M (assets/brand/milan-pro-256.png), tinted when the icon is.
             let r = p.r(0.0, 0.0, 16.0, 16.0);
-            if p.c06 {
-                let tex = super::widgets::brand_tex(p.p.ctx(), super::widgets::Brand::Mark);
-                p.p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), p.force.unwrap_or(Color32::WHITE));
-                return;
-            }
-            p.p.rect_filled(r, CornerRadius::same((3.0 * p.s) as u8), p.c(t.logo_bg));
-            p.p.rect_stroke(r, CornerRadius::same((3.0 * p.s) as u8), Stroke::new(1.0_f32, p.c(t.logo_border)), StrokeKind::Inside);
-            p.line_w(&[(4.0, 12.0), (4.0, 4.5), (8.0, 9.5), (12.0, 4.5), (12.0, 12.0)], t.logo_text, 1.1);
+            let tex = super::widgets::brand_tex(p.p.ctx(), super::widgets::Brand::Mark);
+            p.p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), p.force.unwrap_or(Color32::WHITE));
         }
         DropDown => p.poly(&[(5.5, 6.5), (10.5, 6.5), (8.0, 9.5)], ink),
         RemoveUnused => {
-            p.page(2.0, 1.5, 9.0, 11.0, p.v16);
+            p.page(2.0, 1.5, 9.0, 11.0, true);
             for y in [4.5, 7.0, 9.5] {
-                p.line_w(&[(4.0, y), (9.0, y)], if p.v16 { hex(0x3C3C3C) } else { ink }, 0.7);
+                p.line_w(&[(4.0, y), (9.0, y)], hex(0x3C3C3C), 0.7);
             }
-            let c = p.c16(hex(0xE04040));
+            let c = p.c(hex(0xE04040));
             p.line_w(&[(9.0, 9.0), (14.5, 14.5)], c, 1.3);
             p.line_w(&[(14.5, 9.0), (9.0, 14.5)], c, 1.3);
         }
@@ -959,34 +767,28 @@ fn draw(p: &Pen, icon: Icon) {
         }
         DeviceMedia => {
             // White camcorder with a pink arrow down into the lower right (c_pm).
-            p.fill(1.0, 2.0, 10.0, 7.5, p.c16(hex(0xF0F0F0)));
-            p.poly(&[(11.0, 4.0), (14.5, 2.0), (14.5, 9.5), (11.0, 7.5)], p.c16(hex(0xF0F0F0)));
-            let r = p.c16(hex(0xE0506E));
+            p.fill(1.0, 2.0, 10.0, 7.5, p.c(hex(0xF0F0F0)));
+            p.poly(&[(11.0, 4.0), (14.5, 2.0), (14.5, 9.5), (11.0, 7.5)], p.c(hex(0xF0F0F0)));
+            let r = p.c(hex(0xE0506E));
             p.line_w(&[(5.0, 8.5), (10.5, 13.0)], r, 1.6);
             p.arrow_head_k((14.0, 15.5), (0.707, 0.707), r, 1.2);
         }
         WebMedia => {
-            if p.v16 {
-                // White globe with grey meridians and a red arrow coming down into it.
-                p.dot((7.0, 8.5), 6.0, hex(0xF0F0F0));
-                let g = hex(0x8A8A8A);
-                p.line_w(&[(1.5, 8.5), (12.5, 8.5)], g, 0.7);
-                p.p.add(Shape::ellipse_stroke(p.at((7.0, 8.5)), vec2(2.4, 6.0) * p.s, Stroke::new(0.7 * p.w, p.c(g))));
-                let r = hex(0xE0506E);
-                p.line_w(&[(9.0, 9.0), (12.5, 12.5)], r, 1.6);
-                p.arrow_head_k((15.0, 15.0), (0.707, 0.707), r, 1.2);
-            } else {
-                p.circle((8.0, 8.0), 6.0, ink);
-                p.line(&[(2.0, 8.0), (14.0, 8.0)], ink);
-                p.p.add(Shape::ellipse_stroke(p.at((8.0, 8.0)), vec2(2.6, 6.0) * p.s, Stroke::new(p.w, p.c(ink))));
-            }
+            // White globe with grey meridians and a red arrow coming down into it.
+            p.dot((7.0, 8.5), 6.0, hex(0xF0F0F0));
+            let g = hex(0x8A8A8A);
+            p.line_w(&[(1.5, 8.5), (12.5, 8.5)], g, 0.7);
+            p.p.add(Shape::ellipse_stroke(p.at((7.0, 8.5)), vec2(2.4, 6.0) * p.s, Stroke::new(0.7 * p.w, p.c(g))));
+            let r = hex(0xE0506E);
+            p.line_w(&[(9.0, 9.0), (12.5, 12.5)], r, 1.6);
+            p.arrow_head_k((15.0, 15.0), (0.707, 0.707), r, 1.2);
         }
         Import => {
             // Sheet with a blue arrow coming in from the upper left.
             p.sheet(5.0, 1.5, 10.0, 13.5);
-            let a = p.c16(hex(0x2E8BE6));
-            p.line_w(&[(1.0, 3.0), (6.5, 8.5)], a, if p.v16 { 1.8 } else { 1.0 });
-            p.arrow_head_k((10.0, 12.0), (0.707, 0.707), a, if p.v16 { 1.4 } else { 1.0 });
+            let a = p.c(hex(0x2E8BE6));
+            p.line_w(&[(1.0, 3.0), (6.5, 8.5)], a, 1.8);
+            p.arrow_head_k((10.0, 12.0), (0.707, 0.707), a, 1.4);
         }
         MediaBin => {
             // Three stacked frames, the front one with a picture strip.
@@ -1030,17 +832,17 @@ fn draw(p: &Pen, icon: Icon) {
             }
         }
         Back | Forward => {
-            let c = p.c16(hex(0x3CA050));
+            let c = p.c(hex(0x3CA050));
             p.line_w(&[(13.5, 8.0), (5.0, 8.0)], c, 1.3);
             p.arrow_head((2.5, 8.0), (-1.0, 0.0), c);
         }
         Up => {
-            let c = p.c16(hex(0x3CA050));
+            let c = p.c(hex(0x3CA050));
             p.line_w(&[(8.0, 14.0), (8.0, 5.5)], c, 1.3);
             p.arrow_head((8.0, 2.5), (0.0, -1.0), c);
         }
         Refresh => {
-            let c = p.c16(hex(0x3CA050));
+            let c = p.c(hex(0x3CA050));
             p.arc((8.0, 8.0), 5.0, 300.0, 600.0, c, 1.1);
             p.arrow_head((12.4, 3.2), (0.6, -0.8), c);
         }
@@ -1052,15 +854,11 @@ fn draw(p: &Pen, icon: Icon) {
                     (8.0 + r * a.cos(), 8.5 + r * a.sin())
                 })
                 .collect();
-            p.closed(&pts, p.c16(hex(0xF0C800)));
+            p.closed(&pts, p.c(hex(0xF0C800)));
         }
         FxBadge => {
-            if p.v16 {
-                p.fill(2.0, 3.0, 12.0, 10.0, hex(0x3C8CDC));
-                p.text((8.0, 8.0), "fx", 9.0, fonts::BOLD, hex(0xFFFFFF));
-            } else {
-                p.text((8.0, 8.0), "fx", 11.0, fonts::BOLD, ink);
-            }
+            p.fill(2.0, 3.0, 12.0, 10.0, hex(0x3C8CDC));
+            p.text((8.0, 8.0), "fx", 9.0, hex(0xFFFFFF));
         }
     }
 }
@@ -1071,17 +869,15 @@ mod tests {
     use eframe::egui::{self, LayerId, pos2};
 
     #[test]
-    fn every_icon_paints_in_every_look() {
+    fn every_icon_paints() {
         let ctx = egui::Context::default();
         super::super::fonts::install(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             let painter = ctx.layer_painter(LayerId::background());
-            for look in [UiLook::Vegas16, UiLook::Vegas23, UiLook::Classic2006] {
-                for (i, &icon) in Icon::ALL.iter().enumerate() {
-                    let r = Rect::from_min_size(pos2(i as f32 * 20.0, 0.0), vec2(16.0, 16.0));
-                    paint_icon(&painter, r, icon, look, None);
-                    paint_icon(&painter, r, icon, look, Some(Color32::GRAY));
-                }
+            for (i, &icon) in Icon::ALL.iter().enumerate() {
+                let r = Rect::from_min_size(pos2(i as f32 * 20.0, 0.0), vec2(16.0, 16.0));
+                paint_icon(&painter, r, icon, None);
+                paint_icon(&painter, r, icon, Some(Color32::GRAY));
             }
         });
     }

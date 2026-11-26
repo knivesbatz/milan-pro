@@ -1,6 +1,6 @@
-//! Color Grading panel (§5.13, VP23): Lift / Gamma / Gain / Offset wheels, curves and LUTs on the first Color Grading
+//! Color Grading panel (§5.13, VEGAS 23): Lift / Gamma / Gain / Offset wheels, curves and LUTs on the first Color Grading
 //! effect of the selected video event, the focus video track or the Video Output. The effect is added to that chain
-//! on the first edit; each gesture is one undo step. VP16 users reach the same effect through the Video FX window.
+//! on the first edit; each gesture is one undo step.
 use eframe::egui::*;
 use crate::ui::widgets;
 use std::f32::consts::TAU;
@@ -188,11 +188,8 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
     let (c, outer) = (rect.center(), size * 0.5 - 2.0);
     let inner = outer - 8.0;
     let p = ui.painter();
-    let classic = t.classic();
-    if classic {
-        // Classic 2006: the wheel on a sunken dark well.
-        widgets::sunken(p, rect, t.lane_bg, &t.metal);
-    }
+    // The wheel on a sunken dark well.
+    widgets::sunken(p, rect, t.lane_bg, &t.metal);
     // Hue ring: red up, then blue and green clockwise, as `AXES`.
     let mut mesh = Mesh::default();
     let n = 60;
@@ -210,18 +207,14 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
         }
     }
     p.add(mesh);
-    p.circle_filled(c, inner, if classic { t.lane_bg } else { t.panel_bg.gamma_multiply(0.7) });
+    p.circle_filled(c, inner, t.lane_bg);
     p.hline(Rangef::new(c.x - 4.0, c.x + 4.0), c.y, Stroke::new(1.0_f32, t.text_dim));
     p.vline(c.x, Rangef::new(c.y - 4.0, c.y + 4.0), Stroke::new(1.0_f32, t.text_dim));
     let rgb = [vals[0], vals[1], vals[2]];
     let puck = puck_of(rgb, scale);
     let at = c + puck * inner;
-    if classic {
-        // A 9×9 chrome knob.
-        widgets::chrome_button(p, Rect::from_center_size(at.round(), vec2(9.0, 9.0)), widgets::Chrome::Raised, &t.metal);
-    } else {
-        p.circle(at, 4.0, Color32::WHITE, Stroke::new(1.0_f32, Color32::BLACK));
-    }
+    // A 9×9 chrome knob.
+    widgets::chrome_button(p, Rect::from_center_size(at.round(), vec2(9.0, 9.0)), widgets::Chrome::Raised, &t.metal);
     let mean = (rgb[0] + rgb[1] + rgb[2]) / 3.0;
     let new = if resp.double_clicked() {
         Some(Vec2::ZERO)
@@ -261,12 +254,11 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
 /// The curves editor: a click adds a point, a drag moves one (between its neighbours), a right-click removes one.
 fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
     let t = theme::get();
-    let classic = t.classic();
     ui.horizontal(|ui| {
         ui.label(RichText::new("Curves").strong());
         for (k, name) in ["Master", "R", "G", "B"].into_iter().enumerate() {
             let selected = st.channel == k;
-            let hit = if classic {
+            let hit = {
                 // Chrome buttons, the current channel pressed in.
                 let w = ui.painter().layout_no_wrap(name.to_owned(), t.font(t.font.ui), t.text).size().x + 12.0;
                 let (r, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click());
@@ -274,8 +266,6 @@ fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
                 widgets::chrome_button(ui.painter(), r, state, &t.metal);
                 ui.painter().text(r.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text);
                 resp
-            } else {
-                ui.selectable_label(selected, name)
             };
             if hit.clicked() {
                 (st.channel, st.drag) = (k, None);
@@ -324,31 +314,18 @@ fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
         fx.text.insert(key.into(), points_text(&pts));
     }
     let p = ui.painter_at(rect.expand(2.0));
-    if classic {
-        // Classic 2006: a sunken dark well with a dotted grid and chrome knobs on the curve.
-        widgets::sunken(&p, rect.expand(2.0), t.lane_bg, &t.metal);
-        for k in 1..4 {
-            let f = k as f32 / 4.0;
-            widgets::dotted(&p, pos2(rect.min.x + f * rect.width(), rect.min.y), pos2(rect.min.x + f * rect.width(), rect.max.y), t.grid_line);
-            widgets::dotted(&p, pos2(rect.min.x, rect.min.y + f * rect.height()), pos2(rect.max.x, rect.min.y + f * rect.height()), t.grid_line);
-        }
-    } else {
-        p.rect_filled(rect, 0.0, t.panel_bg.gamma_multiply(0.7));
-        for k in 1..4 {
-            let f = k as f32 / 4.0;
-            p.vline(rect.min.x + f * rect.width(), rect.y_range(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
-            p.hline(rect.x_range(), rect.min.y + f * rect.height(), Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.3)));
-        }
+    // A sunken dark well with a dotted grid and chrome knobs on the curve.
+    widgets::sunken(&p, rect.expand(2.0), t.lane_bg, &t.metal);
+    for k in 1..4 {
+        let f = k as f32 / 4.0;
+        widgets::dotted(&p, pos2(rect.min.x + f * rect.width(), rect.min.y), pos2(rect.min.x + f * rect.width(), rect.max.y), t.grid_line);
+        widgets::dotted(&p, pos2(rect.min.x, rect.min.y + f * rect.height()), pos2(rect.max.x, rect.min.y + f * rect.height()), t.grid_line);
     }
     let ink = [Color32::WHITE, Color32::from_rgb(0xDC, 0x50, 0x50), Color32::from_rgb(0x50, 0xC8, 0x78), Color32::from_rgb(0x3C, 0x8C, 0xDC)][st.channel];
     let line: Vec<Pos2> = (0..=64).map(|i| i as f32 / 64.0).map(|x| to_screen((x, vfx::monotone(&pts, x).clamp(0.0, 1.0)))).collect();
     p.add(Shape::line(line, Stroke::new(1.5_f32, ink)));
     for &q in &pts {
-        if classic {
-            widgets::chrome_button(&p, Rect::from_center_size(to_screen(q).round(), vec2(7.0, 7.0)), widgets::Chrome::Raised, &t.metal);
-        } else {
-            p.circle(to_screen(q), 3.5, ink, Stroke::new(1.0_f32, Color32::BLACK));
-        }
+        widgets::chrome_button(&p, Rect::from_center_size(to_screen(q).round(), vec2(7.0, 7.0)), widgets::Chrome::Raised, &t.metal);
     }
 }
 

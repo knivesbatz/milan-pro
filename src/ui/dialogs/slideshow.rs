@@ -119,7 +119,7 @@ impl Slideshow {
             }
         });
         ui.add_space(4.0);
-        let mut list = |ui: &mut Ui| {
+        let list = |ui: &mut Ui| {
             ScrollArea::vertical().max_height(200.0).auto_shrink([false, false]).show(ui, |ui| {
                 if self.pictures.is_empty() {
                     ui.weak("Add Pictures to begin.");
@@ -132,12 +132,8 @@ impl Slideshow {
                 }
             });
         };
-        // Classic 2006: the list in a sunken white box.
-        if crate::ui::theme::get().classic() {
-            super::field_box(ui, 2, list);
-        } else {
-            list(ui);
-        }
+        // The list in a sunken white box.
+        super::field_box(ui, 2, list);
     }
 
     fn settings_tab(&mut self, ui: &mut Ui) {

@@ -1,5 +1,5 @@
-//! Transitions / Video FX / Media Generators plug-in choosers (§5.6), built from the plug-in registry: search, plug-in
-//! tree (VP16) or category chips and rows (VP23), preset tiles (built-in and user presets) with thumbnails rendered by
+//! Transitions / Video FX / Media Generators plug-in choosers (§5.6), built from the plug-in registry: search, category
+//! chips and rows, preset tiles (built-in and user presets) with thumbnails rendered by
 //! the engine, and the description strip. A tile drags onto an event, a track header or the preview; a double-click
 //! asks the app to apply it to the selection.
 use eframe::egui::*;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::engine::plugins::{self, PluginInfo, PluginKind, UserPreset};
 use crate::engine::{ofx, thumbs};
 use super::icons::{Icon, paint_icon};
-use super::theme::{self, UiLook};
+use super::theme;
 use super::{PluginDrag, widgets};
 
 const CHIPS: [&str; 11] = ["All Plug-ins", "Favorites", "AI/ML", "Creative", "Color", "Utility", "Blur", "Light", "360°", "Third Party", "Filter Packages"];
@@ -98,21 +98,12 @@ impl Chooser {
     }
 }
 
-/// Toolbar row: VP16 search field + bold "Preset:"; VP23 search + category chips.
+/// Toolbar row: search field and category chips.
 pub fn draw_chooser_toolbar(ui: &mut Ui, c: &mut Chooser) {
     let t = theme::get();
     let (icon, _) = ui.allocate_exact_size(vec2(22.0, t.m.button), Sense::hover());
-    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, None);
     widgets::search_field(ui, &mut c.query, "Search plug-ins", 135.0);
-    if t.look() == UiLook::Vegas16 {
-        ui.add_space(14.0);
-        ui.label(RichText::new("Preset:").font(t.bold(t.font.ui)).color(t.text));
-        if let Some((_, name)) = c.plugin.and(c.preset.as_ref()) {
-            ui.add_space(6.0);
-            ui.label(RichText::new(name).font(t.font(t.font.ui)).color(t.text));
-        }
-        return;
-    }
     ui.add_space(8.0);
     for (k, chip) in CHIPS.iter().enumerate() {
         let font = t.font(t.font.ui);
@@ -120,24 +111,11 @@ pub fn draw_chooser_toolbar(ui: &mut Ui, c: &mut Chooser) {
         let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
         let active = c.chip == k;
         let p = ui.painter();
-        if t.classic() {
-            // Chrome buttons, the active category pressed in.
-            use super::widgets::Chrome;
-            let state = if active { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
-            widgets::chrome_button(p, r.shrink2(vec2(0.0, 1.0)), state, &t.metal);
-            p.text(r.center(), Align2::CENTER_CENTER, *chip, font, t.text);
-            if resp.clicked() {
-                c.chip = k;
-            }
-            continue;
-        }
-        if active {
-            p.rect_filled(r, CornerRadius::same(2), t.accent);
-        } else if resp.hovered() {
-            p.rect_filled(r, CornerRadius::same(2), t.button_hover_bg);
-        }
-        p.text(r.center(), Align2::CENTER_CENTER, *chip, font, if active { Color32::WHITE } else { t.text });
-        p.vline(r.max.x + 0.5, r.y_range(), Stroke::new(1.0_f32, t.title_bg));
+        // Chrome buttons, the active category pressed in.
+        use super::widgets::Chrome;
+        let state = if active { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
+        widgets::chrome_button(p, r.shrink2(vec2(0.0, 1.0)), state, &t.metal);
+        p.text(r.center(), Align2::CENTER_CENTER, *chip, font, t.text);
         if resp.clicked() {
             c.chip = k;
         }
@@ -156,7 +134,6 @@ pub struct ChooserOut {
 /// Body: plug-in tree/list | 5 px splitter | preset tiles; description strip at the bottom.
 pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &mut Vec<String>) -> ChooserOut {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     let area = ui.max_rect();
     let desc_h = 26.0;
     let body = Rect::from_min_max(area.min, pos2(area.max.x, area.max.y - desc_h));
@@ -172,34 +149,19 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     }
 
     widgets::scroll_pane(ui, left, "chooser_list", |ui| {
-        if v16 {
-            let (r, _) = widgets::tree_row(ui, 0, Some(true), Some(Icon::Folder), "All", c.plugin.is_none());
-            if r.clicked() {
-                (c.plugin, c.preset) = (None, None);
-            }
-        }
         let shown: Vec<usize> = (0..c.plugins.len()).filter(|&i| c.visible(i, favorites)).collect();
-        let mut folder = None;
         for i in shown {
             let (id, name) = (c.plugins[i].id, c.plugins[i].name);
             let sel = c.plugin == Some(i);
-            // R33a: OFX plug-ins under a folder per grouping ("Spektrafilm"), after the built-ins.
-            let ext = id.starts_with(ofx::PREFIX);
-            if v16 && ext && folder != Some(c.plugins[i].group) {
-                folder = Some(c.plugins[i].group);
-                widgets::tree_row(ui, 1, Some(true), Some(Icon::Folder), c.plugins[i].group, false);
-            }
-            let r = if v16 {
-                widgets::tree_row(ui, 1 + ext as usize, None, Some(Icon::FxBadge), name, sel).0
-            } else {
+            let r = {
                 let r = widgets::list_row(ui, 26.0, sel);
                 let p = ui.painter();
-                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, t.look(), sel.then_some(Color32::WHITE));
+                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, sel.then_some(Color32::WHITE));
                 p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, name, t.font(t.font.ui), if sel { Color32::WHITE } else { t.text });
                 let fav = favorites.iter().any(|f| f == id);
                 if fav || r.hovered() {
                     let star = Rect::from_center_size(pos2(r.rect.max.x - 14.0, r.rect.center().y), vec2(16.0, 16.0));
-                    paint_icon(p, star, Icon::Favorite, t.look(), Some(if fav { t.accent } else { t.text_dim }));
+                    paint_icon(p, star, Icon::Favorite, Some(if fav { t.accent } else { t.text_dim }));
                     if ui.interact(star, r.id.with("fav"), Sense::click()).clicked() {
                         if fav {
                             favorites.retain(|f| f != id);
@@ -222,11 +184,7 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     // Description strip.
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
     let p = ui.painter();
-    if t.classic() {
-        widgets::sunken(p, strip, t.metal.mid, &t.metal);
-    } else {
-        p.rect_filled(strip, 0.0, t.toolbar_bg);
-    }
+    widgets::sunken(p, strip, t.metal.mid, &t.metal);
     if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)) {
         let text = if info.id.starts_with(ofx::PREFIX) {
             let v = info.id.rsplit_once('@').map_or("", |v| v.1);
@@ -239,11 +197,9 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     out
 }
 
-/// Preset tiles: VP16 116×96 (100×60 thumbnail + 2-line label), VP23 ≈120×75 thumbnails with 12 px gaps.
+/// Preset tiles: ≈120×75 thumbnails with 12 px gaps.
 fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[String], out: &mut ChooserOut) {
-    let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
-    let (thumb, gap) = if v16 { (vec2(100.0, 60.0), 16.0) } else { (vec2(120.0, 75.0), 12.0) };
+    let (thumb, gap) = (vec2(120.0, 75.0), 12.0);
     let tile = thumb + vec2(16.0, 36.0);
     // The "All" node shows each plug-in's first preset.
     let tiles: Vec<(&'static PluginInfo, Tile)> = match c.plugin.and_then(|i| c.plugins.get(i)) {

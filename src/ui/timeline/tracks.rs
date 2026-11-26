@@ -1,12 +1,12 @@
-//! Track list (§5.9.3): colour strip with ≡ / ⋯, number and type badge; per-look Mute/Solo (and VP23 compositing
-//! and fx buttons); Level / Vol / Pan sliders with the "II" thumb; audio meter; selection, rename, height drag.
+//! Track list (§5.9.3): colour strip with ≡ / ⋯, number and type badge; compositing, fx, Mute and Solo chrome
+//! buttons; Level / Vol / Pan sliders with the "II" thumb; audio meter; selection, rename, height drag.
 use eframe::egui::*;
 use crate::edit;
 use crate::history::History;
 use crate::project::*;
 use crate::ui::{Selection, automation};
 use crate::ui::icons::{Icon, paint_icon};
-use crate::ui::theme::{self, Theme, UiLook};
+use crate::ui::theme::{self, Theme};
 use super::{GROUP_H, Geo, Head, MIN_TRACK_H, Rename, Row, TlState};
 
 /// Audio fader law: −inf at the bottom, 0 dB at 70 % of travel, +12 dB at the top (cubic below 0 dB).
@@ -164,28 +164,20 @@ fn meter_opts(ctx: &Context) -> MeterOpts {
 
 /// `sends`: the project has a bus or an assignable FX chain (an audio track shows the multipurpose slider).
 fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool, mo: MeterOpts) -> Layout {
-    let v16 = t.look() == UiLook::Vegas16;
     let rect = Rect::from_min_size(pos2(g.rect.min.x, row.top), vec2(g.header_w, (row.h - 2.0).max(1.0)));
     let strip = rect.with_max_x((rect.min.x + t.m.color_strip_w).min(rect.max.x));
     let body = rect.with_min_x(strip.max.x + 1.0);
     let more = Rect::from_min_size(rect.min + vec2(5.0, 4.0), vec2(14.0, 14.0));
-    let meter_w: f32 = match (row.is_video || !mo.show || !mo.vertical, v16) {
-        (true, _) => 0.0,
-        (false, true) => 21.0,
-        (false, false) => 18.0,
-    } * [0.6, 1.0, 1.5][mo.width.min(2) as usize];
+    let meter_w: f32 = if row.is_video || !mo.show || !mo.vertical { 0.0 } else { 18.0 } * [0.6, 1.0, 1.5][mo.width.min(2) as usize];
     let meter_w = meter_w.round();
     let right = body.max.x - meter_w;
     let meter = (meter_w > 0.0 && body.width() > 120.0)
-        // VP16 keeps 16 px above the meter for the peak readout on tall tracks only (68 px: labels fill it).
-        .then(|| Rect::from_min_max(pos2(right, body.min.y + if v16 && rect.height() > 80.0 { 16.0 } else { 4.0 }), pos2(body.max.x - 2.0, body.max.y - 3.0)))
+        .then(|| Rect::from_min_max(pos2(right, body.min.y + 4.0), pos2(body.max.x - 2.0, body.max.y - 3.0)))
         .filter(|m| m.height() > 8.0);
-    let kinds: &[Btn] = match (v16, row.is_video, armed) {
-        (true, false, true) => &[Btn::Arm, Btn::Mute, Btn::Solo],
-        (true, _, _) => &[Btn::Mute, Btn::Solo],
-        (false, true, _) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
-        (false, false, true) => &[Btn::Arm, Btn::Fx, Btn::Mute, Btn::Solo],
-        (false, false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
+    let kinds: &[Btn] = match (row.is_video, armed) {
+        (true, _) => &[Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo],
+        (false, true) => &[Btn::Arm, Btn::Fx, Btn::Mute, Btn::Solo],
+        (false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
     };
     // Row 1: right-aligned on a 24 px pitch with a 6 px right padding; buttons that don't fit are left out.
     let mut buttons = Vec::new();
@@ -202,8 +194,8 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool, mo: MeterOpts
         (false, false) => &[Slider::Vol, Slider::Pan],
         (false, true) => &[Slider::Vol, Slider::Pan, Slider::Send],
     };
-    // VP23 (and Classic 2006) squeeze the rows to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (c_ui_tl).
-    let (y0, pitch) = if !v16 && rect.height() < 64.0 { (19.0, 16.0) } else { (27.0, 22.0) };
+    // The rows squeeze to a 16 px pitch on short tracks so Vol and Pan both fit in 52 px (VEGAS 23, c_ui_tl).
+    let (y0, pitch) = if rect.height() < 64.0 { (19.0, 16.0) } else { (27.0, 22.0) };
     for (k, s) in rows.iter().enumerate() {
         let y = rect.min.y + y0 + pitch * k as f32;
         let r = Rect::from_min_max(pos2(body.min.x, y), pos2(right, y + 14.0));
@@ -419,7 +411,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             };
             let resp = ui.interact(*r, id.with(tip), Sense::click()).on_hover_text(tip);
             if *b == Btn::Comp {
-                // VP23 Compositing Mode: the mode list drops down from the button.
+                // Compositing Mode: the mode list drops down from the button.
                 let pid = id.with("comp_popup");
                 if resp.clicked() {
                     ui.memory_mut(|m| m.toggle_popup(pid));
@@ -461,7 +453,7 @@ pub(super) fn interact(ui: &mut Ui, g: &Geo, rows: &[Row], project: &mut Project
             }
         }
 
-        // The meter (and the VP16 peak readout above it): a click resets the peak readout and the clip lamps.
+        // The meter: a click resets the peak readout and the clip lamps.
         if let Some(m) = l.meter.filter(|m| visible(*m)) {
             let hit = if l.hmeter { m } else { m.with_min_y(l.body.min.y + 2.0) };
             let tip = if project.timeline.tracks(row.is_video)[row.idx].armed { "Recording input level" } else { "Playback level: click to reset the peaks" };
@@ -638,7 +630,6 @@ pub(super) fn paint_reorder(p: &Painter, g: &Geo, rows: &[Row], st: &TlState) {
 /// Paint every visible header, the empty area below them and the separators.
 pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Selection) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     let p = p.with_clip_rect(g.list.intersect(p.clip_rect()));
     for row in rows {
         if row.top > g.list.max.y || row.top + row.h < g.list.min.y {
@@ -654,86 +645,64 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
         p.rect_filled(l.strip, 0.0, color);
         p.rect_filled(Rect::from_x_y_ranges(Rangef::new(l.strip.max.x, l.strip.max.x + 1.0), l.rect.y_range()), 0.0, t.strip_divider);
         if l.strip.width() >= 19.0 {
-            paint_icon(&p, l.more, Icon::More, t.look(), (!v16).then_some(t.text_bright));
+            paint_icon(&p, l.more, Icon::More, Some(t.text_bright));
             let num = (row.num + 1).to_string();
             let font = if t.font.track_number_bold { t.bold(t.font.track_number) } else { t.font(t.font.track_number) };
             let galley = p.layout_no_wrap(num, font, t.text_bright);
             let size = galley.size();
-            let top = if v16 { l.rect.min.y + 20.0 } else { l.rect.center().y - size.y * 0.5 };
+            let top = l.rect.center().y - size.y * 0.5;
             if top + size.y <= l.rect.max.y + 2.0 {
                 let pos = pos2(l.rect.min.x + 4.0, top);
                 p.galley(pos, galley, t.text_bright);
                 // Subscript: below-right of the number, its top at the digit's lower third.
-                let badge = Rect::from_min_size(pos2(pos.x + size.x, pos.y + size.y * 0.55), Vec2::splat(if v16 { 12.0 } else { 10.0 }));
+                let badge = Rect::from_min_size(pos2(pos.x + size.x, pos.y + size.y * 0.55), Vec2::splat(10.0));
                 let icon = if row.is_video { Icon::TrackVideo } else { Icon::TrackAudio };
-                paint_icon(&p, badge, icon, t.look(), Some(t.text_bright));
+                paint_icon(&p, badge, icon, Some(t.text_bright));
             }
         }
         if l.body.width() <= 1.0 {
             continue;
         }
 
-        // Body: flat (VEGAS), or blue-grey brushed metal with a light top and shadow bottom row (Classic 2006).
-        if t.classic() {
-            crate::ui::widgets::header_metal(&p, l.body, &t, selected);
-            let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
-            line(l.body.min.y, t.metal.light);
-            line(l.body.max.y - 1.0, t.metal.shadow);
-        } else {
-            p.rect_filled(l.body, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
-        }
-        if selected && v16 {
-            let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
-            line(l.body.min.y, t.track_header_sel_top);
-            line(l.body.max.y - 1.0, t.track_header_sel_bottom);
-        }
+        // Body: blue-grey brushed metal with a light top and shadow bottom row.
+        crate::ui::widgets::header_metal(&p, l.body, &t, selected);
+        let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(l.body.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
+        line(l.body.min.y, t.metal.light);
+        line(l.body.max.y - 1.0, t.metal.shadow);
         // A compositing child: a bar down its left edge ties it to the parent above.
         // shortcut: VEGAS indents a child's whole header; a marker bar only, until the header layout takes an indent.
         if row.is_video && tr.child && row.idx > 0 {
             p.rect_filled(Rect::from_min_size(l.body.min, vec2(3.0, l.body.height())), 0.0, t.accent);
         }
-        // No track name: the scribble strip is off by default in both looks.
+        // No track name: the scribble strip is off by default.
         let font = t.font(t.font.ui);
         for (b, r) in &l.buttons {
             paint_button(&p, &t, *b, *r, tr, project.timeline.cursor_position);
         }
         for (s, r, groove) in &l.sliders {
             let cy = r.center().y.round();
-            let lr = p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(&cx), font.clone(), t.text_label);
-            // VP16 (and Classic 2006) put values in a column at x=48; VP23 sets them right after the label.
-            let vx = if v16 || t.classic() { l.body.min.x + 48.0 } else { lr.max.x + 4.0 };
+            p.text(pos2(l.body.min.x + 6.0, cy), Align2::LEFT_CENTER, s.label(&cx), font.clone(), t.text_label);
+            // Values in a column at x=48.
+            let vx = l.body.min.x + 48.0;
             let auto = auto_ctl(p.ctx(), project, tr, *s);
             let value = auto.map_or_else(|| s.value(tr, &cx), |(k, _, v)| auto_text(k, v));
             p.text(pos2(vx, cy), Align2::LEFT_CENTER, value, font.clone(), t.text_value);
             if groove.span() < 20.0 {
                 continue;
             }
-            if t.classic() {
-                // Sunken 3D groove (CLASSIC_2006_SPEC.md §6).
-                crate::ui::widgets::groove(&p, *groove, cy, &t.metal);
-            } else if v16 {
-                // Recessed groove: dark line over a lighter one.
-                p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy - 1.0, cy)), 0.0, t.frame);
-                p.rect_filled(Rect::from_x_y_ranges(*groove, Rangef::new(cy, cy + 1.0)), 0.0, t.fader_track);
-            } else {
-                // ~3 px bar with a dark border.
-                let bar = Rect::from_x_y_ranges(*groove, Rangef::new(cy - 1.0, cy + 2.0));
-                p.rect_filled(bar, 0.0, t.fader_track);
-                p.rect_stroke(bar.expand(1.0), 0.0, Stroke::new(1.0_f32, t.frame), StrokeKind::Inside);
-            }
+            // Sunken 3D groove (CLASSIC_2006_SPEC.md §6).
+            crate::ui::widgets::groove(&p, *groove, cy, &t.metal);
             let x = (groove.min + auto.map_or_else(|| s.pos(tr, &cx), |(k, _, v)| auto_pos(k, v)) * groove.span()).round();
             // An automation control's thumb takes its envelope's colour (VEGAS draws a distinct automation handle).
             let tint = auto.map(|(k, ..)| if k == EnvKind::Volume { t.envelope_volume } else { t.envelope_pan });
             if *s == Slider::Pan {
-                let (w, h) = if v16 { (20.0, 12.0) } else { (10.0, 8.0) };
+                let (w, h) = (10.0, 8.0);
                 p.rect_filled(Rect::from_min_size(pos2(groove.center().round(), cy - 3.0), vec2(1.0, 7.0)), 0.0, t.fader_track);
                 let pts = vec![pos2(x - w * 0.5, cy - h * 0.5), pos2(x + w * 0.5, cy - h * 0.5), pos2(x, cy + h * 0.5)];
                 p.add(Shape::convex_polygon(pts, tint.unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
-            } else if t.classic() {
+            } else {
                 // Metallic 11×15 handle with a centre line.
                 crate::ui::widgets::thumb(&p, Rect::from_center_size(pos2(x, cy), vec2(11.0, 15.0)), &t.metal, tint);
-            } else {
-                paint_icon(&p, Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0)), Icon::FaderThumb, t.look(), tint);
             }
         }
         if let Some(m) = l.meter {
@@ -743,7 +712,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             if l.hmeter {
                 paint_hmeter(&p, &t, m, input, &lv);
             } else {
-                paint_meter(&p, &t, m, l.body.min.y + 2.0, input, &lv);
+                paint_meter(&p, &t, m, input, &lv);
             }
         }
     }
@@ -757,13 +726,12 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
         p.rect_filled(r.translate(vec2(0.0, 1.0)), 0.0, t.track_separator_2);
     }
     let empty = Rect::from_min_max(pos2(g.rect.min.x, last.max(g.list.min.y)), pos2(g.rect.min.x + g.header_w, g.list.max.y));
-    p.rect_filled(empty, 0.0, if v16 { t.frame } else if t.classic() { t.band_bg } else { t.empty_lane_bg });
+    p.rect_filled(empty, 0.0, t.band_bg);
 }
 
 /// `at`: the cursor time, at which an audio track's FX count as present when some plug-in changes the sound (every
 /// audio track carries the neutral gate, EQ and compressor).
 fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
-    let v16 = t.look() == UiLook::Vegas16;
     let (icon, on) = match b {
         Btn::Arm => (Icon::Record, true),
         Btn::Comp => (Icon::CompositingMode, false),
@@ -772,50 +740,29 @@ fn paint_button(p: &Painter, t: &Theme, b: Btn, r: Rect, tr: &Track, at: f64) {
         Btn::Mute => (Icon::Mute, tr.muted),
         Btn::Solo => (Icon::Solo, tr.solo),
     };
-    if b == Btn::Fx && !v16 && !t.classic() {
-        // VP23: a 4 px accent dot at the lower right when FX are present, not a toggle fill (§5.9.3).
-        paint_icon(p, r, icon, t.look(), None);
-        if on {
-            p.circle_filled(r.right_bottom() - vec2(3.0, 3.0), 2.0, t.accent);
-        }
-    } else {
-        paint_toggle(p, t, r, icon, on);
-    }
+    paint_toggle(p, t, r, icon, on);
 }
 
 /// A header toggle button (Mute, Solo...), lit when `on`.
 fn paint_toggle(p: &Painter, t: &Theme, r: Rect, icon: Icon, on: bool) {
-    if t.classic() {
-        // 18×18 chrome button, pressed in (blue-tinted) while on.
-        let state = if on { crate::ui::widgets::Chrome::Active } else { crate::ui::widgets::Chrome::Raised };
-        crate::ui::widgets::chrome_button(p, r.expand(1.0), state, &t.metal);
-        paint_icon(p, r.shrink(1.0), icon, t.look(), None);
-    } else if t.look() == UiLook::Vegas16 {
-        paint_icon(p, r, icon, t.look(), None);
-        if on {
-            p.circle_stroke(r.center(), 8.0, Stroke::new(1.0_f32, t.text_bright));
-        }
-    } else if on {
-        p.rect_filled(r, t.radius(2), t.accent.gamma_multiply(0.3));
-        paint_icon(p, r, icon, t.look(), Some(t.accent));
-    } else {
-        paint_icon(p, r, icon, t.look(), None);
-    }
+    // 18×18 chrome button, pressed in (blue-tinted) while on.
+    let state = if on { crate::ui::widgets::Chrome::Active } else { crate::ui::widgets::Chrome::Raised };
+    crate::ui::widgets::chrome_button(p, r.expand(1.0), state, &t.metal);
+    paint_icon(p, r.shrink(1.0), icon, None);
 }
 
 /// Level meter with dB labels: the track's playback level `lv` (L and R bars, peak holds, clip lamps), or lit to
-/// `input` (a linear peak) on an armed track. VP16 shows the peak readout above it.
-fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>, lv: &crate::ui::mixer::MeterView) {
-    let v16 = t.look() == UiLook::Vegas16;
+/// `input` (a linear peak) on an armed track.
+fn paint_meter(p: &Painter, t: &Theme, m: Rect, input: Option<f32>, lv: &crate::ui::mixer::MeterView) {
     let to_y = |d: f32| m.min.y + m.height() * (-d / 60.0).clamp(0.0, 1.0);
     crate::ui::mixer::paint_well(p, m);
     match input {
-        Some(v) if v > 1e-3 => crate::ui::master_bus::paint_bar(p, m, to_y(20.0 * v.log10()), &to_y, v16, 1.0),
+        Some(v) if v > 1e-3 => crate::ui::master_bus::paint_bar(p, m, to_y(20.0 * v.log10()), &to_y),
         Some(_) => {}
-        None => crate::ui::mixer::paint_levels(p, m, lv, v16),
+        None => crate::ui::mixer::paint_levels(p, m, lv),
     }
     let font = t.font(t.font.meter);
-    let labels: &[i32] = if v16 { &[12, 24, 36, 48] } else { &[9, 18, 27, 36, 45, 54] };
+    let labels: &[i32] = &[9, 18, 27, 36, 45, 54];
     // Every other label when they would crowd (short tracks).
     let every = if m.height() * (labels[1] - labels[0]) as f32 / 60.0 < 10.0 { 2 } else { 1 };
     for db in labels.iter().skip(every - 1).step_by(every) {
@@ -823,10 +770,6 @@ fn paint_meter(p: &Painter, t: &Theme, m: Rect, top: f32, input: Option<f32>, lv
         if y < m.max.y - 4.0 {
             p.text(pos2(m.center().x, y), Align2::CENTER_CENTER, db.to_string(), font.clone(), t.meter_label);
         }
-    }
-    if v16 && m.min.y - top >= 10.0 {
-        let peak = if input.is_some() { "-Inf.".to_string() } else { lv.peak_text() };
-        p.text(pos2(m.max.x, top), Align2::RIGHT_TOP, peak, font, if lv.clip.iter().any(|c| *c) && input.is_none() { t.meter_red } else { t.text_secondary });
     }
 }
 

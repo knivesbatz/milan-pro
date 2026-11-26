@@ -45,7 +45,7 @@ struct Drag {
 }
 
 fn color(t: &Theme, kind: EnvKind) -> Color32 {
-    // VP16 default envelope colours (spec §2).
+    // VEGAS default envelope colours (spec §2).
     match kind {
         EnvKind::MotionBlur => Color32::from_rgb(0xBF, 0x7F, 0xD3),
         EnvKind::Supersampling => Color32::from_rgb(0xB8, 0x69, 0x3C),
@@ -308,7 +308,7 @@ fn bus_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history
     }
     let meter = Rect::from_min_max(pos2(head.max.x - 14.0, head.min.y + 28.0), pos2(head.max.x - 4.0, head.max.y - 4.0));
     mixer::paint_well(p, meter);
-    mixer::paint_levels(p, meter, &mixer::level(ui.ctx(), bid), t.look() == theme::UiLook::Vegas16);
+    mixer::paint_levels(p, meter, &mixer::level(ui.ctx(), bid));
     let font = t.font(t.font.ui);
     for (k, pan) in [(0, false), (1, true)] {
         let cy = head.min.y + 35.0 + 17.0 * k as f32;
@@ -338,7 +338,7 @@ fn bus_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history
         let x = (groove.min + pos * groove.span()).round();
         let thumb = Rect::from_center_size(pos2(x, cy), vec2(16.0, 16.0));
         let tint = auto.map(|_| color(&t, kind));
-        super::super::icons::paint_icon(p, thumb, if pan { Icon::PanThumb } else { Icon::FaderThumb }, t.look(), tint);
+        super::super::icons::paint_icon(p, thumb, if pan { Icon::PanThumb } else { Icon::FaderThumb }, tint);
         let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 8.0, groove.max + 8.0), Rangef::new(cy - 7.0, cy + 7.0));
         let resp = ui.interact(hit, id.with(("slider", k)), Sense::click_and_drag()).on_hover_text(value);
         let span = groove.span();

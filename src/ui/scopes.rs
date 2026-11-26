@@ -233,18 +233,16 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 
     let t = theme::get();
     let rect = ui.max_rect();
-    // Classic 2006: each scope is a black well with a sunken 3D frame on the panel; the VEGAS looks are black
+    // Each scope is a black well with a sunken 3D frame on the panel
     // throughout.
-    ui.painter().rect_filled(rect, 0.0, if t.classic() { t.panel_bg } else { Color32::BLACK });
+    ui.painter().rect_filled(rect, 0.0, t.panel_bg);
     let panes = p.view.panes();
     let cells = cells(rect, panes.len());
     for (&pane, &cell) in panes.iter().zip(&cells) {
         let mut row = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(cell.min, vec2(cell.width(), t.m.button))).layout(Layout::left_to_right(Align::Center)));
         row.add_space(2.0);
         let plot = cell.with_min_y(cell.min.y + t.m.button).shrink(6.0);
-        if t.classic() {
-            super::widgets::sunken(ui.painter(), plot.expand(3.0), Color32::BLACK, &t.metal);
-        }
+        super::widgets::sunken(ui.painter(), plot.expand(3.0), Color32::BLACK, &t.metal);
         match pane {
             Pane::Vector => {
                 setting(&mut row, "Vectorscope Settings", &mut p.magnified, ["Normal", "Magnified"]);

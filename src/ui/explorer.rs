@@ -224,7 +224,7 @@ pub fn draw_explorer(ui: &mut Ui, ex: &mut Explorer, actions: &mut Vec<WinAction
             let sel = ex.selected.as_ref() == Some(&path);
             let r = widgets::list_row(ui, ROW_H, sel);
             let icon = if is_dir { Icon::Folder } else if is_audio(&path) { Icon::TrackAudio } else { Icon::TrackVideo };
-            paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, t.look(), None);
+            paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, None);
             let color = if sel { Color32::WHITE } else { t.text };
             if ex.details {
                 let kind = if is_dir { "Folder".to_owned() } else { path.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default() };

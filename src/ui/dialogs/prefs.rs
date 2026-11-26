@@ -1,27 +1,22 @@
-//! Options › Preferences (§5.15.1): two (VP23: three) rows of tabs; General, Video, Audio Device, Editing and Display
+//! Options › Preferences (VEGAS_UI_SPEC.md §5.15.1): three rows of tabs; General, Video, Audio Device, Editing and Display
 //! are live, Audio has the preferred audio editor (R18a) and the loudness log option (R16c), and VST Effects (R34a) the
 //! VST3 and CLAP folders searched.
 use eframe::egui::{self, *};
 use crate::ui::widgets;
 use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
-use super::super::theme::{self, LookChoice, UiLook, Variant};
+use super::super::theme;
 
 // "Update" is Milan Pro's own page (R44/R46): the updater, the log and crash-report options.
-const ROWS16: &[&[&str]] = &[
-    &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
-    &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation", "Update"],
-];
-const ROWS23: &[&[&str]] = &[
+const ROWS: &[&[&str]] = &[
     &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
     &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation"],
     &["File I/O", "Deprecated Features", "Update"],
 ];
 
-/// The Update page's index in `rows` (it is last in both looks).
-pub fn update_tab(look: UiLook) -> usize {
-    let rows = if look == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
-    rows.iter().flat_map(|r| r.iter()).position(|n| *n == "Update").unwrap_or(0)
+/// The Update page's index in `ROWS` (it is last).
+pub fn update_tab() -> usize {
+    ROWS.iter().flat_map(|r| r.iter()).position(|n| *n == "Update").unwrap_or(0)
 }
 const GENERAL: usize = 0;
 pub const VIDEO: usize = 1;
@@ -42,9 +37,6 @@ pub struct PrefsDialog {
     outputs: Option<Vec<String>>,
     /// R14: the displays, listed once per opening of the Preview Device page.
     monitors: Option<Vec<crate::ui::monitors::Monitor>>,
-    /// R13 (VP16) Display: "Display timeline at bottom of main window", which the app reads from and applies to the
-    /// dock (the place of its one area is part of the window layout).
-    pub timeline_bottom: bool,
 }
 
 impl PrefsDialog {
@@ -65,17 +57,15 @@ impl PrefsDialog {
 
     /// Show the dialog; returns the preferences to apply on OK / Apply. `latency`: the audio device's output, input and
     /// monitoring round-trip latency in ms (`audio::Player::latency_ms`), shown on the Audio Device page.
-    /// `timeline_bottom_now`: where the VP16 dock area is (so a change of it enables Apply).
-    pub fn show(&mut self, ctx: &Context, current: &Prefs, latency: Option<(f64, f64, f64)>, timeline_bottom_now: bool) -> Option<Prefs> {
+    pub fn show(&mut self, ctx: &Context, current: &Prefs, latency: Option<(f64, f64, f64)>) -> Option<Prefs> {
         let d = self.draft.as_mut()?;
-        // Layouts change behind the dialog (Apply on a new look saves the old look's); OK must not hand back stale ones.
+        // Layouts change behind the dialog (another window saves its own); OK must not hand back stale ones.
         if d.layouts != current.layouts {
             d.layouts.clone_from(&current.layouts);
         }
-        let t = theme::get();
-        let rows = if t.look() == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
-        let changed = *d != *current || self.timeline_bottom != timeline_bottom_now;
-        let (tab, track, inputs, outputs, bottom) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs, &mut self.timeline_bottom);
+        let rows = ROWS;
+        let changed = *d != *current;
+        let (tab, track, inputs, outputs) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs);
         let monitors = &mut self.monitors;
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
@@ -87,8 +77,8 @@ impl PrefsDialog {
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 VST_EFFECTS => vst_effects(ui, d),
                 EDITING => editing(ui, d),
-                DISPLAY => display(ui, d, track, bottom),
-                k if k == update_tab(t.look()) => update(ui, d),
+                DISPLAY => display(ui, d, track),
+                k if k == update_tab() => update(ui, d),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
             ui.add_space(8.0);
@@ -102,31 +92,6 @@ impl PrefsDialog {
     }
 }
 
-/// A 40×26 preview of `look` beside its radio: its toolbar band over its panel and timeline lane, with a track
-/// colour, framed in the dialog's field border (Classic 2006 paints its metal band and 3D edge).
-fn look_swatch(ui: &mut Ui, look: UiLook) {
-    use crate::ui::widgets;
-    let d = theme::get().dialog();
-    let s = theme::Theme::new(LookChoice { look, variant: Variant::Dark });
-    let (r, _) = ui.allocate_exact_size(vec2(40.0, 26.0), Sense::hover());
-    let r = widgets::px(r);
-    let p = ui.painter();
-    let bar = Rect::from_min_size(r.min, vec2(r.width(), 8.0));
-    if s.classic() {
-        widgets::metal_bar(p, bar, &s.metal);
-    } else {
-        p.rect_filled(bar, 0.0, s.toolbar_bg);
-    }
-    p.rect_filled(Rect::from_min_max(bar.left_bottom(), pos2(r.max.x, r.min.y + 16.0)), 0.0, s.panel_bg);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max), 0.0, s.lane_bg);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 6.0, r.min.y + 18.0), pos2(r.max.x - 10.0, r.max.y - 2.0)), 0.0, s.track_color(0));
-    if s.classic() {
-        widgets::bevel(p, r, false, &theme::get().dialog_metal());
-    } else {
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, d.field_border), StrokeKind::Inside);
-    }
-}
-
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
@@ -136,7 +101,6 @@ fn page_why(page: &str) -> Why {
 }
 
 fn general(ui: &mut Ui, d: &mut Prefs) {
-    let v16 = theme::get().look() == UiLook::Vegas16;
     ui.label("General preferences:");
     super::field_box(ui, 4, |ui| {
         ui.set_width(ui.available_width());
@@ -146,16 +110,9 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         let r49 = Later("R49").text();
         widgets::checkbox_enabled(ui, false, &mut false, "Automatically open last project on startup").on_disabled_hover_text(&r49);
         widgets::checkbox(ui, &mut d.show_splash, "Show splash screen at startup");
-        let mut pause = d.space_pauses || !v16;
-        if ui
-            .add_enabled(v16, Checkbox::new(&mut pause, "Make spacebar and F12 Play/Pause instead of Play/Stop"))
-            .on_disabled_hover_text(Fixed("always on in the VEGAS 23 look").text())
-            .changed()
-        {
-            d.space_pauses = pause;
-        }
-        widgets::checkbox_enabled(ui, !v16, &mut d.show_welcome, "Show Welcome Screen on startup")
-            .on_disabled_hover_text(Fixed("the Welcome Screen belongs to the VEGAS 23 look").text());
+        // Space always plays and pauses (the VEGAS 23 keys).
+        ui.add_enabled(false, Checkbox::new(&mut true, "Make spacebar and F12 Play/Pause instead of Play/Stop")).on_disabled_hover_text(ALWAYS_ON.text());
+        widgets::checkbox(ui, &mut d.show_welcome, "Show Welcome Screen on startup");
         widgets::checkbox(ui, &mut d.auto_update, "Check for updates automatically");
         widgets::checkbox(ui, &mut d.nested_breadcrumb, "Show the parent timelines of a nested timeline above the track list");
     });
@@ -196,7 +153,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         }
     });
     if default_all(ui) {
-        (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
+        (d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (true, true, 4, true, false);
         (d.autosave_on, d.autosave_minutes, d.autosave_keep) = (true, 2, 5);
         d.overlay_library = None;
     }
@@ -599,11 +556,10 @@ fn default_all(ui: &mut Ui) -> bool {
 
 const COLOR_NAMES: [&str; 8] = ["Color A", "Color B", "Color C", "Color D", "Color E", "Color F", "Color G", "Color H"];
 
-fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut bool) {
+fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
-    // The look's own palette for this preview, whatever the current override.
-    let base = theme::Theme::new(d.look).track_colors;
+    // The default palette for this preview, whatever the current override.
+    let base = theme::Theme::new().track_colors;
     let mut palette = d.palette().unwrap_or(base);
 
     super::group(ui, "Track Colors");
@@ -636,49 +592,17 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
         widgets::slider(ui, &mut v, 0.0..=100.0, widgets::Slide { no_value: true, ..Default::default() }).on_disabled_hover_text(&r49);
         ui.label("75 %");
     });
-
-    // Milan Pro: which VEGAS generation the interface follows.
-    super::group(ui, "Interface Look");
-    ui.horizontal(|ui| {
-        for (look, label) in [(UiLook::Classic2006, "Classic 2006"), (UiLook::Vegas16, "VEGAS 16"), (UiLook::Vegas23, "VEGAS 23")] {
-            if widgets::radio(ui, d.look.look == look, label).clicked() {
-                // Only VEGAS 23 has interface types.
-                d.look = if look == UiLook::Vegas23 { LookChoice { look, variant: d.look.variant } } else { LookChoice { look, variant: Variant::Dark } };
-            }
-            look_swatch(ui, look);
-            ui.add_space(6.0);
-        }
-    });
-    super::group(ui, "Interface Type");
-    for (variant, label, enabled) in [
-        (Some(Variant::Dark), "Dark", true),
-        (None, "Medium", false),
-        (None, "Light", false),
-        (Some(Variant::White), "White", d.look.look == UiLook::Vegas23),
-    ] {
-        let on = variant == Some(d.look.variant);
-        let why = if variant.is_some() { Fixed("only the VEGAS 23 look has a White type") } else { Later("R49") };
-        if widgets::radio_enabled(ui, enabled, on, label).on_disabled_hover_text(why.text()).clicked() {
-            if let Some(v) = variant {
-                d.look.variant = v;
-            }
-        }
-    }
     ui.add_space(4.0);
-    // The docking options (§4.3); VP23 dropped "Display timeline at bottom" (its Timeline Top layout does that).
+    // The docking options (§4.3).
     widgets::checkbox(ui, &mut d.auto_hide_docks, "Automatically hide docking area");
-    if v16 {
-        widgets::checkbox(ui, timeline_bottom, "Display timeline at bottom of main window");
-    }
     widgets::checkbox(ui, &mut d.tabs_on_top, "Position tabs at top of docked windows");
-    let mut float_dock = d.float_dock(d.look.look);
+    let mut float_dock = d.float_dock();
     if widgets::checkbox(ui, &mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
         d.float_dock = Some(float_dock);
     }
     if default_all(ui) {
         d.track_colors = None;
-        d.look.variant = Variant::Dark;
-        (d.auto_hide_docks, d.tabs_on_top, *timeline_bottom, d.float_dock) = (false, false, true, None);
+        (d.auto_hide_docks, d.tabs_on_top, d.float_dock) = (false, false, None);
     }
 }
 
@@ -687,17 +611,17 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
 mod tests {
     use super::*;
 
-    /// Apply a new look, the app saves the old look's last layout, then OK: the dialog hands that layout back
-    /// (it does not undo it) and Apply goes off again.
+    /// Another window saves its last layout while the dialog is open, then OK: the dialog hands that layout back (it
+    /// does not undo it) and Apply goes off again.
     #[test]
     fn ok_after_apply_keeps_the_layouts_saved_meanwhile() {
         let mut dlg = PrefsDialog::default();
         let mut current = Prefs::default();
         dlg.open(&current);
-        let l = crate::ui::dock::Dock::new(&theme::Theme::new(LookChoice::VEGAS16)).layout("");
-        current.layouts.insert(crate::settings::layout_key(UiLook::Vegas16, "last"), l);
+        let l = crate::ui::dock::Dock::new(&theme::Theme::new()).layout("");
+        current.layouts.insert(crate::settings::layout_key("last"), l);
         let ctx = Context::default();
-        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current, None, true).is_none()));
+        let _ = ctx.run(RawInput::default(), |ctx| assert!(dlg.show(ctx, &current, None).is_none()));
         assert_eq!(dlg.draft.as_ref(), Some(&current));
     }
 }

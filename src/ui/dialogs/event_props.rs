@@ -119,9 +119,7 @@ fn event_page(ui: &mut Ui, d: &mut Clip, is_video: bool, track_locked: bool, fps
         } else {
             widgets::checkbox_enabled(ui, on, &mut d.invert, "Invert phase");
             widgets::checkbox_enabled(ui, on, &mut d.normalize, "Normalize");
-            if crate::ui::theme::get().look().v23() {
-                widgets::checkbox_enabled(ui, on, &mut d.auto_normalize, "Auto normalize");
-            }
+            widgets::checkbox_enabled(ui, on, &mut d.auto_normalize, "Auto normalize");
         }
     });
     if is_video {

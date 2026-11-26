@@ -1,13 +1,13 @@
 //! Dock areas (Â§4.3â€“4.5, Â§5.3): columns of tabbed window groups with tab strips at the bottom (or the top), draggable
 //! splitters, maximise-in-dock, close (hide), moving tabs between groups by drag or context menu, the tab overflow
-//! scroller, and the areas themselves: VP16 has one (above the timeline, or below it), VP23 four (top, bottom, left,
-//! right), each one minimised on its own (F11, Alt+F11...). R13: the built-in window layouts. R14: floating windows,
-//! each in a native window of its own (an egui viewport) on any monitor, docked again by dragging.
+//! scroller, and the four areas themselves (top, bottom, left, right), each one minimised on its own (F11,
+//! Alt+F11...). R13: the built-in window layouts. R14: floating windows, each in a native window of its own (an egui
+//! viewport) on any monitor, docked again by dragging.
 use eframe::egui::*;
 use serde::{Deserialize, Serialize};
 use super::icons::{Icon, paint_icon};
 use super::monitors;
-use super::theme::{self, Theme, UiLook};
+use super::theme::{self, Theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
 pub enum Panel {
@@ -60,12 +60,11 @@ impl Panel {
         Panel::Overlays,
     ];
 
-    pub fn title(self, look: UiLook) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
             Panel::Explorer => "Explorer",
             Panel::ProjectMedia => "Project Media",
-            Panel::MediaGenerators if look.v23() => "Media Generator",
-            Panel::MediaGenerators => "Media Generators",
+            Panel::MediaGenerators => "Media Generator",
             Panel::Transitions => "Transitions",
             Panel::VideoFx => "Video FX",
             Panel::ColorGrading => "Color Grading",
@@ -82,11 +81,6 @@ impl Panel {
             Panel::PluginManager => "Plug-In Manager",
             Panel::Overlays => "Overlays",
         }
-    }
-
-    /// Color Grading and Project Notes are VP23 windows.
-    pub fn in_look(self, look: UiLook) -> bool {
-        !matches!(self, Panel::ColorGrading | Panel::ProjectNotes) || look.v23()
     }
 }
 
@@ -172,13 +166,11 @@ enum FloatAction {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Builtin {
     Default,
-    /// VP16: VEGAS Pro 14 Default Layout, the timeline above the dock.
-    Classic,
     AudioMixing,
     ColorCorrection,
-    /// VP23: Source Window Layout.
+    /// Source Window Layout.
     Source,
-    /// VP23: Timeline Top Layout.
+    /// Timeline Top Layout.
     TimelineTop,
 }
 
@@ -191,7 +183,7 @@ pub enum LayoutRef {
 
 pub struct Dock {
     pub groups: Vec<Group>,
-    /// Top area height incl. tab strips; None = the look's default.
+    /// Top area height incl. tab strips; None = the default.
     pub height: Option<f32>,
     /// Bottom area height, left and right area widths; None = the default.
     pub bottom_h: Option<f32>,
@@ -269,12 +261,9 @@ impl Dock {
     /// Default layout at 1920Ã—1080 (Â§4.1 / Â§4.2): [plug-in & media group] [Video Preview, Trimmer] [Master Bus].
     pub fn new(t: &Theme) -> Self {
         use Panel::*;
-        let (left, active, mid_w) = match t.look() {
-            // Overlays (Milan Pro's own) right after Media Generators.
-            UiLook::Vegas16 => (vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays], 0, 835.0),
-            // Hub tabs dropped (no online service); Project Media active on first launch [I]. Classic 2006 keeps it.
-            UiLook::Vegas23 | UiLook::Classic2006 => (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0),
-        };
+        // The VEGAS 23 group less its Hub tabs (no online service), Overlays (Milan Pro's own) after Media Generators;
+        // Project Media active on first launch [I].
+        let (left, active, mid_w) = (vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading], 1, 750.0);
         Self {
             groups: vec![
                 Group { tabs: left, active, width: 0.0, area: Area::Top },
@@ -305,9 +294,9 @@ impl Dock {
         }
     }
 
-    /// A built-in layout. Classic, Audio Mixing and Color Correction are decoded from VEGAS 15's
+    /// A built-in layout. Audio Mixing and Color Correction are decoded from VEGAS 15's
     /// `Standard Layouts\*.VegasWindowLayout` (window ids, tab order, active tab and column widths at 1920Ã—1080,
-    /// Â§4.1); Source Window and Timeline Top (VP23) are built from the VP23 default [I].
+    /// Â§4.1); Source Window and Timeline Top (VEGAS 23) are built from the default [I].
     pub fn builtin(b: Builtin, t: &Theme) -> Self {
         use Panel::*;
         let mut d = Dock::new(t);
@@ -315,11 +304,6 @@ impl Dock {
         let col = |tabs: Vec<Panel>, width: f32| Group { tabs, active: 0, width, area: Area::Top };
         match b {
             Builtin::Default => {}
-            Builtin::Classic => {
-                d.groups = vec![left, col(vec![Trimmer], 610.0), col(vec![VideoPreview], 613.0), col(vec![MasterBus], 125.0)];
-                d.groups.iter_mut().for_each(|g| g.area = Area::Bottom);
-                d.bottom_h = Some(449.0);
-            }
             Builtin::AudioMixing => {
                 // The Mixing Console first and active, then the default group; no Trimmer or Master Bus.
                 let tabs = [vec![MixingConsole], left.tabs].concat();
@@ -327,9 +311,8 @@ impl Dock {
                 d.height = Some(438.0);
             }
             Builtin::ColorCorrection => {
-                // Video Scopes (539 px) between the group and Video Preview. VP23 brings its Color Grading window to
-                // the front [I].
-                let front = if t.look().v23() { ColorGrading } else { ProjectMedia };
+                // Video Scopes (539 px) between the group and Video Preview, Color Grading in front [I].
+                let front = ColorGrading;
                 let active = left.tabs.iter().position(|&p| p == front).unwrap_or(0);
                 d.groups = vec![Group { active, ..left }, col(vec![VideoScopes], 539.0), col(vec![VideoPreview], 539.0), col(vec![MasterBus], 127.0)];
                 d.height = Some(438.0);
@@ -359,9 +342,8 @@ impl Dock {
         }
     }
 
-    /// Take on `l`, made safe for `t`'s look: each panel once and only if the look has it, no empty groups, widths
-    /// of at least `MIN_W` (but each area's first), a valid active tab, and in VP16 one area (above the timeline or
-    /// below it). A layout with nothing left gives the default dock.
+    /// Take on `l`, made safe: each panel once, no empty groups, widths of at least `MIN_W` (but each area's first) and a
+    /// valid active tab. A layout with nothing left gives the default dock.
     pub fn apply(&mut self, l: &Layout, t: &Theme) {
         let mut seen: Vec<Panel> = Vec::new();
         let mut areas: Vec<Area> = Vec::new();
@@ -372,18 +354,13 @@ impl Dock {
                 let active = g.tabs.get(g.active).copied();
                 let mut tabs: Vec<Panel> = Vec::new();
                 for &p in &g.tabs {
-                    if p.in_look(t.look()) && !seen.contains(&p) {
+                    if !seen.contains(&p) {
                         seen.push(p);
                         tabs.push(p);
                     }
                 }
                 let active = active.and_then(|a| tabs.iter().position(|&p| p == a)).unwrap_or(0);
-                // VP16 has one docking area: where the first group is (the top, unless it is the bottom).
-                let area = match (t.look(), areas.first()) {
-                    (UiLook::Vegas16, Some(&a)) => a,
-                    (UiLook::Vegas16, None) if g.area != Area::Bottom => Area::Top,
-                    _ => g.area,
-                };
+                let area = g.area;
                 if tabs.is_empty() {
                     return None;
                 }
@@ -402,7 +379,7 @@ impl Dock {
             .floating
             .iter()
             .filter(|f| f.rect.iter().all(|v| v.is_finite()) && f.rect[2] >= 1.0 && f.rect[3] >= 1.0)
-            .filter(|f| f.panel.in_look(t.look()) && !seen.contains(&f.panel) && {
+            .filter(|f| !seen.contains(&f.panel) && {
                 seen.push(f.panel);
                 true
             })
@@ -519,7 +496,7 @@ impl Dock {
         self.maximized = None;
     }
 
-    /// Move `p` into docking area `area` (VP23), as a new last column there; the area is shown.
+    /// Move `p` into docking area `area`, as a new last column there; the area is shown.
     pub fn move_to_area(&mut self, p: Panel, area: Area) {
         match self.find(p) {
             Some((g, i)) => {
@@ -574,23 +551,15 @@ impl Dock {
         }
     }
 
-    /// The areas a window dragged to the main window's edge docks in: VP23's four, VP16's one.
-    fn edge_areas(&self, look: UiLook) -> Vec<Area> {
-        match look {
-            UiLook::Vegas23 | UiLook::Classic2006 => Area::ALL.to_vec(),
-            UiLook::Vegas16 => vec![if self.timeline_top() { Area::Bottom } else { Area::Top }],
-        }
-    }
-
     /// Where a window dropped at `pos` (main window points) lands: the group under it, else the docking area of the
     /// edge band under it, else it floats. With the outline to draw (none for a float).
-    fn drop_at(&self, pos: Option<Pos2>, cols: &[(usize, Rect)], look: UiLook) -> (Drop, Option<Rect>) {
+    fn drop_at(&self, pos: Option<Pos2>, cols: &[(usize, Rect)]) -> (Drop, Option<Rect>) {
         let Some(pos) = pos else { return (Drop::Float, None) };
         if let Some(&(g, r)) = cols.iter().find(|(_, r)| r.contains(pos)) {
             return (Drop::Group(g), Some(r));
         }
         let b = self.bounds;
-        for a in self.edge_areas(look) {
+        for a in Area::ALL {
             let band = match a {
                 Area::Top => b.with_max_y(b.min.y + EDGE),
                 Area::Bottom => b.with_min_y(b.max.y - EDGE),
@@ -619,7 +588,7 @@ impl Dock {
         }
     }
 
-    /// Alt+F11 / Ctrl+Alt+F11 / Ctrl+Shift+F11 (VP23): minimise or restore one area.
+    /// Alt+F11 / Ctrl+Alt+F11 / Ctrl+Shift+F11: minimise or restore one area.
     pub fn toggle_area(&mut self, a: Area) {
         match self.hidden.iter().position(|&h| h == a) {
             Some(k) => {
@@ -652,17 +621,6 @@ impl Dock {
                 }
             }
         }
-    }
-
-    /// VP16 Display preference "Display timeline at bottom of main window": the dock area is above the timeline.
-    pub fn timeline_top(&self) -> bool {
-        self.groups.first().is_some_and(|g| g.area == Area::Bottom)
-    }
-
-    pub fn set_timeline_top(&mut self, top: bool) {
-        let area = if top { Area::Bottom } else { Area::Top };
-        self.groups.iter_mut().for_each(|g| g.area = area);
-        self.hidden.clear();
     }
 
     /// Next Window (F6, Ctrl+Tab) or Previous Window: the timeline, then every window of the shown areas in turn;
@@ -820,7 +778,7 @@ impl Dock {
     fn drop_target(&mut self, ui: &mut Ui, t: &Theme, cols: &[(usize, Rect)]) {
         let Some(p) = self.dragging else { return };
         let (pos, released) = ui.input(|i| (i.pointer.latest_pos(), i.pointer.any_released() || !i.pointer.any_down()));
-        let (target, outline) = self.drop_at(pos, cols, t.look());
+        let (target, outline) = self.drop_at(pos, cols);
         ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
         let size = cols.iter().find(|(g, _)| self.groups.get(*g).is_some_and(|gr| gr.tabs.contains(&p))).map_or(vec2(480.0, 320.0), |(_, r)| r.size());
         let float = pos.map(|pos| Rect::from_min_size(pos - vec2(20.0, 10.0), size));
@@ -829,7 +787,7 @@ impl Dock {
             layer.rect_stroke(r.shrink(1.0), 0.0, Stroke::new(2.0_f32, t.text_dim), StrokeKind::Inside);
         }
         if let Some(pos) = pos {
-            layer.text(pos + vec2(12.0, 4.0), Align2::LEFT_TOP, p.title(t.look()), t.font(t.font.dock_tab), t.text_bright);
+            layer.text(pos + vec2(12.0, 4.0), Align2::LEFT_TOP, p.title(), t.font(t.font.dock_tab), t.text_bright);
         }
         if released {
             self.dragging = None;
@@ -883,15 +841,15 @@ impl Dock {
             let &(_, r0, scale, _) = self.opened.iter().find(|o| o.0 == p).expect("opened above");
             // The builder stays as the window opened: egui moves a window whose builder changes.
             let pts = monitors::to_points(r0, ctx.zoom_factor() * scale);
-            let b = ViewportBuilder::default().with_title(p.title(t.look())).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false).with_icon(crate::icon());
-            let fill = if t.classic() { t.metal.mid } else { t.frame };
+            let b = ViewportBuilder::default().with_title(p.title()).with_inner_size(pts.size().max(MIN_FLOAT)).with_min_inner_size(MIN_FLOAT).with_active(false).with_icon(crate::icon());
+            let fill = t.metal.mid;
             if offscreen {
                 // The harness: eframe cannot shoot an immediate viewport, so the window is drawn in the main one at
                 // its place (its own frame and caption, no OS window), where the screenshot has it.
                 let fr = self.floating[k].rect();
                 let r = Rect::from_min_size(fr.min, fr.size().max(MIN_FLOAT));
                 let mut act = None;
-                Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).title_bar(false).frame(Frame::NONE.fill(fill)).fixed_rect(r).show(ctx, |ui| {
+                Window::new(p.title()).id(Id::new(("dock_float", p))).title_bar(false).frame(Frame::NONE.fill(fill)).fixed_rect(r).show(ctx, |ui| {
                     act = self.float_ui(ui, &t, k, true, allow_dock, &mut content);
                 });
                 actions.extend(act);
@@ -903,7 +861,7 @@ impl Dock {
                 let mut draw = |ui: &mut Ui| act = self.float_ui(ui, &t, k, offscreen || class == ViewportClass::Embedded, allow_dock, &mut content);
                 if class == ViewportClass::Embedded {
                     // A backend without native windows (tests): an egui window instead.
-                    Window::new(p.title(t.look())).id(Id::new(("dock_float", p))).show(vctx, |ui| draw(ui));
+                    Window::new(p.title()).id(Id::new(("dock_float", p))).show(vctx, |ui| draw(ui));
                 } else {
                     CentralPanel::default().frame(Frame::NONE.fill(fill)).show(vctx, |ui| draw(ui));
                 }
@@ -931,41 +889,33 @@ impl Dock {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let mut action = None;
-        let inner = if t.classic() {
-            // Classic tool window: the raised 3D frame and the Windows 2000 caption with its bevelled × (the OS
-            // caption above it stays; this one closes the window and moves it too).
-            let title = p.title(t.look());
-            if super::dialogs::classic_caption(ui, full, &title, &format!("float_cap_{title}"), false) {
-                action = Some(FloatAction::Close(p));
-            }
-            let cap = Rect::from_min_max(full.min + vec2(3.0, 3.0), pos2(full.max.x - 24.0, full.min.y + 21.0));
-            let drag = ui.interact(cap, Id::new(("float_cap_drag", p)), Sense::drag());
-            if drag.drag_started_by(PointerButton::Primary) && !fixed {
-                ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-            }
-            Rect::from_min_max(full.min + vec2(3.0, super::dialogs::title_h()), full.max - vec2(3.0, 3.0))
-        } else {
-            full
-        };
+        // Tool window: the raised 3D frame and the Windows 2000 caption with its bevelled × (the OS caption above it
+        // stays; this one closes the window and moves it too).
+        let title = p.title();
+        if super::dialogs::classic_caption(ui, full, title, &format!("float_cap_{title}"), false) {
+            action = Some(FloatAction::Close(p));
+        }
+        let cap = Rect::from_min_max(full.min + vec2(3.0, 3.0), pos2(full.max.x - 24.0, full.min.y + 21.0));
+        let drag = ui.interact(cap, Id::new(("float_cap_drag", p)), Sense::drag());
+        if drag.drag_started_by(PointerButton::Primary) && !fixed {
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        let inner = Rect::from_min_max(full.min + vec2(3.0, super::dialogs::title_h()), full.max - vec2(3.0, 3.0));
         let strip = self.window_ui(ui, t, p, inner, content);
         let tab = float_tab(ui, t, p, strip, self.tabs_top);
         if tab.drag_started_by(PointerButton::Primary) && !fixed {
             // The tab moves the window, as its title bar does (the OS's own move; docking is checked when it ends).
             ctx.send_viewport_cmd(ViewportCommand::StartDrag);
         }
-        let look = t.look();
-        let areas = self.edge_areas(look);
         super::menus::context(&tab, |ui| {
             if ui.button("Dock").clicked() {
                 action = Some(FloatAction::Dock(p, Drop::Float));
                 ui.close_menu();
             }
-            if look.v23() {
-                for a in areas {
-                    if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
-                        action = Some(FloatAction::Dock(p, Drop::Area(a)));
-                        ui.close_menu();
-                    }
+            for a in Area::ALL {
+                if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
+                    action = Some(FloatAction::Dock(p, Drop::Area(a)));
+                    ui.close_menu();
                 }
             }
             ui.separator();
@@ -1011,7 +961,7 @@ impl Dock {
         let root = ctx.input(|i| i.raw.viewports.get(&ViewportId::ROOT).and_then(|v| Some((v.inner_rect?.min, v.native_pixels_per_point?))));
         let (origin, native) = root?;
         let at = monitors::to_local(cursor, origin, native * ctx.zoom_factor());
-        match self.drop_at(Some(at), &self.cols, look).0 {
+        match self.drop_at(Some(at), &self.cols).0 {
             Drop::Float => None,
             d => Some(FloatAction::Dock(p, d)),
         }
@@ -1026,43 +976,29 @@ impl Dock {
 
     /// A window's toolbar and body in `col`, filled by `content`; returns where its tab strip goes.
     fn window_ui(&self, ui: &mut Ui, t: &Theme, panel: Panel, col: Rect, content: &mut impl FnMut(Panel, &mut Ui, &mut Ui)) -> Rect {
-        let v16 = t.look() == UiLook::Vegas16;
         let p = ui.painter().clone();
         let h = t.m.tab_strip_h;
         // Tabs at the bottom (Â§4.3), or at the top (Preferences â€º Display).
-        let (strip, mut top, bottom) = if self.tabs_top {
+        let (strip, top, bottom) = if self.tabs_top {
             (Rect::from_min_size(col.min, vec2(col.width(), h)), col.min.y + h, col.max.y)
         } else {
             (Rect::from_min_max(pos2(col.min.x, col.max.y - h), col.max), col.min.y, col.max.y - h)
         };
-        if v16 {
-            // 2 px top bevel (Â§5.3).
-            hline(&p, col.x_range(), top, t.dock_bevel_1);
-            hline(&p, col.x_range(), top + 1.0, t.dock_bevel_2);
-            top += 2.0;
-        }
         let bar = Rect::from_min_max(pos2(col.min.x, top), pos2(col.max.x, top + t.m.dock_toolbar_h));
-        if t.classic() {
-            // Metal toolbar with a grip at its left end, the body in a sunken 3D frame.
-            super::widgets::metal_bar(&p, bar, &t.metal);
-            super::widgets::grip(&p, bar, &t.metal);
-            let body = Rect::from_min_max(pos2(col.min.x, bar.max.y), pos2(col.max.x, bottom));
-            super::widgets::sunken(&p, body, t.panel_bg, &t.metal);
-        } else {
-            p.rect_filled(bar, 0.0, t.toolbar_bg);
-            hline(&p, col.x_range(), bar.max.y, if v16 { t.dock_divider } else { t.frame });
-            let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
-            p.rect_filled(body, 0.0, t.panel_bg);
-        }
+        // Metal toolbar with a grip at its left end, the body in a sunken 3D frame.
+        super::widgets::metal_bar(&p, bar, &t.metal);
+        super::widgets::grip(&p, bar, &t.metal);
+        let body = Rect::from_min_max(pos2(col.min.x, bar.max.y), pos2(col.max.x, bottom));
+        super::widgets::sunken(&p, body, t.panel_bg, &t.metal);
         let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
-        let bar = if t.classic() { bar.with_min_x(bar.min.x + 8.0) } else { bar };
+        let bar = bar.with_min_x(bar.min.x + 8.0);
 
         let mut bar_ui = ui.new_child(
             UiBuilder::new().id_salt(("dock_bar", panel)).max_rect(bar.shrink2(vec2(2.0, 0.0))).layout(eframe::egui::Layout::left_to_right(Align::Center)),
         );
         bar_ui.set_clip_rect(bar.intersect(ui.clip_rect()));
         bar_ui.spacing_mut().item_spacing.x = 0.0;
-        let body = if t.classic() { body.shrink(2.0) } else { body };
+        let body = body.shrink(2.0);
         let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(eframe::egui::Layout::top_down(Align::Min)));
         body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         content(panel, &mut bar_ui, &mut body_ui);
@@ -1070,26 +1006,12 @@ impl Dock {
     }
 
     fn tab_strip(&mut self, ui: &mut Ui, t: &Theme, g: usize, strip: Rect) -> Option<TabAction> {
-        let v16 = t.look() == UiLook::Vegas16;
-        let look = t.look();
         let clip = strip.intersect(ui.clip_rect());
         let p = ui.painter().with_clip_rect(clip);
-        let b = &t.bevel;
-        let single = self.groups[g].tabs.len() == 1;
-        let classic = t.classic();
-        if v16 {
-            // Right of the last tab: two edge rows over the frame colour (#202020 for a single-window group).
-            p.rect_filled(strip, 0.0, if single { t.tab_strip_single_bg } else { t.frame });
-            hline(&p, strip.x_range(), strip.min.y, b.strip_1);
-            hline(&p, strip.x_range(), strip.min.y + 1.0, b.strip_2);
-        } else if classic {
-            // Darker metal behind the tabs; the content's 3D frame edge runs along the strip.
-            super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
-            let y = if self.tabs_top { strip.max.y - 1.0 } else { strip.min.y };
-            hline(&p, strip.x_range(), y, if self.tabs_top { t.metal.shadow } else { t.metal.light });
-        } else {
-            p.rect_filled(strip, 0.0, t.tab_strip_bg);
-        }
+        // Darker metal behind the tabs; the content's 3D frame edge runs along the strip.
+        super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
+        let y = if self.tabs_top { strip.max.y - 1.0 } else { strip.min.y };
+        hline(&p, strip.x_range(), y, if self.tabs_top { t.metal.shadow } else { t.metal.light });
         let mut clicked = None;
         let mut action: Option<TabAction> = None;
         let tabs = self.groups[g].tabs.clone();
@@ -1100,27 +1022,14 @@ impl Dock {
         let maximized = self.maximized == Some(g);
         let galleys: Vec<_> = tabs
             .iter()
-            .enumerate()
-            .map(|(i, &panel)| {
-                let font = if i == active && !v16 && !classic { t.bold(t.font.dock_tab) } else { t.font(t.font.dock_tab) };
-                p.layout_no_wrap(panel.title(look).to_owned(), font, t.tab_text)
-            })
+            .map(|&panel| p.layout_no_wrap(panel.title().to_owned(), t.font(t.font.dock_tab), t.tab_text))
             .collect();
-        // VP16 tabs reserve room for â–¡ Ã— even when inactive: 8 + label + 38 (measured [L]: label + 44 at GDI widths);
-        // an inactive VP16 tab is followed by a 1 px separator. Classic 2006: 8 + label + 8, the active tab 2 px wider
-        // each side (Windows tab control); its â–¡ Ã— live on the active tab too (+ 34).
+        // 8 + label + 8, the active tab 2 px wider each side (Windows tab control) with its □ × (+ 34).
         let widths: Vec<f32> = galleys
             .iter()
             .enumerate()
             .map(|(i, gl)| {
-                if v16 {
-                    8.0 + gl.size().x + 38.0 + if i == active { 0.0 } else { 1.0 }
-                } else if classic {
-                    8.0 + gl.size().x + 8.0 + if i == active { 38.0 } else { 0.0 }
-                } else {
-                    9.0 + gl.size().x + 28.0
-                }
-                .round()
+                (8.0 + gl.size().x + 8.0 + if i == active { 38.0 } else { 0.0 }).round()
             })
             .collect();
         // Overflow (Â§4.4): â—‚ â–¸ at the right end scroll the tabs; a tab activated elsewhere is scrolled into view.
@@ -1145,25 +1054,10 @@ impl Dock {
             }
             let is_active = i == active;
             let galley = galleys[i].clone();
-            let w = widths[i] - if v16 && !is_active { 1.0 } else { 0.0 };
-            let r = Rect::from_min_size(pos2(x, strip.min.y), vec2(w, strip.height()));
+            let r = Rect::from_min_size(pos2(x, strip.min.y), vec2(widths[i], strip.height()));
             let resp = ui.interact(r.intersect(tabs_clip), ui.id().with(("dock_tab", panel)), Sense::click_and_drag());
             let hovered = resp.hovered();
-            if v16 {
-                if is_active {
-                    p.rect_filled(r, 0.0, t.tab_active_bg);
-                    vline(&p, r.min.x, strip.y_range(), t.tab_separator);
-                    vline(&p, r.min.x + 1.0, strip.y_range(), b.tab_side_hi);
-                    vline(&p, r.max.x - 1.0, strip.y_range(), t.line_dark);
-                } else {
-                    p.rect_filled(r, 0.0, t.tab_strip_bg);
-                    hline(&p, r.x_range(), r.min.y, t.tab_separator);
-                    hline(&p, r.x_range(), r.min.y + 1.0, b.tab_top_2);
-                    vline(&p, r.max.x, strip.y_range(), t.tab_separator);
-                }
-            } else if classic {
-                classic_tab(&p, t, r, is_active, self.tabs_top);
-            }
+            classic_tab(&p, t, r, is_active, self.tabs_top);
             let color = if hovered && !is_active {
                 t.tab_text_hover
             } else if is_active {
@@ -1171,25 +1065,18 @@ impl Dock {
             } else {
                 t.tab_text
             };
-            let tx = r.min.x + if v16 || classic { 8.0 } else { 9.0 };
-            // VP23 labels sit 2 px off centre, away from the content (measured [M]); classic inactive tabs 1 px lower
-            // (they stand back from the active one).
-            let shift = if v16 { 0.0 } else if classic { if is_active { 0.0 } else if self.tabs_top { 1.0 } else { -1.0 } } else if self.tabs_top { -2.0 } else { 2.0 };
+            let tx = r.min.x + 8.0;
+            // Inactive tabs sit 1 px further out (they stand back from the active one).
+            let shift = if is_active { 0.0 } else if self.tabs_top { 1.0 } else { -1.0 };
             let ty = (r.center().y - galley.size().y * 0.5).round() - shift;
-            if !v16 && !classic && is_active {
-                // 1 px line on the content-facing edge, across the label plus its 9 px padding.
-                let line = vec2(galley.size().x + 18.0, t.m.tab_active_line_w);
-                let y = if self.tabs_top { r.max.y - line.y } else { r.min.y };
-                p.rect_filled(Rect::from_min_size(pos2(r.min.x, y), line), 0.0, t.tab_active_line);
-            }
             p.galley(pos2(tx, ty), galley, color);
-            if (v16 || classic) && is_active {
+            if is_active {
                 // â–¡ maximise in dock and Ã— close, each in a 13 px cell (Â§4.4).
                 for (k, icon) in [Icon::DockMaximize, Icon::DockClose].into_iter().enumerate() {
                     let cell = Rect::from_min_size(pos2(r.max.x - 34.0 + 17.0 * k as f32, r.min.y), vec2(13.0, r.height()));
                     let br = ui.interact(cell.intersect(tabs_clip), ui.id().with(("dock_tab_btn", panel, k)), Sense::click());
                     let tint = if br.hovered() { t.text_bright } else { t.tab_text };
-                    paint_icon(&p, Rect::from_center_size(cell.center(), vec2(16.0, 16.0)), icon, look, Some(tint));
+                    paint_icon(&p, Rect::from_center_size(cell.center(), vec2(16.0, 16.0)), icon, Some(tint));
                     let tip = if k == 0 { "Maximize in Dock" } else { "Close" };
                     if br.on_hover_text(tip).clicked() {
                         action = Some(if k == 0 { TabAction::Maximize(g) } else { TabAction::Close(g, i) });
@@ -1206,7 +1093,7 @@ impl Dock {
             }
             super::menus::context(&resp, |ui| {
                 for &(k, anchor) in &others {
-                    if ui.button(format!("Dock with {}", anchor.title(look))).clicked() {
+                    if ui.button(format!("Dock with {}", anchor.title())).clicked() {
                         action = Some(TabAction::Move(panel, Some(k)));
                         ui.close_menu();
                     }
@@ -1215,13 +1102,11 @@ impl Dock {
                     action = Some(TabAction::Move(panel, None));
                     ui.close_menu();
                 }
-                // VP23 docks on all four sides (Â§4.3), also by dragging the tab to an edge of the main window.
-                if look.v23() {
-                    for a in Area::ALL.into_iter().filter(|&a| a != area) {
-                        if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
-                            action = Some(TabAction::ToArea(panel, a));
-                            ui.close_menu();
-                        }
+                // Any of the four sides (also by dragging the tab to an edge of the main window).
+                for a in Area::ALL.into_iter().filter(|&a| a != area) {
+                    if ui.button(format!("Dock in {} Docking Area", a.name())).clicked() {
+                        action = Some(TabAction::ToArea(panel, a));
+                        ui.close_menu();
                     }
                 }
                 // R14: also by dragging the tab off the docking areas.
@@ -1307,7 +1192,7 @@ fn screen_rect(ctx: &Context, r: Rect) -> Rect {
     r.translate(origin) * ctx.pixels_per_point()
 }
 
-/// Classic 2006 tab (Windows tab control, tabs hanging under the content when `tabs_top` is off): a metal face with a
+/// A dock tab (Windows tab control, tabs hanging under the content when `tabs_top` is off): a metal face with a
 /// 3D edge on three sides, open towards the content; the active tab joins the content and stands 2 px taller.
 fn classic_tab(p: &Painter, t: &Theme, r: Rect, active: bool, tabs_top: bool) {
     let m = &t.metal;
@@ -1328,28 +1213,12 @@ fn classic_tab(p: &Painter, t: &Theme, r: Rect, active: bool, tabs_top: bool) {
 
 /// A floating window's tab strip: its one tab, drawn active (the native title bar has the close button).
 fn float_tab(ui: &mut Ui, t: &Theme, panel: Panel, strip: Rect, tabs_top: bool) -> Response {
-    let v16 = t.look() == UiLook::Vegas16;
-    let classic = t.classic();
     let p = ui.painter_at(strip);
-    if classic {
-        super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
-    } else {
-        p.rect_filled(strip, 0.0, if v16 { t.tab_strip_single_bg } else { t.tab_strip_bg });
-    }
-    let font = if v16 || classic { t.font(t.font.dock_tab) } else { t.bold(t.font.dock_tab) };
-    let galley = p.layout_no_wrap(panel.title(t.look()).to_owned(), font, t.tab_text_active);
-    let r = Rect::from_min_size(strip.min, vec2(galley.size().x + if v16 || classic { 16.0 } else { 18.0 }, strip.height()));
-    if v16 {
-        p.rect_filled(r, 0.0, t.tab_active_bg);
-        vline(&p, r.max.x - 1.0, strip.y_range(), t.line_dark);
-    } else if classic {
-        classic_tab(&p, t, r, true, tabs_top);
-    } else {
-        let y = if tabs_top { r.max.y - t.m.tab_active_line_w } else { r.min.y };
-        p.rect_filled(Rect::from_min_size(pos2(r.min.x, y), vec2(r.width(), t.m.tab_active_line_w)), 0.0, t.tab_active_line);
-    }
-    let shift = if v16 || classic { 0.0 } else if tabs_top { -2.0 } else { 2.0 };
-    let pos = pos2(r.min.x + if v16 || classic { 8.0 } else { 9.0 }, (r.center().y - galley.size().y * 0.5).round() - shift);
+    super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
+    let galley = p.layout_no_wrap(panel.title().to_owned(), t.font(t.font.dock_tab), t.tab_text_active);
+    let r = Rect::from_min_size(strip.min, vec2(galley.size().x + 16.0, strip.height()));
+    classic_tab(&p, t, r, true, tabs_top);
+    let pos = pos2(r.min.x + 8.0, (r.center().y - galley.size().y * 0.5).round());
     p.galley(pos, galley, t.tab_text_active);
     ui.interact(r, ui.id().with(("float_tab", panel)), Sense::click_and_drag())
 }
@@ -1358,39 +1227,34 @@ fn hline(p: &Painter, x: Rangef, y: f32, c: Color32) {
     p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
 }
 
-fn vline(p: &Painter, x: f32, y: Rangef, c: Color32) {
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, c);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme::LookChoice;
 
     #[test]
     fn hide_show_and_move_tabs() {
-        let mut d = Dock::new(&Theme::new(LookChoice::VEGAS16));
+        let mut d = Dock::new(&Theme::new());
         assert_eq!(d.groups.len(), 3);
         assert_eq!(d.groups[0].tabs[d.groups[0].active], Panel::ProjectMedia);
         // Closing the only tab of a group removes the group; opening brings it back into the first group.
         d.toggle(Panel::MasterBus);
         assert!(!d.is_open(Panel::MasterBus) && d.groups.len() == 2);
         d.toggle(Panel::MasterBus);
-        assert_eq!(d.find(Panel::MasterBus), Some((0, 6)));
+        assert_eq!(d.find(Panel::MasterBus), Some((0, 7)));
         // Moving keeps every panel exactly once and activates it in the target group.
         d.move_to(Panel::Trimmer, Some(0));
-        assert_eq!(d.find(Panel::Trimmer), Some((0, 7)));
-        assert_eq!(d.groups[0].active, 7);
+        assert_eq!(d.find(Panel::Trimmer), Some((0, 8)));
+        assert_eq!(d.groups[0].active, 8);
         d.move_to(Panel::Explorer, None);
         assert_eq!(d.groups[1].tabs, vec![Panel::Explorer]);
         let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum();
-        assert_eq!(n, 9); // Color Grading is VP23-only; Properties opens on demand
+        assert_eq!(n, 10); // Properties opens on demand
     }
 
     #[test]
     fn layout_roundtrips_and_apply_sanitises() {
         use Panel::*;
-        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let t23 = Theme::new();
         let mut d = Dock::new(&t23);
         d.move_to(Trimmer, None);
         d.move_to_area(Explorer, Area::Right);
@@ -1420,35 +1284,29 @@ mod tests {
             hidden: vec![Area::Left, Area::Left],
             floating: vec![],
         };
-        let mut v16 = Dock::new(&t16);
-        v16.apply(&bad, &t16);
-        // VP16 has one docking area: the right-hand group joins the top one.
-        assert_eq!(v16.groups, vec![g(vec![Explorer], 0, 0.0), g(vec![Trimmer, VideoPreview], 0, MIN_W)]);
-        assert_eq!((v16.height, v16.bottom_h, v16.track_list_w, v16.hidden), (None, None, t16.m.track_list_w, vec![Area::Left]));
-        // VP23 keeps Color Grading, once, as the active tab it was, and the right area (its first column there).
+        // Each panel once, Color Grading as the active tab it was, the right area (its first column there); bad sizes
+        // dropped, the hidden areas once.
         let mut v23 = Dock::new(&t23);
         v23.apply(&bad, &t23);
         assert_eq!(v23.groups[0], g(vec![ColorGrading, Explorer], 0, 0.0));
         assert_eq!(v23.groups[1], Group { area: Area::Right, ..g(vec![Trimmer, VideoPreview], 0, 10.0) });
+        assert_eq!((v23.height, v23.bottom_h, v23.track_list_w, v23.hidden), (None, None, t23.m.track_list_w, vec![Area::Left]));
         // Nothing usable left: the default dock.
-        let mut z = Dock::new(&t16);
+        let mut z = Dock::new(&t23);
         z.move_to(Explorer, None);
-        z.apply(&Layout { groups: vec![g(vec![ColorGrading], 0, 300.0)], ..bad.clone() }, &t16);
-        assert_eq!(z.groups, Dock::new(&t16).groups);
-        // A VP16 layout below the timeline stays there; a layout from before R13 (no areas) is all at the top.
-        let mut c = Dock::new(&t16);
-        c.apply(&Dock::builtin(Builtin::Classic, &t16).layout("C"), &t16);
-        assert!(c.timeline_top() && c.groups.iter().all(|g| g.area == Area::Bottom));
+        z.apply(&Layout { groups: vec![g(vec![], 0, 300.0)], ..bad.clone() }, &t23);
+        assert_eq!(z.groups, Dock::new(&t23).groups);
+        // A layout from before R13 (no areas) is all at the top.
         let old: Layout = serde_json::from_str(r#"{"name":"Old","groups":[{"tabs":["Trimmer"],"active":0,"width":0}],"height":300,"track_list_w":200}"#).unwrap();
         assert_eq!((old.groups[0].area, old.bottom_h, old.hidden.len(), old.floating.len()), (Area::Top, None, 0, 0));
     }
 
     /// R14: floating windows round-trip through a layout with their rect and monitor; applying one keeps each panel
-    /// once (docked wins), drops bad rects and VP23-only windows in VP16; a layout of floating windows only is kept.
+    /// once (docked wins) and drops bad rects; a layout of floating windows only is kept.
     #[test]
     fn layout_serde_round_trip_with_floating_windows() {
         use Panel::*;
-        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let t23 = Theme::new();
         let mut d = Dock::new(&t23);
         d.float(Trimmer, Rect::from_min_size(pos2(2200.0, 100.0), vec2(800.0, 500.0)));
         d.floating[0].monitor = r"\\.\DISPLAY2".into();
@@ -1461,19 +1319,19 @@ mod tests {
         let mut e = Dock::new(&t23);
         e.apply(&l, &t23);
         assert_eq!((e.floating, e.groups), (d.floating.clone(), d.groups.clone()));
-        // Docked and floating at once, a NaN rect, a VP23 window in VP16: sanitised.
+        // Docked and floating at once, a NaN rect, an empty rect: sanitised.
         let f = |panel, rect| FloatWin { panel, rect, monitor: String::new() };
         let bad = Layout {
             floating: vec![f(VideoPreview, [0.0, 0.0, 300.0, 200.0]), f(Explorer, [f32::NAN, 0.0, 9.0, 9.0]), f(ColorGrading, [0.0; 4]), f(Properties, [5.0, 5.0, 400.0, 300.0]), f(Properties, [9.0, 9.0, 400.0, 300.0])],
-            ..Dock::new(&t16).layout("")
+            ..Dock::new(&t23).layout("")
         };
-        let mut v = Dock::new(&t16);
-        v.apply(&bad, &t16);
+        let mut v = Dock::new(&t23);
+        v.apply(&bad, &t23);
         assert_eq!(v.floating, vec![f(Properties, [5.0, 5.0, 400.0, 300.0])]);
         assert!(v.find(VideoPreview).is_some());
         // Everything floating: no docked groups, and the default ones do not come back.
         let all_float = Layout { groups: vec![], floating: vec![f(MasterBus, [0.0, 0.0, 200.0, 400.0])], ..bad };
-        v.apply(&all_float, &t16);
+        v.apply(&all_float, &t23);
         assert!(v.groups.is_empty() && v.is_open(MasterBus) && !v.is_open(Explorer));
     }
 
@@ -1482,7 +1340,7 @@ mod tests {
     #[test]
     fn floating_windows_open_close_dock_and_cycle() {
         use Panel::*;
-        let t = Theme::new(LookChoice::VEGAS23);
+        let t = Theme::new();
         let mut d = Dock::new(&t);
         let r = Rect::from_min_size(pos2(10.0, 10.0), vec2(400.0, 300.0));
         d.float(MasterBus, r);
@@ -1516,30 +1374,23 @@ mod tests {
         assert_eq!(n, Dock::new(&t).groups.iter().map(|g| g.tabs.len()).sum::<usize>(), "every window once");
     }
 
-    /// R14: where a dragged window lands: the group under it, a docking area along the main window's edge (VP23: any;
-    /// VP16: its one area's), else floating.
+    /// R14: where a dragged window lands: the group under it, a docking area along the main window's edge, else
+    /// floating.
     #[test]
     fn drop_targets() {
-        let t = Theme::new(LookChoice::VEGAS23);
+        let t = Theme::new();
         let mut d = Dock::new(&t);
         d.bounds = Rect::from_min_max(pos2(0.0, 60.0), pos2(1920.0, 1040.0));
         let cols = vec![(0, Rect::from_min_max(pos2(0.0, 60.0), pos2(900.0, 400.0)))];
-        let at = |d: &Dock, x, y, look| d.drop_at(Some(pos2(x, y)), &cols, look).0;
-        let v23 = UiLook::Vegas23;
-        assert_eq!(at(&d, 100.0, 70.0, v23), Drop::Group(0), "a group beats the edge band under it");
-        assert_eq!(at(&d, 1500.0, 70.0, v23), Drop::Area(Area::Top));
-        assert_eq!(at(&d, 1000.0, 1030.0, v23), Drop::Area(Area::Bottom));
-        assert_eq!(at(&d, 5.0, 700.0, v23), Drop::Area(Area::Left));
-        assert_eq!(at(&d, 1910.0, 700.0, v23), Drop::Area(Area::Right));
-        assert_eq!(at(&d, 1000.0, 700.0, v23), Drop::Float, "over the timeline");
-        assert_eq!(at(&d, 3000.0, 700.0, v23), Drop::Float, "outside the main window");
-        assert_eq!(d.drop_at(None, &cols, v23).0, Drop::Float);
-        // VP16: only the edge of its one area (the top, or the bottom with the timeline above it).
-        let v16 = UiLook::Vegas16;
-        assert_eq!(at(&d, 5.0, 700.0, v16), Drop::Float);
-        assert_eq!(at(&d, 1500.0, 70.0, v16), Drop::Area(Area::Top));
-        d.set_timeline_top(true);
-        assert_eq!((at(&d, 1500.0, 70.0, v16), at(&d, 1500.0, 1030.0, v16)), (Drop::Float, Drop::Area(Area::Bottom)));
+        let at = |d: &Dock, x, y| d.drop_at(Some(pos2(x, y)), &cols).0;
+        assert_eq!(at(&d, 100.0, 70.0), Drop::Group(0), "a group beats the edge band under it");
+        assert_eq!(at(&d, 1500.0, 70.0), Drop::Area(Area::Top));
+        assert_eq!(at(&d, 1000.0, 1030.0), Drop::Area(Area::Bottom));
+        assert_eq!(at(&d, 5.0, 700.0), Drop::Area(Area::Left));
+        assert_eq!(at(&d, 1910.0, 700.0), Drop::Area(Area::Right));
+        assert_eq!(at(&d, 1000.0, 700.0), Drop::Float, "over the timeline");
+        assert_eq!(at(&d, 3000.0, 700.0), Drop::Float, "outside the main window");
+        assert_eq!(d.drop_at(None, &cols).0, Drop::Float);
     }
 
     /// R14: dragging a tab over the timeline and letting go floats it there, at its column's size; a floating window
@@ -1574,33 +1425,30 @@ mod tests {
     #[test]
     fn builtin_layouts_open_the_vegas_panels() {
         use Panel::*;
-        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+        let t23 = Theme::new();
         let cols = |d: &Dock| d.groups.iter().map(|g| (g.tabs.clone(), g.tabs[g.active], g.area)).collect::<Vec<_>>();
-        let left16 = vec![ProjectMedia, Explorer, Transitions, VideoFx, MediaGenerators, Overlays];
         let left23 = vec![Explorer, ProjectMedia, MediaGenerators, Overlays, Transitions, VideoFx, ColorGrading];
         use Area::{Bottom, Top};
         let table: Vec<(Builtin, &Theme, Vec<(Vec<Panel>, Panel, Area)>, Option<f32>)> = vec![
-            (Builtin::Classic, &t16, vec![(left16.clone(), ProjectMedia, Bottom), (vec![Trimmer], Trimmer, Bottom), (vec![VideoPreview], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], Some(449.0)),
-            (Builtin::AudioMixing, &t16, vec![([vec![MixingConsole], left16.clone()].concat(), MixingConsole, Top), (vec![VideoPreview], VideoPreview, Top)], Some(438.0)),
-            (Builtin::ColorCorrection, &t16, vec![(left16.clone(), ProjectMedia, Top), (vec![VideoScopes], VideoScopes, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
+            (Builtin::AudioMixing, &t23, vec![([vec![MixingConsole], left23.clone()].concat(), MixingConsole, Top), (vec![VideoPreview], VideoPreview, Top)], Some(438.0)),
             (Builtin::ColorCorrection, &t23, vec![(left23.clone(), ColorGrading, Top), (vec![VideoScopes], VideoScopes, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], Some(438.0)),
             (Builtin::Source, &t23, vec![(left23.clone(), ProjectMedia, Top), (vec![Trimmer], Trimmer, Top), (vec![VideoPreview], VideoPreview, Top), (vec![MasterBus], MasterBus, Top)], None),
             (Builtin::TimelineTop, &t23, vec![(left23.clone(), ProjectMedia, Bottom), (vec![VideoPreview, Trimmer], VideoPreview, Bottom), (vec![MasterBus], MasterBus, Bottom)], None),
         ];
         for (b, t, want, h) in table {
             let d = Dock::builtin(b, t);
-            assert_eq!(cols(&d), want, "{b:?} {:?}", t.look());
-            assert_eq!(if d.timeline_top() { d.bottom_h } else { d.height }, h, "{b:?}");
+            assert_eq!(cols(&d), want, "{b:?}");
+            assert_eq!(d.height, h, "{b:?}");
         }
-        assert_eq!(Dock::builtin(Builtin::AudioMixing, &t16).groups[1].width, 511.0);
-        assert_eq!(Dock::builtin(Builtin::ColorCorrection, &t16).groups[1..].iter().map(|g| g.width).collect::<Vec<_>>(), [539.0, 539.0, 127.0]);
+        assert_eq!(Dock::builtin(Builtin::AudioMixing, &t23).groups[1].width, 511.0);
+        assert_eq!(Dock::builtin(Builtin::ColorCorrection, &t23).groups[1..].iter().map(|g| g.width).collect::<Vec<_>>(), [539.0, 539.0, 127.0]);
         assert_eq!(Dock::builtin(Builtin::Default, &t23).groups, Dock::new(&t23).groups);
     }
 
     /// F11 twice gives the layout back; one area alone; Maximize Timeline and Collapse Track Headers toggle back.
     #[test]
     fn dock_commands_toggle_back() {
-        let t = Theme::new(LookChoice::VEGAS23);
+        let t = Theme::new();
         let full = Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1080.0));
         let mut d = Dock::builtin(Builtin::TimelineTop, &t);
         d.move_to_area(Panel::MasterBus, Area::Right);
@@ -1633,24 +1481,18 @@ mod tests {
         let shown = d.area_sizes(&t, full, true, None, false);
         assert_eq!(shown[1], PEEK);
         assert_eq!(d.area_sizes(&t, full, true, None, true)[1], before.1[1]);
-        // VP16's Display preference moves the one dock area.
-        let mut v = Dock::new(&Theme::new(LookChoice::VEGAS16));
-        v.set_timeline_top(true);
-        assert!(v.timeline_top());
-        v.set_timeline_top(false);
-        assert_eq!(v.groups, Dock::new(&Theme::new(LookChoice::VEGAS16)).groups);
     }
 
     /// Next Window goes through the timeline and every window of the shown areas, bringing each to the front.
     #[test]
     fn next_window_cycles_and_activates() {
-        let t = Theme::new(LookChoice::VEGAS16);
+        let t = Theme::new();
         let mut d = Dock::new(&t);
         let n: usize = d.groups.iter().map(|g| g.tabs.len()).sum();
         d.cycle(false);
-        assert_eq!((d.focus, d.groups[0].active), (Some(Panel::ProjectMedia), 0));
+        assert_eq!((d.focus, d.groups[0].active), (Some(Panel::Explorer), 0));
         d.cycle(false);
-        assert_eq!((d.focus, d.groups[0].active), (Some(Panel::Explorer), 1));
+        assert_eq!((d.focus, d.groups[0].active), (Some(Panel::ProjectMedia), 1));
         d.cycle(true);
         d.cycle(true);
         assert_eq!(d.focus, None);
@@ -1701,11 +1543,11 @@ mod tests {
         let mut d = Dock::new(&t);
         let rect = Rect::from_min_size(pos2(3.0, 0.0), vec2(1914.0, 596.0));
         click(&ctx, &mut d, rect, pos2(400.0, rect.max.y - 8.0));
-        assert_ne!(d.groups[0].active, 0, "click on a tab activates it");
+        assert_ne!(d.groups[0].active, 1, "click on a tab activates it");
         assert_eq!(d.focus, Some(d.groups[0].tabs[d.groups[0].active]), "and focuses that window");
 
         let press = |p: Pos2, pressed| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
-        let first_split = rect.min.x + rect.width() - 125.0 - 7.0 - 835.0 - 7.0 + 3.0;
+        let first_split = rect.min.x + rect.width() - t.m.master_bus_w - t.m.splitter_w - 750.0 - t.m.splitter_w + 3.0;
         let mut y = pos2(first_split, 300.0);
         frame(&ctx, &mut d, rect, vec![Event::PointerMoved(y)]);
         frame(&ctx, &mut d, rect, vec![press(y, true)]);
@@ -1714,7 +1556,7 @@ mod tests {
             frame(&ctx, &mut d, rect, vec![Event::PointerMoved(y)]);
         }
         frame(&ctx, &mut d, rect, vec![press(y, false)]);
-        assert!(d.groups[1].width > 835.0 && d.groups[1].width <= 875.0, "width {}", d.groups[1].width);
+        assert!(d.groups[1].width > 750.0 && d.groups[1].width <= 790.0, "width {}", d.groups[1].width);
     }
 
     /// R13: a group with more tabs than its strip shows (every window, 400 px) scrolls with â—‚ â–¸, so every tab can be
@@ -1724,7 +1566,7 @@ mod tests {
         let ctx = Context::default();
         let t = theme::get();
         let mut d = Dock::new(&t);
-        let all: Vec<Panel> = Panel::ALL.into_iter().filter(|p| p.in_look(t.look())).collect();
+        let all: Vec<Panel> = Panel::ALL.to_vec();
         d.groups = vec![Group { tabs: all.clone(), active: 0, width: 0.0, area: Area::Top }];
         let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0));
         let y = rect.max.y - t.m.tab_strip_h * 0.5;

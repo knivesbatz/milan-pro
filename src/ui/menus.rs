@@ -1,4 +1,4 @@
-//! Menu bar (§5.1, §6.1–6.7): the full File…Help trees per look, with mnemonics (underlined while Alt is held or
+//! Menu bar (VEGAS_UI_SPEC.md §5.1, §6.1–6.7): the full File…Help trees of VEGAS 23, with mnemonics (underlined while Alt is held or
 //! after Alt+letter / F10 opened a menu), right-aligned shortcuts from the keymap, check and radio marks, submenus
 //! and greyed-out items for what Milan Pro cannot do yet. Menus and context menus send `Command`s on a per-frame
 //! bus that the app drains; they read enabled/checked state from the `CmdState` the app publishes each frame.
@@ -17,7 +17,7 @@ use super::chrome;
 use super::EditTool;
 use super::dock::{LayoutRef, Panel};
 use super::keymap::{self, Command, Command::*};
-use super::theme::{self, UiLook};
+use super::theme;
 
 /// Menu items handled by the app (dialogs, and actions that may discard unsaved changes). Kept for the
 /// toolbars, which predate `Command`.
@@ -49,7 +49,6 @@ impl From<MenuAction> for Command {
 /// What menus need to know to grey out and check items; published by the app every frame.
 #[derive(Clone, Default)]
 pub struct CmdState {
-    pub look: UiLook,
     pub can_undo: bool,
     pub can_redo: bool,
     /// An event is selected (and whether the focus event is locked); `n_sel` events are.
@@ -89,8 +88,6 @@ pub struct CmdState {
     pub open_panels: Vec<Panel>,
     pub quality: Option<Quality>,
     pub recent: Vec<String>,
-    /// VP16 preference: Space and F12 Play/Pause instead of Play/Stop.
-    pub space_pauses: bool,
     pub tool: super::EditTool,
     /// A selected event is in a group.
     pub in_group: bool,
@@ -126,7 +123,7 @@ pub struct CmdState {
     pub recording: bool,
     /// Live input peak (linear) shown in armed tracks' meters; None while no input is open.
     pub input_level: Option<f32>,
-    /// Names of the saved user layouts 0-9 of this look (None = <EMPTY>).
+    /// Names of the saved user layouts 0-9 (None = <EMPTY>).
     pub layouts: [Option<String>; 10],
     /// The layout last loaded or saved (its bullet; Save Layout saves over a user slot).
     pub layout: Option<super::dock::LayoutRef>,
@@ -183,20 +180,18 @@ pub struct CmdState {
 
 impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
-        let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml | ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard | CommandPalette => true,
-            // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
-            LayoutVp14 => !v23,
-            TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
+            // Four docking areas and the Source / Timeline Top layouts.
+            TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => true,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
             RollBack => self.rollback,
-            Welcome => v23,
+            Welcome => true,
             OpenRecent(i) => i < self.recent.len(),
             Undo | UndoAll => self.can_undo,
             Redo => self.can_redo,
@@ -243,7 +238,7 @@ impl CmdState {
             FocusPrevTrack | FocusNextTrack => self.any_tracks,
             InsertRegion | ZoomSelection => self.selection,
             PlayStop | PlayPause | PlayFromStart | PlayAnyWindow | Stop | Loop | ShuttleReverse | ShuttlePause
-            | ShuttleForward | SpacePlayPause => true,
+            | ShuttleForward => true,
             GoToStart | GoToEnd | SelOrViewStart | SelOrViewEnd | PrevFrame | NextFrame | PixelLeft | PixelRight
             | PrevMarker | NextMarker | PrevEditPoint | NextEditPoint | Marker(_) | CenterView => true,
             SetSelStart | SetSelEnd | SelectionToView | SelectionToProject | InsertMarker | InsertAudioTrack
@@ -281,18 +276,18 @@ impl CmdState {
             MulticamTake(..) => self.multicam,
             NestedOpen => self.nested_clip,
             NestedParent => self.nested_parent,
-            // R18a. Smart Split cuts a time selection out of the selected events (VEGAS 23 only).
-            SmartSplit => v23 && self.clip && self.selection,
+            // R18a. Smart Split cuts a time selection out of the selected events.
+            SmartSplit => self.clip && self.selection,
             OpenInAudioEditor | OpenCopyInAudioEditor => self.audio_clip,
             CdTrack => self.selection,
             InsertCommand | CdIndex | MediaMarkers | MarkerLabels | Metronome | RebuildPeaks | ContextMenu => true,
-            EventLength => v23,
+            EventLength => true,
             // R18b. An Adjustment Event goes on the focus video track; an audio transition on the selected audio.
-            InsertAdjustmentTrack | InsertSlideshow => v23,
-            InsertAdjustmentEvent => v23 && self.video_track_focus,
+            InsertAdjustmentTrack | InsertSlideshow => true,
+            InsertAdjustmentEvent => self.video_track_focus,
             InsertAudioTransition => self.audio_clip || self.audio_track_focus,
             InsertTime | ResizeGenerated => true,
-            Window(p) | ShowWindow(p) => p.in_look(self.look),
+            Window(_) | ShowWindow(_) => true,
             _ => false,
         }
     }
@@ -317,7 +312,6 @@ impl CmdState {
             EventLock => self.clip_locked,
             EventMute => self.clip_muted,
             EventLoop => self.clip_looping,
-            SpacePlayPause => self.space_pauses,
             Quantize => self.quantize,
             ShowEnvelopes => self.show_env,
             LockEnvelopes => self.lock_env,
@@ -347,8 +341,7 @@ impl CmdState {
             LayoutUser(n) => self.layout == Some(LayoutRef::User(n)),
             _ if c.builtin_layout().is_some() => self.layout == c.builtin_layout().map(LayoutRef::Builtin),
             // Always-on behaviour Milan Pro has no switch for.
-            SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => true,
-            EventHeaders => self.look == UiLook::Vegas16,
+            SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo | EventHeaders => true,
             ExternalMonitor => self.external,
             Loudness(k) => return self.loudness.checked(k),
             MediaMarkers => self.media_markers,
@@ -394,7 +387,7 @@ pub enum Why {
     Later(&'static str),
     /// VEGAS long tail (R57-R60): no decision to build it.
     NotPlanned(&'static str),
-    /// Anything else, as a lowercase phrase: a behaviour Milan Pro has without a switch, a choice fixed by the look...
+    /// Anything else, as a lowercase phrase: a behaviour Milan Pro has without a switch...
     Fixed(&'static str),
 }
 
@@ -431,8 +424,7 @@ pub fn unfinished(c: Command) -> Option<Why> {
         SurroundPanner => Later("R10b"),
         Help | WhatsThis => Later("R53"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
-        SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo => ALWAYS_ON,
-        EventHeaders => Fixed("set by the look: on in VEGAS 16, off in VEGAS 23"),
+        SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo | EventHeaders => ALWAYS_ON,
         _ => return None,
     })
 }
@@ -477,7 +469,7 @@ fn label_job(ui: &Ui, label: &str, color: Color32, gutter: f32) -> LayoutJob {
 fn row_colors(enabled: bool) -> (Color32, Color32) {
     let t = theme::get();
     let text = if enabled { t.menu_popup_text } else { t.menu_popup_text_disabled };
-    let short = if !enabled { t.menu_popup_text_disabled } else if t.look() != UiLook::Vegas23 { t.menu_popup_text } else { t.text_dim };
+    let short = if !enabled { t.menu_popup_text_disabled } else { t.menu_popup_text };
     (text, short)
 }
 
@@ -529,7 +521,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
     let radio = matches!(
         c,
-        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutVp14 | LayoutAudio
+        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutAudio
             | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
             | Loudness(super::loudness::LoudCmd::Mode(_) | super::loudness::LoudCmd::Range(_) | super::loudness::LoudCmd::Wide(_))
     );
@@ -538,7 +530,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
         Some(on) => Mark::Check(on),
         None => Mark::None,
     };
-    if row(ui, label, &keymap::shortcut_text(c, st.look), st.enabled(c), mark, unfinished(c)) {
+    if row(ui, label, &keymap::shortcut_text(c), st.enabled(c), mark, unfinished(c)) {
         send(ui.ctx(), c);
     }
 }
@@ -571,7 +563,7 @@ pub fn sub(ui: &mut Ui, label: &str, enabled: bool, add: impl FnOnce(&mut Ui)) {
 
 // ---- Static trees ----
 
-/// A menu tree entry. `V16` / `V23` limit an entry to one look.
+/// A menu tree entry.
 pub enum M {
     C(&'static str, Command),
     /// Not available: greyed out, saying why on hover.
@@ -583,8 +575,6 @@ pub enum M {
     Sub(&'static str, &'static [M]),
     /// Items shown in place (shared blocks).
     Inline(&'static [M]),
-    V16(&'static M),
-    V23(&'static M),
     Recent,
     /// View › Window Layouts: user slots 0-9 with their names.
     UserLayouts,
@@ -595,13 +585,12 @@ pub enum M {
 use M::*;
 
 pub fn show(ui: &mut Ui, items: &[M]) {
-    let look = theme::get().look();
     for item in items {
-        show_item(ui, item, look);
+        show_item(ui, item);
     }
 }
 
-fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
+fn show_item(ui: &mut Ui, item: &M) {
     match item {
         C(l, c) => cmd(ui, l, *c),
         X(l, w) => off(ui, l, *w),
@@ -610,9 +599,6 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
         S => sep(ui),
         Sub(l, items) => sub(ui, l, true, |ui| show(ui, items)),
         Inline(items) => show(ui, items),
-        V16(i) if look == UiLook::Vegas16 => show_item(ui, i, look),
-        V23(i) if look.v23() => show_item(ui, i, look),
-        V16(_) | V23(_) => {}
         Recent => {
             let st = state(ui.ctx());
             for (i, p) in st.recent.iter().enumerate() {
@@ -640,7 +626,6 @@ const IMPORT: &[M] = &[
     C("&Media...", ImportMedia),
     C("&VEGAS Project...", ImportVegas),
     C("Media from &Project...", ImportMediaFromProject),
-    V16(&X("&AAF...", AAF)),
     // R29: Premiere reads FCP7 XML (never .prproj, an undocumented gzip format), so its row is the same import.
     C("P&remiere/After Effects (via Final Cut Pro 7 XML)...", ImportXmeml),
     C("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", ImportXmeml),
@@ -651,7 +636,6 @@ const IMPORT: &[M] = &[
     X("&Closed Captioning...", Later("R39")),
 ];
 
-const AAF: Why = Fixed("not feasible: no Rust AAF library; export OpenTimelineIO and convert with otioconvert (docs/INTERCHANGE.md)");
 
 const EXPORT: &[M] = &[
     C("&Milan Pro Project Archive...", ArchiveProject),
@@ -671,18 +655,16 @@ pub const FILE: &[M] = &[
     S,
     C("&Save", Save),
     C("Save &As...", SaveAs),
-    V23(&C("Save Version", SaveVersion)),
+    C("Save Version", SaveVersion),
     S,
-    V16(&C("&Render As...", RenderAs)),
-    V23(&C("&Render...", RenderAs)),
+    C("&Render...", RenderAs),
     X("Real-Ti&me Render...", NotPlanned("R59")),
     S,
     Sub("&Import", IMPORT),
     Sub("E&xport", EXPORT),
-    V16(&X("Capture &Video...", NotPlanned("R59"))),
     X("&Extract Audio from CD...", NotPlanned("R59")),
     S,
-    V23(&C("Welcome Screen", Welcome)),
+    C("Welcome Screen", Welcome),
     C("&Properties...", Properties),
     S,
     Recent,
@@ -725,12 +707,11 @@ const RIPPLE: &[M] = &[
 
 const SELECT: &[M] = &[
     C("Select &All", SelectAll),
-    V23(&C("Select All After Cursor", SelectAfterCursor)),
+    C("Select All After Cursor", SelectAfterCursor),
     C("Select Event Sta&rt", SelectEventStart),
     C("Select Event &End", SelectEventEnd),
     C("Enter Expanded Edit &Mode", ExpandedEdit),
-    V16(&C("Exit E&dit Mode", ExitEditMode)),
-    V23(&C("Exit Expanded E&dit Mode", ExitEditMode)),
+    C("Exit Expanded E&dit Mode", ExitEditMode),
     S,
     C("&Loop Playback", Loop),
     S,
@@ -776,7 +757,7 @@ const SWITCHES: &[M] = &[
 pub const AUDIO_SWITCHES: &[M] = &[
     C("&Invert Phase", EventSwitch(Switch::Invert)),
     C("&Normalize", EventSwitch(Switch::Normalize)),
-    V23(&C("Auto Normalize", EventSwitch(Switch::AutoNormalize))),
+    C("Auto Normalize", EventSwitch(Switch::AutoNormalize)),
 ];
 
 /// The video event switches (Edit › Switches and the video event menu).
@@ -787,7 +768,7 @@ pub const VIDEO_SWITCHES: &[M] = &[
     C("Use P&roject Resample Mode", SetResample(None)),
     C("Force Re&sample", SetResample(Some(Resample::Force))),
     C("&Disable Resample", SetResample(Some(Resample::Disable))),
-    V23(&C("Optical Flow", SetResample(Some(Resample::OpticalFlow)))),
+    C("Optical Flow", SetResample(Some(Resample::OpticalFlow))),
 ];
 
 /// Edit › Take and the event menu's Take ▸; Choose Active... and Delete... open the Take Chooser.
@@ -842,7 +823,7 @@ pub const EDIT: &[M] = &[
     C("Trim &Start", TrimStart),
     C("Trim &End", TrimEnd),
     C("Spl&it", Split),
-    V23(&C("Smart Split", SmartSplit)),
+    C("Smart Split", SmartSplit),
     S,
     Sub("Na&vigate", NAVIGATE),
     Sub("P&ost-Edit Ripple", RIPPLE),
@@ -866,11 +847,10 @@ const LAYOUTS: &[M] = &[
     C("R&eload Selected Layout", ReloadLayout),
     S,
     C("&Default Layout", LayoutDefault),
-    V16(&C("Classic Default Layout", LayoutVp14)),
     C("Audio Mixing", LayoutAudio),
     C("Color Correction", LayoutColor),
-    V23(&C("Source Window Layout", LayoutSource)),
-    V23(&C("Timeline Top Layout", LayoutTimelineTop)),
+    C("Source Window Layout", LayoutSource),
+    C("Timeline Top Layout", LayoutTimelineTop),
     S,
     UserLayouts,
 ];
@@ -882,7 +862,7 @@ const WINDOWS: &[M] = &[
     C("&Video Preview", Window(Panel::VideoPreview)),
     C("Pro&ject Media", Window(Panel::ProjectMedia)),
     C("Edit &Details", Window(Panel::EditDetails)),
-    V23(&C("Project Notes", Window(Panel::ProjectNotes))),
+    C("Project Notes", Window(Panel::ProjectNotes)),
     C("&Transitions", Window(Panel::Transitions)),
     C("V&ideo FX", Window(Panel::VideoFx)),
     C("Media &Generators", Window(Panel::MediaGenerators)),
@@ -895,8 +875,8 @@ const WINDOWS: &[M] = &[
     C("Mixing Console", Window(Panel::MixingConsole)),
     C("Device Exp&lorer", DeviceExplorer),
     C("Loudness Meters", Window(Panel::LoudnessMeters)),
-    V23(&C("Dashboard", Dashboard)),
-    V23(&C("Color Grading", Window(Panel::ColorGrading))),
+    C("Dashboard", Dashboard),
+    C("Color Grading", Window(Panel::ColorGrading)),
     S,
     // Milan Pro's own window (not in VEGAS).
     C("Pr&operties", Window(Panel::Properties)),
@@ -945,8 +925,8 @@ pub const VIEW: &[M] = &[
     C("Event Fade &Lengths", FadeLengths),
     C("Video &Event Edge Edit Frames", EdgeFrames),
     C("Event Headers", EventHeaders),
-    V23(&C("Event Length", EventLength)),
-    V23(&C("Show OFX Effect Envelopes (Beta)", OfxEnvelopes)),
+    C("Event Length", EventLength),
+    C("Show OFX Effect Envelopes (Beta)", OfxEnvelopes),
     S,
     Sub("&Audio Envelopes", AUDIO_ENV_VIEW),
     Sub("Video &Envelopes", VIDEO_ENV_VIEW),
@@ -977,18 +957,18 @@ pub const INSERT: &[M] = &[
     S,
     C("&Audio Track", InsertAudioTrack),
     C("&Video Track", InsertVideoTrack),
-    V23(&C("Adjustment Track", InsertAdjustmentTrack)),
+    C("Adjustment Track", InsertAdjustmentTrack),
     S,
     C("Audio &Bus", InsertAudioBus),
     C("Audio In&put Bus", InsertInputBus),
     C("Audio Assignable &FX...", InsertAssignableFx),
     S,
     C("&Empty Event", InsertEmptyEvent),
-    V23(&C("Adjustment Event", InsertAdjustmentEvent)),
+    C("Adjustment Event", InsertAdjustmentEvent),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
-    V23(&C("&Slideshow...", InsertSlideshow)),
-    V23(&X("Insert Subtitles from Files...", Later("R39"))),
-    V23(&X("Insert Subtitles from Regions...", Later("R39"))),
+    C("&Slideshow...", InsertSlideshow),
+    X("Insert Subtitles from Files...", Later("R39")),
+    X("Insert Subtitles from Regions...", Later("R39")),
     S,
     C("Audio Tra&nsition...", InsertAudioTransition),
     S,
@@ -1029,7 +1009,7 @@ pub const TOOLS: &[M] = &[
         C("&Track Motion...", TrackMotion),
         S,
         C("Vi&deo Output FX...", VideoOutputFx),
-        V23(&C("Motion Tracking", MotionTracking)),
+        C("Motion Tracking", MotionTracking),
     ]),
     S,
     C("&Render to New Track...", RenderToNewTrack),
@@ -1038,7 +1018,7 @@ pub const TOOLS: &[M] = &[
     C("&Selectively Prerender Video...", Prerender),
     C("Clean &Up Prerendered Video...", CleanPrerender),
     C("Build Dynamic RAM Previe&w", RamPreview),
-    V23(&C("Clear Dynamic RAM Preview", ClearRamPreview)),
+    C("Clear Dynamic RAM Preview", ClearRamPreview),
     S,
     X("&Lay Out Audio CD from Events", NotPlanned("R59")),
     Sub("&Burn Disc", &[
@@ -1048,9 +1028,9 @@ pub const TOOLS: &[M] = &[
         X("&Blu-ray Disc...", Fixed("not feasible: needs AACS licensing (VEGAS long tail R59)")),
     ]),
     C("Generate Loudness Log", GenerateLoudnessLog),
-    V23(&C("Advanced Save...", ArchiveProject)),
-    V23(&X("Speech to Text...", NotPlanned("R59"))),
-    V23(&C("Text to Speech...", TextToSpeech)),
+    C("Advanced Save...", ArchiveProject),
+    X("Speech to Text...", NotPlanned("R59")),
+    C("Text to Speech...", TextToSpeech),
     S,
     Sub("Scrip&ting", &[
         X("Ru&n Script...", NotPlanned("R60")),
@@ -1125,7 +1105,7 @@ pub const RULER_MENU: &[M] = &[
     Inline(RULER_FORMATS),
     S,
     C("Set T&ime at Cursor", SetTimeAtCursor),
-    V23(&C("Set Project Tempo", ProjectTempo)),
+    C("Set Project Tempo", ProjectTempo),
 ];
 
 /// R16c: Options › Loudness Meters, also the Loudness Meters window's right-click menu.
@@ -1211,8 +1191,8 @@ pub const OPTIONS: &[M] = &[
     C("Customize Timeline Toolbar...", CustomizeTimelineToolbar),
     C("Customize &Keyboard...", CustomizeKeyboard),
     C("&Preferences...", Preferences),
-    V23(&X("Export Preferences...", Later("R49"))),
-    V23(&X("Import Preferences...", Later("R49"))),
+    X("Export Preferences...", Later("R49")),
+    X("Import Preferences...", Later("R49")),
 ];
 
 pub const HELP: &[M] = &[
@@ -1221,13 +1201,11 @@ pub const HELP: &[M] = &[
     C("&Keyboard Shortcuts", KeyboardShortcuts),
     C("Unfinished &Features", UnfinishedFeatures),
     X("&Show Me How...", Later("R53")),
-    V16(&X("Interactive Tutorial&s...", Later("R53"))),
-    V16(&X("&Welcome...", Fixed("only in the VEGAS 23 look (File > Welcome Screen)"))),
     S,
     C("Check for &Updates...", CheckForUpdates),
     C("Create &Diagnostic Report...", DiagnosticReport),
     C("&Roll Back to Previous Version...", RollBack),
-    V23(&X("Download User Manual", Later("R53"))),
+    X("Download User Manual", Later("R53")),
     S,
     C("About Milan Pro...", About),
 ];
@@ -1236,39 +1214,36 @@ pub const HELP: &[M] = &[
 pub const MENUS: [(&str, &[M]); 7] =
     [("&File", FILE), ("&Edit", EDIT), ("&View", VIEW), ("&Insert", INSERT), ("&Tools", TOOLS), ("&Options", OPTIONS), ("&Help", HELP)];
 
-/// The commands of the `C` rows of `items`, submenus and both looks included.
+/// The commands of the `C` rows of `items`, submenus included.
 pub fn commands(items: &[M], out: &mut Vec<Command>) {
     for item in items {
         match item {
             C(_, c) => out.push(*c),
             Sub(_, items) | Inline(items) => commands(items, out),
-            V16(i) | V23(i) => commands(std::slice::from_ref(*i), out),
             _ => {}
         }
     }
 }
 
-/// R15: the commands Customize Keyboard lists in `look`, named as VEGAS names them: by menu path ("Edit.Undo", the
+/// R15: the commands Customize Keyboard lists, named as VEGAS names them: by menu path ("Edit.Undo", the
 /// first row that sends a command), then the context menus' ("Video event.Properties"), then the keymap's other rows.
-pub fn named_commands(look: UiLook) -> Vec<(String, Command)> {
+pub fn named_commands() -> Vec<(String, Command)> {
     fn clean(label: &str) -> String {
         keymap::mnemonic(label).0.trim_end_matches("...").to_string()
     }
-    fn walk(items: &[M], path: &str, look: UiLook, out: &mut Vec<(String, Command)>) {
+    fn walk(items: &[M], path: &str, out: &mut Vec<(String, Command)>) {
         for item in items {
             match item {
                 C(l, c) if !out.iter().any(|o| o.1 == *c) => out.push((format!("{path}.{}", clean(l)), *c)),
-                Sub(l, items) => walk(items, &format!("{path}.{}", clean(l)), look, out),
-                Inline(items) => walk(items, path, look, out),
-                V16(i) if look == UiLook::Vegas16 => walk(std::slice::from_ref(*i), path, look, out),
-                V23(i) if look.v23() => walk(std::slice::from_ref(*i), path, look, out),
+                Sub(l, items) => walk(items, &format!("{path}.{}", clean(l)), out),
+                Inline(items) => walk(items, path, out),
                 _ => {}
             }
         }
     }
     let mut out = Vec::new();
     for (menu, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
-        walk(items, &clean(menu), look, &mut out);
+        walk(items, &clean(menu), &mut out);
     }
     for r in keymap::TABLE {
         if !out.iter().any(|o| o.1 == r.0) {
@@ -1278,7 +1253,7 @@ pub fn named_commands(look: UiLook) -> Vec<(String, Command)> {
     out
 }
 
-/// Every greyed row of `items` (submenus included, rows of both looks) as (label without '&', why), in menu order;
+/// Every greyed row of `items` (submenus included) as (label without '&', why), in menu order;
 /// `C` rows whose command `unfinished` names. A label shown twice with the same reason is listed once.
 pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
     for item in items {
@@ -1287,10 +1262,6 @@ pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
             X(l, w) | K(l, _, w) | R(l, _, w) => Some((*l, *w)),
             Sub(_, items) | Inline(items) => {
                 greyed(items, out);
-                None
-            }
-            V16(i) | V23(i) => {
-                greyed(std::slice::from_ref(*i), out);
                 None
             }
             S | Recent | UserLayouts | Streams => None,
@@ -1353,38 +1324,23 @@ pub fn draw_menu_bar(ui: &mut Ui) {
     }
 
     egui::menu::bar(ui, |ui| {
-        // Bar labels: native white row in VP16, dark title-bar row in VP23 (§5.1), metal row with a raised bevel on
-        // hover and a sunken one while open in Classic 2006.
+        // Bar labels on the metal row, with a raised bevel on hover and a sunken one while open.
         let v = ui.visuals_mut();
         v.override_text_color = Some(t.menu_text);
-        v.widgets.hovered.weak_bg_fill = t.menu_bar_hover;
-        v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, t.menu_bar_hover_border);
-        v.widgets.open.weak_bg_fill = t.menu_bar_open;
-        v.widgets.active.weak_bg_fill = t.menu_bar_open;
-        if t.classic() {
-            v.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
-            v.widgets.hovered.bg_stroke = Stroke::NONE;
-            v.widgets.open.weak_bg_fill = Color32::TRANSPARENT;
-            v.widgets.active.weak_bg_fill = Color32::TRANSPARENT;
-        }
-        // VP23 labels sit ~2 px further apart (light2026: File 39, Edit 73, View 109, Insert 150).
-        ui.spacing_mut().button_padding = vec2(if t.look() == UiLook::Vegas16 { 7.0 } else { 8.0 }, 1.0);
+        v.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
+        v.widgets.hovered.bg_stroke = Stroke::NONE;
+        v.widgets.open.weak_bg_fill = Color32::TRANSPARENT;
+        v.widgets.active.weak_bg_fill = Color32::TRANSPARENT;
+        ui.spacing_mut().button_padding = vec2(8.0, 1.0);
         ui.spacing_mut().item_spacing.x = 0.0;
-        if t.classic() {
-            ui.add_space(4.0);
-        }
+        ui.add_space(4.0);
         for (k, (label, items)) in MENUS.iter().enumerate() {
             let id = bar_id().with(*label);
             let open = bar.as_ref().is_some_and(|r| r.id == id);
-            let mut b = Button::new(label_job(ui, label, t.menu_text, 0.0));
-            if open && !t.classic() {
-                b = b.fill(t.menu_bar_open).stroke(Stroke::new(1.0_f32, t.menu_bar_hover_border));
-            } else if t.classic() {
-                b = b.fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
-            }
+            let b = Button::new(label_job(ui, label, t.menu_text, 0.0)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE);
             let mut resp = ui.add(b);
             resp.id = id; // a fixed id, so Alt+letter can open the menu and `draw_menu_bar` can tell which is open
-            if t.classic() && (open || resp.hovered()) {
+            if open || resp.hovered() {
                 // Behind the label (the bevel's inside is the metal row itself): raised on hover, sunken while open.
                 let r = Rect::from_x_y_ranges(resp.rect.x_range(), Rangef::new(resp.rect.min.y - 1.0, resp.rect.max.y + 1.0));
                 super::widgets::edge(ui.painter(), r, !open, &t.metal);
@@ -1405,7 +1361,7 @@ pub fn draw_menu_bar(ui: &mut Ui) {
     bar.store(&ctx, bar_id());
 }
 
-/// Show `add` as `resp`'s right-click menu in the look's popup style (native light in VP16).
+/// Show `add` as `resp`'s right-click menu in the menu popup style.
 pub fn context(resp: &Response, add: impl FnOnce(&mut Ui)) {
     let t = theme::get();
     chrome::with_menu_style(&resp.ctx, &t, || {
@@ -1663,18 +1619,16 @@ mod tests {
         assert!(tools.contains(&GenerateLoudnessLog) && tools.contains(&Loudness(L::ResetEngine)));
     }
 
-    /// R31: View › Window › Plug-In Manager (Ctrl+Alt+1) works in both looks with its check mark, and nothing in the
-    /// menus waits on R31 any more.
+    /// R31: View › Window › Plug-In Manager (Ctrl+Alt+1) works with its check mark, and nothing in the menus waits on
+    /// R31 any more.
     #[test]
     fn plugin_manager_works() {
         let c = Window(Panel::PluginManager);
         let mut st = CmdState::default();
         assert!(unfinished(c).is_none() && st.enabled(c) && st.checked(c) == Some(false));
-        st.look = UiLook::Vegas23;
-        assert!(st.enabled(c));
         st.open_panels.push(Panel::PluginManager);
         assert_eq!(st.checked(c), Some(true));
-        assert_eq!(keymap::default_keys(c, UiLook::Vegas16), ["Ctrl+Alt+1"]);
+        assert_eq!(keymap::default_keys(c), ["Ctrl+Alt+1"]);
         let mut cmds = Vec::new();
         commands(WINDOWS, &mut cmds);
         assert!(cmds.contains(&c));
@@ -1766,19 +1720,16 @@ mod tests {
         assert!([MulticamCreate, MulticamExpand, Multicam, MulticamAudio, MulticamFullFrame].iter().all(|c| tools.contains(c)));
     }
 
-    /// R18a: its commands work when they can (Smart Split in VEGAS 23 with an event and a time selection, the audio
+    /// R18a: its commands work when they can (Smart Split with an event and a time selection, the audio
     /// editor with an audio event, a CD track region over a time selection), the switches show their state, and nothing
     /// in the menus waits on R18a any more.
     #[test]
     fn r18a_commands_work() {
-        let off = CmdState { look: UiLook::Vegas23, ..CmdState::default() };
+        let off = CmdState::default();
         let on = CmdState { clip: true, audio_clip: true, selection: true, media_markers: true, marker_labels: true, event_length: true, metronome: true, ..off.clone() };
         for c in [SmartSplit, OpenInAudioEditor, OpenCopyInAudioEditor, CdTrack] {
             assert!(unfinished(c).is_none() && !off.enabled(c) && on.enabled(c), "{c:?}");
         }
-        assert!(!CmdState { look: UiLook::Vegas16, ..on.clone() }.enabled(SmartSplit) && !CmdState { look: UiLook::Vegas16, ..CmdState::default() }.enabled(EventLength));
-        // Classic 2006 follows the VEGAS 23 command set.
-        assert!(CmdState { look: UiLook::Classic2006, ..on.clone() }.enabled(SmartSplit));
         for c in [InsertCommand, CdIndex, RebuildPeaks, ContextMenu] {
             assert!(unfinished(c).is_none() && off.enabled(c), "{c:?}");
         }
@@ -1797,22 +1748,21 @@ mod tests {
         assert!([SmartSplit, InsertCommand, CdTrack, CdIndex, OpenInAudioEditor, OpenCopyInAudioEditor, MediaMarkers, MarkerLabels, EventLength, Metronome, RebuildPeaks].iter().all(|c| all.contains(c)));
     }
 
-    /// R18b: its commands work when they can (the adjustment items in VEGAS 23, an Adjustment Event on a focus video
+    /// R18b: its commands work when they can (the adjustment items, an Adjustment Event on a focus video
     /// track, an audio transition on selected audio, Set Default Track Properties on either kind of track, Cut and Copy
     /// over a time selection), and nothing in the menus waits on R18b any more.
     #[test]
     fn r18b_commands_work() {
-        let v16 = CmdState { look: UiLook::Vegas16, ..CmdState::default() };
-        let v23 = CmdState { look: UiLook::Vegas23, ..CmdState::default() };
+        let v23 = CmdState::default();
         for c in [InsertAdjustmentTrack, InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated, DefaultTrackFx] {
             assert!(unfinished(c).is_none(), "{c:?}");
         }
-        assert!(v23.enabled(InsertAdjustmentTrack) && v23.enabled(InsertSlideshow) && !v16.enabled(InsertAdjustmentTrack) && !v16.enabled(InsertSlideshow));
+        assert!(v23.enabled(InsertAdjustmentTrack) && v23.enabled(InsertSlideshow));
         assert!(!v23.enabled(InsertAdjustmentEvent) && CmdState { video_track_focus: true, ..v23.clone() }.enabled(InsertAdjustmentEvent));
-        assert!(!v16.enabled(InsertAudioTransition) && CmdState { audio_clip: true, ..v16.clone() }.enabled(InsertAudioTransition));
-        assert!(v16.enabled(InsertTime) && v16.enabled(ResizeGenerated) && !v16.enabled(DefaultTrackFx));
-        assert!(CmdState { video_track_focus: true, ..v16.clone() }.enabled(DefaultTrackFx));
-        assert!(!v16.enabled(Cut) && !v16.enabled(Copy) && CmdState { selection: true, ..v16.clone() }.enabled(Cut) && CmdState { selection: true, ..v16.clone() }.enabled(Copy));
+        assert!(!v23.enabled(InsertAudioTransition) && CmdState { audio_clip: true, ..v23.clone() }.enabled(InsertAudioTransition));
+        assert!(v23.enabled(InsertTime) && v23.enabled(ResizeGenerated) && !v23.enabled(DefaultTrackFx));
+        assert!(CmdState { video_track_focus: true, ..v23.clone() }.enabled(DefaultTrackFx));
+        assert!(!v23.enabled(Cut) && !v23.enabled(Copy) && CmdState { selection: true, ..v23.clone() }.enabled(Cut) && CmdState { selection: true, ..v23.clone() }.enabled(Copy));
         let mut rows = Vec::new();
         for (_, items) in MENUS.iter().chain(crate::ui::timeline::CONTEXT_MENUS) {
             greyed(items, &mut rows);
@@ -1873,7 +1823,7 @@ mod tests {
     /// ripple mode work; nothing in the menus waits on R8b any more.
     #[test]
     fn mixer_bus_track_and_dim_commands_work() {
-        let mut st = CmdState { look: UiLook::Vegas16, ..Default::default() };
+        let mut st = CmdState::default();
         for c in [Window(Panel::MixingConsole), BusTracks, DimMaster, AudioProperties, RippleMode(RippleMode::AffectedMarkersOnly), OutputMeters, VerticalMeters, MeterWidth(2)] {
             assert!(unfinished(c).is_none() && st.enabled(c), "{c:?}");
         }
@@ -1997,7 +1947,7 @@ mod tests {
 
     #[test]
     fn user_layout_slots_follow_the_saved_ones() {
-        let mut st = CmdState { look: UiLook::Vegas16, ..CmdState::default() };
+        let mut st = CmdState::default();
         assert!(!st.enabled(LayoutUser(3)) && st.enabled(SaveLayoutUser(3)) && st.enabled(SaveLayout) && st.enabled(SaveLayoutAs));
         st.layouts[3] = Some("Edit".into());
         assert!(st.enabled(LayoutUser(3)) && !st.enabled(LayoutUser(4)) && !st.enabled(LayoutUser(10)));
@@ -2006,21 +1956,18 @@ mod tests {
         assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3))), (Some(true), Some(false)));
         st.layout = Some(LayoutRef::User(3));
         assert_eq!((st.checked(LayoutDefault), st.checked(LayoutUser(3)), st.checked(LayoutUser(4))), (Some(false), Some(true), Some(false)));
-        assert!(!st.enabled(Window(Panel::ColorGrading)) && !st.enabled(LayoutTimelineTop));
-        // R13: the built-in layouts are radios too; VP16 has Classic and one dock area, VP23 Source / Timeline Top.
+        assert!(st.enabled(Window(Panel::ColorGrading)) && st.enabled(LayoutTimelineTop));
+        // R13: the built-in layouts are radios too, with the four dock areas and Source / Timeline Top.
         st.layout = Some(LayoutRef::Builtin(crate::ui::dock::Builtin::AudioMixing));
         assert_eq!((st.checked(LayoutAudio), st.checked(LayoutDefault), st.checked(LayoutUser(3))), (Some(true), Some(false), Some(false)));
-        assert!(st.enabled(LayoutVp14) && !st.enabled(RightDock) && st.enabled(ToggleDocks) && st.enabled(ReloadLayout));
-        st.look = UiLook::Vegas23;
-        assert!(!st.enabled(LayoutVp14) && st.enabled(RightDock) && st.enabled(LayoutSource));
+        assert!(st.enabled(RightDock) && st.enabled(ToggleDocks) && st.enabled(ReloadLayout) && st.enabled(LayoutSource));
     }
 
     /// R0: a command that stays greyed out with everything selected says why, and a command labelled unfinished is
     /// never live (the batch that builds it removes the label).
     #[test]
     fn every_greyed_command_says_why() {
-        let everything = |look| CmdState {
-            look,
+        let everything = CmdState {
             can_undo: true,
             can_redo: true,
             clip: true,
@@ -2059,7 +2006,7 @@ mod tests {
         }
         assert!(cmds.len() > 250);
         for c in cmds {
-            let live = [UiLook::Vegas16, UiLook::Vegas23].into_iter().any(|look| everything(look).enabled(c));
+            let live = everything.enabled(c);
             assert_eq!(live, unfinished(c).is_none(), "{c:?}: live {live}, reason {:?}", unfinished(c));
         }
         // Every greyed menu row has a reason by construction (`X`, `K`, `R` carry one); the list has them all.
@@ -2103,26 +2050,25 @@ mod tests {
                 }
             }
         }
-        assert!(found > 150, "{found}");
+        assert!(found > 130, "{found}");
     }
 
     /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.
     #[test]
     fn menu_shortcut_text_follows_the_overrides() {
-        let named = named_commands(UiLook::Vegas23);
+        let named = named_commands();
         let path = |c| named.iter().find(|n| n.1 == c).map(|n| n.0.as_str());
         assert_eq!(path(CustomizeKeyboard), Some("Options.Customize Keyboard"));
         assert_eq!(path(Window(Panel::ColorGrading)), Some("View.Window.Color Grading"));
         assert_eq!(path(ShuttlePause), Some("Shuttle pause"), "keymap rows outside the menus by their names");
-        assert!(named_commands(UiLook::Vegas16).iter().all(|n| n.1 != Welcome), "only the look's rows");
         // Preferences has no default key, so no other test sees this one.
-        assert_eq!(keymap::shortcut_text(Preferences, UiLook::Vegas23), "");
-        let ov = keymap::Overrides::from([("vp23".to_string(), [(keymap::name(Preferences), vec!["Ctrl+Alt+F9".to_string()])].into())]);
+        assert_eq!(keymap::shortcut_text(Preferences), "");
+        let ov = keymap::Overrides::from([(keymap::name(Preferences), vec!["Ctrl+Alt+F9".to_string()])]);
         keymap::set_overrides(&ov);
-        let (v23, v16) = (keymap::shortcut_text(Preferences, UiLook::Vegas23), keymap::shortcut_text(Preferences, UiLook::Vegas16));
+        let mine = keymap::shortcut_text(Preferences);
         keymap::set_overrides(&keymap::Overrides::new());
-        assert_eq!((v23.as_str(), v16.as_str()), ("Ctrl+Alt+F9", ""));
-        assert_eq!(keymap::shortcut_text(Preferences, UiLook::Vegas23), "");
+        assert_eq!(mine, "Ctrl+Alt+F9");
+        assert_eq!(keymap::shortcut_text(Preferences), "");
     }
 
     /// A save that cannot write (missing or read-only folder) comes back as an error for the status bar, and the
