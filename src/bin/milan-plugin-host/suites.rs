@@ -181,11 +181,23 @@ unsafe extern "C" fn prop_set_int_n(h: OfxPropertySetHandle, k: *const c_char, n
     unsafe { prop_set_n(h, k, n, x, |p| V::I(vec![*p]), |v| V::I(v.into_iter().flat_map(|x| if let V::I(p) = x { p } else { vec![] }).collect())) }
 }
 
+/// The host's own property set (`host_props`), so a host property a plug-in asks for in vain can be named in an error.
+pub static HOST_PROPS: AtomicU64 = AtomicU64::new(0);
+
 /// Element `i` of property `k` through `f` (which writes it out); numbers convert between int and double.
 unsafe fn prop_get(h: OfxPropertySetHandle, k: *const c_char, i: c_int, f: impl FnOnce(&V, usize) -> OfxStatus) -> OfxStatus {
     let (Some(p), Some(k)) = (unsafe { props(h) }, unsafe { name(k) }) else { return kOfxStatErrBadHandle };
     let m = lock(&p.m);
-    let Some(v) = m.get(k) else { return kOfxStatErrUnknown };
+    let host = h as u64 == HOST_PROPS.load(Ordering::Relaxed);
+    if host && PROBING.load(Ordering::Relaxed) {
+        lock(&HOST_READS).insert(k.to_string());
+    }
+    let Some(v) = m.get(k) else {
+        if host {
+            lock(&REFUSED).insert(format!("host property {k}"));
+        }
+        return kOfxStatErrUnknown;
+    };
     if i < 0 || i as usize >= v.len() {
         return kOfxStatErrBadIndex;
     }
@@ -1271,10 +1283,47 @@ pub unsafe extern "C" fn fetch_suite(_host: OfxPropertySetHandle, n: *const c_ch
         ("OfxProgressSuite", 1) => p(&PROGRESS_SUITE_V1),
         ("OfxProgressSuite", 2) => p(&PROGRESS_SUITE_V2),
         ("OfxTimeLineSuite", 1) => p(&TIMELINE_SUITE),
-        // Interact (overlays), parametric parameters, OpenGL/CUDA/Metal/OpenCL, dialogs: not supported.
-        _ => std::ptr::null(),
+        ("OfxInteractSuite", 1) => p(&INTERACT_SUITE),
+        // Interact (overlays), parametric parameters, OpenGL/CUDA/Metal/OpenCL, dialogs, host-private suites: not
+        // supported. Noted, so an error can say what the plug-in asked for.
+        (n, v) => {
+            lock(&REFUSED).insert(format!("{n} v{v}"));
+            std::ptr::null()
+        }
     }
 }
+
+/// Suites plug-ins of this binary asked for and did not get (names and versions).
+pub static REFUSED: LazyLock<Mutex<std::collections::BTreeSet<String>>> = LazyLock::new(Default::default);
+
+/// A compatibility probe (`MILAN_HOST_PROBE`): host properties the plug-ins read are noted too (`HOST_READS`), so a
+/// report can tell a host check from a missing feature.
+pub static PROBING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static HOST_READS: LazyLock<Mutex<std::collections::BTreeSet<String>>> = LazyLock::new(Default::default);
+
+/// The suites and host properties refused so far (and, in a probe, the host properties read), as a sentence for an error.
+pub fn refused() -> String {
+    let r = lock(&REFUSED);
+    let mut s = if r.is_empty() { String::new() } else { format!("; asked for and not provided: {}", r.iter().cloned().collect::<Vec<_>>().join(", ")) };
+    let reads = lock(&HOST_READS);
+    if !reads.is_empty() {
+        s.push_str(&format!("; host properties read: {}", reads.iter().cloned().collect::<Vec<_>>().join(", ")));
+    }
+    s
+}
+
+// The interact suite: Milan Pro draws no overlays (`kOfxImageEffectPropSupportsOverlays` 0) and never calls an
+// interact, so these are never reached by a well-behaved plug-in; a stub lets plug-ins that insist on the suite describe.
+unsafe extern "C" fn interact_unsupported(_h: *mut c_void) -> OfxStatus {
+    kOfxStatErrMissingHostFeature
+}
+unsafe extern "C" fn interact_get_property_set(_h: *mut c_void, out: *mut OfxPropertySetHandle) -> OfxStatus {
+    if !out.is_null() {
+        unsafe { *out = std::ptr::null_mut() };
+    }
+    kOfxStatErrMissingHostFeature
+}
+pub static INTERACT_SUITE: OfxInteractSuiteV1 = OfxInteractSuiteV1 { interactSwapBuffers: interact_unsupported, interactRedraw: interact_unsupported, interactGetPropertySet: interact_get_property_set };
 
 /// The host's own properties: what Milan Pro supports.
 pub fn host_props() -> Box<Props> {
@@ -1286,7 +1335,10 @@ pub fn host_props() -> Box<Props> {
     let ver: Vec<c_int> = env!("CARGO_PKG_VERSION").split('.').map(|x| x.parse().unwrap_or(0)).collect();
     p.set(kOfxPropVersion, V::I(ver));
     p.st(kOfxPropVersionLabel, env!("CARGO_PKG_VERSION"));
-    p.i(kOfxImageEffectHostPropIsBackground, 0);
+    // A compatibility probe (`MILAN_HOST_PROBE`) runs with nobody watching: plug-ins are told so.
+    let probing = std::env::var_os("MILAN_HOST_PROBE").is_some();
+    PROBING.store(probing, Ordering::Relaxed);
+    p.i(kOfxImageEffectHostPropIsBackground, probing as c_int);
     p.i(kOfxImageEffectPropSupportsOverlays, 0);
     p.i(kOfxImageEffectPropSupportsMultiResolution, 0);
     p.i(kOfxImageEffectPropSupportsTiles, 0);

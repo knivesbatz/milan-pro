@@ -21,7 +21,7 @@ fn desc() -> PluginDesc {
         params: vec![
             param("page", "Page", &[]),
             param("grp", "Group", &[]),
-            ParamDesc { parent: "grp".into(), min: 0.0, max: 4.0, ..param("amount", "Double", &[1.5]) },
+            ParamDesc { parent: "grp".into(), min: 0.0, max: 4.0, vmin: 0.0, vmax: 4.0, ..param("amount", "Double", &[1.5]) },
             ParamDesc { parent: "grp".into(), ..param("count", "Integer", &[3.0]) },
             param("flag", "Boolean", &[1.0]),
             ParamDesc { options: vec!["A".into(), "B".into(), "C".into()], ..param("mode", "Choice", &[2.0]) },
@@ -50,6 +50,9 @@ fn parameters_map_both_ways() {
     assert_eq!(keys, ["amount", "count", "flag", "mode", "tint", "pos.x", "pos.y", "idx.x", "idx.y", "idx.z", "note", "hidden", "blob", "empty"]);
     assert!(info.params.iter().all(|p| p.section.is_empty()), "the OFX layout places them, not sections");
     assert!(matches!(info.params[0].kind, ParamKind::Float { min: 0.0, max: 4.0, default: 1.5 }));
+    // A parameter with no hard range keeps any value (the slider shows a range around the default: `Row::Param::slider`).
+    assert!(matches!(info.params[1].kind, ParamKind::Float { min, max, default: 3.0 } if min == -f32::MAX && max == f32::MAX));
+
     assert!(matches!(info.params[3].kind, ParamKind::Choice { default: 2, .. }));
     assert!(std::ptr::eq(info, leak_info(&d)), "an unchanged description is leaked once");
     let vals = values(&d, &preset_eval(info, None));
@@ -119,11 +122,15 @@ fn test_bundle() -> PathBuf {
         cmd.args(["build", "--release", "--offline", "--quiet", "--manifest-path"]).arg(repo.join("tools").join("ofx-test-plugin").join("Cargo.toml")).arg("--target-dir").arg(&target);
         let st = crate::proc::output(&mut cmd).expect("cargo runs");
         assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
-        let dir = std::env::temp_dir().join("milan-agent").join("ofx").join(format!("bundles-{}", std::process::id()));
-        let win64 = dir.join("MilanTest.ofx.bundle").join("Contents").join("Win64");
-        std::fs::create_dir_all(&win64).unwrap();
-        std::fs::copy(target.join("release").join("milan_ofx_test.dll"), win64.join("MilanTest.ofx")).unwrap();
-        dir
+        // One folder for every test run (a host from an earlier run may still hold the file: then a folder of this run's own).
+        let built = target.join("release").join("milan_ofx_test.dll");
+        let place = |dir: PathBuf| {
+            let win64 = dir.join("MilanTest.ofx.bundle").join("Contents").join("Win64");
+            std::fs::create_dir_all(&win64)?;
+            std::fs::copy(&built, win64.join("MilanTest.ofx")).map(|_| dir)
+        };
+        let base = std::env::temp_dir().join("milan-agent").join("ofx");
+        place(base.join("bundles")).or_else(|_| place(base.join(format!("bundles-{}", std::process::id())))).unwrap()
     })
     .clone()
 }
@@ -355,6 +362,8 @@ fn layout_follows_pages_groups_and_state() {
     };
     let rows = layout_of(&p, None, &|_, d| d);
     assert_eq!(names(&rows), ["H:PAGE", "TINT", "G:GRP", "AMOUNT", "COUNT", "H:PAGE2", "FLAG", "MODE[A,B,C]", "POS X", "POS Y", "IDX X", "IDX Y", "IDX Z", "NOTE", "B:GO", "EMPTY[]"]);
+    assert!(rows.iter().any(|r| matches!(r, Row::Param { label, slider: Some((0.0, 4.0)), .. } if label == "AMOUNT")));
+    assert!(rows.iter().any(|r| matches!(r, Row::Param { label, slider: Some((lo, hi)), .. } if label == "COUNT" && *lo == -100.0 && *hi == 103.0)));
     // A closed group hides its members; the plug-in's run-time state hides, greys, relabels and refills options.
     let rows = layout_of(&p, None, &|g, _| g != "grp");
     assert!(names(&rows).contains(&"G:GRP(closed)".to_string()) && !names(&rows).iter().any(|n| n == "AMOUNT"));
@@ -475,18 +484,24 @@ fn plug_in_edits_buttons_state_and_messages() {
     assert!(st["extra"].secret && st["sawScale"].secret);
     assert!(!labels(&rows(&fx)).contains(&"Extra".to_string()));
     assert!(matches!(&rows(&fx)[0], Row::Group { label, open: true, .. } if label == "Controls"));
+    // The seed's slider spans a range around its default, the stored value stands outside it.
+    assert!(rows(&fx).iter().any(|r| matches!(r, Row::Param { label, slider: Some((lo, hi)), .. } if label == "Seed" && *lo <= 0.0 && *hi <= 100.0)));
+    assert_eq!(plugins::eval(&fx, 0.0).unwrap().f("seed"), seed as f32, "not clamped to the slider's range");
     assert_eq!(rows(&fx).iter().filter(|r| matches!(r, Row::Button { .. })).count(), 3);
-    // Amount 2 now (restored): the picture doubles; the plug-in sets the render scale it saw (0.5: a preview-size picture).
+    // Amount 2 now (restored): the picture doubles. The plug-in writes the render scale it saw (0.5: a preview-size
+    // picture) into a parameter during the render: that stays its own, or every differently sized frame would change
+    // the project (and render it again).
     let mut img = gray();
     vfx::apply(&mut img, &eval_at(PARAMS, Some(fx.clone()), 0.0, 16.0), 1);
     assert_eq!(img.pixels[0].to_array(), [200, 200, 200, 255]);
     let eds = take_edits();
-    let saw = eds.iter().flat_map(|e| &e.edits).find(|e| e.0 == "sawScale").expect("the render scale");
-    assert_eq!(saw.1, PVal::N(vec![0.5]));
+    assert!(eds.iter().flat_map(|e| &e.edits).all(|e| e.0 != "sawScale"), "{eds:?}");
     for ed in &eds {
         apply_edits(&mut fx, &ed.edits, ed.initial);
     }
-    assert_eq!(fx.params["sawScale"].keys[0].v, 0.5);
+    assert!(!fx.params.contains_key("sawScale"));
+    vfx::apply(&mut gray(), &eval_at(PARAMS, Some(fx.clone()), 0.0, 8.0), 1);
+    assert!(take_edits().iter().flat_map(|e| &e.edits).all(|e| e.0 != "sawScale"), "nor set back and reported again");
     fx.params.insert("mode".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 1.0, curve: Curve::Linear }] });
     vfx::apply(&mut gray(), &eval_at(PARAMS, Some(fx.clone()), 0.0, 8.0), 1);
     assert!(!state(&fx.id).unwrap()["extra"].secret, "Advanced shows Extra");
@@ -564,4 +579,126 @@ fn bench_ofx_roundtrip_1080p() {
     };
     println!("BENCH ofx_roundtrip_1080p float_ms={float:.2} byte_ms={byte:.2} builtin_invert_ms={base:.2} float_overhead_ms={:.2}", float - base);
     close_hosts();
+}
+
+/// A5: the plug-in host, started as Milan starts it (Job Object, no window), can make a Vulkan device of its own, as
+/// Spektrafilm does. Strict where the system has a Vulkan loader; elsewhere it only has to answer.
+#[test]
+#[ignore]
+fn the_host_can_make_a_vulkan_device() {
+    let bin = test_bundle().join("MilanTest.ofx.bundle").join("Contents").join("Win64").join("MilanTest.ofx");
+    let (mut c, _) = Conn::start(&bin).unwrap();
+    let reply = c.request(&Req::GpuCheck, Some(std::time::Duration::from_secs(20))).expect("the host answers");
+    println!("{reply:?}");
+    let loader = std::env::var_os("SystemRoot").map(|r| PathBuf::from(r).join("System32").join("vulkan-1.dll")).is_some_and(|p| p.is_file());
+    match reply {
+        Reply::Rendered(o) => assert!(o.messages[0].contains("compute queue)") && !o.messages[0].contains(" 0 physical"), "{:?}", o.messages),
+        Reply::Error(e) => assert!(!loader, "a Vulkan loader is installed but the host could not use it: {e}"),
+        r => panic!("{r:?}"),
+    }
+    c.quit();
+}
+
+/// R33c: every OFX plug-in in the VEGAS Pro 15 bundles (`MILAN_VEGAS_OFX`, default `C:\Program Files\VEGAS\VEGAS Pro
+/// 15.0\OFX Video Plug-Ins`; read only, never copied) is loaded, described and rendered once (96x54) in probe hosts:
+/// background flag on, a hidden desktop, dialogs noted, a hang killed. Writes `ofx-vegas15.csv` and the dialog log to
+/// `MILAN_COMPAT_OUT` (default %TEMP%\milan-agent\ofx2\compat). Nothing is asserted about the plug-ins: the CSV is the
+/// result; the test only checks that the probe itself ran every binary and wrote a row per plug-in.
+#[test]
+#[ignore]
+fn vegas15_compat_report() {
+    let dir = std::env::var_os("MILAN_VEGAS_OFX").map_or_else(|| PathBuf::from(r"C:\Program Files\VEGAS\VEGAS Pro 15.0\OFX Video Plug-Ins"), PathBuf::from);
+    if !dir.is_dir() {
+        eprintln!("{} is not there: nothing to test", dir.display());
+        return;
+    }
+    let out_dir = std::env::var_os("MILAN_COMPAT_OUT").map_or_else(|| std::env::temp_dir().join("milan-agent").join("ofx2").join("compat"), PathBuf::from);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let log = out_dir.join("host-dialogs.log");
+    let _ = std::fs::remove_file(&log);
+    *lock(&client::PROBE_LOG) = Some(log.clone());
+    // `MILAN_COMPAT_DLL_DIRS` (;-separated): folders the probe hosts may load a plug-in's imports from (the VEGAS folder
+    // holds ErrorReport.dll, OpenColorIO.dll and proDADMercalli20.dll); Milan Pro itself never adds them.
+    let dll_dirs: Vec<PathBuf> = std::env::var_os("MILAN_COMPAT_DLL_DIRS").map(|v| std::env::split_paths(&v).filter(|p| !p.as_os_str().is_empty()).collect()).unwrap_or_default();
+    *lock(&client::PROBE_DLL_DIRS) = dll_dirs.clone();
+    client::DESCRIBE_TIMEOUT_MS.store(10_000, Ordering::Relaxed);
+    client::RENDER_TIMEOUT_MS.store(20_000, Ordering::Relaxed);
+    let started = std::time::Instant::now();
+    let cache = scan::scan(&[dir.clone()], &ScanCache::default(), true, &scan::describe_binary);
+    set_registry(&cache, &OfxPrefs::default());
+    let describe_ms = started.elapsed().as_millis();
+    let (w, h) = (96usize, 54usize);
+    let src = ColorImage { size: [w, h], pixels: (0..w * h).map(|i| Color32::from_rgba_premultiplied((i % w * 255 / w) as u8, (i / w * 255 / h) as u8, 128, 255)).collect() };
+    let b_img = ColorImage::new([w, h], Color32::from_rgba_premultiplied(20, 200, 40, 255));
+    let csv_cell = |s: &str| {
+        let s = s.replace('\n', " ");
+        if s.contains([',', '"']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s }
+    };
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut binaries = 0;
+    for b in &cache.binaries {
+        binaries += 1;
+        let file = b.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        for (i, e) in &b.errors {
+            let idx = i.map_or(String::new(), |i| i.to_string());
+            rows.push(vec![file.clone(), idx, String::new(), String::new(), String::new(), String::new(), String::new(), String::new(), "0".into(), if i.is_none() { "no".into() } else { "yes".into() }, "no".into(), "no".into(), String::new(), e.clone()]);
+        }
+        for d in &b.plugins {
+            let id = id_of(d);
+            let base = vec![file.clone(), d.index.to_string(), d.id.clone(), d.label.clone(), d.group.clone(), d.contexts.iter().map(|c| c.trim_start_matches("OfxImageEffectContext")).collect::<Vec<_>>().join(" "), d.context.trim_start_matches("OfxImageEffectContext").to_string(), d.depths.iter().map(|x| x.trim_start_matches("OfxBitDepth")).collect::<Vec<_>>().join(" "), d.params.len().to_string(), "yes".into(), "yes".into()];
+            let mut row = base;
+            if let Some(why) = unsupported(d) {
+                row.extend(["no".into(), String::new(), why]);
+                rows.push(row);
+                continue;
+            }
+            let Some(info) = plugins::find(&id) else {
+                row.extend(["no".into(), String::new(), "not registered".into()]);
+                rows.push(row);
+                continue;
+            };
+            let fx = plugins::new_fx(info, None);
+            let mut e = plugins::eval(&fx, 0.0).expect("evaluates");
+            add_frame_vals(&mut e, &fx.id, false, 0.0, h as f64, 30.0, 1.0);
+            let t = std::time::Instant::now();
+            let what = match info.kind {
+                PluginKind::Transition => transition(&e, &src, &b_img, 0.5).map(|o| if o.pixels == src.pixels { "renders (SourceFrom passed through)" } else { "renders" }),
+                PluginKind::Generator => {
+                    let o = generate(&e, w as u32, h as u32, 0.0);
+                    failure(&id).is_none().then(|| if o.pixels.iter().all(|p| p.a() == 0) { "renders (transparent)" } else { "renders" })
+                }
+                _ => {
+                    let mut img = src.clone();
+                    apply(&mut img, &e);
+                    failure(&id).is_none().then(|| if img.pixels == src.pixels { "renders (identity at defaults)" } else { "renders" })
+                }
+            };
+            let ms = t.elapsed().as_millis().to_string();
+            match (what, failure(&id)) {
+                (Some(w), None) => row.extend([w.to_string(), ms, String::new()]),
+                (_, why) => row.extend(["no".into(), ms, why.unwrap_or_default()]),
+            }
+            rows.push(row);
+        }
+    }
+    // Dialogs the hosts' window watcher saw.
+    let dialogs = std::fs::read_to_string(&log).unwrap_or_default();
+    let mut csv = String::from("binary,index,identifier,label,grouping,contexts,context_used,depths,params,loads,describes,renders,render_ms,error\n");
+    for r in &rows {
+        csv.push_str(&r.iter().map(|c| csv_cell(c)).collect::<Vec<_>>().join(","));
+        csv.push('\n');
+    }
+    std::fs::write(out_dir.join("ofx-vegas15.csv"), &csv).unwrap();
+    let plugins_n = rows.iter().filter(|r| !r[2].is_empty()).count();
+    let rendered = rows.iter().filter(|r| r[11].starts_with("renders")).count();
+    println!("COMPAT binaries={binaries} rows={} plugins={plugins_n} rendered={rendered} describe_ms={describe_ms} total_ms={} dll_dirs={dll_dirs:?} dialogs={:?}", rows.len(), started.elapsed().as_millis(), dialogs.lines().collect::<Vec<_>>());
+    println!("{}", out_dir.join("ofx-vegas15.csv").display());
+    *lock(&client::PROBE_LOG) = None;
+    lock(&client::PROBE_DLL_DIRS).clear();
+    client::DESCRIBE_TIMEOUT_MS.store(2_000, Ordering::Relaxed);
+    client::RENDER_TIMEOUT_MS.store(30_000, Ordering::Relaxed);
+    clear_failures();
+    close_hosts();
+    set_registry(&ScanCache::default(), &OfxPrefs::default());
+    assert!(binaries > 0 && !rows.is_empty());
 }

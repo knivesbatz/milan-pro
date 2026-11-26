@@ -11,8 +11,19 @@ use super::proto::{self, Reply, Req};
 
 /// Loading a binary (its DLL load and every plug-in's load action): generous, a first load may be scanned by antivirus.
 pub const LOAD_TIMEOUT: Duration = Duration::from_secs(10);
-/// One plug-in's describe and describeInContext.
-pub const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// One plug-in's describe and describeInContext: 2 s, longer in a compatibility probe.
+pub static DESCRIBE_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(2_000);
+
+pub fn describe_timeout() -> Duration {
+    Duration::from_millis(DESCRIBE_TIMEOUT_MS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// R33c: while Some, hosts start as compatibility probes: told they run in the background, on a hidden desktop of
+/// their own, noting every window a plug-in opens in this file (`main.rs::probe_mode`).
+pub static PROBE_LOG: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// R33c: folders put before PATH for probe hosts, so a plug-in that imports DLLs from its application's own folder can
+/// be loaded for the report (Milan Pro itself adds none).
+pub static PROBE_DLL_DIRS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// One frame (a first render may set up a GPU): 30 s, shorter in the hang test.
 pub static RENDER_TIMEOUT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(30_000);
 
@@ -79,10 +90,20 @@ impl Conn {
         let name = format!(r"\\.\pipe\milan-ofx-{}-{}", std::process::id(), uuid::Uuid::new_v4().simple());
         let mut cmd = Command::new(exe);
         cmd.args(["--pipe", &name]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        if let Some(log) = lock(&PROBE_LOG).as_ref() {
+            cmd.env("MILAN_HOST_PROBE", "1").env("MILAN_HOST_DESKTOP", "milan-ofx-probe").env("MILAN_HOST_LOG", log);
+            let dirs = lock(&PROBE_DLL_DIRS).clone();
+            if !dirs.is_empty() {
+                let path = std::env::join_paths(dirs.into_iter().chain(std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default())).unwrap_or_default();
+                cmd.env("PATH", path);
+            }
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            // No console. (STARTF_USESHOWWINDOW / SW_HIDE is not on stable Rust's Command; the host has no window of its
+            // own, and a probe moves its plug-ins' windows to a hidden desktop.)
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = crate::proc::spawn(&mut cmd).map_err(|e| Fail::Io(format!("the plug-in host failed to start: {e}")))?;

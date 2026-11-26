@@ -32,6 +32,7 @@ Every number below was measured by that run; nothing is estimated.
 - **Scrub drag** (`scrub_drag_follows_the_cursor`): the same clip, the cursor dragged at 2x for 3 s backwards and forwards through `VideoEngine` as the Video Preview drives it (60 Hz); at every UI frame, how far the frame on screen (read from its burnt-in number) is from the cursor.
 - **Reverse playback** (`reverse_playback_shows_every_frame`): the same clip as a reversed event, played at 1x for 10 s against a 30 fps clock as above; a frame counts when the one on screen is exactly the source frame due.
 - **Adjust Size and Quality for Optimal Playback** (`bench_adaptive_quality` in `src/engine/mod.rs`): the four layers at Best (Full), 1920x1080, looped for 60 s through the Video Preview itself (`decode::Preview`, a 60 Hz UI loop against the wall clock), with the option off and then on.
+- **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle's invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in's own work.
 
 ## Playback, Preview (960x540)
 
@@ -97,6 +98,17 @@ Every number below was measured by that run; nothing is estimated.
 
 With the option on, the preview steps down one rung (Full, Half, Quarter, then Draft) when more than 2 % of the frames in 2 s drop, and back up after 10 s without a drop; a step up that drops again doubles the wait before the next try (up to 160 s). Every change restarts the decoders at the new size, and on GOP-250 media that costs a stall of about 1-3 s, which the totals above include. The render never uses these settings.
 
+## OFX plug-in host round trip (1920x1080, one frame)
+
+Measured by running `bench_ofx_roundtrip_1080p` alone at commit ad217d7 plus the R33b/R33c changes (the other tables are from the earlier full run).
+
+| Path | ms per frame |
+|---|---|
+| OFX invert, 32-bit float (what Spektrafilm gets) | 10.70 ms |
+| OFX invert, 8-bit | 4.22 ms |
+| Built-in invert, all cores | 4.22 ms |
+| Hosting overhead (float round trip less the built-in) | 6.48 ms |
+
 ## Gates (`docs/FEATURE_PLAN.md` 1.9)
 
 | Gate | Measured | Result |
@@ -106,3 +118,4 @@ With the option on, the preview steps down one rung (Full, Half, Quarter, then D
 | Scrub p95 under 150 ms on proxies (R20) | 98.9 ms (original GOP-250 media: 177.4 ms) | pass |
 | Random seeks frame-exact on long-GOP media (R20) | 200 of 200 on the source and 200 of 200 on its proxy | pass |
 | Reverse playback at 1x shows at least 95 % of frames (R20) | 100.0 % | pass |
+| OFX host round trip at 1080p under 10 ms overhead per frame (R33b) | 6.48 ms | pass |

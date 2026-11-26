@@ -25,6 +25,9 @@ struct Instance {
     used: u64,
     /// The parameters' run-time state as last reported to Milan.
     state: Vec<ParamState>,
+    /// Parameters the plug-in wrote during a render action: its own working values (the render scale it saw, a
+    /// cache key...), which Milan neither stores nor sets back, or every frame would change the project.
+    owned: std::collections::HashSet<String>,
 }
 
 pub struct Host {
@@ -43,6 +46,7 @@ pub struct Host {
 impl Host {
     pub fn new() -> Self {
         let props: &'static Props = Box::leak(suites::host_props());
+        suites::HOST_PROPS.store(props.handle() as u64, std::sync::atomic::Ordering::Relaxed);
         let host = Box::into_raw(Box::new(OfxHost { host: props.handle(), fetchSuite: suites::fetch_suite }));
         Self { host, lib: None, plugins: Vec::new(), loaded: Vec::new(), descs: HashMap::new(), instances: HashMap::new(), shm: None, clock: 0 }
     }
@@ -68,7 +72,8 @@ impl Host {
         const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 8;
         let lib = match unsafe { libloading::os::windows::Library::load_with_flags(binary, if binary.is_absolute() { LOAD_WITH_ALTERED_SEARCH_PATH } else { 0 }) } {
             Ok(l) => libloading::Library::from(l),
-            Err(e) => return Reply::Error(format!("cannot load {}: {e}", binary.display())),
+            // The OS error names the cause (a DLL it imports is missing, a wrong architecture...).
+            Err(e) => return Reply::Error(format!("cannot load {}: {e}{}", binary.display(), std::error::Error::source(&e).map_or(String::new(), |s| format!(": {s}")))),
         };
         unsafe {
             // OFX 1.5: a binary may take the host before it lists its plug-ins.
@@ -275,7 +280,7 @@ impl Host {
             // The host animates a transition's own parameter: no instance changed for it.
             if context == TRANSITION && k == "Transition" {
                 set_param(e, k, v);
-            } else if r.restored && inst.sent.get(k).is_some_and(|s| s != v) {
+            } else if r.restored && !inst.owned.contains(k) && inst.sent.get(k).is_some_and(|s| s != v) {
                 set_param(e, k, v);
                 inst.sent.insert(k.clone(), v.clone());
                 changed.push(k.clone());
@@ -321,7 +326,7 @@ impl Host {
                 label: Some(p.props.s0(kOfxPropLabel)).filter(|l| !l.is_empty()).unwrap_or_else(|| p.name.clone()),
                 options: p.props.get_s(kOfxParamPropChoiceOption),
             });
-            if class(&p.kind) == Class::None || (context == TRANSITION && p.name == "Transition") {
+            if class(&p.kind) == Class::None || (context == TRANSITION && p.name == "Transition") || inst.owned.contains(&p.name) {
                 continue;
             }
             let mut v = lock(&p.value);
@@ -355,8 +360,17 @@ impl Host {
         lock(&e.frame).live = true;
         // SAFETY: the output region is inside the mapping (checked by `with_instance`).
         unsafe { std::ptr::write_bytes(f.dst as *mut u8, 0, f.w as usize * f.h as usize * f.depth.bpp()) };
+        let before: Vec<(String, PVal)> = lock(&e.params.params).iter().filter(|p| class(&p.kind) != Class::None).map(|p| (p.name.clone(), stored(&p.kind, &lock(&p.value)))).collect();
         let res = self.render_actions(r.index, e, f, begin);
         lock(&e.frame).live = false;
+        // What the render wrote stays the plug-in's own: not reported as an edit, not set back next frame.
+        for p in lock(&e.params.params).iter().filter(|p| class(&p.kind) != Class::None) {
+            let cur = stored(&p.kind, &lock(&p.value));
+            if before.iter().any(|b| b.0 == p.name && b.1 != cur) {
+                inst.owned.insert(p.name.clone());
+                inst.sent.insert(p.name.clone(), cur);
+            }
+        }
         res
     }
 
@@ -474,7 +488,7 @@ impl Host {
         let sent = lock(&e.params.params).iter().filter(|p| class(&p.kind) != Class::None).map(|p| (p.name.clone(), stored(&p.kind, &lock(&p.value)))).collect();
         // The parameters as described: a change the plug-in made while creating the instance is reported.
         let state = self.descs.get(&index).map(|d| d.2.params.iter().map(|p| ParamState { name: p.name.clone(), secret: p.secret, enabled: p.enabled, label: p.label.clone(), options: p.options.clone() }).collect()).unwrap_or_default();
-        Ok(Instance { effect: e, sent, began: None, used: self.clock, state })
+        Ok(Instance { effect: e, sent, began: None, used: self.clock, state, owned: Default::default() })
     }
 
     fn end_sequence(&self, index: u32, e: &Effect, scale: f64) {
@@ -566,6 +580,8 @@ fn param_desc(name: &str, kind: &str, p: &Props) -> ParamDesc {
         text: if class(kind) == Class::Str { p.s0(kOfxParamPropDefault) } else { String::new() },
         min: lo,
         max: hi,
+        vmin: first(kOfxParamPropMin).filter(|v| v.is_finite()).unwrap_or(-f64::MAX),
+        vmax: first(kOfxParamPropMax).filter(|v| v.is_finite()).unwrap_or(f64::MAX),
         options: p.get_s(kOfxParamPropChoiceOption),
         parent: p.s0(kOfxParamPropParent),
         secret: p.i0(kOfxParamPropSecret).unwrap_or(0) != 0,
@@ -582,10 +598,86 @@ pub fn status(s: OfxStatus) -> String {
     n.get(s as usize).map_or_else(|| format!("status {s}"), |n| format!("kOfxStat{n}"))
 }
 
-/// The plug-in's last messages, as a suffix for an error.
+/// The plug-in's last messages, and the suites it asked for in vain, as a suffix for an error.
 fn messages() -> String {
     let m = std::mem::take(&mut *lock(&suites::MESSAGES));
-    if m.is_empty() { String::new() } else { format!(": {}", m.join("; ")) }
+    let m = if m.is_empty() { String::new() } else { format!(": {}", m.join("; ")) };
+    format!("{m}{}", suites::refused())
+}
+
+/// Can this process make a Vulkan device (as Spektrafilm does, compute only, no window)? The loader is taken from the
+/// system; each device's name and whether it has a compute queue are reported.
+pub fn gpu_check() -> Reply {
+    use std::ffi::c_void;
+    use std::os::raw::c_char;
+    #[repr(C)]
+    struct AppInfo {
+        s_type: u32,
+        next: *const c_void,
+        app: *const c_char,
+        app_version: u32,
+        engine: *const c_char,
+        engine_version: u32,
+        api: u32,
+    }
+    #[repr(C)]
+    struct CreateInfo {
+        s_type: u32,
+        next: *const c_void,
+        flags: u32,
+        app: *const AppInfo,
+        layers: u32,
+        layer_names: *const *const c_char,
+        exts: u32,
+        ext_names: *const *const c_char,
+    }
+    type CreateInstance = unsafe extern "system" fn(*const CreateInfo, *const c_void, *mut *mut c_void) -> i32;
+    type Destroy = unsafe extern "system" fn(*mut c_void, *const c_void);
+    type Enumerate = unsafe extern "system" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
+    type Props = unsafe extern "system" fn(*mut c_void, *mut u8);
+    type Queues = unsafe extern "system" fn(*mut c_void, *mut u32, *mut [u32; 6]);
+    // SAFETY: the Vulkan loader's documented entry points, called with zeroed buffers larger than their structures
+    // (VkPhysicalDeviceProperties is under 1 KB; a queue family property is 24 bytes).
+    unsafe {
+        let lib = match libloading::Library::new("vulkan-1.dll") {
+            Ok(l) => l,
+            Err(e) => return Reply::Error(format!("no Vulkan loader (vulkan-1.dll): {e}")),
+        };
+        let (Ok(create), Ok(destroy), Ok(enumerate), Ok(props), Ok(queues)) = (
+            lib.get::<CreateInstance>(b"vkCreateInstance\0"),
+            lib.get::<Destroy>(b"vkDestroyInstance\0"),
+            lib.get::<Enumerate>(b"vkEnumeratePhysicalDevices\0"),
+            lib.get::<Props>(b"vkGetPhysicalDeviceProperties\0"),
+            lib.get::<Queues>(b"vkGetPhysicalDeviceQueueFamilyProperties\0"),
+        ) else {
+            return Reply::Error("the Vulkan loader lacks its entry points".into());
+        };
+        let app = AppInfo { s_type: 0, next: std::ptr::null(), app: c"Milan Pro plug-in host".as_ptr(), app_version: 1, engine: c"Milan Pro".as_ptr(), engine_version: 1, api: (1 << 22) | (1 << 12) };
+        let info = CreateInfo { s_type: 1, next: std::ptr::null(), flags: 0, app: &app, layers: 0, layer_names: std::ptr::null(), exts: 0, ext_names: std::ptr::null() };
+        let mut inst = std::ptr::null_mut();
+        let r = create(&info, std::ptr::null(), &mut inst);
+        if r != 0 {
+            return Reply::Error(format!("vkCreateInstance failed with VkResult {r}"));
+        }
+        let mut n = 0u32;
+        enumerate(inst, &mut n, std::ptr::null_mut());
+        let mut devs = vec![std::ptr::null_mut(); n as usize];
+        enumerate(inst, &mut n, devs.as_mut_ptr());
+        let mut names = Vec::new();
+        for d in devs.iter().take(n as usize) {
+            let mut buf = vec![0u8; 8192];
+            props(*d, buf.as_mut_ptr());
+            let name = CStr::from_bytes_until_nul(&buf[20..276]).map_or_else(|_| "?".into(), |c| c.to_string_lossy().into_owned());
+            let mut q = 0u32;
+            queues(*d, &mut q, std::ptr::null_mut());
+            let mut fam = vec![[0u32; 6]; q as usize];
+            queues(*d, &mut q, fam.as_mut_ptr());
+            let compute = fam.iter().take(q as usize).any(|f| f[0] & 2 != 0);
+            names.push(format!("{name} ({}compute queue)", if compute { "" } else { "no " }));
+        }
+        destroy(inst, std::ptr::null());
+        Reply::Rendered(Outcome { messages: vec![format!("Vulkan 1.1 instance made; {n} physical device(s): {}", names.join(", "))], ..Default::default() })
+    }
 }
 
 /// Milan's shared memory, mapped.

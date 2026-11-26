@@ -9,6 +9,7 @@
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
+//! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;
@@ -174,6 +175,9 @@ impl Shot {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
+        }
+        if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
+            eprintln!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
         }
         if busy || !sized {
             self.quiet_since = None;

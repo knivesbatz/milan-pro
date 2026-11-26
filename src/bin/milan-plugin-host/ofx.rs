@@ -164,6 +164,15 @@ pub struct OfxMessageSuiteV2 {
     pub clearPersistentMessage: unsafe extern "C" fn(*mut c_void) -> OfxStatus,
 }
 
+/// The interact (overlay) suite's shape: Milan Pro offers a stub (no overlays), so a plug-in that fetches it in its
+/// describe action (HitFilm) can go on.
+#[repr(C)]
+pub struct OfxInteractSuiteV1 {
+    pub interactSwapBuffers: unsafe extern "C" fn(*mut c_void) -> OfxStatus,
+    pub interactRedraw: unsafe extern "C" fn(*mut c_void) -> OfxStatus,
+    pub interactGetPropertySet: unsafe extern "C" fn(*mut c_void, *mut OfxPropertySetHandle) -> OfxStatus,
+}
+
 #[repr(C)]
 pub struct OfxProgressSuiteV1 {
     pub progressStart: unsafe extern "C" fn(*mut c_void, *const c_char) -> OfxStatus,

@@ -362,7 +362,14 @@ fn components(kind: &str) -> usize {
     }
 }
 
-/// A finite slider range around the default (OFX ranges are often ±DBL_MAX).
+/// A parameter's hard range as 32-bit floats (what `plugins::eval` keeps a value within).
+fn hard(vmin: f64, vmax: f64) -> (f32, f32) {
+    let f = |v: f64| v.clamp(-f32::MAX as f64, f32::MAX as f64) as f32;
+    let (lo, hi) = (f(vmin), f(vmax));
+    (lo, if hi > lo { hi } else { lo + 1.0 })
+}
+
+/// A finite slider range around the default (OFX display ranges are often ±DBL_MAX).
 fn range(min: f64, max: f64, default: f64) -> (f32, f32) {
     let ok = |v: f64| v.is_finite() && v.abs() < 1e7;
     let lo = if ok(min) { min } else { default.min(0.0) - 100.0 };
@@ -393,13 +400,15 @@ pub fn specs(d: &PluginDesc) -> Vec<ParamSpec> {
         let d0 = |i: usize| p.default.get(i).copied().unwrap_or(0.0);
         let mut add = |key: String, name: String, kind: ParamKind| out.push(ParamSpec { key: leak(&key), name: leak(&name), section: "", kind });
         match p.kind.as_str() {
+            // The spec's range is the hard one (a value a plug-in or preset sets stays as it is); the slider shows
+            // the display range (`Row::Param::slider`).
             "Double" | "Integer" => {
-                let (min, max) = range(p.min, p.max, d0(0));
+                let (min, max) = hard(p.vmin, p.vmax);
                 add(p.name.clone(), p.label.clone(), ParamKind::Float { min, max, default: d0(0) as f32 });
             }
             "Double2D" | "Double3D" | "Integer2D" | "Integer3D" => {
                 for (i, (k, l)) in XYZ.iter().enumerate().take(components(&p.kind)) {
-                    let (min, max) = range(p.min, p.max, d0(i));
+                    let (min, max) = hard(p.vmin, p.vmax);
                     add(format!("{}.{k}", p.name), format!("{} {l}", p.label), ParamKind::Float { min, max, default: d0(i) as f32 });
                 }
             }
@@ -499,8 +508,9 @@ pub enum Row {
     Group { name: String, label: String, depth: usize, open: bool },
     /// A page's name (only when the plug-in has several pages).
     Heading(String),
-    /// Control `index` of the plug-in's `PluginInfo::params`; `options`: a choice's options now.
-    Param { index: usize, label: String, depth: usize, enabled: bool, options: Option<Vec<String>>, hint: String },
+    /// Control `index` of the plug-in's `PluginInfo::params`; `options`: a choice's options now; `slider`: a number's
+    /// display range (the value may lie outside it: the slider widens to it).
+    Param { index: usize, label: String, depth: usize, enabled: bool, options: Option<Vec<String>>, slider: Option<(f32, f32)>, hint: String },
     Button { name: String, label: String, depth: usize, enabled: bool, hint: String },
 }
 
@@ -559,7 +569,9 @@ fn layout_of(p: &Plugin, st: Option<&HashMap<String, ParamState>>, open: &dyn Fn
                 // A Custom parameter has a value and no control.
                 for (k, &index) in idx.iter().enumerate().filter(|_| d.kind != "Custom") {
                     let label = if idx.len() > 1 { format!("{label} {}", XYZ[k.min(2)].1) } else { label.clone() };
-                    out.push(Row::Param { index, label, depth, enabled, options: (d.kind == "Choice").then(|| options.clone()), hint: d.hint.clone() });
+                    let number = matches!(d.kind.as_str(), "Double" | "Integer" | "Double2D" | "Double3D" | "Integer2D" | "Integer3D");
+                    let slider = number.then(|| range(d.min, d.max, d.default.get(k).copied().unwrap_or(0.0)));
+                    out.push(Row::Param { index, label, depth, enabled, options: (d.kind == "Choice").then(|| options.clone()), slider, hint: d.hint.clone() });
                 }
             }
         }
@@ -765,39 +777,102 @@ fn half_to_f32(h: u16) -> f32 {
     if h & 0x8000 != 0 { -v } else { v }
 }
 
+/// Threads for converting a picture of `n` pixels: one for small ones, else up to 8 (a 1080p float frame is 33 MB).
+fn convert_threads(n: usize) -> usize {
+    if n < 65_536 { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8) }
+}
+
 /// `img` into OFX rows (bottom first) at `depth`, premultiplied as Milan keeps it.
 fn put(img: &ColorImage, depth: Depth, out: &mut [u8]) {
     let [w, h] = img.size;
     let row = w * bpp(depth);
-    for (y, src) in img.pixels.chunks_exact(w).enumerate() {
-        let dst = &mut out[(h - 1 - y) * row..][..row];
-        match depth {
-            Depth::Byte => dst.copy_from_slice(bytemuck::cast_slice(src)),
-            Depth::Short => dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&(v as u16 * 257).to_le_bytes())),
-            Depth::Half => dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&f32_to_half(v as f32 / 255.0).to_le_bytes())),
-            Depth::Float => dst.chunks_exact_mut(4).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&(v as f32 / 255.0).to_le_bytes())),
+    static TO_F32: LazyLock<[f32; 256]> = LazyLock::new(|| std::array::from_fn(|i| i as f32 / 255.0));
+    static TO_HALF: LazyLock<[u16; 256]> = LazyLock::new(|| std::array::from_fn(|i| f32_to_half(i as f32 / 255.0)));
+    let one = |src: &[Color32], dst: &mut [u8]| match depth {
+        Depth::Byte => dst.copy_from_slice(bytemuck::cast_slice(src)),
+        Depth::Short => {
+            for (d, v) in dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())) {
+                d.copy_from_slice(&(v as u16 * 257).to_le_bytes());
+            }
         }
-    }
+        Depth::Half => {
+            for (d, v) in dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())) {
+                d.copy_from_slice(&TO_HALF[v as usize].to_le_bytes());
+            }
+        }
+        Depth::Float => {
+            for (d, v) in dst.chunks_exact_mut(4).zip(src.iter().flat_map(|s| s.to_array())) {
+                d.copy_from_slice(&TO_F32[v as usize].to_le_bytes());
+            }
+        }
+    };
+    let k = convert_threads(w * h);
+    let per = h.div_ceil(k).max(1);
+    let px = &img.pixels;
+    std::thread::scope(|sc| {
+        // Byte rows in chunks, bottom first: byte row b holds picture row h - 1 - b.
+        for (c, chunk) in out[..row * h].chunks_mut(per * row).enumerate() {
+            let mut work = move || {
+                for (b, dst) in (c * per..).zip(chunk.chunks_exact_mut(row)) {
+                    one(&px[(h - 1 - b) * w..][..w], dst);
+                }
+            };
+            if k > 1 {
+                sc.spawn(work);
+            } else {
+                work();
+            }
+        }
+    });
 }
 
 /// OFX rows back into `img`, clamped to valid premultiplied colours.
 fn take(out: &[u8], depth: Depth, img: &mut ColorImage) {
     let [w, h] = img.size;
-    let row = w * bpp(depth);
-    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    for (y, dst) in img.pixels.chunks_exact_mut(w).enumerate() {
-        let src = &out[(h - 1 - y) * row..][..row];
-        for (x, d) in dst.iter_mut().enumerate() {
-            let c: [u8; 4] = std::array::from_fn(|c| match depth {
-                Depth::Byte => src[x * 4 + c],
-                Depth::Short => ((u16::from_le_bytes([src[x * 8 + c * 2], src[x * 8 + c * 2 + 1]]) as u32 + 128) / 257) as u8,
-                Depth::Half => q(half_to_f32(u16::from_le_bytes([src[x * 8 + c * 2], src[x * 8 + c * 2 + 1]]))),
-                Depth::Float => q(f32::from_le_bytes(src[x * 16 + c * 4..x * 16 + c * 4 + 4].try_into().expect("4 bytes"))),
-            });
-            let a = c[3];
-            *d = Color32::from_rgba_premultiplied(c[0].min(a), c[1].min(a), c[2].min(a), a);
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let mut px = std::mem::take(&mut img.pixels);
+    let bytes = &out[..w * h * bpp(depth)];
+    let k = convert_threads(w * h);
+    let per = h.div_ceil(k).max(1);
+    std::thread::scope(|sc| {
+        for (c, chunk) in px.chunks_mut(per * w).enumerate() {
+            let y0 = c * per;
+            let mut work = move || {
+                for (y, dst) in (y0..).zip(chunk.chunks_exact_mut(w)) {
+                    let src = &bytes[(h - 1 - y) * w * bpp(depth)..][..w * bpp(depth)];
+                    let mut c = [0u8; 4];
+                    for (x, d) in dst.iter_mut().enumerate() {
+                        match depth {
+                            Depth::Byte => c.copy_from_slice(&src[x * 4..x * 4 + 4]),
+                            Depth::Short => {
+                                for (i, v) in c.iter_mut().enumerate() {
+                                    *v = ((u16::from_le_bytes([src[x * 8 + i * 2], src[x * 8 + i * 2 + 1]]) as u32 + 128) / 257) as u8;
+                                }
+                            }
+                            Depth::Half => {
+                                for (i, v) in c.iter_mut().enumerate() {
+                                    *v = q(half_to_f32(u16::from_le_bytes([src[x * 8 + i * 2], src[x * 8 + i * 2 + 1]])));
+                                }
+                            }
+                            Depth::Float => {
+                                for (i, v) in c.iter_mut().enumerate() {
+                                    *v = q(f32::from_le_bytes(src[x * 16 + i * 4..x * 16 + i * 4 + 4].try_into().expect("4 bytes")));
+                                }
+                            }
+                        }
+                        let a = c[3];
+                        *d = Color32::from_rgba_premultiplied(c[0].min(a), c[1].min(a), c[2].min(a), a);
+                    }
+                }
+            };
+            if k > 1 {
+                sc.spawn(work);
+            } else {
+                work();
+            }
         }
-    }
+    });
+    img.pixels = px;
 }
 
 /// Take in what a reply says the plug-in did: its parameters' state, its own edits, its messages.

@@ -20,6 +20,8 @@ pub enum Req {
     Button(Render, String),
     /// Testing aid: the host panics (the R32 crash test without a plug-in).
     Panic,
+    /// Can this process make a Vulkan device of its own (as Spektrafilm does)? The answer is in `Outcome::messages`.
+    GpuCheck,
     Quit,
 }
 
@@ -165,10 +167,16 @@ pub struct ParamDesc {
     pub default: Vec<f64>,
     #[serde(default)]
     pub text: String,
+    /// The display range (kOfxParamPropDisplayMin/Max, else Min/Max): the slider's.
     #[serde(default)]
     pub min: f64,
     #[serde(default)]
     pub max: f64,
+    /// The hard range (kOfxParamPropMin/Max): values are kept within it, never within the display range.
+    #[serde(default = "lowest")]
+    pub vmin: f64,
+    #[serde(default = "highest")]
+    pub vmax: f64,
     #[serde(default)]
     pub options: Vec<String>,
     #[serde(default)]
@@ -192,6 +200,14 @@ pub struct ParamDesc {
 
 fn yes() -> bool {
     true
+}
+
+fn lowest() -> f64 {
+    -f64::MAX
+}
+
+fn highest() -> f64 {
+    f64::MAX
 }
 
 impl Default for ParamDesc {

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use super::client::{Conn, DESCRIBE_TIMEOUT};
+use super::client::{Conn, describe_timeout};
 use super::proto::{PluginDesc, Reply, Req};
 
 /// Milan Pro's OFX preferences: the folders searched besides the standard ones, and the plug-ins turned off (by id).
@@ -143,7 +143,7 @@ pub fn describe_binary(binary: &Path) -> Binary {
         }
     };
     for i in 0..n {
-        match conn.request(&Req::Describe { index: i }, Some(DESCRIBE_TIMEOUT)) {
+        match conn.request(&Req::Describe { index: i }, Some(describe_timeout())) {
             Ok(Reply::Described(d)) => out.plugins.push(*d),
             Ok(Reply::Error(e)) => out.errors.push((Some(i), e)),
             Ok(r) => out.errors.push((Some(i), format!("unexpected reply {r:?}"))),

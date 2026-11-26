@@ -2574,6 +2574,30 @@ impl MeridianApp {
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
             "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
+            // R33a review: the FX window on the focus video event with an OFX plug-in from MILAN_OFX_DIR (the test
+            // bundle's "Test Params", else the first OFX video FX) and a missing OFX plug-in behind it (the bypassed
+            // notice and the timeline badge).
+            // R33a review: the FX window on the focus video event as it is ("fx-event"), or with a missing OFX plug-in
+            // (the bypassed notice and the timeline badge) and the first OFX video FX of MILAN_OFX_DIR (the test
+            // bundle's "Test Params": groups, hidden and greyed parameters, push buttons) selected ("fx-ofx").
+            "fx-event" | "fx-ofx" | "fx-badge" => {
+                if let Some(id) = self.focus_clip(true) {
+                    let target = edit::FxTarget::Event(id);
+                    if what != "fx-event" {
+                        let gone = crate::project::Fx { plugin: "ofx:com.example.gone@1".into(), ..crate::engine::plugins::new_fx(crate::engine::plugins::find("milan.fx.invert").expect("built in"), None) };
+                        edit::add_fx(&mut self.project, &target, gone);
+                        let ofx: Vec<_> = crate::engine::plugins::catalog(crate::engine::plugins::PluginKind::VideoFx).filter(|i| i.id.starts_with(crate::engine::ofx::PREFIX)).collect();
+                        if let Some(info) = ofx.iter().find(|i| i.name.contains("Params")).or(ofx.first()) {
+                            edit::add_fx(&mut self.project, &target, crate::engine::plugins::new_fx(info, None));
+                        }
+                        // The harness never has a modified project (a modified one would not close for the screenshot).
+                        self.project.modified = false;
+                    }
+                    if what != "fx-badge" {
+                        self.open_fx(target);
+                    }
+                }
+            }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),
             // R14: the Preview Device page; a floating Trimmer and the external preview (off-screen in the harness).

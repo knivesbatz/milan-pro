@@ -12,7 +12,7 @@ use super::theme::{self, UiLook};
 use super::toolbar::tool_button;
 use super::widgets;
 
-const COLS: [(&str, f32); 5] = [("Name", 230.0), ("Type", 70.0), ("Grouping", 160.0), ("Status", 80.0), ("Version", 70.0)];
+const COLS: [(&str, f32); 5] = [("Name", 230.0), ("Type", 96.0), ("Grouping", 160.0), ("Status", 80.0), ("Version", 70.0)];
 const CHECK_W: f32 = 22.0;
 
 pub struct PluginManager {

@@ -505,7 +505,7 @@ impl FxWindow {
                             ofx::Row::Group { name, label, depth, open } => {
                                 ui.horizontal(|ui| {
                                     ui.add_space(*depth as f32 * 12.0);
-                                    let r = ui.add(Label::new(RichText::new(format!("{} {label}", if *open { "▾" } else { "▸" })).strong()).sense(Sense::click()));
+                                    let r = ui.add(Label::new(RichText::new(format!("{} {label}", if *open { "-" } else { "+" })).strong()).sense(Sense::click()));
                                     if r.clicked() {
                                         toggle = Some(name.clone());
                                     }
@@ -520,7 +520,7 @@ impl FxWindow {
                                     }
                                 });
                             }
-                            ofx::Row::Param { index, label, depth, enabled, options, hint } => {
+                            ofx::Row::Param { index, label, depth, enabled, options, slider, hint } => {
                                 let (i, spec) = (*index, &info.params[*index]);
                                 let changed = e.vals[i].1 != d.vals[i].1;
                                 ui.horizontal(|ui| {
@@ -528,10 +528,16 @@ impl FxWindow {
                                     if name_cell(ui, label, changed, *depth, hint) && editable {
                                         reset(fx, spec.key, spec.kind);
                                     }
+                                    // The slider spans the plug-in's display range, widened to a value outside it (a
+                                    // long seed); the value itself is only kept within the hard range (`spec.kind`).
+                                    let kind = match (spec.kind, slider, &e.vals[i].1) {
+                                        (ParamKind::Float { default, .. }, Some((lo, hi)), Val::F(v)) => ParamKind::Float { min: lo.min(*v), max: hi.max(*v), default },
+                                        (k, ..) => k,
+                                    };
                                     ui.add_enabled_ui(editable && *enabled, |ui| match (options, &e.vals[i].1) {
                                         (Some(o), Val::F(v)) => live_choice(ui, fx, spec.key, o, *v, key_at, fps),
                                         _ => {
-                                            param(ui, fx, spec.key, spec.kind, &e.vals[i].1, key_at, fps, &mut self.fonts);
+                                            param(ui, fx, spec.key, kind, &e.vals[i].1, key_at, fps, &mut self.fonts);
                                         }
                                     });
                                 });
