@@ -1,32 +1,40 @@
-//! R21a: the GPU compositor, on its own wgpu device (Vulkan) beside the UI's glow painter. `Gpu::compose` gives the
-//! frame `composite::compose` gives, within 2 in 255 per channel: draws (affine, bilinear or nearest), opacity, Source
-//! Alpha and the integer blend modes are bit-exact (the passes in `composite.wgsl` use the CPU's integer maths), the
-//! float blend modes (any mode over a transparent backdrop, Hard Light to Luminosity, Cut, Multiply (Mask)) round
-//! within 2. The CPU compositor stays the reference, and does what the GPU does not yet:
+//! R21a: the GPU compositor, a `Compositor` on wgpu (Vulkan). `GpuCompositor::compose` gives the frame
+//! `composite::compose` gives, within 2 in 255 per channel (bit-exact on every plan tried so far): draws (affine,
+//! bilinear or nearest), opacity, Source Alpha and the integer blend modes use the CPU's own integer maths (the passes in
+//! `composite.wgsl` work on `Rgba8Uint` textures), and the float blend modes (any mode over a transparent backdrop, Hard
+//! Light to Luminosity, Cut, Multiply (Mask)) replay the CPU's f32 operations in order, with division and square root
+//! corrected to the rounded result. The CPU compositor stays the reference, and does what the GPU does not yet:
 //! - per piece, made by the CPU code and uploaded: decoding, resampling, event FX, masks, nested timelines,
 //!   transitions with a kind (`composite::transition_image`), and a whole track with track FX, 3D Track Motion or
-//!   2D Shadow / Glow (`composite::layer_image`);
-//! - per layer, read back and done on the CPU: Adjustment Tracks / Events, Custom compositors and Hard Mix (a step
-//!   whose threshold the GPU's division may cross differently); after the frame: the Video Output FX and the bus's
-//!   Fade to Color (`composite::finish`), and motion blur's mean (`Worker::frame`);
-//! - per frame: a frame or picture larger than the adapter's textures, or any GPU error;
+//!   2D Shadow / Glow (`composite::layer_image`); R21b moves FX, transitions and generators here;
+//! - per layer, read back and done on the CPU: Adjustment Tracks / Events and Custom compositors; after the frame: the
+//!   Video Output FX and the bus's Fade to Color (`composite::finish`), and motion blur's mean (`Worker::frame`);
+//! - per frame: a frame or picture larger than the device's textures, or any GPU error;
 //! - always: no Vulkan adapter, Preferences › Video › GPU acceleration Off, or a lost device.
 //!
-//! Renders use the same compositor as the preview (`Worker::frame`), so a render shows what was previewed.
+//! The device: with the `wgpu` feature the UI paints through wgpu on the adapter Preferences › Video chose
+//! (`wgpu_options`), and the compositor shares that device (`attach`), so a frame can stay on the GPU for the
+//! preview (R21c). A preference naming another adapter, or the `glow` painter, opens the adapter on its own device
+//! (`choose`), and every frame is read back. Renders use the same compositor as the preview (`Worker::frame`), so a
+//! render shows what was previewed.
 use eframe::egui::{Color32, ColorImage};
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use wgpu::util::DeviceExt;
-use crate::engine::composite::{self, Affine, Sources};
+use crate::engine::composite::{self, Affine, Compositor, Sources};
 use crate::engine::plan::{FramePlan, Item, TrackPlan};
 use crate::project::Composite;
 
 /// Preferences › Video › GPU acceleration: this value turns it off ("" is automatic, anything else an adapter's name).
 pub const OFF: &str = "Off";
 
+/// The passes' textures: integers, so the CPU's 8-bit maths replays exactly.
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 /// Textures kept between frames for reuse, at most this many bytes.
 const POOL_BYTES: usize = 256 << 20;
+
+/// R21c: frames read back from the GPU into `ColorImage`s so far (a zero-copy preview adds none).
+pub static READBACKS: AtomicU64 = AtomicU64::new(0);
 
 struct Tex {
     tex: wgpu::Texture,
@@ -38,10 +46,12 @@ struct Tex {
     cpu: bool,
 }
 
-pub struct Gpu {
+pub struct GpuCompositor {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pub name: String,
+    /// The UI paints with this device too (`attach`): a frame can stay on it for the preview.
+    pub shared: bool,
     layout: wgpu::BindGroupLayout,
     draw: wgpu::RenderPipeline,
     blend: wgpu::RenderPipeline,
@@ -71,16 +81,33 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
-impl Gpu {
-    fn open(adapter: &wgpu::Adapter) -> Result<Gpu, String> {
+/// The limits the compositor asks of a device: the adapter's own (frames up to its largest texture).
+fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
+    wgpu::DeviceDescriptor { label: Some("milan"), required_features: wgpu::Features::empty(), required_limits: adapter.limits(), memory_hints: wgpu::MemoryHints::MemoryUsage }
+}
+
+impl GpuCompositor {
+    /// A device of its own on `adapter`.
+    fn open(adapter: &wgpu::Adapter) -> Result<GpuCompositor, String> {
         let name = adapter.get_info().name;
-        let desc = wgpu::DeviceDescriptor { label: Some("milan-compositor"), required_features: wgpu::Features::empty(), required_limits: adapter.limits(), memory_hints: wgpu::MemoryHints::MemoryUsage };
-        let (device, queue) = block_on(adapter.request_device(&desc, None)).map_err(|e| format!("{name} could not be opened ({e})"))?;
+        let (device, queue) = block_on(adapter.request_device(&device_descriptor(adapter), None)).map_err(|e| format!("{name} could not be opened ({e})"))?;
+        Self::on(name, device, queue, false)
+    }
+
+    /// The compositor on `device` (`shared`: the UI's).
+    fn on(name: String, device: wgpu::Device, queue: wgpu::Queue, shared: bool) -> Result<GpuCompositor, String> {
         let broken = Arc::new(AtomicBool::new(false));
         let b = broken.clone();
-        device.on_uncaptured_error(Box::new(move |_| b.store(true, Relaxed)));
-        let b = broken.clone();
-        device.set_device_lost_callback(move |_, _| b.store(true, Relaxed));
+        // The UI's own errors (there are none) would land here too: they are still reported, and the compositor steps
+        // aside either way.
+        device.on_uncaptured_error(Box::new(move |e| {
+            eprintln!("wgpu: {e}");
+            b.store(true, Relaxed);
+        }));
+        if !shared {
+            let b = broken.clone();
+            device.set_device_lost_callback(move |_, _| b.store(true, Relaxed));
+        }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("composite.wgsl"), source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()) });
         let stage = wgpu::ShaderStages::FRAGMENT;
         let tex = |binding| wgpu::BindGroupLayoutEntry { binding, visibility: stage, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None };
@@ -116,33 +143,11 @@ impl Gpu {
         if broken.load(Relaxed) {
             return Err(format!("{name} could not build the compositor's shaders"));
         }
-        Ok(Gpu { device, queue, name, layout, draw, blend, fade, none, no_rows, max, broken, pool: Mutex::new(Vec::new()) })
+        Ok(GpuCompositor { device, queue, name, shared, layout, draw, blend, fade, none, no_rows, max, broken, pool: Mutex::new(Vec::new()) })
     }
 
     pub fn broken(&self) -> bool {
         self.broken.load(Relaxed)
-    }
-
-    /// `composite::compose` on the GPU; None when this frame cannot be done here (the caller composes it on the CPU).
-    pub fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage> {
-        if self.broken() || w == 0 || h == 0 || w.max(h) > self.max as usize {
-            return None;
-        }
-        let run = || {
-            let enc = self.device.create_command_encoder(&Default::default());
-            let mut f = Frame { g: self, enc, w: w as u32, h: h as u32, spare: Vec::new(), written: Vec::new(), bilinear, k };
-            let img = f.frame(fp, src);
-            f.done();
-            img
-        };
-        // A panic inside wgpu (a driver gone bad) must not take the editor down: the CPU takes over.
-        let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
-            self.broken.store(true, Relaxed);
-            None
-        });
-        let mut img = img.filter(|_| !self.broken())?;
-        composite::finish(&mut img, fp, k);
-        Some(img)
     }
 
     /// A `w` x `h` texture from the pool, or a new one.
@@ -166,6 +171,34 @@ impl Gpu {
     }
 }
 
+impl Compositor for GpuCompositor {
+    fn name(&self) -> String {
+        format!("{} (Vulkan)", self.name)
+    }
+
+    /// `composite::compose` on the GPU; None when this frame cannot be done here (the caller composes it on the CPU).
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage> {
+        if self.broken() || w == 0 || h == 0 || w.max(h) > self.max as usize {
+            return None;
+        }
+        let run = || {
+            let enc = self.device.create_command_encoder(&Default::default());
+            let mut f = Frame { g: self, enc, w: w as u32, h: h as u32, spare: Vec::new(), written: Vec::new(), bilinear, k };
+            let img = f.frame(fp, src);
+            f.done();
+            img
+        };
+        // A panic inside wgpu (a driver gone bad) must not take the editor down: the CPU takes over.
+        let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
+            self.broken.store(true, Relaxed);
+            None
+        });
+        let mut img = img.filter(|_| !self.broken())?;
+        composite::finish(&mut img, fp, k);
+        Some(img)
+    }
+}
+
 fn new_tex(device: &wgpu::Device, w: u32, h: u32, cpu: bool) -> Tex {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: None,
@@ -183,7 +216,7 @@ fn new_tex(device: &wgpu::Device, w: u32, h: u32, cpu: bool) -> Tex {
 
 /// One frame being composed: its passes are recorded into `enc`, submitted at a readback.
 struct Frame<'a> {
-    g: &'a Gpu,
+    g: &'a GpuCompositor,
     enc: wgpu::CommandEncoder,
     w: u32,
     h: u32,
@@ -341,9 +374,9 @@ impl Frame<'_> {
         self.pass(pipe, dst, Some(s), p, &rows)
     }
 
-    /// `composite::blend` of `layer` onto `dst` (Custom and Hard Mix on the CPU).
+    /// `composite::blend` of `layer` onto `dst` (Custom on the CPU).
     fn blend(&mut self, dst: Tex, layer: Tex, mode: Composite, opacity: f32, group: bool) -> Option<Tex> {
-        if matches!(mode, Composite::Custom | Composite::HardMix) {
+        if mode == Composite::Custom {
             let (l, k) = (self.read(&layer)?, self.k);
             self.give(layer);
             return self.on_cpu(dst, |d| composite::blend(d, &l, mode, opacity, None, group, k));
@@ -403,7 +436,7 @@ impl Frame<'_> {
         out
     }
 
-    /// `img` as a texture; None when the adapter cannot hold it.
+    /// `img` as a texture; None when the device cannot hold it.
     fn upload(&mut self, img: &ColorImage) -> Option<Tex> {
         let [w, h] = img.size.map(|v| v as u32);
         if w == 0 || h == 0 || w.max(h) > self.g.max {
@@ -418,6 +451,7 @@ impl Frame<'_> {
     /// Run the recorded passes and read `t` back.
     fn read(&mut self, t: &Tex) -> Option<ColorImage> {
         let g = self.g;
+        READBACKS.fetch_add(1, Relaxed);
         let row = (t.w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buf = g.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: row as u64 * t.h as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None };
@@ -469,24 +503,109 @@ struct State {
     choice: Option<String>,
     /// Counts choices, so a slow detection of an older one does not land.
     round: u64,
+    /// The Vulkan adapters' names (None while they are being listed).
     adapters: Option<Vec<String>>,
-    gpu: Option<Arc<Gpu>>,
+    /// The compositor on the UI's own device (`attach`), when the UI paints through wgpu on Vulkan.
+    shared: Option<Arc<GpuCompositor>>,
+    gpu: Option<Arc<GpuCompositor>>,
     why: String,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { choice: None, round: 0, adapters: None, gpu: None, why: String::new() });
+static STATE: Mutex<State> = Mutex::new(State { choice: None, round: 0, adapters: None, shared: None, gpu: None, why: String::new() });
 
-/// GPU acceleration as Preferences › Video chooses it: "" the best adapter, `OFF`, or an adapter's name. The adapters
-/// are listed and the device opened on a background thread (a missing or old driver only means the CPU composes);
-/// until then, and whenever there is no GPU, `current` is None.
+/// Automatic: a discrete GPU, else an integrated one, else a virtual one; never a software rasteriser, which is
+/// slower than the CPU compositor.
+fn automatic<'a>(adapters: impl Iterator<Item = &'a wgpu::Adapter> + Clone) -> Option<&'a wgpu::Adapter> {
+    use wgpu::DeviceType::*;
+    [DiscreteGpu, IntegratedGpu, VirtualGpu].into_iter().find_map(|t| adapters.clone().find(|a| a.get_info().device_type == t))
+}
+
+fn vulkan(a: &&wgpu::Adapter) -> bool {
+    a.get_info().backend == wgpu::Backend::Vulkan
+}
+
+fn names<'a>(adapters: impl Iterator<Item = &'a wgpu::Adapter>) -> Vec<String> {
+    let mut names: Vec<String> = adapters.map(|a| a.get_info().name).collect();
+    names.dedup();
+    names
+}
+
+/// eframe's wgpu painter set up for Milan Pro: Vulkan (OpenGL only where there is none), on the adapter Preferences ›
+/// Video chose (`choice`, as `choose` reads it) when it exists, else the automatic one; the compositor's limits.
+#[cfg(feature = "wgpu")]
+pub fn wgpu_options(choice: &str) -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+    let choice = choice.to_string();
+    let select = move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| -> Result<wgpu::Adapter, String> {
+        let fits = |a: &&wgpu::Adapter| surface.is_none_or(|s| !s.get_capabilities(a).formats.is_empty());
+        let usable = adapters.iter().filter(fits);
+        let named = usable.clone().filter(vulkan).find(|a| a.get_info().name == choice);
+        named
+            .or_else(|| automatic(usable.clone().filter(vulkan)))
+            .or_else(|| automatic(usable.clone()))
+            .or_else(|| usable.clone().next())
+            .cloned()
+            .ok_or_else(|| "No graphics adapter can show the window".to_string())
+    };
+    WgpuConfiguration {
+        wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
+            instance_descriptor: wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN | wgpu::Backends::GL, ..Default::default() },
+            native_adapter_selector: Some(Arc::new(select)),
+            device_descriptor: Arc::new(|adapter| {
+                if adapter.get_info().backend == wgpu::Backend::Vulkan {
+                    device_descriptor(adapter)
+                } else {
+                    wgpu::DeviceDescriptor { label: Some("milan"), required_features: wgpu::Features::empty(), required_limits: wgpu::Limits { max_texture_dimension_2d: 8192, ..wgpu::Limits::downlevel_webgl2_defaults() }, memory_hints: Default::default() }
+                }
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// The UI paints through wgpu: its adapters are the list Preferences › Video offers, and when its device is a Vulkan
+/// one the compositor runs on it (a frame can then stay on the GPU for the preview, R21c). Before `choose`.
+#[cfg(feature = "wgpu")]
+pub fn attach(rs: &eframe::egui_wgpu::RenderState) {
+    let info = rs.adapter.get_info();
+    let mut s = lock(&STATE);
+    s.adapters = Some(names(rs.available_adapters.iter().filter(vulkan)));
+    if info.backend == wgpu::Backend::Vulkan {
+        match GpuCompositor::on(info.name.clone(), rs.device.clone(), rs.queue.clone(), true) {
+            Ok(g) => s.shared = Some(Arc::new(g)),
+            Err(e) => s.why = format!("{e}: compositing on the CPU."),
+        }
+    } else {
+        s.why = format!("The window is drawn through {:?} on {}, which has no Vulkan: compositing on the CPU.", info.backend, info.name);
+    }
+}
+
+/// GPU acceleration as Preferences › Video chooses it: "" the best adapter, `OFF`, or an adapter's name. The UI's own
+/// device serves when it is that adapter (`attach`); another adapter is opened on its own device on a background
+/// thread (a missing or old driver only means the CPU composes). Until then, and whenever there is no GPU, `current`
+/// is None.
 pub fn choose(choice: &str) {
     let round = {
         let mut s = lock(&STATE);
         if s.choice.as_deref() == Some(choice) && !s.gpu.as_ref().is_some_and(|g| g.broken()) {
             return;
         }
-        (s.choice, s.gpu, s.why) = (Some(choice.to_string()), None, "Looking for graphics adapters...".into());
+        s.choice = Some(choice.to_string());
         s.round += 1;
+        if choice == OFF {
+            (s.gpu, s.why) = (None, "GPU acceleration is off: compositing on the CPU.".into());
+            return;
+        }
+        if let Some(g) = s.shared.clone().filter(|g| !g.broken() && (choice.is_empty() || g.name == choice)) {
+            (s.gpu, s.why) = (Some(g), String::new());
+            return;
+        }
+        if s.shared.is_none() && s.adapters.is_some() && choice.is_empty() && s.why.contains("no Vulkan") {
+            s.gpu = None; // the window's adapter has no Vulkan: nothing else to look for
+            return;
+        }
+        (s.gpu, s.why) = (None, "Looking for graphics adapters...".into());
         s.round
     };
     let choice = choice.to_string();
@@ -494,7 +613,9 @@ pub fn choose(choice: &str) {
         let (names, gpu) = std::panic::catch_unwind(|| detect(&choice)).unwrap_or_else(|_| (Vec::new(), Err("The graphics driver failed".into())));
         let mut s = lock(&STATE);
         if s.round == round {
-            s.adapters = Some(names);
+            if s.adapters.is_none() {
+                s.adapters = Some(names);
+            }
             (s.gpu, s.why) = match gpu {
                 Ok(g) => (Some(Arc::new(g)), String::new()),
                 Err(e) => (None, format!("{e}: compositing on the CPU.")),
@@ -503,22 +624,18 @@ pub fn choose(choice: &str) {
     });
 }
 
-/// (adapter names, the device for `choice`).
-fn detect(choice: &str) -> (Vec<String>, Result<Gpu, String>) {
+/// (the Vulkan adapters' names, a device of its own for `choice`).
+fn detect(choice: &str) -> (Vec<String>, Result<GpuCompositor, String>) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
     let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN);
-    let mut names: Vec<String> = adapters.iter().map(|a| a.get_info().name).collect();
-    names.dedup();
-    // Automatic: a discrete GPU, else an integrated one, else a virtual one; never a software rasteriser, which is
-    // slower than the CPU compositor.
-    use wgpu::DeviceType::*;
+    let names = names(adapters.iter());
     let picked = match choice {
         OFF => return (names, Err("GPU acceleration is off".into())),
-        "" => [DiscreteGpu, IntegratedGpu, VirtualGpu].into_iter().find_map(|t| adapters.iter().find(|a| a.get_info().device_type == t)),
+        "" => automatic(adapters.iter()),
         name => adapters.iter().find(|a| a.get_info().name == name),
     };
     let gpu = match picked {
-        Some(a) => Gpu::open(a),
+        Some(a) => GpuCompositor::open(a),
         None if choice.is_empty() => Err("No Vulkan graphics adapter was found".into()),
         None => Err(format!("{choice} was not found")),
     };
@@ -526,12 +643,20 @@ fn detect(choice: &str) -> (Vec<String>, Result<Gpu, String>) {
 }
 
 /// The GPU compositor to use now, if any.
-pub fn current() -> Option<Arc<Gpu>> {
+pub fn current() -> Option<Arc<GpuCompositor>> {
     #[cfg(test)]
     if std::env::var_os("MILAN_TEST_GPU").is_some() {
         return test_gpu();
     }
     lock(&STATE).gpu.clone().filter(|g| !g.broken())
+}
+
+/// The compositor frames go through now: the GPU when Preferences › Video chose one and it works, else the CPU.
+pub fn compositor() -> Arc<dyn Compositor> {
+    match current() {
+        Some(g) => g,
+        None => Arc::new(composite::CpuCompositor),
+    }
 }
 
 /// The adapters found (None while they are being listed).
@@ -544,38 +669,33 @@ pub fn status() -> String {
     let s = lock(&STATE);
     match &s.gpu {
         Some(g) if g.broken() => format!("{} stopped working: compositing on the CPU until Milan Pro restarts.", g.name),
-        Some(g) => format!("Compositing on {} (Vulkan).", g.name),
+        Some(g) if g.shared => format!("Compositing on {}, the display's own device.", g.name()),
+        Some(g) => format!("Compositing on {}, read back for the display.", g.name()),
         None => s.why.clone(),
     }
 }
 
-/// Tests: the automatic adapter, opened once; None (the GPU tests skip) when there is none.
+/// Tests: the automatic adapter on a device of its own, opened once; None (the GPU tests skip) when there is none.
 #[cfg(test)]
-pub fn test_gpu() -> Option<Arc<Gpu>> {
-    static G: std::sync::OnceLock<Option<Arc<Gpu>>> = std::sync::OnceLock::new();
+pub fn test_gpu() -> Option<Arc<GpuCompositor>> {
+    static G: std::sync::OnceLock<Option<Arc<GpuCompositor>>> = std::sync::OnceLock::new();
     G.get_or_init(|| detect("").1.ok().map(Arc::new)).clone()
-}
-
-/// Benches: compose on `g` (None: the CPU) whatever the preference says.
-#[cfg(test)]
-pub fn force(g: Option<Arc<Gpu>>) {
-    let mut s = lock(&STATE);
-    (s.choice, s.gpu) = (Some("test".into()), g);
 }
 
 /// Benches: the CPU, then the GPU when there is one (its name with `_` for spaces, for `tools/bench.ps1`).
 #[cfg(test)]
-pub fn compositors() -> Vec<(&'static str, Option<Arc<Gpu>>)> {
+pub fn compositors() -> Vec<(&'static str, Arc<dyn Compositor>)> {
     let g = test_gpu();
     match &g {
         Some(g) => println!("BENCH adapter name={}", g.name.replace(' ', "_")),
         None => println!("SKIPPED the GPU runs: no Vulkan graphics adapter"),
     }
-    std::iter::once(("cpu", None)).chain(g.map(|g| ("gpu", Some(g)))).collect()
+    let cpu: Arc<dyn Compositor> = Arc::new(composite::CpuCompositor);
+    std::iter::once(("cpu", cpu)).chain(g.map(|g| ("gpu", g as Arc<dyn Compositor>))).collect()
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::engine::composite::tests::{event, layer, media};
     use crate::engine::plan::{self, MediaRef, SrcAt};
@@ -585,7 +705,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     /// The GPU, or None with a clear message (run with --nocapture to see it): the test then checks nothing.
-    fn gpu_or_skip(test: &str) -> Option<Arc<Gpu>> {
+    pub(crate) fn gpu_or_skip(test: &str) -> Option<Arc<GpuCompositor>> {
         let g = test_gpu();
         if g.is_none() {
             println!("SKIPPED {test}: no Vulkan graphics adapter, so GPU-CPU parity was not checked");
@@ -593,7 +713,7 @@ mod tests {
         g
     }
 
-    fn hash(mut x: u32) -> u32 {
+    pub(crate) fn hash(mut x: u32) -> u32 {
         x ^= x >> 16;
         x = x.wrapping_mul(0x7feb_352d);
         x ^= x >> 15;
@@ -601,13 +721,13 @@ mod tests {
         x ^ (x >> 16)
     }
 
-    struct Rng(u32);
+    pub(crate) struct Rng(pub u32);
     impl Rng {
-        fn f(&mut self) -> f32 {
+        pub fn f(&mut self) -> f32 {
             self.0 = hash(self.0.wrapping_add(0x9e37_79b9));
             (self.0 >> 8) as f32 / (1 << 24) as f32
         }
-        fn pick<T: Copy>(&mut self, v: &[T]) -> T {
+        pub fn pick<T: Copy>(&mut self, v: &[T]) -> T {
             v[(self.f() * v.len() as f32) as usize % v.len()]
         }
     }
@@ -615,7 +735,7 @@ mod tests {
     /// Pictures by media id at any size, made once: gradients with noise (so sampling has to be exact); ids starting
     /// with "a" have alpha (clear, half, opaque and random pixels), premultiplied.
     #[derive(Default)]
-    struct Noise(HashMap<(Arc<str>, u32, u32), Arc<ColorImage>>);
+    pub(crate) struct Noise(HashMap<(Arc<str>, u32, u32), Arc<ColorImage>>);
     impl Sources for Noise {
         fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>> {
             let id = s.m.id.clone();
@@ -636,22 +756,27 @@ mod tests {
     }
 
     /// (largest per-channel difference, channels that differ).
-    fn diff(a: &ColorImage, b: &ColorImage) -> (u8, usize) {
+    pub(crate) fn diff(a: &ColorImage, b: &ColorImage) -> (u8, usize) {
         assert_eq!(a.size, b.size);
         a.pixels.iter().zip(&b.pixels).flat_map(|(x, y)| x.to_array().into_iter().zip(y.to_array())).fold((0, 0), |(m, n), (x, y)| (m.max(x.abs_diff(y)), n + (x != y) as usize))
     }
 
-    /// `fp` on both, at most 2 in 255 apart.
-    fn check(g: &Gpu, fp: &FramePlan, [w, h]: [usize; 2], bilinear: bool, what: &str) -> (u8, usize) {
+    /// `fp` on both, at most `within` in 255 apart.
+    pub(crate) fn check_within(g: &GpuCompositor, fp: &FramePlan, [w, h]: [usize; 2], bilinear: bool, within: u8, what: &str) -> (u8, usize) {
         let mut src = Noise::default();
         let cpu = composite::compose(fp, &mut src, w, h, bilinear, 3);
         let gpu = g.compose(fp, &mut src, w, h, bilinear, 3).unwrap_or_else(|| panic!("{what}: the GPU did not compose it"));
         let d = diff(&cpu, &gpu);
-        assert!(d.0 <= 2, "{what}: the GPU frame differs from the CPU's by up to {} ({} channels)\n{fp:?}", d.0, d.1);
+        assert!(d.0 <= within, "{what}: the GPU frame differs from the CPU's by up to {} ({} channels)\n{fp:?}", d.0, d.1);
         d
     }
 
-    fn ev(r: &mut Rng, id: String) -> plan::EventPlan {
+    /// `fp` on both, at most 2 in 255 apart.
+    fn check(g: &GpuCompositor, fp: &FramePlan, size: [usize; 2], bilinear: bool, what: &str) -> (u8, usize) {
+        check_within(g, fp, size, bilinear, 2, what)
+    }
+
+    pub(crate) fn ev(r: &mut Rng, id: String) -> plan::EventPlan {
         let (mw, mh) = r.pick(&[(1920, 1080), (640, 480), (1280, 720), (480, 270)]);
         let m = Arc::new(MediaRef { id: id.into(), ..(*media(mw, mh)).clone() });
         let pc = if r.f() < 0.5 {
@@ -700,6 +825,13 @@ mod tests {
         FramePlan { alpha: r.f() < 0.2, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers }
     }
 
+    /// (plan, frame size, bilinear) number `n` of the random sequence the parity tests walk.
+    fn plan_n(r: &mut Rng) -> (FramePlan, [usize; 2], bool) {
+        let fp = random_frame(r);
+        let size = r.pick(&[[480, 270], [320, 180], [257, 143]]);
+        (fp, size, r.f() < 0.8)
+    }
+
     /// R21a acceptance: 300 random plans of 1-4 layers in every blend mode (all but Custom), random opacity, Track Motion
     /// (scale, rotation, offset), Pan/Crop (flips, rotation), event alpha, sources with alpha, bilinear and nearest,
     /// dissolves, Fade to Color, compositing groups with Parent Motion, transparent backgrounds: the GPU's frame is
@@ -710,17 +842,32 @@ mod tests {
         let mut r = Rng(1);
         let (mut worst, mut exact) = (0, 0);
         for n in 0..300 {
-            let fp = random_frame(&mut r);
-            let size = r.pick(&[[480, 270], [320, 180], [257, 143]]);
-            let (d, _) = check(&g, &fp, size, r.f() < 0.8, &format!("plan {n}"));
+            let (fp, size, bilinear) = plan_n(&mut r);
+            let (d, _) = check(&g, &fp, size, bilinear, &format!("plan {n}"));
             (worst, exact) = (worst.max(d), exact + (d == 0) as usize);
         }
         println!("gpu_matches_cpu_on_random_plans on {}: largest difference {worst}, {exact} of 300 frames bit-exact", g.name);
     }
 
+    /// The same over 3000 plans, with a histogram of the largest difference per frame (the 300 above are its start).
+    /// `cargo test --release -- --ignored --nocapture gpu_parity_histogram`
+    #[test]
+    #[ignore]
+    fn gpu_parity_histogram() {
+        let Some(g) = gpu_or_skip("gpu_parity_histogram") else { return };
+        let mut r = Rng(1);
+        let mut hist = [0usize; 256];
+        for n in 0..3000 {
+            let (fp, size, bilinear) = plan_n(&mut r);
+            let (d, _) = check(&g, &fp, size, bilinear, &format!("plan {n}"));
+            hist[d as usize] += 1;
+        }
+        println!("gpu_parity_histogram on {}: {:?}", g.name, hist.iter().enumerate().filter(|x| *x.1 > 0).collect::<Vec<_>>());
+    }
+
     /// What the GPU leaves to the CPU gives the CPU's frame too: track FX, 3D Track Motion, 2D Shadow and Glow, a
-    /// transition with a kind, Adjustment Tracks and Events, a Custom compositor, Hard Mix, Video Output FX and the bus's
-    /// Fade to Color; a frame larger than the adapter's textures is left to the CPU.
+    /// transition with a kind, Adjustment Tracks and Events, a Custom compositor, Video Output FX and the bus's Fade
+    /// to Color; a frame larger than the device's textures is left to the CPU.
     #[test]
     fn gpu_matches_cpu_with_its_cpu_pieces() {
         let Some(g) = gpu_or_skip("gpu_matches_cpu_with_its_cpu_pieces") else { return };
@@ -734,7 +881,7 @@ mod tests {
             cases.push((name, FramePlan { alpha: false, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![bg, top] }));
         };
         let mut l = one(&mut r, Composite::Screen);
-        l.fx = vec![fx("milan.fx.invert")];
+        l.fx = vec![fx("milan.fx.cookie_cutter")];
         frame("track FX", &mut r, l);
         let mut l = one(&mut r, Composite::ThreeD);
         l.persp = plan::motion3d(Motion { ry: 40.0, z: 0.2, ..Default::default() }, (1920.0, 1080.0));
@@ -753,11 +900,6 @@ mod tests {
         let mut l = one(&mut r, Composite::Custom);
         l.compositor = Some(fx("milan.comp.displacement"));
         frame("Custom compositor", &mut r, l);
-        let l = one(&mut r, Composite::HardMix);
-        frame("Hard Mix", &mut r, l);
-        let mut l = one(&mut r, Composite::SourceAlpha);
-        l.parent = Some((Composite::HardMix, Affine::scale(1.0, 1.0)));
-        frame("Hard Mix parent", &mut r, l);
         let l = one(&mut r, Composite::Multiply);
         frame("output FX and fade", &mut r, l);
         let last = cases.len() - 1;
@@ -766,24 +908,15 @@ mod tests {
             assert_eq!(check(&g, fp, [320, 180], true, name), (0, 0), "{name} is made by the CPU code, exactly");
         }
         let big = g.max as usize + 1;
-        assert!(g.compose(&cases[0].1, &mut Noise::default(), big, 2, true, 1).is_none(), "too large for the adapter: the CPU composes it");
+        assert!(g.compose(&cases[0].1, &mut Noise::default(), big, 2, true, 1).is_none(), "too large for the device: the CPU composes it");
     }
 
+    /// The float emulation `composite.wgsl` builds the float blend modes on: its division and square root give the
+    /// correctly rounded f32 result (the GPU's own are approximate), and a product added to a sum is not fused.
     #[test]
-    #[ignore]
-    fn probe_float() {
-        let g = test_gpu().unwrap();
+    fn gpu_float_ops_round_as_the_cpu() {
+        let Some(g) = gpu_or_skip("gpu_float_ops_round_as_the_cpu") else { return };
         let src = format!("{}\n{}", include_str!("composite.wgsl"), r#"
-fn blend_dbg(d: vec4<u32>, s: vec4<u32>, mode: u32, o: f32) -> vec4<f32> {
-    let dp = unit(d);
-    let su = unit(s);
-    let sp = vec4<f32>(mul(su.r, o), mul(su.g, o), mul(su.b, o), mul(su.a, o));
-    let ab = dp.a;
-    let a = sp.a;
-    let b = clamp(mix_mode(mode, straight(dp, ab), straight(sp, a)), vec3<f32>(0.0), vec3<f32>(1.0));
-    let c = mul3(sp.rgb, 1.0 - ab) + mul3(dp.rgb, 1.0 - a) + mul3(b, mul(a, ab));
-    return vec4<f32>(b.b, c.b, sp.b, f32(quantize(vec4<f32>(c, a + ab - mul(a, ab))).b));
-}
 fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; return x ^ (x >> 16u); }
 @fragment fn fs_probe(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     let q = vec2<u32>(pos.xy);
@@ -791,117 +924,44 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
     let a = f32(h(i) & 0xffffffu) * (1.0 / 16777216.0);
     let b = f32(h(i ^ 0x5bd1e995u) & 0xffffffu) * (1.0 / 16777216.0) + 0.001;
     var r: f32;
-    switch p.k.y { case 0u: { r = div(a, b); } case 1u: { r = root(a); } case 2u: { r = mul(a, b) + a; } case 3u: { r = a / b; } default: {
-        let dp = unit(vec4<u32>(50u, 88u, 56u, 221u) + p.k.w);
-        let su = unit(vec4<u32>(55u, 105u, 83u, 127u) + p.k.w);
-        let o = p.f.x;
-        let sp = vec4<f32>(mul(su.r, o), mul(su.g, o), mul(su.b, o), mul(su.a, o));
-        let ab = dp.a;
-        let aa = sp.a;
-        let cb = straight(dp, ab);
-        let cs = straight(sp, aa);
-        let bb = clamp(mix_mode(22u + p.k.w, cb, cs), vec3<f32>(0.0), vec3<f32>(1.0));
-        let c = mul3(sp.rgb, 1.0 - ab) + mul3(dp.rgb, 1.0 - aa) + mul3(bb, mul(aa, ab));
-        let full = blend_px(vec4<u32>(50u, 88u, 56u, 221u) + p.k.w, vec4<u32>(55u, 105u, 83u, 127u) + p.k.w, 22u + p.k.w, o, false);
-        let v1 = blend_px(vec4<u32>(50u, 88u, 56u, 221u), vec4<u32>(55u, 105u, 83u, 127u), 22u, 179.0 / 255.0, false);
-        let v2 = blend_px(vec4<u32>(50u, 88u, 56u, 221u) + p.k.w, vec4<u32>(55u, 105u, 83u, 127u) + p.k.w, 22u, o, false);
-        let ab2 = dp.a;
-        let a2 = sp.a;
-        let c2 = mul3(sp.rgb, 1.0 - ab2) + mul3(dp.rgb, 1.0 - a2) + mul3(bb, mul(a2, ab2));
-        let al = a2 + ab2 - mul(a2, ab2);
-        let v3 = quantize(vec4<f32>(c2, al));
-        let dbg = blend_dbg(vec4<u32>(50u, 88u, 56u, 221u) + p.k.w, vec4<u32>(55u, 105u, 83u, 127u) + p.k.w, 22u, o);
-        let vals = array<f32, 8>(dbg.x, dbg.y, dbg.z, dbg.w, bb.b, c.b, mul(c.b, 255.0), f32(full.b));
-        r = vals[min(i, 7u)];
-    } }
+    switch p.k.y { case 0u: { r = div(a, b); } case 1u: { r = root(a); } case 2u: { r = add(mul(a, b), a); } default: { r = a / b; } }
     let u = bitcast<u32>(r);
     return vec4<u32>(u & 255u, (u >> 8u) & 255u, (u >> 16u) & 255u, u >> 24u);
 }"#);
         let shader = g.device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(src.into()) });
         let pl = g.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&g.layout], push_constant_ranges: &[] });
         let pipe = g.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None, layout: Some(&pl),
+            label: None,
+            layout: Some(&pl),
             vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_probe"), targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })], compilation_options: Default::default() }),
-            primitive: Default::default(), depth_stencil: None, multisample: Default::default(), multiview: None, cache: None,
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview: None,
+            cache: None,
         });
-        for op in 0..5u32 {
+        let mut native_div_differs = 0;
+        for op in 0..4u32 {
             let enc = g.device.create_command_encoder(&Default::default());
             let mut f = Frame { g: &g, enc, w: 256, h: 256, spare: Vec::new(), written: Vec::new(), bilinear: true, k: 1 };
             let t = f.clear(Color32::TRANSPARENT);
-            let out = f.pass(&pipe, t, None, params([0; 4], [0; 4], [0; 4], [0, op, 0, 0], [179.0 / 255.0, 0.0, 0.0, 0.0]), &[]);
+            let out = f.pass(&pipe, t, None, params([0; 4], [0; 4], [0; 4], [0, op, 0, 0], [0.0; 4]), &[]);
             let img = f.read(&out).unwrap();
-            if op == 4 {
-                println!("gpu: {:?}", (0..8).map(|i| f32::from_bits(u32::from_le_bytes(img.pixels[i].to_array()))).collect::<Vec<_>>());
-            }
+            f.done();
             let mut bad = 0;
             for i in 0..65536u32 {
                 let a = (hash(i) & 0xffffff) as f32 * (1.0 / 16777216.0);
                 let b = (hash(i ^ 0x5bd1e995) & 0xffffff) as f32 * (1.0 / 16777216.0) + 0.001;
-                let want = match op { 0 | 3 => a / b, 1 => a.sqrt(), 2 => a * b + a, _ => a.mul_add(b, -(a * b)) };
-                let got = f32::from_bits(u32::from_le_bytes(img.pixels[i as usize].to_array()));
-                if got != want { bad += 1; if bad < 3 { println!("op {op}: {a} {b}: got {got} want {want}"); } }
+                let want = match op { 0 | 3 => a / b, 1 => a.sqrt(), _ => a * b + a };
+                bad += (f32::from_bits(u32::from_le_bytes(img.pixels[i as usize].to_array())) != want) as usize;
             }
-            println!("op {op}: {bad} of 65536 differ");
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn probe_modes() {
-        {
-            let (d, s, o) = ([50f32, 88.0, 56.0, 221.0], [55f32, 105.0, 83.0, 127.0], (0.7f32 * 255.0).round() / 255.0);
-            let dp = d.map(|v| v / 255.0);
-            let sp = s.map(|v| v / 255.0 * o);
-            let (ab, a) = (dp[3], sp[3]);
-            let st = |c: [f32; 4], a: f32| [c[0] / a, c[1] / a, c[2] / a];
-            let lum = |c: [f32; 3]| 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
-            let (cb, cs) = (st(dp, ab), st(sp, a));
-            let dl = lum(cs) - lum(cb);
-            let c: [f32; 3] = cb.map(|v| v + dl);
-            let l = lum(c);
-            let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
-            println!("cb {cb:?} cs {cs:?} c {c:?} l {l} n {n} x {x}");
-            let b = c[2];
-            let v = sp[2] * (1.0 - ab) + dp[2] * (1.0 - a) + a * ab * b.clamp(0.0, 1.0);
-            println!("v*255 = {:.9} (f64 {:.9})", v * 255.0, v as f64 * 255.0);
-            println!("cpu: {:?}", [cb[2], cs[2], lum(cs), lum(cb), b.clamp(0.0, 1.0), v, v * 255.0, sp[2]]);
-        }
-        let g = test_gpu().unwrap();
-        let mut r = Rng(1);
-        let mut hist = [0usize; 256];
-        for _ in 0..300 {
-            let fp = random_frame(&mut r);
-            let size = r.pick(&[[480, 270], [320, 180], [257, 143]]);
-            let bil = r.f() < 0.8;
-            let mut src = Noise::default();
-            let cpu = composite::compose(&fp, &mut src, size[0], size[1], bil, 3);
-            let gpu = g.compose(&fp, &mut src, size[0], size[1], bil, 3).unwrap();
-            let d = diff(&cpu, &gpu);
-            hist[d.0 as usize] += 1;
-            if d.0 > 2 {
-                println!("over 2: {d:?} modes {:?}", fp.layers.iter().map(|l| (l.mode, l.child, l.parent.map(|p| p.0), l.fade.is_some(), fp.alpha)).collect::<Vec<_>>());
+            match op {
+                3 => native_div_differs = bad,
+                _ => assert_eq!(bad, 0, "op {op} ({}): {bad} of 65536 results are not the CPU's", ["div", "sqrt", "mul then add"][op as usize]),
             }
         }
-        println!("hist {:?}", hist.iter().enumerate().filter(|x| *x.1 > 0).collect::<Vec<_>>());
-        for alpha in [false, true] {
-            for mode in MODES {
-                let mut r = Rng(3);
-                let bg = layer(vec![Item::Event(ev(&mut r, "a0".into()))], Composite::SourceAlpha, 1.0, Motion::default());
-                let top = layer(vec![Item::Event(ev(&mut r, "a1".into()))], mode, 0.7, Motion::default());
-                let fp = FramePlan { alpha, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![bg, top] };
-                let mut src = Noise::default();
-                let cpu = composite::compose(&fp, &mut src, 480, 270, true, 3);
-                let gpu = g.compose(&fp, &mut src, 480, 270, true, 3).unwrap();
-                println!("alpha={alpha} {mode:?}: {:?}", diff(&cpu, &gpu));
-                if let Some(i) = (0..cpu.pixels.len()).find(|&i| cpu.pixels[i] != gpu.pixels[i]) {
-                    let fp0 = FramePlan { alpha, fade: None, samples: Vec::new(), out_fx: Vec::new(), layers: vec![layer(vec![Item::Event(ev(&mut Rng(3), "a0".into()))], Composite::SourceAlpha, 1.0, Motion::default())] };
-                    let d = composite::compose(&fp0, &mut src, 480, 270, true, 3).pixels[i];
-                    let s = composite::layer_image(&mut src, &fp.layers[1], [480, 270], true, 3).pixels[i];
-                    println!("  px {i}: d {:?} s {:?} cpu {:?} gpu {:?}", d.to_array(), s.to_array(), cpu.pixels[i].to_array(), gpu.pixels[i].to_array());
-                }
-            }
-        }
+        println!("gpu_float_ops_round_as_the_cpu on {}: the GPU's own division differs from the CPU's in {native_div_differs} of 65536 cases; the emulation in none", g.name);
     }
 
     /// Off lists the adapters but opens none, so the CPU composes.
@@ -910,28 +970,31 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
         if std::env::var_os("MILAN_TEST_GPU").is_some() {
             return; // the whole run is forced onto the GPU
         }
-        choose(OFF);
+        choose("probe"); // an adapter that does not exist: the list is made on the detection thread
         let t = Instant::now();
         while adapters().is_none() && t.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(adapters().is_some(), "the adapters are listed");
+        choose(OFF);
         assert!(current().is_none() && status().contains("off"), "{}", status());
+        assert_eq!(compositor().name(), "CPU");
     }
 
     /// R21a: four 1920x1080 layers composed on the CPU and on the GPU from decoded pictures (upload and readback
-    /// included): full frames at Level 50 % (the playback benches' project), then picture-in-pictures turned 15°.
+    /// included): full frames at Level 50 % (the playback benches' project), then picture-in-pictures turned 15°;
+    /// R21c: the same at 3840x2160 (a 4K project at Best (Full)).
     /// `cargo test --release -- --ignored --nocapture bench_compose`
     #[test]
     #[ignore]
     fn bench_compose() {
         let mo = |i: usize, pip: bool| if pip { Motion { w: 0.45, h: 0.45, x: (i % 2) as f32 * 0.5 - 0.25, y: (i / 2) as f32 * 0.5 - 0.25, rot: 15.0, ..Default::default() } } else { Motion::default() };
-        let fp = |pip: bool| FramePlan {
+        let fp = |pip: bool, (mw, mh): (u32, u32)| FramePlan {
             alpha: false,
             fade: None,
             samples: Vec::new(),
             out_fx: Vec::new(),
-            layers: (0..4).map(|i| layer(vec![Item::Event(event(&Arc::new(MediaRef { id: format!("m{i}").into(), ..(*media(1920, 1080)).clone() }), PanCrop::default(), 1.0))], Composite::SourceAlpha, 0.5, mo(i, pip))).collect(),
+            layers: (0..4).map(|i| layer(vec![Item::Event(event(&Arc::new(MediaRef { id: format!("m{i}").into(), ..(*media(mw, mh)).clone() }), PanCrop::default(), 1.0))], Composite::SourceAlpha, 0.5, mo(i, pip))).collect(),
         };
         let ms = |f: &mut dyn FnMut()| {
             f(); // warm: pictures made, textures pooled
@@ -945,15 +1008,12 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
             t.sort_by(f64::total_cmp);
             t[15]
         };
-        for (kind, pip) in [("full", false), ("pip", true)] {
-            let (fp, mut src) = (fp(pip), Noise::default());
-            for (name, g) in compositors() {
+        for (kind, pip, size) in [("full", false, (1920, 1080)), ("pip", true, (1920, 1080)), ("4k", false, (3840, 2160))] {
+            let (fp, mut src) = (fp(pip, size), Noise::default());
+            for (name, c) in compositors() {
                 let k = composite::stripes();
                 let t = ms(&mut || {
-                    let img = match &g {
-                        Some(g) => g.compose(&fp, &mut src, 1920, 1080, true, k).unwrap(),
-                        None => composite::compose(&fp, &mut src, 1920, 1080, true, k),
-                    };
+                    let img = c.compose(&fp, &mut src, size.0 as usize, size.1 as usize, true, k).expect("composed");
                     std::hint::black_box(img);
                 });
                 println!("BENCH compose kind={kind} compositor={name} layers=4 ms={t:.2}");

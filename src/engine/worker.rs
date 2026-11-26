@@ -301,9 +301,9 @@ impl Worker {
         let (wu, hu, bilinear, k) = (w as usize, h as usize, q != Quality::Draft, self.k);
         // R21a: on the GPU when Preferences › Video chose one, renders too (so a render shows what was previewed); a
         // frame the GPU cannot do composes on the CPU.
-        let gpu = crate::engine::gpu::current();
+        let compositor = crate::engine::gpu::compositor();
         let compose = |fp: &plan::FramePlan, live: &mut Live| {
-            gpu.as_ref().and_then(|g| g.compose(fp, live, wu, hu, bilinear, k)).unwrap_or_else(|| {
+            compositor.compose(fp, live, wu, hu, bilinear, k).unwrap_or_else(|| {
                 live.drawn.clear(); // a GPU attempt may have drawn some layers already
                 composite::compose(fp, live, wu, hu, bilinear, k)
             })

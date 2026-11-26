@@ -304,7 +304,12 @@ impl MeridianApp {
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
-        // R21a: the graphics adapters are listed and the compositor's device opened on a background thread.
+        // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
+        // opens the chosen adapter on a background thread; without one the CPU composes.
+        #[cfg(feature = "wgpu")]
+        if let Some(rs) = &cc.wgpu_render_state {
+            crate::engine::gpu::attach(rs);
+        }
         crate::engine::gpu::choose(&prefs.gpu);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
@@ -1185,7 +1190,20 @@ impl eframe::App for MeridianApp {
 
     /// The window layout comes back at the next launch. Only the layout is written, over what is on disk, so
     /// another window's preferences (recent projects) are kept.
+    #[cfg(feature = "glow")]
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.exit();
+    }
+
+    #[cfg(not(feature = "glow"))]
+    fn on_exit(&mut self) {
+        self.exit();
+    }
+}
+
+impl MeridianApp {
+    /// `App::on_exit` (its signature depends on the painter feature).
+    fn exit(&mut self) {
         if self.demo || self.shot.is_some() {
             return;
         }

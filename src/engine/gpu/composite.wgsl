@@ -276,10 +276,11 @@ fn set_lum(c0: vec3<f32>, l0: f32) -> vec3<f32> {
     let l = lum(c);
     let n = min(min(c.r, c.g), c.b);
     let x = max(max(c.r, c.g), c.b);
-    if n < 0.0 {
+    // A grey out of range (l == n or x == l) is left for the caller's clamp, as the CPU leaves it: no 0 / 0.
+    if n < 0.0 && l > n {
         c = clip(c, l, l, sub(l, n));
     }
-    if x > 1.0 {
+    if x > 1.0 && x > l {
         c = clip(c, l, sub(1.0, l), sub(x, l));
     }
     return c;
@@ -336,10 +337,16 @@ fn unit(v: vec4<u32>) -> vec4<f32> {
     return vec4<f32>(div(f.r, 255.0), div(f.g, 255.0), div(f.b, 255.0), div(f.a, 255.0));
 }
 
-// 0..1 to 0..255, rounded half away from zero as Rust's `f32::round` (the values are never negative).
+// Rust's `f32::round` of a non-negative value: to the nearest integer, a half up (WGSL's `round` takes a half to the
+// even integer, and `floor(x + 0.5)` is wrong just under a half, where the sum rounds up to the integer).
+fn round_half_up(x: vec4<f32>) -> vec4<f32> {
+    return select(round(x), floor(x) + 1.0, fract(x) == vec4<f32>(0.5));
+}
+
+// 0..1 to 0..255, rounded as the CPU's `(v.clamp(0, 1) * 255).round()`.
 fn quantize(c: vec4<f32>) -> vec4<u32> {
     let v = clamp(c, vec4<f32>(0.0), vec4<f32>(1.0));
-    return vec4<u32>(floor(vec4<f32>(add(mul(v.r, 255.0), 0.5), add(mul(v.g, 255.0), 0.5), add(mul(v.b, 255.0), 0.5), add(mul(v.a, 255.0), 0.5))));
+    return vec4<u32>(round_half_up(vec4<f32>(mul(v.r, 255.0), mul(v.g, 255.0), mul(v.b, 255.0), mul(v.a, 255.0))));
 }
 
 // `composite::blend_px`: the W3C general formula, any backdrop alpha.
@@ -413,5 +420,5 @@ fn fs_fade(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     let x = vec4<f32>(d);
     let to = vec4<f32>(c) - x;
     let v = vec4<f32>(add(x.r, mul(to.r, t)), add(x.g, mul(to.g, t)), add(x.b, mul(to.b, t)), add(x.a, mul(to.a, t)));
-    return vec4<u32>(floor(vec4<f32>(add(v.r, 0.5), add(v.g, 0.5), add(v.b, 0.5), add(v.a, 0.5))));
+    return vec4<u32>(round_half_up(v));
 }

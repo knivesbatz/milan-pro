@@ -6,8 +6,17 @@ description = "Professional nonlinear video editor inspired by VEGAS Pro"
 license = "MIT"
 authors = ["MeridianNLE Contributors"]
 
+# R21a: the UI's painter. `wgpu` (default) paints through wgpu on Vulkan and shares its device with the GPU
+# compositor (`src/engine/gpu`), so a preview frame never leaves the GPU (R21c). `glow` keeps eframe's OpenGL
+# painter: the compositor then opens its own device and reads every frame back. `--no-default-features --features glow`.
+[features]
+default = ["wgpu"]
+wgpu = ["eframe/wgpu"]
+glow = ["eframe/glow"]
+
 [dependencies]
-eframe = "0.31"
+# eframe's own defaults less its `glow` painter, which is a feature of this crate (above).
+eframe = { version = "0.31", default-features = false, features = ["accesskit", "default_fonts", "wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.15"
@@ -23,8 +32,8 @@ sha2 = "0.10"
 bytemuck = "1"
 # src/engine/generate.rs: Titles & Text glyph outlines. Already in Cargo.lock (via epaint).
 ab_glyph = "0.2"
-# R21a: src/engine/gpu, the GPU compositor on Vulkan. Already in Cargo.lock (via eframe's optional wgpu renderer); the
-# default dx12 feature would add gpu-allocator, which is not, so only the Vulkan (and GL, unused) backends are built.
+# R21a: src/engine/gpu, the GPU compositor on Vulkan. The version eframe's wgpu painter uses; the default dx12
+# feature would add gpu-allocator, which is not in Cargo.lock, so only the Vulkan (and GL, unused) backends are built.
 wgpu = { version = "24.0.5", default-features = false, features = ["wgsl"] }
 
 # milan-plugin-host.exe loads OFX plug-in binaries (ISC). Already in Cargo.lock (via glutin and others); MilanPro.exe

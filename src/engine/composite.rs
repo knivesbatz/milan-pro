@@ -63,6 +63,29 @@ pub trait Sources {
     fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>>;
 }
 
+/// R21a: what composes a frame plan into a picture: this module's code (`CpuCompositor`, the reference) or the GPU
+/// (`gpu::GpuCompositor`), which gives the same picture within 2 in 255 and leaves to the CPU what it does not do.
+pub trait Compositor: Send + Sync {
+    /// `compose`: frame `fp` at `w` x `h`; None when this compositor cannot make this frame (the caller then uses the
+    /// CPU, which composes every frame).
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage>;
+    /// For the Preferences and the benches.
+    fn name(&self) -> String;
+}
+
+/// The CPU compositor: `compose`, on `k` row stripes.
+pub struct CpuCompositor;
+
+impl Compositor for CpuCompositor {
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage> {
+        Some(compose(fp, src, w, h, bilinear, k))
+    }
+
+    fn name(&self) -> String {
+        "CPU".into()
+    }
+}
+
 /// round(x * y / 255) for x, y in 0..=255.
 #[inline]
 pub fn mul255(x: u32, y: u32) -> u32 {
@@ -277,13 +300,14 @@ fn lum(c: [f32; 3]) -> f32 {
     0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
 }
 
-/// W3C SetLum (with ClipColor).
+/// W3C SetLum (with ClipColor). A grey out of range (its channels all equal, so `l - n` or `x - l` is 0) is left
+/// for the caller's clamp: the division would make a NaN, which `as u8` turned black (R21a: the GPU does the same).
 fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
     let d = l - lum(c);
     let c = c.map(|v| v + d);
     let l = lum(c);
     let (n, x) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
-    c.map(|v| if n < 0.0 { l + (v - l) * l / (l - n) } else { v }).map(|v| if x > 1.0 { l + (v - l) * (1.0 - l) / (x - l) } else { v })
+    c.map(|v| if n < 0.0 && l > n { l + (v - l) * l / (l - n) } else { v }).map(|v| if x > 1.0 && x > l { l + (v - l) * (1.0 - l) / (x - l) } else { v })
 }
 
 fn sat(c: [f32; 3]) -> f32 {
