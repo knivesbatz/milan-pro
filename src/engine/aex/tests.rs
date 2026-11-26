@@ -303,6 +303,26 @@ fn a_plugin_that_crashes_in_global_setup_is_contained() {
 /// iterate_generic, abort and progress, a refused suite); its picture equals the Rust reference of the same steps.
 #[test]
 #[ignore]
+fn aex_callbacks_match_a_rust_reference() {
+    registered();
+    let src = opaque(3);
+    let out = run(&new_fx(CALLBACKS), &src, 0.0);
+    assert!(ofx::failure(CALLBACKS).is_none(), "{:?}", ofx::failure(CALLBACKS));
+    let [w, h] = src.size;
+    let reference: Vec<Color32> = (0..w * h)
+        .map(|i| {
+            let (x, y) = (i % w, i / w);
+            let s = src.pixels[i].to_array();
+            let t = if x < w / 2 && y < h / 2 { [10, 20, 30, 255] } else { s };
+            let rot = [t[1], t[2], t[0], t[3]];
+            let mix = |a: u8, b: u8| ((a as u32 * 32768 + b as u32 * 32768 + 32768) >> 16) as u8;
+            Color32::from_rgba_premultiplied(mix(rot[0], s[0]), mix(rot[1], s[1]), mix(rot[2], s[2]), mix(rot[3], s[3]))
+        })
+        .collect();
+    let reference = ColorImage { size: src.size, pixels: reference };
+    assert_eq!(max_diff(&out, &reference), 0, "the picture differs from the Rust reference");
+    ofx::close_hosts();
+}
 
 /// A4 acceptance: the AE-format invert equals the built-in invert within 1 LSB through shared memory, half-transparent
 /// rows included.
