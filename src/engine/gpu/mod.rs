@@ -31,6 +31,7 @@ use crate::engine::plugins::FxEval;
 use crate::project::Composite;
 
 pub mod fx;
+pub mod mvfx;
 
 /// Preferences › Video › GPU acceleration: this value turns it off ("" is automatic, anything else an adapter's name).
 pub const OFF: &str = "Off";
@@ -171,6 +172,8 @@ pub struct GpuCompositor {
     fade: wgpu::RenderPipeline,
     /// R21b: the FX, transitions and generators.
     fx: fx::Pipes,
+    /// MVFX: the music-video FX and transitions' kernels.
+    mv: mvfx::Pipes,
     /// Bound where a pass reads no source / no rows.
     none: Tex,
     no_rows: wgpu::Buffer,
@@ -283,6 +286,7 @@ impl GpuCompositor {
         let pipe = |module: &wgpu::ShaderModule, fs: &str| pipe_to(module, fs, FORMAT);
         let (draw, blend, fade) = (pipe(&shader, "fs_draw"), pipe(&shader, "fs_blend"), pipe(&shader, "fs_fade"));
         let fx = fx::Pipes::new(&device, &layout, math, &pipe_to);
+        let mv = mvfx::Pipes::new(&device, math, &pipe_to);
         let none = new_tex(&device, 1, 1, false);
         // Cleared once, so no frame's submission has to zero it.
         {
@@ -311,6 +315,7 @@ impl GpuCompositor {
             blend,
             fade,
             fx,
+            mv,
             none,
             no_rows,
             max,
@@ -680,7 +685,9 @@ impl Frame<'_> {
             self.give(t);
             t = f;
         }
-        if let Some(out) = self.fx_chain(&t, &e.fx) {
+        if crate::engine::mvfx::needs_sources(&e.fx) {
+            t = self.mv_event(t, e, src, (dw, dh))?;
+        } else if let Some(out) = self.fx_chain(&t, &e.fx) {
             self.give(t);
             t = out;
         }

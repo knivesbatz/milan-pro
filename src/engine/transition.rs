@@ -123,6 +123,7 @@ pub fn mix(e: &FxEval, a: &ColorImage, b: &ColorImage, p: f32, k: usize) -> Colo
             let (za, zb) = (zoomed(a, 1.0 + p as f64 * amt, k), zoomed(b, 1.0 + (1.0 - p as f64) * amt, k));
             blend(&za, &zb, k, |_, _| p)
         }
+        id if crate::engine::mvfx::find(id).is_some() => crate::engine::mvfx::mix(e, a, b, p, k).unwrap_or_else(|| blend(a, b, k, |_, _| p)),
         _ if e.on("additive") => {
             let (wa, wb) = ((2.0 - 2.0 * p).min(1.0), (2.0 * p).min(1.0));
             let mut out = map(a, k, |s| add(Color32::TRANSPARENT, s, wa));

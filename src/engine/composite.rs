@@ -473,9 +473,7 @@ pub(crate) fn event_image(src: &mut dyn Sources, e: &EventPlan, to_out: Affine, 
     if e.flicker {
         reduce_flicker(Arc::make_mut(&mut img), k);
     }
-    for f in &e.fx {
-        vfx::apply(Arc::make_mut(&mut img), f, k);
-    }
+    crate::engine::mvfx::event_fx(Arc::make_mut(&mut img), e, src, (dw, dh), k);
     raster::apply(Arc::make_mut(&mut img), &e.masks, k);
     Some(img)
 }

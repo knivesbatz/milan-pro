@@ -431,6 +431,7 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
 fn evals(chain: &[Fx], t: f64, full_h: u32, p: &VideoPlan) -> Vec<FxEval> {
     let frame = |f: &Fx, mut e: FxEval| {
         crate::engine::ofx::add_frame_vals(&mut e, &f.id, crate::engine::ofx::restored(f), t, full_h as f64, p.fps, p.par);
+        crate::engine::mvfx::frame_vals(&mut e, t, p.fps);
         e
     };
     chain.iter().filter(|f| f.enabled).filter_map(|f| plugins::eval(f, t).map(|e| frame(f, e))).collect()

@@ -24,6 +24,7 @@ pub mod lut;
 pub mod loudness;
 pub mod mix;
 pub mod multicam;
+pub mod mvfx;
 pub mod nested;
 pub mod ofx;
 pub mod picture;
