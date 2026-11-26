@@ -20,11 +20,12 @@
 //! preview (R21c). A preference naming another adapter, or the `glow` painter, opens the adapter on its own device
 //! (`choose`), and every frame is read back. Renders use the same compositor as the preview (`Worker::frame`), so a
 //! render shows what was previewed.
-use eframe::egui::{Color32, ColorImage};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use eframe::egui::{Color32, ColorImage, TextureId};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 use wgpu::util::DeviceExt;
 use crate::engine::composite::{self, Affine, Compositor, Sources};
+use crate::engine::picture::Picture;
 use crate::engine::plan::{EventPlan, FramePlan, Item, SrcAt, TrackPlan};
 use crate::engine::plugins::FxEval;
 use crate::project::Composite;
@@ -39,8 +40,95 @@ const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Uint;
 /// Textures kept between frames for reuse, at most this many bytes.
 const POOL_BYTES: usize = 256 << 20;
 
-/// R21c: frames read back from the GPU into `ColorImage`s so far (a zero-copy preview adds none).
-pub static READBACKS: AtomicU64 = AtomicU64::new(0);
+
+/// R21c: the format a composed frame is kept in on the GPU (`GpuCompositor::set_intermediate`). The passes compose in
+/// 8-bit either way today; `Rgba16Float` holds the result in linear light with 16-bit float channels, the format
+/// R40b's float pipeline composes in. The preview samples both; a readback converts both to the 8-bit picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Intermediate {
+    #[default]
+    Rgba8,
+    Rgba16Float,
+}
+
+impl Intermediate {
+    fn format(self) -> wgpu::TextureFormat {
+        match self {
+            Intermediate::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+            Intermediate::Rgba16Float => wgpu::TextureFormat::Rgba16Float,
+        }
+    }
+}
+
+/// R21c: a composed frame on the GPU: the compositor's output in its `Intermediate` format, with the view the UI
+/// samples (sRGB-decoding for 8-bit, linear for float, as egui expects). Back to the compositor's pool when dropped.
+pub struct Output {
+    g: Weak<GpuCompositor>,
+    tex: Option<OutTex>,
+}
+
+struct OutTex {
+    tex: wgpu::Texture,
+    /// The render target (raw bytes).
+    target: wgpu::TextureView,
+    /// What the UI samples.
+    sample: wgpu::TextureView,
+    format: Intermediate,
+    w: u32,
+    h: u32,
+}
+
+impl Output {
+    pub fn size(&self) -> [usize; 2] {
+        let t = self.tex.as_ref().expect("an output until dropped");
+        [t.w as usize, t.h as usize]
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))] // R40b composes in float: the preview asks then
+    pub fn format(&self) -> Intermediate {
+        self.tex.as_ref().expect("an output until dropped").format
+    }
+
+    /// The pixels, read back (premultiplied gamma-space RGBA; a float frame converted).
+    pub(crate) fn read(&self) -> ColorImage {
+        let t = self.tex.as_ref().expect("an output until dropped");
+        match self.g.upgrade() {
+            Some(g) => g.read_output(t),
+            None => ColorImage::new([t.w as usize, t.h as usize], Color32::BLACK),
+        }
+    }
+
+    /// Registered with the UI's painter as an egui texture (`register`); None when the UI does not paint through
+    /// this device.
+    pub fn register(&self) -> Option<TextureId> {
+        let t = self.tex.as_ref()?;
+        let g = self.g.upgrade().filter(|g| g.shared)?;
+        let ui = lock(&STATE).ui.clone()?;
+        let mut r = ui.renderer.write();
+        Some(r.register_native_texture(&g.device, &t.sample, wgpu::FilterMode::Linear))
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let (Some(g), Some(t)) = (self.g.upgrade(), self.tex.take()) {
+            g.give_output(t);
+        }
+    }
+}
+
+/// `Output::register`'s texture freed again, once the frame it showed is gone.
+pub fn unregister(id: TextureId) {
+    if let Some(ui) = lock(&STATE).ui.clone() {
+        ui.renderer.write().free_texture(&id);
+    }
+}
+
+/// The UI's painter (feature `wgpu`): where `Output::register` lands.
+#[derive(Clone)]
+struct Ui {
+    renderer: Arc<eframe::egui::mutex::RwLock<eframe::egui_wgpu::Renderer>>,
+}
 
 pub(super) struct Tex {
     tex: wgpu::Texture,
@@ -58,6 +146,11 @@ pub struct GpuCompositor {
     pub name: String,
     /// The UI paints with this device too (`attach`): a frame can stay on it for the preview.
     pub shared: bool,
+    me: Weak<GpuCompositor>,
+    /// `Intermediate` as a u8.
+    intermediate: AtomicU8,
+    /// R21c: frames and pieces read back into `ColorImage`s so far (a zero-copy preview adds none).
+    readbacks: AtomicU64,
     layout: wgpu::BindGroupLayout,
     draw: wgpu::RenderPipeline,
     blend: wgpu::RenderPipeline,
@@ -71,6 +164,8 @@ pub struct GpuCompositor {
     /// A validation error, a panic inside wgpu or a lost device: the CPU composes from then on.
     broken: Arc<AtomicBool>,
     pool: Mutex<Vec<Tex>>,
+    /// Output textures (`Output`) kept for reuse.
+    outputs: Mutex<Vec<OutTex>>,
     /// Held while a frame records one step (a pass, a clear, an upload) and while it creates that step's buffers and
     /// bind group. Two threads composing at once (a render beside the preview) and recording freely lose draws now
     /// and then on wgpu 24's Vulkan backend (the parity tests run in parallel reproduce it: a layer comes out
@@ -94,6 +189,27 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
+/// An IEEE half to f32 (a readback of an `Rgba16Float` frame).
+fn half(v: u16) -> f32 {
+    let (s, e, m) = ((v >> 15) as u32, ((v >> 10) & 31) as u32, (v & 1023) as u32);
+    let bits = match e {
+        0 if m == 0 => s << 31,
+        0 => {
+            // Subnormal: normalise.
+            let mut e = 127 - 15 + 1;
+            let mut m = m;
+            while m & 1024 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            (s << 31) | (e << 23) | ((m & 1023) << 13)
+        }
+        31 => (s << 31) | (255 << 23) | (m << 13),
+        _ => (s << 31) | ((e + 127 - 15) << 23) | (m << 13),
+    };
+    f32::from_bits(bits)
+}
+
 /// The limits the compositor asks of a device: the adapter's own (frames up to its largest texture).
 fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
     wgpu::DeviceDescriptor { label: Some("milan"), required_features: wgpu::Features::empty(), required_limits: adapter.limits(), memory_hints: wgpu::MemoryHints::MemoryUsage }
@@ -101,14 +217,14 @@ fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static>
 
 impl GpuCompositor {
     /// A device of its own on `adapter`.
-    fn open(adapter: &wgpu::Adapter) -> Result<GpuCompositor, String> {
+    fn open(adapter: &wgpu::Adapter) -> Result<Arc<GpuCompositor>, String> {
         let name = adapter.get_info().name;
         let (device, queue) = block_on(adapter.request_device(&device_descriptor(adapter), None)).map_err(|e| format!("{name} could not be opened ({e})"))?;
         Self::on(name, device, queue, false)
     }
 
     /// The compositor on `device` (`shared`: the UI's).
-    fn on(name: String, device: wgpu::Device, queue: wgpu::Queue, shared: bool) -> Result<GpuCompositor, String> {
+    fn on(name: String, device: wgpu::Device, queue: wgpu::Queue, shared: bool) -> Result<Arc<GpuCompositor>, String> {
         let broken = Arc::new(AtomicBool::new(false));
         let b = broken.clone();
         // The UI's own errors (there are none) would land here too: they are still reported, and the compositor steps
@@ -132,7 +248,7 @@ impl GpuCompositor {
             entries: &[tex(0), tex(1), buf(2, wgpu::BufferBindingType::Uniform), buf(3, wgpu::BufferBindingType::Storage { read_only: true })],
         });
         let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&layout], push_constant_ranges: &[] });
-        let pipe = |module: &wgpu::ShaderModule, fs: &str| {
+        let pipe_to = |module: &wgpu::ShaderModule, fs: &str, format: wgpu::TextureFormat| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(fs),
                 layout: Some(&pl),
@@ -140,7 +256,7 @@ impl GpuCompositor {
                 fragment: Some(wgpu::FragmentState {
                     module,
                     entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
                     compilation_options: Default::default(),
                 }),
                 primitive: Default::default(),
@@ -150,8 +266,9 @@ impl GpuCompositor {
                 cache: None,
             })
         };
+        let pipe = |module: &wgpu::ShaderModule, fs: &str| pipe_to(module, fs, FORMAT);
         let (draw, blend, fade) = (pipe(&shader, "fs_draw"), pipe(&shader, "fs_blend"), pipe(&shader, "fs_fade"));
-        let fx = fx::Pipes::new(&device, &layout, math, &pipe);
+        let fx = fx::Pipes::new(&device, &layout, math, &pipe_to);
         let none = new_tex(&device, 1, 1, false);
         // Cleared once, so no frame's submission has to zero it.
         {
@@ -167,7 +284,115 @@ impl GpuCompositor {
         if broken.load(Relaxed) {
             return Err(format!("{name} could not build the compositor's shaders"));
         }
-        Ok(GpuCompositor { device, queue, name, shared, layout, draw, blend, fade, fx, none, no_rows, max, broken, pool: Mutex::new(Vec::new()), record: Mutex::new(()) })
+        Ok(Arc::new_cyclic(|me| GpuCompositor {
+            device,
+            queue,
+            name,
+            shared,
+            me: me.clone(),
+            intermediate: AtomicU8::new(0),
+            readbacks: AtomicU64::new(0),
+            layout,
+            draw,
+            blend,
+            fade,
+            fx,
+            none,
+            no_rows,
+            max,
+            broken,
+            pool: Mutex::new(Vec::new()),
+            outputs: Mutex::new(Vec::new()),
+            record: Mutex::new(()),
+        }))
+    }
+
+    /// R21c: the format composed frames are kept in (`Intermediate`), for the frames composed from now on.
+    #[cfg_attr(not(test), allow(dead_code))] // R40b's Project Properties pixel format sets it
+    pub fn set_intermediate(&self, f: Intermediate) {
+        self.intermediate.store(f as u8, Relaxed);
+    }
+
+    /// R21c: how many frames (or pieces a CPU step needed) this compositor has read back from the GPU.
+    pub fn readbacks(&self) -> u64 {
+        self.readbacks.load(Relaxed)
+    }
+
+    pub fn intermediate(&self) -> Intermediate {
+        match self.intermediate.load(Relaxed) {
+            1 => Intermediate::Rgba16Float,
+            _ => Intermediate::Rgba8,
+        }
+    }
+
+    /// A `w` x `h` output texture in `format`, from its pool or new.
+    fn output(&self, w: u32, h: u32, format: Intermediate) -> OutTex {
+        let mut pool = lock(&self.outputs);
+        if let Some(i) = pool.iter().position(|t| (t.w, t.h, t.format) == (w, h, format)) {
+            return pool.remove(i);
+        }
+        let f = format.format();
+        let srgb = format == Intermediate::Rgba8;
+        let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("milan-frame"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: f,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: if srgb { &[wgpu::TextureFormat::Rgba8UnormSrgb] } else { &[] },
+        });
+        let target = tex.create_view(&Default::default());
+        let sample = tex.create_view(&wgpu::TextureViewDescriptor { format: srgb.then_some(wgpu::TextureFormat::Rgba8UnormSrgb), ..Default::default() });
+        OutTex { tex, target, sample, format, w, h }
+    }
+
+    /// An output texture back to its pool (at most `POOL_BYTES` / 4 of them).
+    fn give_output(&self, t: OutTex) {
+        let mut pool = lock(&self.outputs);
+        pool.push(t);
+        let bytes = |t: &OutTex| t.w as usize * t.h as usize * if t.format == Intermediate::Rgba8 { 4 } else { 8 };
+        let mut total: usize = pool.iter().map(bytes).sum();
+        while total > POOL_BYTES / 4 {
+            total -= bytes(&pool.remove(0));
+        }
+    }
+
+    /// `Output::read`: the frame's pixels, a float frame converted to 8-bit gamma space.
+    fn read_output(&self, t: &OutTex) -> ColorImage {
+        self.readbacks.fetch_add(1, Relaxed);
+        let bpp = if t.format == Intermediate::Rgba8 { 4 } else { 8 };
+        let row = (t.w * bpp).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: row as u64 * t.h as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None };
+        enc.copy_texture_to_buffer(t.tex.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buf, layout }, t.tex.size());
+        self.queue.submit([enc.finish()]);
+        let (tx, rx) = mpsc::channel();
+        buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        let (w, h) = (t.w as usize, t.h as usize);
+        if rx.recv().ok().and_then(Result::ok).is_none() || self.broken() {
+            return ColorImage::new([w, h], Color32::BLACK);
+        }
+        let data = buf.slice(..).get_mapped_range();
+        let mut pixels = Vec::with_capacity(w * h);
+        for y in 0..h {
+            let line = &data[y * row as usize..];
+            if t.format == Intermediate::Rgba8 {
+                pixels.extend_from_slice(bytemuck::cast_slice::<u8, Color32>(&line[..w * 4]));
+            } else {
+                let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                for px in bytemuck::cast_slice::<u8, [u16; 4]>(&line[..w * 8]) {
+                    let [r, g, b, a] = px.map(|v| f32::from(half(v)));
+                    pixels.push(Color32::from_rgba_premultiplied(to8(crate::engine::vfx::to_srgb(r)), to8(crate::engine::vfx::to_srgb(g)), to8(crate::engine::vfx::to_srgb(b)), to8(a)));
+                }
+            }
+        }
+        ColorImage { size: [w, h], pixels }
     }
 
     pub fn broken(&self) -> bool {
@@ -200,24 +425,26 @@ impl Compositor for GpuCompositor {
         format!("{} (Vulkan)", self.name)
     }
 
-    /// `composite::compose` on the GPU; None when this frame cannot be done here (the caller composes it on the CPU).
-    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage> {
+    /// `composite::compose` on the GPU, the frame left there (`Picture::gpu`); None when this frame cannot be done
+    /// here (the caller composes it on the CPU).
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<Picture> {
         if self.broken() || w == 0 || h == 0 || w.max(h) > self.max as usize {
             return None;
         }
         let run = || {
             let enc = self.device.create_command_encoder(&Default::default());
             let mut f = Frame { g: self, enc, w: w as u32, h: h as u32, spare: Vec::new(), written: Vec::new(), bilinear, k };
-            let img = f.frame(fp, src);
+            let out = f.frame(fp, src);
             f.done();
-            img
+            out
         };
         // A panic inside wgpu (a driver gone bad) must not take the editor down: the CPU takes over.
-        let img = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).unwrap_or_else(|_| {
             self.broken.store(true, Relaxed);
             None
         });
-        img.filter(|_| !self.broken())
+        let out = out.filter(|_| !self.broken())?;
+        Some(Picture::on_gpu(Output { g: self.me.clone(), tex: Some(out) }))
     }
 }
 
@@ -251,7 +478,7 @@ pub(super) struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    fn frame(&mut self, fp: &FramePlan, src: &mut dyn Sources) -> Option<ColorImage> {
+    fn frame(&mut self, fp: &FramePlan, src: &mut dyn Sources) -> Option<OutTex> {
         let (w, h) = (self.w, self.h);
         let mut acc = self.clear(w, h, if fp.alpha { Color32::TRANSPARENT } else { Color32::BLACK });
         let mut group: Option<Tex> = None;
@@ -302,14 +529,41 @@ impl Frame<'_> {
             if let Some((c, t)) = fp.fade {
                 acc = self.fade(acc, c, t);
             }
-            let img = self.read(&acc);
+            let out = self.present(&acc);
             self.give(acc);
-            return img;
+            return Some(out);
         }
         let mut img = self.read(&acc)?;
         self.give(acc);
         composite::finish(&mut img, fp, self.k);
-        Some(img)
+        let t = self.upload(&img)?;
+        let out = self.present(&t);
+        self.give(t);
+        Some(out)
+    }
+
+    /// The frame `acc` into an output texture (`Intermediate`), submitted: the frame is complete on the GPU.
+    fn present(&mut self, acc: &Tex) -> OutTex {
+        let g = self.g;
+        let format = g.intermediate();
+        let out = g.output(acc.w, acc.h, format);
+        {
+            let _step = lock(&g.record);
+            let pipe = match format {
+                Intermediate::Rgba8 => &g.fx.present8,
+                Intermediate::Rgba16Float => &g.fx.present16,
+            };
+            let bind = self.bind(&g.layout, acc, None, &fx::U::default().words(), &[], None);
+            let ops = wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store };
+            let at = wgpu::RenderPassColorAttachment { view: &out.target, resolve_target: None, ops };
+            let mut rp = self.enc.begin_render_pass(&wgpu::RenderPassDescriptor { color_attachments: &[Some(at)], ..Default::default() });
+            rp.set_pipeline(pipe);
+            rp.set_bind_group(0, &bind, &[]);
+            rp.draw(0..3, 0..1);
+        }
+        let enc = std::mem::replace(&mut self.enc, g.device.create_command_encoder(&Default::default()));
+        g.queue.submit([enc.finish()]);
+        out
     }
 
     /// `composite::fade_to` on `t`.
@@ -615,6 +869,8 @@ impl Frame<'_> {
         if w == 0 || h == 0 || w.max(h) > self.g.max {
             return None;
         }
+        // `write_texture` stages the picture once more (wgpu's own belt, its memory reused): a mapped buffer of the
+        // frame's own was twice as slow (an allocation and a mapping per picture).
         let _step = lock(&self.g.record);
         let t = self.g.texture(w, h, true);
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: None };
@@ -625,7 +881,7 @@ impl Frame<'_> {
     /// Run the recorded passes and read `t` back.
     pub(super) fn read(&mut self, t: &Tex) -> Option<ColorImage> {
         let g = self.g;
-        READBACKS.fetch_add(1, Relaxed);
+        g.readbacks.fetch_add(1, Relaxed);
         let row = (t.w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
         let buf = g.device.create_buffer(&wgpu::BufferDescriptor { label: None, size: row as u64 * t.h as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: None };
@@ -681,11 +937,13 @@ struct State {
     adapters: Option<Vec<String>>,
     /// The compositor on the UI's own device (`attach`), when the UI paints through wgpu on Vulkan.
     shared: Option<Arc<GpuCompositor>>,
+    /// The UI's painter, for `Output::register`.
+    ui: Option<Ui>,
     gpu: Option<Arc<GpuCompositor>>,
     why: String,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { choice: None, round: 0, adapters: None, shared: None, gpu: None, why: String::new() });
+static STATE: Mutex<State> = Mutex::new(State { choice: None, round: 0, adapters: None, shared: None, ui: None, gpu: None, why: String::new() });
 
 /// Automatic: a discrete GPU, else an integrated one, else a virtual one; never a software rasteriser, which is
 /// slower than the CPU compositor.
@@ -747,7 +1005,10 @@ pub fn attach(rs: &eframe::egui_wgpu::RenderState) {
     s.adapters = Some(names(rs.available_adapters.iter().filter(vulkan)));
     if info.backend == wgpu::Backend::Vulkan {
         match GpuCompositor::on(info.name.clone(), rs.device.clone(), rs.queue.clone(), true) {
-            Ok(g) => s.shared = Some(Arc::new(g)),
+            Ok(g) => {
+                s.shared = Some(g);
+                s.ui = Some(Ui { renderer: rs.renderer.clone() });
+            }
             Err(e) => s.why = format!("{e}: compositing on the CPU."),
         }
     } else {
@@ -791,7 +1052,7 @@ pub fn choose(choice: &str) {
                 s.adapters = Some(names);
             }
             (s.gpu, s.why) = match gpu {
-                Ok(g) => (Some(Arc::new(g)), String::new()),
+                Ok(g) => (Some(g), String::new()),
                 Err(e) => (None, format!("{e}: compositing on the CPU.")),
             };
         }
@@ -799,7 +1060,7 @@ pub fn choose(choice: &str) {
 }
 
 /// (the Vulkan adapters' names, a device of its own for `choice`).
-fn detect(choice: &str) -> (Vec<String>, Result<GpuCompositor, String>) {
+fn detect(choice: &str) -> (Vec<String>, Result<Arc<GpuCompositor>, String>) {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor { backends: wgpu::Backends::VULKAN, ..Default::default() });
     let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN);
     let names = names(adapters.iter());
@@ -833,6 +1094,11 @@ pub fn compositor() -> Arc<dyn Compositor> {
     }
 }
 
+/// R21c: frames the current GPU compositor has read back so far (None: the CPU composes).
+pub fn readback_count() -> Option<u64> {
+    current().map(|g| g.readbacks())
+}
+
 /// The adapters found (None while they are being listed).
 pub fn adapters() -> Option<Vec<String>> {
     lock(&STATE).adapters.clone()
@@ -853,7 +1119,14 @@ pub fn status() -> String {
 #[cfg(test)]
 pub fn test_gpu() -> Option<Arc<GpuCompositor>> {
     static G: std::sync::OnceLock<Option<Arc<GpuCompositor>>> = std::sync::OnceLock::new();
-    G.get_or_init(|| detect("").1.ok().map(Arc::new)).clone()
+    G.get_or_init(|| detect("").1.ok()).clone()
+}
+
+/// Tests: compose on `g` (None: the CPU) whatever the preference says, from now on in this process.
+#[cfg(test)]
+pub fn force_for_tests(g: Option<Arc<GpuCompositor>>) {
+    let mut s = lock(&STATE);
+    (s.choice, s.gpu) = (Some("forced".into()), g);
 }
 
 /// Benches: the CPU, then the GPU when there is one (its name with `_` for spaces, for `tools/bench.ps1`).
@@ -1150,12 +1423,83 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
         println!("gpu_float_ops_round_as_the_cpu on {}: the GPU's own division differs from the CPU's in {native_div_differs} of 65536 cases; the emulation in none", g.name);
     }
 
+    /// The tests that set the process-wide choice take turns.
+    static CHOICE: Mutex<()> = Mutex::new(());
+
+    /// R21c acceptance: a preview frame the GPU composed stays there (no readback: the counter does not move), and
+    /// its pixels, asked for as a render asks (`Picture::image`), are read back once and are the CPU's; the worker
+    /// hands the preview that picture, and a render's frames come through the same worker.
+    #[test]
+    fn preview_frames_stay_on_the_gpu_and_renders_read_back() {
+        use crate::engine::worker::Worker;
+        use crate::project::{Clip, MediaItem, MediaType, Project};
+        if gpu_or_skip("preview_frames_stay_on_the_gpu_and_renders_read_back").is_none() {
+            return;
+        }
+        // Its own device, so its counter is this test's alone.
+        let Some(g) = detect("").1.ok() else { return };
+        let _turn = lock(&CHOICE);
+        force_for_tests(Some(g.clone()));
+        let mut p = Project::new("gpu");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (320, 180, 30.0);
+        let info = find("milan.gen.gradient").unwrap();
+        let m = MediaItem { id: "g".into(), name: "g".into(), media_type: MediaType::Image, duration: 60.0, generator: Some(crate::engine::plugins::new_fx(info, info.presets.get(2))), ..Default::default() };
+        let mut c = Clip::from_media(&m, 0.0);
+        (c.duration, c.out_point) = (10.0, 10.0);
+        p.timeline.video_tracks[0].clips.push(c);
+        p.media_pool.push(m);
+        let mut wk = Worker::new();
+        wk.set_plan(Arc::new(plan::compile(&p)));
+        let before = g.readbacks();
+        let (pic, err) = wk.frame(30, 320, 180, crate::decode::Quality::Preview, None);
+        assert!(err.is_none(), "{err:?}");
+        assert!(pic.gpu().is_some(), "the frame is on the GPU");
+        assert_eq!(pic.gpu().unwrap().size(), [320, 180]);
+        assert_eq!(g.readbacks(), before, "a preview frame is not read back");
+        let img = pic.image();
+        assert_eq!(g.readbacks(), before + 1, "a render reads the frame back");
+        let _ = pic.image();
+        assert_eq!(g.readbacks(), before + 1, "once");
+        force_for_tests(None);
+        let mut cpu = Worker::new();
+        cpu.set_plan(Arc::new(plan::compile(&p)));
+        let (want, _) = cpu.frame(30, 320, 180, crate::decode::Quality::Preview, None);
+        assert!(want.gpu().is_none() && img.pixels == want.pixels, "the GPU frame read back is the CPU frame");
+        // The frame through `Picture`'s pixels (the scopes, a snapshot) is the same readback.
+        assert_eq!(pic.size, [320, 180]);
+    }
+
+    /// R21c: the `Rgba16Float` intermediate (R40b's): a frame held in linear float reads back within 1 in 255 of the
+    /// 8-bit frame (sRGB in and out of 16-bit float), and the preview sees a float texture.
+    #[test]
+    fn float_intermediate_reads_back_within_one() {
+        if gpu_or_skip("float_intermediate_reads_back_within_one").is_none() {
+            return;
+        }
+        // Its own device: the shared test compositor stays 8-bit for the other tests.
+        let Some(g) = detect("").1.ok() else { return };
+        g.set_intermediate(Intermediate::Rgba16Float);
+        assert_eq!(g.intermediate(), Intermediate::Rgba16Float);
+        let mut r = Rng(21);
+        let (fp, size, bilinear) = plan_n(&mut r);
+        let mut src = Noise::default();
+        let cpu = composite::compose(&fp, &mut src, size[0], size[1], bilinear, 3);
+        let pic = g.compose(&fp, &mut src, size[0], size[1], bilinear, 3).expect("composed");
+        assert_eq!(pic.gpu().unwrap().format(), Intermediate::Rgba16Float);
+        let d = diff(&cpu, &pic.image());
+        assert!(d.0 <= 1, "a float frame reads back within 1: {d:?}");
+        g.set_intermediate(Intermediate::Rgba8);
+        let pic = g.compose(&fp, &mut src, size[0], size[1], bilinear, 3).expect("composed");
+        assert_eq!(diff(&cpu, &pic.image()), (0, 0), "and 8-bit is exact again");
+    }
+
     /// Off lists the adapters but opens none, so the CPU composes.
     #[test]
     fn off_lists_the_adapters_and_composes_on_the_cpu() {
         if std::env::var_os("MILAN_TEST_GPU").is_some() {
             return; // the whole run is forced onto the GPU
         }
+        let _turn = lock(&CHOICE);
         choose("probe"); // an adapter that does not exist: the list is made on the detection thread
         let t = Instant::now();
         while adapters().is_none() && t.elapsed() < Duration::from_secs(30) {
@@ -1198,11 +1542,16 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
             let (fp, mut src) = (fp(pip, size), Noise::default());
             for (name, c) in compositors() {
                 let k = composite::stripes();
+                // As the preview gets it (R21c: a GPU frame stays on the GPU), and with its pixels read back (a render).
                 let t = ms(&mut || {
-                    let img = c.compose(&fp, &mut src, size.0 as usize, size.1 as usize, true, k).expect("composed");
-                    std::hint::black_box(img);
+                    let pic = c.compose(&fp, &mut src, size.0 as usize, size.1 as usize, true, k).expect("composed");
+                    std::hint::black_box(pic);
                 });
-                println!("BENCH compose kind={kind} compositor={name} layers=4 ms={t:.2}");
+                let tr = ms(&mut || {
+                    let pic = c.compose(&fp, &mut src, size.0 as usize, size.1 as usize, true, k).expect("composed");
+                    std::hint::black_box(pic.image());
+                });
+                println!("BENCH compose kind={kind} compositor={name} layers=4 ms={t:.2} ms_readback={tr:.2}");
             }
         }
     }

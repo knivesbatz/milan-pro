@@ -406,7 +406,8 @@ fn feed_video(vp: VideoPlan, (n0, n1): (i64, i64), (w, h): (u32, u32), q: crate:
             r = Err(format!("Frame {} ({:.3} s): {e}", n - n0, n as f64 / fps));
             break;
         }
-        if tx.send(img).is_err() {
+        // R21c: a frame the GPU composed is read back here, for the encoder.
+        if tx.send(img.image()).is_err() {
             break; // the writer stopped: its result says so
         }
         if (n - n0) % 30 == 29 {

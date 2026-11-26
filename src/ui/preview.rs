@@ -167,8 +167,8 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
     });
     let has = preview.image.is_some();
     if tool_button(ui, Icon::SnapshotCopy, "Copy Snapshot to Clipboard", has, false).clicked() {
-        if let Some(img) = &preview.image {
-            ui.ctx().copy_image((**img).clone());
+        if let Some(img) = preview.image.as_ref().map(|p| p.image()) {
+            ui.ctx().copy_image((*img).clone());
             // R16b: kept for Split-Screen View › Clipboard.
             let tex = ui.ctx().load_texture("split_snapshot", img.clone(), TextureOptions::LINEAR);
             view.snapshot = Some((img.clone(), tex));
@@ -201,9 +201,9 @@ fn quality_menu(ui: &mut Ui, preview: &mut Preview) {
 }
 
 fn save_snapshot(preview: &Preview) -> Option<String> {
-    let img = preview.image.as_ref()?;
+    let img = preview.image.as_ref()?.image();
     let path = rfd::FileDialog::new().add_filter("PNG Image", &["png"]).set_file_name("Snapshot.png").save_file()?;
-    Some(match crate::demo::save_png(&path, img) {
+    Some(match crate::demo::save_png(&path, &img) {
         Ok(()) => format!("Snapshot saved to {}", path.display()),
         Err(e) => format!("Could not save snapshot: {e}"),
     })
@@ -247,9 +247,9 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     if let Some(tex) = preview.texture.as_ref().filter(|_| !preview.mute) {
         pv.add(rotated_image(tex.id(), frame, s.rotation, [0.0, 0.0, 1.0, 1.0]));
         // R16b: Split-Screen View: the region from the frame without FX, or from the clipboard snapshot.
-        let other = if view.split_clipboard { view.snapshot.as_ref().map(|(_, t)| t) } else { preview.bypass_texture() };
+        let other = if view.split_clipboard { view.snapshot.as_ref().map(|(_, t)| t.id()) } else { preview.bypass_texture().map(|t| t.id()) };
         if let Some(other) = other.filter(|_| view.split) {
-            pv.add(rotated_image(other.id(), frame, s.rotation, view.split_region));
+            pv.add(rotated_image(other, frame, s.rotation, view.split_region));
         }
     } else if let Some(err) = preview.error.as_ref().filter(|_| !preview.mute) {
         pv.text(frame.center(), Align2::CENTER_CENTER, err, t.font(12.0), t.warning_text);

@@ -22,6 +22,7 @@ pub mod mix;
 pub mod multicam;
 pub mod nested;
 pub mod ofx;
+pub mod picture;
 pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;
@@ -38,13 +39,14 @@ pub mod velocity;
 pub mod vfx;
 mod worker;
 
-use eframe::egui::{self, ColorImage};
+use eframe::egui;
 use std::hash::{DefaultHasher, Hasher};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use crate::decode::Quality;
 use crate::project::Project;
+use picture::Picture;
 use plan::VideoPlan;
 
 pub enum VCmd {
@@ -56,9 +58,9 @@ pub enum VCmd {
 }
 
 /// (Show generation, frame, first decode error)
-pub type Shown = (u64, Arc<ColorImage>, Option<String>);
+pub type Shown = (u64, Arc<Picture>, Option<String>);
 /// (unwrapped frame number, frame, first decode error)
-pub type Played = (i64, Arc<ColorImage>, Option<String>);
+pub type Played = (i64, Arc<Picture>, Option<String>);
 
 /// The worker's playback figures, refreshed every 0.5 s while playing (R19: the Video Preview's playback statistics).
 #[derive(Default)]
@@ -220,7 +222,7 @@ impl VideoEngine {
 
     /// Once per UI frame: replan after edits, then take the wanted frame (paused) or the due frame (playing).
     /// Returns a new picture and the first decode error behind it.
-    pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<ColorImage>, Option<String>)> {
+    pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<Picture>, Option<String>)> {
         // A proxy becoming ready replans, so Draft and Preview switch to it.
         let hash = content_hash(p) ^ crate::proxy::generation() ^ if self.grid { 0x6d75_6c74_6963_616d } else { 0 };
         if hash != self.sent_hash {

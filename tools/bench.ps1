@@ -36,7 +36,8 @@ $tests = @(
     'engine::worker::tests::seeks_are_frame_exact_on_long_gop',
     'engine::worker::tests::scrub_drag_follows_the_cursor',
     'engine::worker::tests::reverse_playback_shows_every_frame',
-    'engine::ofx::tests::bench_ofx_roundtrip_1080p'
+    'engine::ofx::tests::bench_ofx_roundtrip_1080p',
+    'engine::gpu::tests::bench_compose'
 )
 # Each BENCH line: "BENCH <name> key=value ...".
 $bench = @()
@@ -84,7 +85,9 @@ L '| | |'
 L '|---|---|'
 L "| CPU | $($cpu.Name.Trim()), $($cpu.NumberOfCores) cores / $($cpu.NumberOfLogicalProcessors) threads |"
 L "| RAM | $ram GB |"
-L "| GPU | $gpus (unused: compositing is on the CPU until R21a) |"
+$adapter = Rows 'adapter' | Select-Object -First 1
+$gpuNote = if ($adapter) { "compositing on $($adapter.name -replace '_', ' ') through Vulkan (R21a)" } else { 'no Vulkan adapter: compositing on the CPU' }
+L "| GPU | $gpus ($gpuNote) |"
 L "| OS | $($os.Caption) $($os.Version) |"
 L "| Power plan | $power |"
 L "| Build | ``cargo test --release``, $rustc |"
@@ -107,7 +110,8 @@ L '- **Seeks** (`seeks_are_frame_exact_on_long_gop`): a 20 s 1920x1080 30 fps H.
 L '- **Scrub drag** (`scrub_drag_follows_the_cursor`): the same clip, the cursor dragged at 2x for 3 s backwards and forwards through `VideoEngine` as the Video Preview drives it (60 Hz); at every UI frame, how far the frame on screen (read from its burnt-in number) is from the cursor.'
 L '- **Reverse playback** (`reverse_playback_shows_every_frame`): the same clip as a reversed event, played at 1x for 10 s against a 30 fps clock as above; a frame counts when the one on screen is exactly the source frame due.'
 L '- **Adjust Size and Quality for Optimal Playback** (`bench_adaptive_quality` in `src/engine/mod.rs`): the four layers at Best (Full), 1920x1080, looped for 60 s through the Video Preview itself (`decode::Preview`, a 60 Hz UI loop against the wall clock), with the option off and then on.'
-L '- **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle''s invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in''s own work.'
+L '- **GPU compositor** (`bench_compose` in `src/engine/gpu/mod.rs`, R21a-c): four decoded layers composed into one frame, on the CPU and on the GPU, median of 30 after a warm-up: four full 1920x1080 frames at Level 50 % (the playback benches' project), four 1920x1080 picture-in-pictures at 45 % turned 15 degrees, and four full 3840x2160 frames (a 4K project at Best (Full)). *As the preview gets it*: the frame stays on the GPU (R21c); *read back*: its pixels copied to the CPU too, as a render needs them. The GPU times include uploading the decoded pictures (32 MB a frame at 1080p full, 133 MB at 4K).
+- **OFX host round trip** (`bench_ofx_roundtrip_1080p` in `src/engine/ofx/tests.rs`, R33b): one 1920x1080 frame through the test bundle''s invert plug-in in `milan-plugin-host.exe` (the frame to shared memory as 32-bit float or 8-bit RGBA, the render action, the result back and converted), 20 frames after a warm-up, against the built-in invert on all cores. The overhead is the float round trip less the built-in time: what hosting costs on top of a plug-in''s own work.'
 L ''
 
 L '## Playback, Preview (960x540)'
@@ -176,9 +180,22 @@ L "| OFX invert, 8-bit | $($ofx.byte_ms) ms |"
 L "| Built-in invert, all cores | $($ofx.builtin_invert_ms) ms |"
 L "| Hosting overhead (float round trip less the built-in) | $($ofx.float_overhead_ms) ms |"
 L ''
+L '## GPU compositor (4 layers, R21a-c)'
+L ''
+L '| Frame | CPU | GPU, as the preview gets it | GPU, read back |'
+L '|---|---|---|---|'
+foreach ($kind in @(@('full', '1920x1080, four full frames'), @('pip', '1920x1080, four picture-in-pictures'), @('4k', '3840x2160 Best (Full), four full frames'))) {
+    $c = Rows 'compose' | Where-Object { $_.kind -eq $kind[0] -and $_.compositor -eq 'cpu' } | Select-Object -First 1
+    $g = Rows 'compose' | Where-Object { $_.kind -eq $kind[0] -and $_.compositor -eq 'gpu' } | Select-Object -First 1
+    $gpuMs = if ($g) { "$($g.ms) ms" } else { 'no adapter' }
+    $gpuRb = if ($g) { "$($g.ms_readback) ms" } else { 'no adapter' }
+    L "| $($kind[1]) | $($c.ms) ms | $gpuMs | $gpuRb |"
+}
+L ''
 L '## Gates (`docs/FEATURE_PLAN.md` 1.9)'
 L ''
 $four = Rows 'playback' | Where-Object { $_.layers -eq '4' } | Select-Object -First 1
+$cg = Rows 'compose' | Where-Object { $_.kind -eq 'full' -and $_.compositor -eq 'gpu' } | Select-Object -First 1
 $starts = (Rows 'playback' | ForEach-Object { [double]$_.start_ms } | Measure-Object -Maximum).Maximum
 L '| Gate | Measured | Result |'
 L '|---|---|---|'
@@ -188,5 +205,6 @@ L "| Scrub p95 under 150 ms on proxies (R20) | $($sp.p95_ms) ms (original GOP-25
 L "| Random seeks frame-exact on long-GOP media (R20) | 200 of 200 on the source and 200 of 200 on its proxy | pass |"
 L "| Reverse playback at 1x shows at least 95 % of frames (R20) | $($rv.pct) % | $(Gate ([double]$rv.pct -ge 95)) |"
 L "| OFX host round trip at 1080p under 10 ms overhead per frame (R33b) | $($ofx.float_overhead_ms) ms | $(Gate ([double]$ofx.float_overhead_ms -lt 10)) |"
+if ($cg) { L "| 4-layer 1080p compose on the GPU under 4 ms (R21a) | $($cg.ms) ms, four full frames (picture-in-pictures: $((Rows 'compose' | Where-Object { $_.kind -eq 'pip' -and $_.compositor -eq 'gpu' } | Select-Object -First 1).ms) ms) | $(Gate ([double]$cg.ms -lt 4)) |" } else { L '| 4-layer 1080p compose on the GPU under 4 ms (R21a) | no Vulkan adapter | skipped |' }
 [IO.File]::WriteAllText($Out, $md.ToString(), (New-Object System.Text.UTF8Encoding $false))
 Write-Host "Wrote $Out"

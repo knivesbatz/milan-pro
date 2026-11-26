@@ -1,6 +1,7 @@
 //! CPU compositor: premultiplied 8-bit `Color32` layers, bottom to top, row stripes on scoped threads.
 use eframe::egui::{Color32, ColorImage};
 use std::sync::Arc;
+use crate::engine::picture::Picture;
 use crate::engine::plan::{EventPlan, FramePlan, Item, Nested, SrcAt, TrackPlan};
 use crate::engine::plugins::FxEval;
 use crate::engine::{raster, transition, vfx};
@@ -67,8 +68,8 @@ pub trait Sources {
 /// (`gpu::GpuCompositor`), which gives the same picture within 2 in 255 and leaves to the CPU what it does not do.
 pub trait Compositor: Send + Sync {
     /// `compose`: frame `fp` at `w` x `h`; None when this compositor cannot make this frame (the caller then uses the
-    /// CPU, which composes every frame).
-    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage>;
+    /// CPU, which composes every frame). R21c: the GPU leaves the frame on the GPU (`Picture::gpu`).
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<Picture>;
     /// For the Preferences and the benches.
     fn name(&self) -> String;
 }
@@ -77,8 +78,8 @@ pub trait Compositor: Send + Sync {
 pub struct CpuCompositor;
 
 impl Compositor for CpuCompositor {
-    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<ColorImage> {
-        Some(compose(fp, src, w, h, bilinear, k))
+    fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<Picture> {
+        Some(Picture::cpu(Arc::new(compose(fp, src, w, h, bilinear, k))))
     }
 
     fn name(&self) -> String {

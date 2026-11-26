@@ -173,6 +173,10 @@ impl Shot {
             if let Err(e) = save_png(&self.path, &image) {
                 eprintln!("screenshot: {e}");
             }
+            if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
+                // R21c: what composed the preview, and whether any frame left the GPU (a zero-copy preview reads none back).
+                eprintln!("shot compositor: {} readbacks={:?}", crate::engine::gpu::status(), crate::engine::gpu::readback_count());
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }

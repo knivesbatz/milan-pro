@@ -27,13 +27,17 @@ pub(super) struct Pipes {
     pub transition: wgpu::RenderPipeline,
     pub generate: wgpu::RenderPipeline,
     pub opaque: wgpu::RenderPipeline,
+    /// R21c: the frame into its output texture (`Intermediate::Rgba8`, `Intermediate::Rgba16Float`).
+    pub present8: wgpu::RenderPipeline,
+    pub present16: wgpu::RenderPipeline,
     /// `cs_box`, with its own layout: the passes' bindings plus the output storage texture.
     pub box_blur: wgpu::ComputePipeline,
     pub box_layout: wgpu::BindGroupLayout,
 }
 
 impl Pipes {
-    pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, math: &str, render: &dyn Fn(&wgpu::ShaderModule, &str) -> wgpu::RenderPipeline) -> Pipes {
+    pub fn new(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, math: &str, render_to: &dyn Fn(&wgpu::ShaderModule, &str, wgpu::TextureFormat) -> wgpu::RenderPipeline) -> Pipes {
+        let render = |module: &wgpu::ShaderModule, fs: &str| render_to(module, fs, super::FORMAT);
         let src = format!("{math}\n{}", include_str!("fx.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("fx.wgsl"), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let stage = wgpu::ShaderStages::COMPUTE;
@@ -63,6 +67,8 @@ impl Pipes {
             transition: render(&module, "fs_transition"),
             generate: render(&module, "fs_generate"),
             opaque: render(&module, "fs_opaque"),
+            present8: render_to(&module, "fs_present", wgpu::TextureFormat::Rgba8Unorm),
+            present16: render_to(&module, "fs_present_linear", wgpu::TextureFormat::Rgba16Float),
             box_blur,
             box_layout,
         }

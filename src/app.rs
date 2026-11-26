@@ -843,7 +843,9 @@ impl eframe::App for MeridianApp {
                     self.preview.visible |= !self.playing || self.prefs.scopes.while_playing;
                     scopes_prefs |= ui::scopes_toolbar(bar, &mut self.scopes, &mut self.prefs.scopes);
                     let split = self.preview_view.split_snapshot();
-                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
+                    // R21c: the scopes read the frame's pixels (a frame the GPU composed is read back once).
+                    let frame = self.preview.image.as_ref().map(|p| p.image());
+                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, frame.as_ref(), split, self.playing);
                 }
                 Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
                 Panel::PluginManager => {

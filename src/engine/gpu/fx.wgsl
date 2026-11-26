@@ -474,6 +474,27 @@ fn fs_opaque(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<u32> {
     return vec4<u32>(p.rgb, 255u);
 }
 
+// R21c: the composed frame into its `Rgba8Unorm` output texture: the same bytes (sampled through an sRGB view).
+@fragment
+fn fs_present(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    return vec4<f32>(at(vec2<i32>(pos.xy))) / 255.0;
+}
+
+fn linear_from_gamma(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+// R21c: the frame into an `Rgba16Float` output: premultiplied, linear light (what sampling the 8-bit frame through
+// its sRGB view gives), the format R40b composes in.
+@fragment
+fn fs_present_linear(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = vec4<f32>(at(vec2<i32>(pos.xy))) / 255.0;
+    return vec4<f32>(linear_from_gamma(p.r), linear_from_gamma(p.g), linear_from_gamma(p.b), p.a);
+}
+
 // `vfx::box_row`, three times along x (i.y = 0) or y (i.y = 1) at radius i.x, edges clamped: one invocation runs
 // one line's sliding window as the CPU does, so the sum and its rounding are exact at any radius.
 @group(0) @binding(4) var out: texture_storage_2d<rgba8uint, write>;

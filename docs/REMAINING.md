@@ -100,8 +100,8 @@ What matters most:
 | 3.1 | Rust for core functionality | DONE | 36k lines of Rust; FFmpeg only as child processes |
 | 3.2 | FFmpeg for decode, encode, filters | DONE | `src/engine/vdecode.rs`, `src/engine/mix.rs`, `src/engine/render.rs`, `src/proc.rs` |
 | 3.3 | GStreamer evaluated | MISSING | No written evaluation → R53 (decision record) |
-| 3.4 | GPU-accelerated rendering and compositing | MISSING | The compositor is CPU only (`engine/composite.rs`). → R21a-c |
-| 3.5 | Vulkan / Direct3D or another graphics API evaluated | PARTIAL | The UI renders through glow (OpenGL). wgpu 24.0.5 and egui-wgpu 0.31.1 are in `Cargo.lock` but inactive (eframe feature `wgpu` is off). → R21a, R53 |
+| 3.4 | GPU-accelerated rendering and compositing | DONE | (R21a-c) `engine/gpu`: the compositor runs on the GPU through wgpu on Vulkan (`GpuCompositor`, a `composite::Compositor` beside `CpuCompositor`), for the preview and renders alike; draws, every blend mode, Track Motion, the video FX, transitions and generators in WGSL, bit-exact against the CPU on 3000 random plans and at three parameter sets per plug-in (the clock wipe within 1). A preview frame stays on the GPU (`Picture`, shown as an egui native texture); a render reads back. Preferences › Video › GPU acceleration of video processing: Automatic, Off or an adapter. |
+| 3.5 | Vulkan / Direct3D or another graphics API evaluated | DONE | (R21a) The UI paints through wgpu on Vulkan (eframe feature `wgpu`, the default; OpenGL where there is no Vulkan), and the compositor shares its device. Direct3D 12 was not taken: wgpu's dx12 backend would add gpu-allocator and its MIT/Apache tree, and VEGAS's own compositor runs on OpenCL/Vulkan-class hardware either way. Cargo feature `glow` keeps the OpenGL painter (the compositor then opens its own device). → R53 for the docs |
 | 3.6 | Hardware video decoding and encoding | PARTIAL | Decode: `-hwaccel auto` only for HEVC/AV1 or width ≥ 2560 (`vdecode.rs:40-44`). Encode: none. → R22 |
 | 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
 | 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
@@ -196,7 +196,7 @@ What matters most:
 | 6.2 | Low-latency playback | DONE | Play start ≤ 250 ms target (`FEATURE_PLAN.md` 1.9) |
 | 6.3 | Accurate frame timing | DONE | Frames are popped against the audio clock (`FEATURE_PLAN.md` 1.5.4) |
 | 6.4 | Audio/video synchronization | DONE | Locked to the audio clock; (R9) the playhead is what is heard: the clock less the output latency the device reports, carried on between callbacks (`audio::Stamp`, test `the_playhead_follows_what_is_heard`). The manual click-track check (under 5 ms) is the user's. |
-| 6.5 | GPU-accelerated compositing | MISSING | → R21a-c |
+| 6.5 | GPU-accelerated compositing | DONE | (R21a-c) See 3.4. `docs/PERFORMANCE.md`: four full 1080p layers compose in 4.7 ms on the GPU (22 ms on the CPU), four picture-in-pictures in 1.2 ms (13 ms), four 4K layers in 30 ms (103 ms), uploads of the decoded pictures included. |
 | 6.6 | Hardware decoding when available | PARTIAL | Heavy sources only; no capability probe or preference. → R22 |
 | 6.7 | Efficient frame caching | DONE | `engine/cache.rs` (SourceCache 192 MB, CompositeCache 256 MB) |
 | 6.8 | Asynchronous media decoding | DONE | Decoder child processes and reader threads |
@@ -513,10 +513,10 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 17.1 | CPU thread scheduling | DONE | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. R12: a render's encoder runs at BELOW_NORMAL priority (`proc::below_normal`, checked in `render_queue_e2e`). R19: the render thread and its compose stripes run below normal too (`proc::below_normal_thread`, `composite::par_rows`; test `render_threads_run_below_normal`), so the preview and UI come first |
-| 17.2 | GPU acceleration | MISSING | → R21a |
+| 17.2 | GPU acceleration | DONE | (R21a) Preferences › Video › "GPU acceleration of video processing" as VEGAS has it (Off or an adapter), plus Automatic (the best Vulkan adapter, the default). The page says what composites now. |
 | 17.3 | Hardware video decoding | PARTIAL | → R22 |
 | 17.4 | Hardware encoding | MISSING | → R22 |
-| 17.5 | GPU compositing | MISSING | → R21a-c |
+| 17.5 | GPU compositing | DONE | (R21a-c) See 3.4 and 6.5. |
 | 17.6 | Memory management | DONE | Byte-capped LRU caches (`engine/cache.rs`), decoder cap of 8 |
 | 17.7 | Cache management | PARTIAL | Fixed sizes. No preference, no disk cache, no "clear cache". → R23 |
 | 17.8 | SSD storage (cache/prerender location) | MISSING | The prerender and temp folder fields are greyed (`settings.rs:344`, `prefs.rs:112`). → R23 |
@@ -1570,6 +1570,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R21a: GPU compositor core on wgpu (L)
 
+**Status: DONE.** Built as designed below, except:
+- Textures are `Rgba8Uint`, not `Rgba8Unorm`: the passes replay the CPU compositor's integer maths on the bytes as they are, and the float blend modes replay its f32 operations in order through `engine/gpu/math.wgsl` (every operation pinned against fusing, division and square root corrected to the rounded result), so the parity is bit-exact rather than within 2: 3000 random plans of 1-4 layers in every blend mode (`gpu_matches_cpu_on_random_plans`, `gpu_parity_histogram`), Hard Mix included. The output for the preview is an `Rgba8Unorm` texture with an sRGB view (R21c).
+- The UI paints through wgpu (eframe feature `wgpu`, default) on Vulkan, and the compositor shares its device (`gpu::attach`); the `glow` feature keeps the OpenGL painter, and a preference naming another adapter opens it on a device of its own. The screenshot harness runs on both painters; against the glow screenshots the VEGAS 23 look differs by 1-2 in 255 at antialiased edges and through textures (egui-wgpu's sRGB conversion in the shader against egui_glow's; 6.6 % of the pixels) and nowhere else but the Record Time readout, which counts free disk space.
+- Found while reviewing the paused WIP: `floor(x + 0.5)` rounded up just under a half, and ClipColor divided 0 by 0 on a uniform out-of-range grey (a NaN the CPU cast to black); both fixed on both sides (`composite::set_lum`).
+- Two threads recording on one device at once (a render beside the preview) lost draws on wgpu 24's Vulkan backend (the parity tests run in parallel reproduced it); each recording step takes the compositor's `record` lock, which the parity tests now pass in parallel 10 times over.
+- Bench (`bench_compose`, in `tools/bench.ps1` and `docs/PERFORMANCE.md`): four full 1080p layers 4.7 ms on the GPU against 22 ms on the CPU (about three quarters of it uploading the four decoded 8 MB pictures), four picture-in-pictures 1.2 ms against 13 ms. The 4 ms gate holds for the picture-in-pictures and not for four full frames on this integrated Radeon (a Z1 Extreme), where the upload of 32 MB a frame is the cost.
+
 **Scope**
 - Switch eframe to the `wgpu` renderer: feature `wgpu`, which uses wgpu 24.0.5 and egui-wgpu 0.31.1 already in `Cargo.lock`. Keep glow as a fallback feature.
 - `trait Compositor` with `CpuCompositor` (today's code) and `GpuCompositor`: per-layer textures, affine draw, opacity, the 9 (plus R7) blend modes and track motion in WGSL.
@@ -1589,6 +1596,11 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R21b: GPU effects, transitions and generators (L)
 
+**Status: DONE.** Built as designed below, except:
+- `PluginInfo::gpu: Option<GpuPort>` names the port; the 15 video FX plus Color Grading, the 8 transitions and the solid, gradient, checkerboard and noise generators have one (`engine/gpu/fx.rs`, `fx.wgsl`). Cookie Cutter, Bezier Masking (rasterised masks), the text generators and OFX plug-ins have none: a picture, track, transition, adjustment or output chain with one is made by the CPU code and uploaded, so mixed plans compose on the GPU with those pieces exact.
+- Levels and curves are the CPU's own 256-entry LUTs (`vfx::color_op_for`, `Grade::steps`), uploaded as a storage buffer; a .cube is a storage buffer with the CPU's trilinear maths rather than a sampled 3D texture, so it is bit-exact. The blur is a compute shader running the CPU's sliding window, one invocation per line, exact at any radius. Resampling, Reduce Interlace Flicker, Adjustment mixes and the opaque output step are passes too.
+- Parity (`gpu_video_fx_match_cpu`, `gpu_transitions_match_cpu`, `gpu_generators_match_cpu`, three parameter sets each): every plug-in bit-exact, the clock wipe within 1 (the GPU's `atan2`); a clock wipe with no feather can differ on the pixels exactly at its edge.
+
 **Scope:** WGSL ports of the 15 video FX (separable blur, colour ops, levels/curves via 1D LUT texture, .cube via 3D texture, chroma key, sharpen, vignette, mirror, border, crop), the 8 transitions and the noise/gradient/checker generators. Text stays CPU-rendered and uploaded.
 
 **Files:** `engine/gpu/fx/*.wgsl`, `engine/gpu/mod.rs`, `engine/plugins.rs` (a `gpu: Option<…>` per plug-in).
@@ -1596,6 +1608,11 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 **Acceptance tests:** a parity test per plug-in at three parameter sets (≤ 2 LSB; blur ≤ 3).
 
 ### R21c: Zero-copy preview and float pipeline hook (M)
+
+**Status: DONE.** Built as designed below, except:
+- `engine::picture::Picture` carries a frame: pixels (the CPU), or the GPU's output texture with the pixels read back once if asked (`image`; a render, the scopes, a snapshot, the Overlays channel view). `decode::PreviewTex::Native` shows it through `egui_wgpu::Renderer::register_native_texture` (an `Rgba8Unorm` texture through its sRGB view, as egui's own textures), freed when the next frame replaces it. `preview_frames_stay_on_the_gpu_and_renders_read_back`: the compositor's readback counter stays at 0 through a preview frame and moves once when its pixels are asked for as a render asks; the harness prints the count with `MILAN_SHOT_TRACE`.
+- `GpuCompositor::set_intermediate(Intermediate::Rgba16Float)` keeps the output in linear-light 16-bit float (the preview samples it, a readback converts back within 1 in 255: `float_intermediate_reads_back_within_one`); the passes still compose in 8-bit until R40b.
+- 4K Best bench: four full 3840x2160 layers 30 ms on the GPU against 103 ms on the CPU (uploads of 133 MB a frame included); with the readback 49 ms.
 
 **Scope**
 - Register the GPU output as an egui native texture (`egui_wgpu::RenderState::renderer.register_native_texture`), so preview playback needs no readback.
