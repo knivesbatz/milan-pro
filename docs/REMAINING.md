@@ -47,7 +47,7 @@ What matters most:
 - **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Missing: hardware encoders (R22).
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
-- **Reliability gaps:** no schema version, no `.bak` on save, no crash-recovery prompt, fixed 120 s autosave, no logging (the release exe has no console, so `eprintln!` goes nowhere), no diagnostic report.
+- **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
 - **Documentation gaps:** no REFERENCE_ANALYSIS, ARCHITECTURE, CONTRIBUTING, issue templates, compatibility matrix, format report or licence review. `docs/FEATURE_PLAN.md` line 3 still says "plan only. Nothing here is built yet", which is stale.
 - **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
@@ -477,8 +477,8 @@ What matters most:
 | 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
 | 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
 | 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
-| 15.11 | Error logging | MISSING | 7 `eprintln!` calls, and the release exe has `windows_subsystem = "windows"` (`main.rs:1`), so they go nowhere. No log file. → R44 |
-| 15.12 | Diagnostic reports | MISSING | → R44 |
+| 15.11 | Error logging | DONE | R44: `src/logger.rs`, Milan Pro's own file logger behind the `log` crate: `%LOCALAPPDATA%\MilanPro\logs\milan-<date>.log`, 2 MB × 5 files, level in Preferences › Update; every former stderr print logs (grep test `logger::tests::no_eprintln_left_in_the_tree`); updater, autosave, render-queue, plug-in and open/save events are logged |
+| 15.12 | Diagnostic reports | DONE | R44: Help › Create Diagnostic Report writes `%LOCALAPPDATA%\MilanPro\diagnostics\report-<time>\` with `system.txt` (Windows build, CPU, memory, GPUs and drivers through DXGI, displays), `ffmpeg.txt` (`-version`, `-hwaccels`), `prefs.json`, the logs and the crash files (`src/diagnostics.rs`, `dialogs/diagnostics.rs`); a panic writes `crashes\crash-<time>.txt` (version, backtrace, project summary, last 500 log lines) and a native crash a minidump beside it (`SetUnhandledExceptionFilter` → `MiniDumpWriteDump`); the next start offers Open crash report / Report on GitHub (the issue page with the version prefilled; nothing uploaded) |
 | 15.13 | Proper project format | DONE | `.mnle` JSON (`project.rs`) |
 | 15.14 | Stores structure, media, tracks, FX, transitions, keyframes, audio settings, workspace | PARTIAL | All editing data is stored, (R8a) busses, assignable FX chains, routing, sends and Pan Type included (`Timeline.audio`, `Track.out/sends/pan_type`). The workspace layout lives in prefs, not the project (acceptable). Channel layout settings do not exist yet. → R10a |
 | 15.15 | Versioned schema with safe migration | DONE | R42: `Project.format_version` (`FORMAT_VERSION` = 1; absent = 0), `project/migrate.rs` steps run on the JSON before deserializing (0→1 tested); a file from a newer build opens read-only ("(read-only)" in the title, Save becomes Save As), never down-saved in place |
@@ -537,7 +537,7 @@ What matters most:
 | 18.2 | Rust workspace with independently testable modules | PARTIAL | One crate, `milan-pro`; unit tests per module. → R50 |
 | 18.3 | Timeline not coupled to one codec library or rendering API | DONE | `trait Sources`, `compose()` frame-in/frame-out, FFmpeg behind `vdecode`/`mix` |
 | 18.4 | Meaningful error handling | DONE | `anyhow` plus user-facing messages throughout |
-| 18.5 | Logging | MISSING | → R44 |
+| 18.5 | Logging | DONE | R44: see 15.11 |
 | 18.6 | Automated tests | DONE | 319 unit tests |
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
 | 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
@@ -1971,6 +1971,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a stale marker is detected (fake pid); rotation keeps N; a recovered project opens unsaved with the original untouched; ignored e2e: kill the app (`taskkill /F`), restart, and the dialog lists the project.
 
 ### R44: Logging, crash reports, diagnostic report (M-L)
+
+**Status: DONE.** Built as designed below, with these differences: the module is `src/logger.rs` (a module named `log` would shadow the `log` crate inside the tree); the level and the privacy option live on Preferences › Update (Milan Pro's own page, shared with R46) rather than General; crash files go to `%LOCALAPPDATA%\MilanPro\crashes\`. The exception filter writes the minidump with `MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo`; release builds are stripped, so a panic's backtrace is addresses only (the minidump carries the context a debugger needs). The plug-in host's one stderr print now goes to its `MILAN_HOST_LOG` file (its stderr is a null handle). Harness: `MILAN_DIALOG=crash-offer`, `MILAN_DIALOG=prefs-update`; the harness logs to stderr only and writes no crash files unless `MILAN_APPDATA` is set. Tests: `logger::tests::{log_rotation_keeps_n_files_and_the_ring_the_last_lines, panic_hook_writes_a_crash_file (a child process panics), no_eprintln_left_in_the_tree}`, `diagnostics::tests::{diagnostic_report_has_every_section, gpu_list_names_an_adapter}`, `dialogs::diagnostics::tests::issue_url_carries_the_version_and_nothing_else`.
 
 **Scope**
 - Add `log = "0.4"` (already in the lock; MIT/Apache).

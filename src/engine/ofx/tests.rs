@@ -609,7 +609,7 @@ fn the_host_can_make_a_vulkan_device() {
 fn vegas15_compat_report() {
     let dir = std::env::var_os("MILAN_VEGAS_OFX").map_or_else(|| PathBuf::from(r"C:\Program Files\VEGAS\VEGAS Pro 15.0\OFX Video Plug-Ins"), PathBuf::from);
     if !dir.is_dir() {
-        eprintln!("{} is not there: nothing to test", dir.display());
+        println!("{} is not there: nothing to test", dir.display());
         return;
     }
     let out_dir = std::env::var_os("MILAN_COMPAT_OUT").map_or_else(|| std::env::temp_dir().join("milan-agent").join("ofx2").join("compat"), PathBuf::from);

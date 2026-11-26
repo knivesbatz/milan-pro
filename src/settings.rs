@@ -35,6 +35,11 @@ pub struct Prefs {
     pub autosave_on: bool,
     pub autosave_minutes: u32,
     pub autosave_keep: u32,
+    /// R44: Preferences › Update: the log level ("error" ... "trace"), "crash reports leave out file names and paths",
+    /// and the crash report last offered at startup (so it is offered once).
+    pub log_level: String,
+    pub crash_privacy: bool,
+    pub crash_seen: Option<String>,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
@@ -257,6 +262,9 @@ impl Default for Prefs {
             autosave_on: true,
             autosave_minutes: 2,
             autosave_keep: 5,
+            log_level: "info".into(),
+            crash_privacy: false,
+            crash_seen: None,
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
@@ -340,6 +348,11 @@ impl Prefs {
 
     fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("prefs.json"))
+    }
+
+    /// R44: the preferences file (for the diagnostic report).
+    pub fn file() -> Option<PathBuf> {
+        Self::path()
     }
 
     pub fn load() -> Self {

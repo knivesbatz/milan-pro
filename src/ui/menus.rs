@@ -184,7 +184,7 @@ impl CmdState {
         let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
-            | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
+            | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
             // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
@@ -1213,6 +1213,7 @@ pub const HELP: &[M] = &[
     V16(&X("&Welcome...", Fixed("only in the VEGAS 23 look (File > Welcome Screen)"))),
     S,
     C("Check for &Updates...", CheckForUpdates),
+    C("Create &Diagnostic Report...", DiagnosticReport),
     V23(&X("Download User Manual", Later("R53"))),
     S,
     C("About Milan Pro...", About),

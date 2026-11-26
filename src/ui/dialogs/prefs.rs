@@ -7,15 +7,22 @@ use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
 use super::super::theme::{self, LookChoice, UiLook, Variant};
 
+// "Update" is Milan Pro's own page (R44/R46): the updater, the log and crash-report options.
 const ROWS16: &[&[&str]] = &[
     &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
-    &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation"],
+    &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation", "Update"],
 ];
 const ROWS23: &[&[&str]] = &[
     &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
     &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation"],
-    &["File I/O", "Deprecated Features"],
+    &["File I/O", "Deprecated Features", "Update"],
 ];
+
+/// The Update page's index in `rows` (it is last in both looks).
+pub fn update_tab(look: UiLook) -> usize {
+    let rows = if look == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
+    rows.iter().flat_map(|r| r.iter()).position(|n| *n == "Update").unwrap_or(0)
+}
 const GENERAL: usize = 0;
 const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
@@ -81,6 +88,7 @@ impl PrefsDialog {
                 VST_EFFECTS => vst_effects(ui, d),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track, bottom),
+                k if k == update_tab(t.look()) => update(ui, d),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
             ui.add_space(8.0);
@@ -191,6 +199,45 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
         (d.autosave_on, d.autosave_minutes, d.autosave_keep) = (true, 2, 5);
         d.overlay_library = None;
+    }
+}
+
+/// R44/R46: Milan Pro's own page: the updater's settings and the log and crash-report options.
+fn update(ui: &mut Ui, d: &mut Prefs) {
+    ui.label("Updates:");
+    super::field_box(ui, 4, |ui| {
+        ui.set_width(ui.available_width());
+        widgets::checkbox(ui, &mut d.auto_update, "Check for updates automatically at startup");
+    });
+    ui.add_space(8.0);
+    ui.label("Logging and crash reports:");
+    super::field_box(ui, 4, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label("Log level:");
+            let current = d.log_level.clone();
+            widgets::combo(ui, "log_level", 100.0, current.as_str(), |ui| {
+                for l in crate::logger::LEVEL_NAMES {
+                    if ui.selectable_label(d.log_level == l, l).clicked() {
+                        d.log_level = l.into();
+                    }
+                }
+            });
+        });
+        widgets::checkbox(ui, &mut d.crash_privacy, "Crash reports and diagnostic reports leave out file names and paths");
+        ui.horizontal(|ui| {
+            if widgets::push_button(ui, "Open Log Folder").clicked() {
+                if let Some(dir) = crate::logger::logs_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::open_file(&dir);
+                }
+            }
+            ui.label(crate::logger::logs_dir().map(|p| p.display().to_string()).unwrap_or_default());
+        });
+        ui.label("A crash writes crash-<time>.txt (and a minidump) next to the logs; the next start offers to open it or report it on GitHub. Nothing is sent by itself.");
+    });
+    if default_all(ui) {
+        (d.auto_update, d.log_level, d.crash_privacy) = (true, "info".into(), false);
     }
 }
 

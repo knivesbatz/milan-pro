@@ -365,6 +365,7 @@ impl MeridianApp {
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
+        crate::logger::set_privacy(prefs.crash_privacy);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
@@ -565,6 +566,7 @@ impl MeridianApp {
         app.autosave.force_first = app.rel.autosave && app.shot.is_some() && std::env::var_os("MILAN_AUTOSAVE_NOW").is_some();
         if app.rel.autosave {
             app.offer_recovery();
+            app.offer_crash_report();
         }
         if !launch.demo {
             app.prefs.overlays_placed = true;
@@ -761,6 +763,9 @@ impl eframe::App for MeridianApp {
 
         // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
         let title = format!("{}{}{} - Milan Pro", self.project.name, if self.project.read_only { " (read-only)" } else { "" }, if self.project.modified { " *" } else { "" });
+        // R44: what a crash report says about the project (paths only when the privacy option is off).
+        let summary = self.project.summary();
+        crate::logger::set_project(format!("{} ({}): {summary}", self.project.name, self.project.path.as_ref().map_or("unsaved".to_string(), |p| p.display().to_string())), summary.clone());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         let t = theme::get();
         // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.
@@ -1271,13 +1276,13 @@ impl eframe::App for MeridianApp {
             return;
         }
         let Some(mut p) = Prefs::try_load() else {
-            eprintln!("Could not read the preferences; the window layout is not saved.");
+            log::warn!("could not read the preferences; the window layout is not saved");
             return;
         };
         p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
         p.overlays_placed = true; // this layout has the Overlays window placed already (or closed on purpose)
         if let Err(e) = p.save() {
-            eprintln!("Could not save the window layout: {e}");
+            log::warn!("could not save the window layout: {e}");
         }
     }
 }

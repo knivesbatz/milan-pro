@@ -2,8 +2,9 @@
 //! read, the notes from opening a file (migration, read-only, repairs), and (R43-R46) crash recovery, the crash-report
 //! offer, the diagnostic report and the roll-back offer.
 use eframe::egui;
+use std::path::PathBuf;
 use crate::project::CorruptOffer;
-use crate::ui::dialogs::{self, CorruptChoice, RecoverChoice};
+use crate::ui::dialogs::{self, CorruptChoice, CrashChoice, DiagAction, RecoverChoice};
 use super::MeridianApp;
 
 #[derive(Default)]
@@ -18,12 +19,15 @@ pub struct Rel {
     pub autosave: bool,
     /// R43: the Recover Projects dialog, open.
     pub recover: Option<dialogs::Recover>,
+    /// R44: the newest crash report not offered yet, and Help › Create Diagnostic Report, open.
+    pub crash_offer: Option<PathBuf>,
+    pub diagnostics: Option<dialogs::Diagnostics>,
 }
 
 impl Rel {
     /// A modal of this module is open (keys go to it, not the timeline).
     pub fn modal(&self) -> bool {
-        self.save_version.is_some() || self.corrupt.is_some() || self.open_notes.is_some() || self.recover.is_some()
+        self.save_version.is_some() || self.corrupt.is_some() || self.open_notes.is_some() || self.recover.is_some() || self.crash_offer.is_some() || self.diagnostics.is_some()
     }
 }
 
@@ -38,7 +42,36 @@ impl MeridianApp {
         }
     }
 
+    /// R44, at start: the newest crash report, once.
+    pub(super) fn offer_crash_report(&mut self) {
+        let Some(dir) = crate::logger::crashes_dir() else { return };
+        let Some(newest) = crate::logger::crash_reports(&dir).into_iter().next() else { return };
+        let name = newest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if self.prefs.crash_seen.as_deref() != Some(name.as_str()) {
+            log::info!("offering crash report {name}");
+            self.rel.crash_offer = Some(newest);
+        }
+    }
+
     pub(super) fn show_reliability(&mut self, ctx: &egui::Context) {
+        if let Some(report) = self.rel.crash_offer.clone() {
+            if let Some(choice) = dialogs::crash_offer_window(ctx, &report) {
+                match choice {
+                    CrashChoice::OpenReport => dialogs::open_file(&report),
+                    CrashChoice::ReportOnGitHub => dialogs::open_url(&dialogs::issue_url(crate::updater::CURRENT, &report)),
+                    CrashChoice::Close => {}
+                }
+                self.rel.crash_offer = None;
+                self.prefs.crash_seen = report.file_name().map(|n| n.to_string_lossy().into_owned());
+                self.save_prefs();
+            }
+        }
+        if let Some(choice) = self.rel.diagnostics.as_mut().and_then(|d| d.show(ctx)) {
+            if let DiagAction::OpenFolder(dir) = choice {
+                dialogs::open_file(&dir);
+            }
+            self.rel.diagnostics = None;
+        }
         if let Some(choice) = self.rel.recover.as_mut().and_then(|r| r.show(ctx)) {
             let r = self.rel.recover.as_mut().expect("the dialog is open");
             match choice {

@@ -886,6 +886,8 @@ impl MeridianApp {
             UnfinishedFeatures => self.unfinished_open = true,
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
+            // R44: a folder of system info, FFmpeg details, preferences, logs and crash reports.
+            DiagnosticReport => self.rel.diagnostics = Some(dialogs::Diagnostics::start(ctx, self.prefs.crash_privacy)),
             // Edit
             // A drag in progress holds its own undo step until release; undoing under it would stack a half drag.
             Undo | Redo | UndoAll if self.dragging() => {}
@@ -2174,6 +2176,9 @@ impl MeridianApp {
             self.look = new.look;
             self.prefs = new;
             self.save_prefs();
+            // R44: the logger follows the preferences at once.
+            crate::logger::set_level(crate::logger::level_from_name(&self.prefs.log_level));
+            crate::logger::set_privacy(self.prefs.crash_privacy);
             if rescan {
                 self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
             }
@@ -2437,7 +2442,7 @@ impl MeridianApp {
                 }
                 // With MILAN_SCREENSHOT the message stays up for the screenshot, which then closes the app.
                 State::Message(m) if self.shot.is_none() => {
-                    eprintln!("update: {m}");
+                    log::warn!("update: {m}");
                     self.updater.dismiss();
                     self.request(ctx, MenuAction::Exit);
                 }
@@ -2588,6 +2593,8 @@ impl MeridianApp {
             // The Edit menu dropped open (look screenshots).
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // R44/R46 review: Preferences on Milan Pro's own Update page.
+            "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab(crate::ui::theme::get().look()))),
             // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
             // copy): the dialog needs an event in the clipboard.
@@ -2604,6 +2611,14 @@ impl MeridianApp {
             }
             // R43 review: the Recover Projects dialog over two made-up crashed sessions.
             "recover" => self.rel.recover = Some(dialogs::Recover::new(crate::autosave::demo_items(&self.project))),
+            // R44 review: the offer made at the start after a crash, over a made-up report beside the demo media.
+            "crash-offer" => {
+                let dir = crate::demo::media_dir().join("crashes");
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("crash-20261126-083012.txt");
+                let _ = std::fs::write(&path, format!("Milan Pro {} crash report (made up for the screenshot)\n", crate::updater::CURRENT));
+                self.rel.crash_offer = Some(path);
+            }
             "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),

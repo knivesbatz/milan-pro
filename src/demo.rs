@@ -175,13 +175,13 @@ impl Shot {
         });
         if let Some(image) = image {
             if let Err(e) = save_png(&self.path, &image) {
-                eprintln!("screenshot: {e}");
+                log::error!("screenshot: {e}");
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
         if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
-            eprintln!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
+            log::info!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
         }
         if busy || !sized {
             self.quiet_since = None;

@@ -162,17 +162,25 @@ fn probe_mode() {
     use windows_sys::Win32::System::StationsAndDesktops::{CreateDesktopW, DESKTOP_CREATEWINDOW, DESKTOP_READOBJECTS, DESKTOP_WRITEOBJECTS, SetThreadDesktop};
     use windows_sys::Win32::System::Threading::GetCurrentThreadId;
     use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW, IsWindowVisible};
+    // The host's stderr goes nowhere (Milan opens it on a null handle), so a desktop failure is noted in the log file.
+    let mut desktop_error = None;
     if let Some(name) = std::env::var_os("MILAN_HOST_DESKTOP").filter(|n| !n.is_empty()) {
         let w: Vec<u16> = name.to_string_lossy().encode_utf16().chain([0]).collect();
         // SAFETY: a NUL-terminated name; the desktop handle is kept for the life of the process.
         unsafe {
             let d = CreateDesktopW(w.as_ptr(), std::ptr::null(), std::ptr::null(), 0, DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS, std::ptr::null());
             if d.is_null() || SetThreadDesktop(d) == 0 {
-                eprintln!("milan-plugin-host: cannot use desktop {}: {}", name.to_string_lossy(), std::io::Error::last_os_error());
+                desktop_error = Some(format!("cannot use desktop {}: {}", name.to_string_lossy(), std::io::Error::last_os_error()));
             }
         }
     }
     let Some(log) = std::env::var_os("MILAN_HOST_LOG").filter(|n| !n.is_empty()) else { return };
+    if let Some(e) = desktop_error {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&log) {
+            let _ = writeln!(f, "error: {e}");
+        }
+    }
     // SAFETY: a plain query.
     let main_thread = unsafe { GetCurrentThreadId() };
     unsafe extern "system" fn each(h: windows_sys::Win32::Foundation::HWND, titles: isize) -> windows_sys::Win32::Foundation::BOOL {

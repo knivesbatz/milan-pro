@@ -983,7 +983,7 @@ impl RenderQueue {
         let Some(f) = &self.file else { return };
         let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(anyhow::Error::from);
         if let Err(e) = r.and_then(|()| crate::project::write_atomic(f, &serde_json::to_string_pretty(&self.jobs)?)) {
-            eprintln!("Could not save the render queue {}: {e}", f.display());
+            log::warn!("could not save the render queue {}: {e}", f.display());
         }
     }
 

@@ -1388,6 +1388,23 @@ impl Project {
         Ok(Opened { project, notes })
     }
 
+    /// R44: what a crash report says about the project: counts only, never a path or a media name.
+    pub fn summary(&self) -> String {
+        let tl = &self.timeline;
+        let events: usize = tl.video_tracks.iter().chain(&tl.audio_tracks).map(|t| t.clips.len()).sum();
+        format!(
+            "{} video and {} audio tracks, {events} events, {} media items, {}x{} at {} fps, format {}{}",
+            tl.video_tracks.len(),
+            tl.audio_tracks.len(),
+            self.media_pool.len(),
+            self.settings.width,
+            self.settings.height,
+            self.settings.frame_rate,
+            self.format_version,
+            if self.modified { ", unsaved changes" } else { "" }
+        )
+    }
+
     pub fn mark_modified(&mut self) {
         self.modified = true;
     }
