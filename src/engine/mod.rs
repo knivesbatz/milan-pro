@@ -6,6 +6,9 @@
 pub mod afx;
 pub mod aplug;
 pub mod cache;
+// shortcut: the cache sizes are read by the R23 worker; drop this allow when it lands.
+#[allow(dead_code)]
+pub mod caches;
 pub mod composite;
 // shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the
 // batch-15 plug-in UI; drop these allows when it lands.
@@ -13,6 +16,7 @@ pub mod composite;
 pub mod fonts;
 pub mod generate;
 pub mod gpu;
+pub mod hw;
 // shortcut: key editing is used from batch 10 (keyframe UI) on.
 #[allow(dead_code)]
 pub mod keyframes;

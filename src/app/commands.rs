@@ -2190,6 +2190,8 @@ impl MeridianApp {
                 self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
             }
             crate::engine::gpu::choose(&self.prefs.gpu);
+            crate::engine::hw::set_prefs(&self.prefs.hw_decode, &self.prefs.hw_encode);
+            crate::engine::caches::configure(&self.prefs);
         }
         self.show_organize(ctx);
         if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {

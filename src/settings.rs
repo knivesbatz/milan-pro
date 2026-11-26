@@ -151,6 +151,18 @@ pub struct Prefs {
     /// Overlays window was put once beside Media Generators in the saved last layouts.
     pub overlay_library: Option<PathBuf>,
     pub overlays_placed: bool,
+    /// R22: Preferences › Video › "Video decode acceleration": "" Automatic (heavy sources on the hwaccel that measured
+    /// fastest), `engine::hw::OFF`, or a hwaccel ("d3d11va", "cuda", "qsv"); and the "Encode device" Render As
+    /// hardware templates use: "" Automatic (the first that passed), `OFF`, or a device ("nvenc", "qsv", "amf", "mf").
+    pub hw_decode: String,
+    pub hw_encode: String,
+    /// R23: Preferences › Video › "Dynamic RAM Preview max (MB)" (VEGAS's default 200), the disk frame cache for heavy
+    /// sources' decoded frames in MB (Milan Pro's own; 0 = off), the prerendered files folder (None =
+    /// %LOCALAPPDATA%\MilanPro\prerender) and the template Selectively Prerender Video last used.
+    pub ram_preview_mb: u32,
+    pub disk_cache_mb: u32,
+    pub prerender_folder: Option<PathBuf>,
+    pub prerender_template: Option<String>,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -314,6 +326,12 @@ impl Default for Prefs {
             ofx: Default::default(),
             overlay_library: None,
             overlays_placed: false,
+            hw_decode: String::new(),
+            hw_encode: String::new(),
+            ram_preview_mb: 200,
+            disk_cache_mb: 0,
+            prerender_folder: None,
+            prerender_template: None,
         }
     }
 }

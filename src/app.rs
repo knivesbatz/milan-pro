@@ -372,6 +372,11 @@ impl MeridianApp {
             crate::engine::gpu::attach(rs);
         }
         crate::engine::gpu::choose(&prefs.gpu);
+        // R22: the hardware acceleration table, from its cache or measured on a background thread (the harness reads
+        // the cache but never writes it); R23: the caches' sizes.
+        crate::engine::hw::set_prefs(&prefs.hw_decode, &prefs.hw_encode);
+        crate::engine::hw::start(!launch.demo, false);
+        crate::engine::caches::configure(&prefs);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.

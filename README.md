@@ -15,7 +15,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Real-time multi-layer preview with persistent decoders, frame caches and video proxies
 - Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
-- Render As through the same engine as the preview (FFmpeg encoders)
+- Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
 

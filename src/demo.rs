@@ -11,6 +11,8 @@
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
 //! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
+//! - `MILAN_HW_TABLE=<file.json>` (R22): the hardware acceleration table to show in Preferences › Video, loaded as it
+//!   is (no probe); `hw_capability_table` writes one to %TEMP%\milan-agent\hw-probe\hw.json.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;

@@ -256,6 +256,10 @@ impl RenderDialog {
         if let Some(v) = t.video_line(s, self.opts.rotate) {
             ui.label(format!("Video:  {v}"));
         }
+        // R22: a hardware template whose encoder is not available here says it renders in software.
+        if let (_, Some(note)) = t.resolved() {
+            ui.label(RichText::new(note).color(theme::get().text_dim));
+        }
         if let Some(a) = t.audio_line(s) {
             ui.label(format!("Audio:  {a}"));
         }

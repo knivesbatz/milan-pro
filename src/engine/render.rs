@@ -310,6 +310,10 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
         ctl.kill();
     }
     log.stderr = said.join().unwrap_or_default();
+    // R22: a hardware template that rendered in software says so in the log.
+    if let (_, Some(note)) = t.resolved() {
+        log.stderr.insert(0, format!("[milan] {note}"));
+    }
     let tail = summary(&log.stderr);
     let status = ctl.take_child().map(|mut c| c.wait());
     let complete = fed?;
@@ -454,7 +458,9 @@ mod tests {
             match (&t.video, &t.audio) {
                 (Some(v), au) => {
                     assert!(joined.contains("-f rawvideo -pix_fmt rgba -s 1920x1080 -framerate 30000/1001 -i - ") || v.size.is_some(), "{joined}");
-                    assert!(joined.contains(&format!("-c:v {} ", v.codec)) && joined.contains(&format!("-pix_fmt {}", v.pix_fmt())), "{}: {joined}", t.name);
+                    // R22: a hardware template names the encoder it resolves to (the software one in a test run).
+                    let enc = t.resolved().0.video.unwrap().codec;
+                    assert!(joined.contains(&format!("-c:v {enc} ")) && joined.contains(&format!("-pix_fmt {}", v.pix_fmt())), "{}: {joined}", t.name);
                     assert_eq!(joined.contains(&format!("-f f32le -ar 48000 -ac 2 -i {} -map 0:v -map 1:a", tmp.display())), au.is_some(), "{joined}");
                     assert_eq!(joined.contains("out_color_matrix=bt709") && joined.contains("-colorspace bt709"), !crate::render::is_rgb(v.pix_fmt()), "{joined}");
                 }
@@ -580,6 +586,97 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         job.status()
+    }
+
+    /// R22: a hardware template with hardware forced unavailable renders with the software encoder and says so in the
+    /// Render As details (`resolved`), its arguments and the log; a device's encoder that did not pass likewise.
+    #[test]
+    fn hardware_templates_fall_back_to_software_with_a_note() {
+        use crate::engine::hw;
+        let _g = hw::tests::CHOICE.lock().unwrap_or_else(|e| e.into_inner());
+        let s = settings();
+        let find = |n: &str| BUILTIN.iter().find(|t| t.name == n).unwrap().clone();
+        let h264 = find("MP4 H.264 (hardware)");
+        hw::set_table(None);
+        hw::set_prefs("", "");
+        let (t, note) = h264.resolved();
+        assert_eq!(t.video.as_ref().unwrap().codec, "libx264");
+        assert!(note.as_deref().is_some_and(|n| n.contains("not been tested yet") && n.ends_with("rendering with H.264 in software.")), "{note:?}");
+        assert!(h264.video_args(&s).join(" ").starts_with("-c:v libx264 -crf 23 -preset medium -pix_fmt yuv420p"), "{:?}", h264.video_args(&s));
+        // With a table: the first device that passed, with its own rate control.
+        hw::set_table(Some(hw::tests::amd_table()));
+        let (t, note) = h264.resolved();
+        assert_eq!((t.video.as_ref().unwrap().codec.as_str(), note), ("h264_amf", None));
+        assert_eq!(h264.video_args(&s).join(" "), "-c:v h264_amf -rc cqp -qp_i 23 -qp_p 23 -quality balanced -pix_fmt yuv420p");
+        assert!(h264.video_line(&s, false).unwrap().contains("H.264 (AMD AMF)"));
+        hw::set_prefs("", "mf");
+        let hevc = find("MP4 HEVC (hardware)");
+        assert_eq!(hevc.video_args(&s).join(" "), "-c:v hevc_mf -rate_control quality -quality 26 -pix_fmt yuv420p -tag:v hvc1");
+        // Forced unavailable (hardware encoding Off has the same effect): software, with the note.
+        hw::force_unavailable(true);
+        let (t, note) = hevc.resolved();
+        assert_eq!(t.video.as_ref().unwrap().codec, "libx265");
+        assert!(note.as_deref().is_some_and(|n| n.contains("HEVC (hardware) is not available") && n.ends_with("rendering with HEVC in software.")), "{note:?}");
+        assert!(hevc.check().is_ok(), "a template that falls back still renders");
+        // A concrete device encoder in a user template: kept while it passed, software otherwise; its quality scale
+        // (Media Foundation's runs upwards) is not carried over.
+        hw::force_unavailable(false);
+        let mut user = hevc.clone();
+        user.video.as_mut().unwrap().codec = "hevc_mf".into();
+        user.video.as_mut().unwrap().rate = crate::render::Rate::Quality(80);
+        assert_eq!(user.check(), Ok(()));
+        assert_eq!(user.resolved().0.video.unwrap().codec, "hevc_mf");
+        hw::set_prefs("", hw::OFF);
+        let (t, note) = user.resolved();
+        assert_eq!((t.video.as_ref().unwrap().codec.as_str(), t.video.as_ref().unwrap().rate), ("libx265", crate::render::Rate::Default));
+        assert!(note.is_some());
+        // AV1: no AV1 encoder passed on the AMD table, so Automatic falls back; the quality on SVT-AV1's scale is kept.
+        hw::set_prefs("", "");
+        let (t, note) = find("MP4 AV1 (hardware)").resolved();
+        assert_eq!((t.video.as_ref().unwrap().codec.as_str(), t.video.as_ref().unwrap().rate), ("libsvtav1", crate::render::Rate::Quality(30)));
+        assert!(note.as_deref().is_some_and(|n| n.contains("no hardware encoder for it passed")), "{note:?}");
+        // Software templates are untouched.
+        assert_eq!(find("YouTube 1080p").resolved().1, None);
+        hw::set_table(None);
+    }
+
+    /// Needs ffmpeg and a graphics card with a working encoder (this machine: AMD AMF or Media Foundation). The probe
+    /// runs (about 10 s), then a 1 s render with "MP4 H.264 (hardware)" goes through the first encoder that passed, and
+    /// its file decodes as H.264. Skips when none passed. `cargo test --release -- --ignored render_with_hardware_encoder`
+    #[test]
+    #[ignore]
+    fn render_with_hardware_encoder() {
+        use crate::engine::hw;
+        let _g = hw::tests::CHOICE.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join("milan-agent").join(format!("hw-render-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        hw::set_table(Some(hw::probe(&std::env::temp_dir().join("milan-agent").join("hw-probe"), |_| {})));
+        hw::set_prefs("", "");
+        let Some(enc) = hw::encoder_for("h264") else {
+            println!("SKIPPED: no hardware H.264 encoder passed on this computer");
+            hw::set_table(None);
+            return;
+        };
+        let path = dir.join("src.mp4");
+        assert!(crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=d=1:s=1280x720:r=30", "-pix_fmt", "yuv420p"]).arg(&path).status().unwrap().success());
+        let m = crate::media::probe_media(&path).unwrap();
+        let mut p = Project::new("hw");
+        (p.settings.width, p.settings.height, p.settings.frame_rate) = (1280, 720, 30.0);
+        p.timeline.video_tracks[0].clips.push(Clip::from_media(&m, 0.0));
+        p.media_pool.push(m);
+        let t = BUILTIN.iter().find(|t| t.name == "MP4 H.264 (hardware)").unwrap();
+        let out = dir.join("out.mp4");
+        let job = start(&p, t, out.clone(), (0.0, 1.0), Opts::default(), egui::Context::default());
+        let st = wait(&job);
+        let log = std::fs::read_to_string(job.log().expect("a log")).unwrap();
+        assert_eq!(st, Status::Done, "{log}");
+        assert!(log.contains(&format!("-c:v {enc} ")) && !log.contains("[milan]"), "{log}");
+        let m = crate::media::probe_media(&out).unwrap();
+        assert_eq!((m.codec.as_deref(), m.width, m.height), (Some("h264"), Some(1280), Some(720)));
+        assert!((m.duration - 1.0).abs() < 0.1, "{}", m.duration);
+        println!("rendered 30 frames of 1280x720 with {enc}");
+        hw::set_table(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// f32 stereo at 48 kHz of a rendered file.
