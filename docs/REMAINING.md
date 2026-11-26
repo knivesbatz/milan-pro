@@ -469,20 +469,20 @@ What matters most:
 |---|---|---|---|
 | 15.1 | Automatic project saving | DONE | `autosave.rs` (backup copy in `%APPDATA%\MilanPro\autosave`, atomic) |
 | 15.2 | Configurable autosave interval | MISSING | `const INTERVAL: f64 = 120.0` (`autosave.rs:8`) → R43 |
-| 15.3 | Project backups | PARTIAL | Only the single autosave copy. No `.mnle.bak` on save; no rotation. → R42, R43 |
+| 15.3 | Project backups | PARTIAL | R42: Save keeps the file it writes over as `<name>.mnle.bak` (`project::backup_path`, as VEGAS keeps `.veg.bak`). Autosave rotation → R43 |
 | 15.4 | Recovery after crashes | PARTIAL | Backups exist, but nothing offers them after a crash; the user must find them by hand. → R43 |
 | 15.5 | Undo/redo history | DONE | `history.rs`, history list on the Undo split button |
 | 15.6 | Non-destructive editing | DONE | |
-| 15.7 | Project versioning | MISSING | "Save Version" (Ctrl+Alt+S) disabled (`menus.rs:430`) → R42 |
+| 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, VEGAS 23 look) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
 | 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
 | 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
-| 15.10 | Corrupt project detection | PARTIAL | A JSON parse error is reported (`project.rs:427`). No structural validation, no fallback to the backup. → R42 |
+| 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
 | 15.11 | Error logging | MISSING | 7 `eprintln!` calls, and the release exe has `windows_subsystem = "windows"` (`main.rs:1`), so they go nowhere. No log file. → R44 |
 | 15.12 | Diagnostic reports | MISSING | → R44 |
 | 15.13 | Proper project format | DONE | `.mnle` JSON (`project.rs`) |
 | 15.14 | Stores structure, media, tracks, FX, transitions, keyframes, audio settings, workspace | PARTIAL | All editing data is stored, (R8a) busses, assignable FX chains, routing, sends and Pan Type included (`Timeline.audio`, `Track.out/sends/pan_type`). The workspace layout lives in prefs, not the project (acceptable). Channel layout settings do not exist yet. → R10a |
-| 15.15 | Versioned schema with safe migration | MISSING | No `format_version`; only `#[serde(default)]` and `#[serde(other)]` tolerance (`project.rs:206-280`). A newer file can be silently down-saved. → R42 |
-| 15.16 | Never change a project destructively without preserving the original | PARTIAL | Saves are atomic (`project.rs:674`), but the previous file is replaced with no `.bak`. VEGAS import opens as a new unsaved project (good). → R42 |
+| 15.15 | Versioned schema with safe migration | DONE | R42: `Project.format_version` (`FORMAT_VERSION` = 1; absent = 0), `project/migrate.rs` steps run on the JSON before deserializing (0→1 tested); a file from a newer build opens read-only ("(read-only)" in the title, Save becomes Save As), never down-saved in place |
+| 15.16 | Never change a project destructively without preserving the original | DONE | R42: saves are atomic and keep the previous file as `.mnle.bak`; validator repairs stay in memory until a save; backups and autosaves open as unsaved copies. VEGAS import opens as a new unsaved project |
 
 ### 2.16 Section 15: updater
 
@@ -616,7 +616,7 @@ The inventory as found before R0:
 
 | Group | Commands | Batch |
 |---|---|---|
-| File | SaveVersion | R42 |
+| File | SaveVersion | R42 (DONE) |
 | Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a (DONE), R6b (DONE), R12 (DONE), R18a (DONE), R17b (DONE) |
 | Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 (DONE) |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
@@ -1935,6 +1935,8 @@ No product code unless the research finds a stable, documented structure. If it 
 ---
 
 ### R42: Project schema versioning, backups, validation, Save Version (M)
+
+**Status: DONE.** Built as designed below. `format_version` 1 is the first versioned format (0.7.0 and earlier files are 0 and migrate on open: `migrate::v0_to_v1` drops the `null` optionals the old builds wrote); a newer file opens read-only with a note and Save becomes Save As. `project/validate.rs` repairs duplicate ids, unknown take media, NaN/negative/infinite times, duplicate takes and zero settings, and lists unknown event media (left offline); the notes show in an "Open Project" report. Save Version follows VEGAS 23 (the menu item is in that look only; Ctrl+Alt+S works in all) and keeps editing in the new numbered file; a project never saved is saved as first. Tests: `project::migrate::tests`, `project::validate::tests`, `project::tests::{newer_format_opens_read_only_and_v0_migrates, save_keeps_the_previous_file_as_bak, a_truncated_file_offers_the_backup}`, `dialogs::save_version::tests`.
 
 **Scope**
 - `Project.format_version: u32`, where 0 means pre-versioning; current = 1.

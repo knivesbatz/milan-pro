@@ -183,7 +183,7 @@ impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
         let v23 = self.look.v23();
         match c {
-            New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
+            New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
@@ -421,7 +421,6 @@ impl Why {
 /// Why `c` is greyed out whatever is selected; None for commands that work (they may still need a selection).
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
-        SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
         Prerender | RamPreview => Later("R23"),
         Help | WhatsThis => Later("R53"),
@@ -1430,8 +1429,9 @@ pub fn context_at(owner: &Response, open_at: Option<Pos2>, add: impl FnOnce(&mut
 /// Save to the current path, or Save As if the project has none. Ok(false): Save As was cancelled.
 pub fn save(project: &mut Project) -> Result<bool, String> {
     match project.path.clone() {
-        Some(path) => save_to(project, &path),
-        None => save_as(project),
+        // R42: a file from a newer Milan Pro is never written over by this build: Save becomes Save As.
+        Some(path) if !project.read_only => save_to(project, &path),
+        _ => save_as(project),
     }
 }
 

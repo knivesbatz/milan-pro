@@ -1,6 +1,6 @@
 //! Periodic backup of modified projects to %APPDATA%\MilanPro\autosave (never the user's file).
 use eframe::egui;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use crate::project::Project;
@@ -16,15 +16,25 @@ pub fn autosave_path(name: &str) -> Option<PathBuf> {
 /// Saved projects are named after their file plus a hash of its full path (two "Untitled.mnle" in different folders
 /// get their own backups); unsaved ones get the pid so instances don't collide.
 fn backup_name(project: &Project) -> String {
+    backup_name_for(&project.name, project.path.as_deref())
+}
+
+fn backup_name_for(name: &str, path: Option<&Path>) -> String {
     use std::hash::{Hash, Hasher};
-    match &project.path {
+    match path {
         Some(p) => {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             p.to_string_lossy().to_lowercase().hash(&mut h);
-            format!("{}-{:08x}", project.name, h.finish() as u32)
+            format!("{name}-{:08x}", h.finish() as u32)
         }
-        None => format!("{}-{}", project.name, std::process::id()),
+        None => format!("{name}-{}", std::process::id()),
     }
+}
+
+/// R42: the autosave file of the project saved at `path` (whether or not there is one).
+pub fn autosave_for(path: &Path) -> Option<PathBuf> {
+    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    autosave_path(&backup_name_for(&name, Some(path)))
 }
 
 #[derive(Default)]

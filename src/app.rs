@@ -1,6 +1,7 @@
 mod commands;
 mod drop;
 mod audio_editor;
+mod reliability;
 mod multicam;
 mod nested;
 mod sync;
@@ -242,6 +243,9 @@ pub struct MeridianApp {
     /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
     slideshow: Option<crate::ui::dialogs::Slideshow>,
     audio_transition: Option<crate::ui::dialogs::AudioTransition>,
+    /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
+    /// crash-report offer, the diagnostic report and the roll-back offer.
+    rel: reliability::Rel,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -554,6 +558,7 @@ impl MeridianApp {
             command_props: None,
             slideshow: None,
             audio_transition: None,
+            rel: Default::default(),
         };
         if !launch.demo {
             app.prefs.overlays_placed = true;
@@ -749,7 +754,7 @@ impl eframe::App for MeridianApp {
         let mut menu_action = None;
 
         // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
-        let title = format!("{}{} - Milan Pro", self.project.name, if self.project.modified { " *" } else { "" });
+        let title = format!("{}{}{} - Milan Pro", self.project.name, if self.project.read_only { " (read-only)" } else { "" }, if self.project.modified { " *" } else { "" });
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         let t = theme::get();
         // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.

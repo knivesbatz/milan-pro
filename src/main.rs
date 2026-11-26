@@ -9,6 +9,7 @@ mod edit;
 mod engine;
 mod history;
 mod interchange;
+mod logger;
 mod media;
 mod overlays;
 mod proc;

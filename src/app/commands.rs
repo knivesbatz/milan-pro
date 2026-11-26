@@ -57,6 +57,7 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
+            || self.rel.modal()
             || self.overlays.modal()
     }
 
@@ -847,6 +848,14 @@ impl MeridianApp {
                 let r = menus::save_as(&mut self.project);
                 self.save_result(r);
             }
+            // R42: a numbered copy beside the file, with a note; a project never saved (or read-only) is saved as first.
+            SaveVersion => match self.project.path.clone() {
+                Some(p) if !self.project.read_only => self.rel.save_version = Some(dialogs::SaveVersion::new(&p)),
+                _ => {
+                    let r = menus::save_as(&mut self.project);
+                    self.save_result(r);
+                }
+            },
             RenderAs => self.render.open(&self.project),
             RenderToNewTrack => self.render.open_new_track(&self.project),
             RenderQueue => self.queue_win.open = true,
@@ -1985,9 +1994,22 @@ impl MeridianApp {
                         None => return,
                     },
                 };
-                match Project::load(&path) {
-                    Ok(p) => p,
-                    Err(e) => return self.message = Some(format!("Could not open {}: {e}", path.display())),
+                // R42: a file this build cannot read offers its .bak or autosave; one it can is checked and its notes shown.
+                match Project::open(&path) {
+                    Ok(o) => {
+                        if !o.notes.is_empty() {
+                            log::warn!("open {}: {}", path.display(), o.notes.join(" | "));
+                            self.rel.open_notes = Some((format!("{} opened with notes:", path.display()), o.notes));
+                        }
+                        o.project
+                    }
+                    Err(e) => {
+                        log::error!("open {}: {e}", path.display());
+                        return match crate::project::CorruptOffer::find(&path, e.to_string()) {
+                            Some(o) => self.rel.corrupt = Some(o),
+                            None => self.message = Some(format!("Could not open {}: {e}", path.display())),
+                        };
+                    }
                 }
             }
             MenuAction::ImportVegas => {
@@ -2131,6 +2153,7 @@ impl MeridianApp {
             }
         }
         self.show_update(ctx);
+        self.show_reliability(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
             self.about = !dialogs::about(ctx);
