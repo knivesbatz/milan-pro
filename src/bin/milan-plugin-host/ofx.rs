@@ -205,6 +205,7 @@ names! {
     kOfxActionDescribe = c"OfxActionDescribe";
     kOfxActionUnload = c"OfxActionUnload";
     kOfxActionPurgeCaches = c"OfxActionPurgeCaches";
+    kOfxActionSyncPrivateData = c"OfxActionSyncPrivateData";
     kOfxActionCreateInstance = c"OfxActionCreateInstance";
     kOfxActionDestroyInstance = c"OfxActionDestroyInstance";
     kOfxActionInstanceChanged = c"OfxActionInstanceChanged";
@@ -235,6 +236,7 @@ names! {
     kOfxPluginPropFilePath = c"OfxPluginPropFilePath";
     kOfxChangeUserEdited = c"OfxChangeUserEdited";
     kOfxChangePluginEdited = c"OfxChangePluginEdited";
+    kOfxChangeTime = c"OfxChangeTime";
     kOfxTypeImageEffectHost = c"OfxTypeImageEffectHost";
     kOfxTypeImageEffect = c"OfxTypeImageEffect";
     kOfxTypeImageEffectInstance = c"OfxTypeImageEffectInstance";
@@ -247,6 +249,8 @@ names! {
     kOfxImageEffectPropContext = c"OfxImageEffectPropContext";
     kOfxImageEffectContextFilter = c"OfxImageEffectContextFilter";
     kOfxImageEffectContextGeneral = c"OfxImageEffectContextGeneral";
+    kOfxImageEffectContextTransition = c"OfxImageEffectContextTransition";
+    kOfxImageEffectContextGenerator = c"OfxImageEffectContextGenerator";
     kOfxImageEffectPluginPropGrouping = c"OfxImageEffectPluginPropGrouping";
     kOfxImageEffectPropSupportedPixelDepths = c"OfxImageEffectPropSupportedPixelDepths";
     kOfxImageEffectPropSupportedComponents = c"OfxImageEffectPropSupportedComponents";
@@ -307,6 +311,9 @@ names! {
     kOfxImageEffectFrameVarying = c"OfxImageEffectFrameVarying";
     kOfxImageEffectOutputClipName = c"Output";
     kOfxImageEffectSimpleSourceClipName = c"Source";
+    kOfxImageEffectTransitionSourceFromClipName = c"SourceFrom";
+    kOfxImageEffectTransitionSourceToClipName = c"SourceTo";
+    kOfxImageEffectTransitionParamName = c"Transition";
     // Parameters
     kOfxParamTypeInteger = c"OfxParamTypeInteger";
     kOfxParamTypeDouble = c"OfxParamTypeDouble";
@@ -345,6 +352,7 @@ names! {
     kOfxParamPropDoubleType = c"OfxParamPropDoubleType";
     kOfxParamDoubleTypePlain = c"OfxParamDoubleTypePlain";
     kOfxParamPropGroupOpen = c"OfxParamPropGroupOpen";
+    kOfxParamPropPageChild = c"OfxParamPropPageChild";
     kOfxParamHostPropSupportsCustomAnimation = c"OfxParamHostPropSupportsCustomAnimation";
     kOfxParamHostPropSupportsStringAnimation = c"OfxParamHostPropSupportsStringAnimation";
     kOfxParamHostPropSupportsBooleanAnimation = c"OfxParamHostPropSupportsBooleanAnimation";
@@ -356,6 +364,8 @@ names! {
     kOfxParamHostPropPageRowColumnCount = c"OfxParamHostPropPageRowColumnCount";
     // Messages
     kOfxMessageError = c"OfxMessageError";
+    kOfxMessageWarning = c"OfxMessageWarning";
+    kOfxMessageMessage = c"OfxMessageMessage";
     kOfxMessageFatal = c"OfxMessageFatal";
     kOfxMessageQuestion = c"OfxMessageQuestion";
 }

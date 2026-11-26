@@ -34,10 +34,11 @@ fn main() {
             Req::Load { binary } => host.load(&binary),
             Req::Describe { index } => host.describe(index),
             Req::Render(r) => host.render(&r),
+            Req::Button(r, name) => host.button(&r, &name),
             Req::Panic => panic!("asked to panic"),
             Req::Quit => {
                 host.shutdown();
-                let _ = proto::write_msg(&mut pipe, &Reply::Rendered);
+                let _ = proto::write_msg(&mut pipe, &Reply::Rendered(Default::default()));
                 break;
             }
         };

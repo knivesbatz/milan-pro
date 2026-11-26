@@ -1,22 +1,28 @@
 //! R31-R33b: OFX plug-ins. `scan` finds and describes them (in a host process), this module turns each described
-//! Filter or General effect into a registry entry the choosers, the FX window, keyframes and projects use like a
-//! built-in (`plugins::find`), and renders it through `client` (a host process per binary, frames in shared memory).
-//! A plug-in that crashes, hangs or fails is bypassed for the session with a message; its settings stay in the project.
+//! effect (Filter or General: a video FX; Transition; Generator) into a registry entry the choosers, the FX window,
+//! keyframes and projects use like a built-in (`plugins::find`), and renders it through `client` (a host process per
+//! binary, frames in shared memory). A plug-in that crashes, hangs or fails is bypassed for the session with a
+//! message; its settings stay in the project.
 //!
 //! Instances are stored as `ofx:<identifier>@<major version>` with the OFX parameter names as keys: a Double is one key,
 //! an RGB/RGBA colour the usual `key.r`..`key.a`, a 2D/3D value `key.x`, `key.y`, `key.z`, a string in `Fx.text`.
+//! Every parameter that has a value is stored, hidden ones too: what the FX window shows (hidden, greyed, labels, choice
+//! options, groups) follows the plug-in at run time (`layout`). Values a plug-in sets itself come back with each
+//! reply (`take_edits`) and are written to the project by the app.
 pub mod client;
 pub mod proto;
 pub mod scan;
 
 use eframe::egui::{Color32, ColorImage};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use crate::engine::plugins::{FxEval, ParamKind, ParamSpec, PluginInfo, PluginKind, Preset, Val};
+use crate::project::{Curve, Fx, Keyframe, Keyframes};
 use client::{Conn, Shm, lock};
-use proto::{PVal, PluginDesc, Render, Reply, Req};
+pub use proto::Depth;
+use proto::{Outcome, PVal, ParamDesc, ParamState, PluginDesc, Render, Reply, Req};
 pub use scan::{OfxPrefs, ScanCache};
 
 pub const PREFIX: &str = "ofx:";
@@ -27,8 +33,10 @@ pub struct Plugin {
     pub info: &'static PluginInfo,
     pub binary: PathBuf,
     pub desc: PluginDesc,
-    /// Rendered in 32-bit float (else 8-bit).
-    pub float: bool,
+    /// The pixel depth its pictures travel in.
+    pub depth: Depth,
+    /// Where each OFX parameter's controls are in `info.params` (one; two or three for a 2D or 3D value).
+    specs: HashMap<String, Vec<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,6 +64,8 @@ pub struct Entry {
     pub name: String,
     pub group: String,
     pub version: String,
+    /// "OFX", "OFX Transition" or "OFX Generator".
+    pub kind: &'static str,
     pub binary: PathBuf,
     pub status: Status,
 }
@@ -73,6 +83,39 @@ static FAILED: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default:
 static EVENTS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(Default::default);
 /// Changes on any registry change or failure: choosers list again, frames render again.
 static GEN: AtomicU64 = AtomicU64::new(1);
+/// What plug-ins changed themselves, for the app to write into the project (`take_edits`).
+static EDITS: LazyLock<Mutex<Vec<Edit>>> = LazyLock::new(Default::default);
+/// Per instance (FX id): its parameters' run-time state, by parameter name.
+static STATE: LazyLock<Mutex<HashMap<String, Arc<HashMap<String, ParamState>>>>> = LazyLock::new(Default::default);
+/// Per instance: the plug-in's last messages (after a button, or with a frame), as it worded them.
+static NOTES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
+/// Per instance: the button whose action is running, and the way to stop its host.
+static BUSY: LazyLock<Mutex<HashMap<String, (String, client::Killer)>>> = LazyLock::new(Default::default);
+/// Plug-ins (by id) whose input colour space hint was dismissed, and whether that changed since `hints_changed`.
+static HINTS: LazyLock<Mutex<(BTreeSet<String>, bool)>> = LazyLock::new(Default::default);
+
+/// Values a plug-in set itself on instance `instance` (an FX id) of `plugin`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Edit {
+    pub instance: String,
+    pub plugin: String,
+    pub edits: Vec<(String, PVal)>,
+    /// A new instance's starting values: they fill in only what the FX does not hold yet.
+    pub initial: bool,
+    /// After a button the user clicked: an undo step of its own.
+    pub by_user: bool,
+}
+
+const TRANSITION: &str = "OfxImageEffectContextTransition";
+const GENERATOR: &str = "OfxImageEffectContextGenerator";
+
+fn kind_of(d: &PluginDesc) -> PluginKind {
+    match d.context.as_str() {
+        TRANSITION => PluginKind::Transition,
+        GENERATOR => PluginKind::Generator,
+        _ => PluginKind::VideoFx,
+    }
+}
 
 pub fn id_of(d: &PluginDesc) -> String {
     format!("{PREFIX}{}@{}", d.id, d.major)
@@ -82,21 +125,28 @@ pub fn id_of(d: &PluginDesc) -> String {
 pub fn unsupported(d: &PluginDesc) -> Option<String> {
     if d.context.is_empty() {
         let has = d.contexts.iter().map(|c| c.trim_start_matches("OfxImageEffectContext")).collect::<Vec<_>>().join(", ");
-        return Some(format!("it is a {has} effect: Milan Pro runs Filter and General video effects"));
+        return Some(format!("it is a {has} effect: Milan Pro runs Filter, General, Transition and Generator effects"));
     }
-    if !d.depths.iter().any(|x| x == "OfxBitDepthFloat" || x == "OfxBitDepthByte") {
-        return Some(format!("it takes only {} pixels: Milan Pro gives 8-bit or 32-bit float", d.depths.join(", ")));
+    if Depth::pick(&d.depths).is_none() {
+        return Some(format!("it takes only {} pixels: Milan Pro gives 8-bit, 16-bit, half or 32-bit float", if d.depths.is_empty() { "no".into() } else { d.depths.join(", ") }));
     }
     None
 }
 
 /// The plug-ins of the last scan, with the user's choices: what the choosers offer and what runs.
-pub fn set_registry(cache: &ScanCache, disabled: &BTreeSet<String>) {
+pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
+    let disabled = &prefs.disabled;
+    {
+        let mut h = lock(&HINTS);
+        if !h.1 {
+            h.0.clone_from(&prefs.hints_seen);
+        }
+    }
     let mut r = Registry::default();
     for b in &cache.binaries {
         let file = b.path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
         for (i, e) in &b.errors {
-            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), binary: b.path.clone(), status: Status::Failed(e.clone()) });
+            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), kind: "OFX", binary: b.path.clone(), status: Status::Failed(e.clone()) });
         }
         for d in &b.plugins {
             let id = id_of(d);
@@ -107,12 +157,21 @@ pub fn set_registry(cache: &ScanCache, disabled: &BTreeSet<String>) {
             } else {
                 Status::Ok
             };
-            if status == Status::Ok && !r.usable.contains_key(&id) {
-                let float = d.depths.iter().any(|x| x == "OfxBitDepthFloat");
-                r.usable.insert(id.clone(), Arc::new(Plugin { info: leak_info(d), binary: b.path.clone(), desc: d.clone(), float }));
+            if let (Status::Ok, false, Some(depth)) = (&status, r.usable.contains_key(&id), Depth::pick(&d.depths)) {
+                let info = leak_info(d);
+                let mut specs: HashMap<String, Vec<usize>> = HashMap::new();
+                for (i, s) in info.params.iter().enumerate() {
+                    specs.entry(param_of(d, s.key).to_string()).or_default().push(i);
+                }
+                r.usable.insert(id.clone(), Arc::new(Plugin { info, binary: b.path.clone(), desc: d.clone(), depth, specs }));
             }
             let name = if d.label.is_empty() { d.id.clone() } else { d.label.clone() };
-            r.entries.push(Entry { id, name, group: d.group.clone(), version: format!("{}.{}", d.major, d.minor), binary: b.path.clone(), status });
+            let kind = match kind_of(d) {
+                PluginKind::Transition => "OFX Transition",
+                PluginKind::Generator => "OFX Generator",
+                _ => "OFX",
+            };
+            r.entries.push(Entry { id, name, group: d.group.clone(), version: format!("{}.{}", d.major, d.minor), kind, binary: b.path.clone(), status });
         }
     }
     *REG.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(r);
@@ -139,9 +198,9 @@ pub fn info(id: &str) -> Option<&'static PluginInfo> {
     find(id).map(|p| p.info)
 }
 
-/// The OFX video FX the choosers offer, by grouping and name.
-pub fn catalog() -> Vec<&'static PluginInfo> {
-    let mut v: Vec<&'static PluginInfo> = reg().usable.values().map(|p| p.info).collect();
+/// The OFX plug-ins of `kind` the choosers offer, by grouping and name.
+pub fn catalog(kind: PluginKind) -> Vec<&'static PluginInfo> {
+    let mut v: Vec<&'static PluginInfo> = reg().usable.values().map(|p| p.info).filter(|i| i.kind == kind).collect();
     v.sort_by(|a, b| (a.group.to_lowercase(), a.name.to_lowercase(), a.id).cmp(&(b.group.to_lowercase(), b.name.to_lowercase(), b.id)));
     v
 }
@@ -172,6 +231,45 @@ pub fn clear_failures() {
 /// Messages for the status bar since the last call.
 pub fn take_events() -> Vec<String> {
     std::mem::take(&mut *lock(&EVENTS))
+}
+
+/// What plug-ins changed themselves since the last call (the app writes it into the project).
+pub fn take_edits() -> Vec<Edit> {
+    std::mem::take(&mut *lock(&EDITS))
+}
+
+/// Instance `instance`'s parameters as the plug-in last set them up (hidden, enabled, label, choice options).
+pub fn state(instance: &str) -> Option<Arc<HashMap<String, ParamState>>> {
+    lock(&STATE).get(instance).cloned()
+}
+
+/// The plug-in's last messages for `instance`, as it worded them.
+pub fn note(instance: &str) -> Option<String> {
+    lock(&NOTES).get(instance).cloned()
+}
+
+/// The button of `instance` whose action is still running (the plug-in may be showing a window of its own).
+pub fn busy(instance: &str) -> Option<String> {
+    lock(&BUSY).get(instance).map(|b| b.0.clone())
+}
+
+/// Stop the plug-in host that is running `instance`'s button (it starts again with the next frame).
+pub fn stop(instance: &str) {
+    if let Some((_, k)) = lock(&BUSY).get(instance) {
+        k.kill();
+    }
+}
+
+/// The input colour space hint of `plugin` was read: it is not shown again.
+pub fn dismiss_hint(plugin: &str) {
+    let mut h = lock(&HINTS);
+    h.1 |= h.0.insert(plugin.to_string());
+}
+
+/// The dismissed hints when they changed since the last call (the app keeps them in its preferences).
+pub fn hints_changed() -> Option<BTreeSet<String>> {
+    let mut h = lock(&HINTS);
+    std::mem::take(&mut h.1).then(|| h.0.clone())
 }
 
 /// The name of OFX plug-in `id` when it cannot run: "Name (off)", "Name (failed)", "identifier (missing)".
@@ -237,7 +335,7 @@ fn leak_info(d: &PluginDesc) -> &'static PluginInfo {
         Box::leak(Box::new(PluginInfo {
             id: leak(&id_of(d)),
             name: leak(if d.label.is_empty() { &d.id } else { &d.label }),
-            kind: PluginKind::VideoFx,
+            kind: kind_of(d),
             group: leak(if d.group.is_empty() { "OFX" } else { &d.group }),
             category: "Third Party",
             desc: leak(d.description.lines().next().unwrap_or_default()),
@@ -266,20 +364,27 @@ fn range(min: f64, max: f64, default: f64) -> (f32, f32) {
     (lo as f32, if hi > lo { hi as f32 } else { lo as f32 + 1.0 })
 }
 
-/// The FX window's controls for `d`: what Milan Pro can show and store. Hidden (secret) parameters, pages, push
-/// buttons, custom parameters and choices without options are left to the plug-in's defaults; groups become headings.
+/// The OFX parameter a control key belongs to: the key itself, or the name before `.x` / `.y` / `.z`.
+fn param_of<'a>(d: &PluginDesc, key: &'a str) -> &'a str {
+    if d.params.iter().any(|p| p.name == key) {
+        return key;
+    }
+    key.rsplit_once('.').map_or(key, |x| x.0)
+}
+
+/// A transition's own progress parameter: the host sets it, Milan neither shows nor stores it.
+fn is_progress(d: &PluginDesc, p: &ParamDesc) -> bool {
+    d.context == TRANSITION && p.name == "Transition"
+}
+
+/// The controls of `d`, in the order it defined them: every parameter with a value (Milan stores them all, so what a
+/// plug-in sets or hides at run time is kept). Groups, pages and push buttons have no value: `layout` places them.
+/// A Custom parameter is kept as text and never shown.
 pub fn specs(d: &PluginDesc) -> Vec<ParamSpec> {
-    let groups: HashMap<&str, &str> = d.params.iter().filter(|p| p.kind == "Group").map(|p| (p.name.as_str(), p.label.as_str())).collect();
     let mut out: Vec<ParamSpec> = Vec::new();
-    let mut section: Option<&str> = None;
-    for p in d.params.iter().filter(|p| !p.secret) {
+    for p in d.params.iter().filter(|p| !is_progress(d, p)) {
         let d0 = |i: usize| p.default.get(i).copied().unwrap_or(0.0);
-        let mut add = |key: String, name: String, kind: ParamKind| {
-            let heading = groups.get(p.parent.as_str()).copied().unwrap_or(if out.is_empty() { "" } else { "Other" });
-            let sec = if section != Some(heading) { heading } else { "" };
-            section = Some(heading);
-            out.push(ParamSpec { key: leak(&key), name: leak(&name), section: leak(sec), kind });
-        };
+        let mut add = |key: String, name: String, kind: ParamKind| out.push(ParamSpec { key: leak(&key), name: leak(&name), section: "", kind });
         match p.kind.as_str() {
             "Double" | "Integer" => {
                 let (min, max) = range(p.min, p.max, d0(0));
@@ -292,16 +397,15 @@ pub fn specs(d: &PluginDesc) -> Vec<ParamSpec> {
                 }
             }
             "Boolean" => add(p.name.clone(), p.label.clone(), ParamKind::Bool { default: d0(0) != 0.0 }),
-            "Choice" if !p.options.is_empty() => {
+            "Choice" => {
                 let options: Vec<&'static str> = p.options.iter().map(|o| leak(o)).collect();
-                let default = (d0(0).max(0.0) as usize).min(options.len() - 1);
-                add(p.name.clone(), p.label.clone(), ParamKind::Choice { options: Box::leak(options.into_boxed_slice()), default });
+                add(p.name.clone(), p.label.clone(), ParamKind::Choice { options: Box::leak(options.into_boxed_slice()), default: d0(0).max(0.0) as usize });
             }
             "RGB" | "RGBA" => {
                 let c = [d0(0), d0(1), d0(2), if p.kind == "RGBA" { p.default.get(3).copied().unwrap_or(1.0) } else { 1.0 }].map(|v| v.clamp(0.0, 1.0) as f32);
                 add(p.name.clone(), p.label.clone(), ParamKind::Color { default: c });
             }
-            "String" => add(p.name.clone(), p.label.clone(), ParamKind::Text { multiline: p.multiline, default: leak(&p.text) }),
+            "String" | "Custom" => add(p.name.clone(), p.label.clone(), ParamKind::Text { multiline: p.multiline, default: leak(&p.text) }),
             _ => {}
         }
     }
@@ -312,7 +416,7 @@ pub fn specs(d: &PluginDesc) -> Vec<ParamSpec> {
 pub fn values(d: &PluginDesc, e: &FxEval) -> Vec<(String, PVal)> {
     let has = |k: &str| e.vals.iter().any(|v| v.0 == k);
     let mut out = Vec::new();
-    for p in d.params.iter().filter(|p| !p.secret) {
+    for p in d.params.iter().filter(|p| !is_progress(d, p)) {
         let int = p.kind.starts_with("Integer");
         let n = |v: f32| if int { (v as f64).round() } else { v as f64 };
         let v = match p.kind.as_str() {
@@ -328,7 +432,7 @@ pub fn values(d: &PluginDesc, e: &FxEval) -> Vec<(String, PVal)> {
             "Choice" if has(&p.name) => PVal::N(vec![e.i(&p.name) as f64]),
             "RGB" if has(&p.name) => PVal::N(e.c(&p.name)[..3].iter().map(|&v| v as f64).collect()),
             "RGBA" if has(&p.name) => PVal::N(e.c(&p.name).iter().map(|&v| v as f64).collect()),
-            "String" if has(&p.name) => PVal::S(e.t(&p.name).to_string()),
+            "String" | "Custom" if has(&p.name) => PVal::S(e.t(&p.name).to_string()),
             _ => continue,
         };
         out.push((p.name.clone(), v));
@@ -336,19 +440,177 @@ pub fn values(d: &PluginDesc, e: &FxEval) -> Vec<(String, PVal)> {
     out
 }
 
+/// Write values the plug-in set itself (`edits`, by OFX parameter name) into `fx`. `initial`: a new instance's
+/// starting values, which never replace what `fx` already holds. True when `fx` changed.
+pub fn apply_edits(fx: &mut Fx, edits: &[(String, PVal)], initial: bool) -> bool {
+    let Some(p) = find(&fx.plugin) else { return false };
+    let mut changed = false;
+    let mut num = |fx: &mut Fx, key: String, v: f64| {
+        let v = v as f32;
+        match fx.params.get(&key) {
+            Some(_) if initial => {}
+            // shortcut: a keyframed parameter keeps the user's keys; key the plug-in's value at the frame's time if a
+            // plug-in needs to drive an animated parameter.
+            Some(k) if k.keys.len() > 1 => {}
+            Some(k) if k.keys.first().is_some_and(|k| k.v == v) => {}
+            _ => {
+                fx.params.insert(key, Keyframes { keys: vec![Keyframe { t: 0.0, v, curve: Curve::Linear }] });
+                changed = true;
+            }
+        }
+    };
+    for (name, v) in edits {
+        let Some(d) = p.desc.params.iter().find(|d| d.name == *name && !is_progress(&p.desc, d)) else { continue };
+        match (d.kind.as_str(), v) {
+            ("Double" | "Integer" | "Boolean" | "Choice", PVal::N(x)) if !x.is_empty() => num(fx, name.clone(), x[0]),
+            ("Double2D" | "Double3D" | "Integer2D" | "Integer3D", PVal::N(x)) => {
+                for ((k, _), v) in XYZ.iter().zip(x) {
+                    num(fx, format!("{name}.{k}"), *v);
+                }
+            }
+            ("RGB" | "RGBA", PVal::N(x)) => {
+                for (k, v) in ["r", "g", "b", "a"].iter().zip(x) {
+                    num(fx, format!("{name}.{k}"), *v);
+                }
+            }
+            ("String" | "Custom", PVal::S(t)) => {
+                if !(initial && fx.text.contains_key(name)) && fx.text.get(name) != Some(t) {
+                    fx.text.insert(name.clone(), t.clone());
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
+/// One line of an OFX plug-in's controls in the FX window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Row {
+    /// A group's heading (click to open or close); its rows follow one level deeper while it is open.
+    Group { name: String, label: String, depth: usize, open: bool },
+    /// A page's name (only when the plug-in has several pages).
+    Heading(String),
+    /// Control `index` of the plug-in's `PluginInfo::params`; `options`: a choice's options now.
+    Param { index: usize, label: String, depth: usize, enabled: bool, options: Option<Vec<String>>, hint: String },
+    Button { name: String, label: String, depth: usize, enabled: bool, hint: String },
+}
+
+/// The FX window's rows for instance `instance` of OFX plug-in `plugin`, laid out as the plug-in defines: its pages'
+/// children in page order (then whatever is on no page), groups with their members under them, in the order they were
+/// defined; hidden (secret) parameters left out, disabled ones greyed, labels and choice options as the plug-in last
+/// set them. `open(group, default)` says whether a group is open. None when `plugin` is not a usable OFX plug-in.
+pub fn layout(plugin: &str, instance: &str, open: &dyn Fn(&str, bool) -> bool) -> Option<Vec<Row>> {
+    let p = find(plugin)?;
+    Some(layout_of(&p, state(instance).as_deref(), open))
+}
+
+fn layout_of(p: &Plugin, st: Option<&HashMap<String, ParamState>>, open: &dyn Fn(&str, bool) -> bool) -> Vec<Row> {
+    let all = &p.desc.params;
+    let groups: HashSet<&str> = all.iter().filter(|d| d.kind == "Group").map(|d| d.name.as_str()).collect();
+    let top = |d: &ParamDesc| d.kind != "Page" && !groups.contains(d.parent.as_str());
+    let now = |d: &ParamDesc| match st.and_then(|s| s.get(&d.name)) {
+        Some(s) => (s.secret, s.enabled, s.label.clone(), s.options.clone()),
+        None => (d.secret, d.enabled, d.label.clone(), d.options.clone()),
+    };
+    // The top level: (page heading, parameter).
+    let pages: Vec<&ParamDesc> = all.iter().filter(|d| d.kind == "Page" && !d.children.is_empty() && !now(d).0).collect();
+    let mut roots: Vec<(Option<String>, &ParamDesc)> = Vec::new();
+    for page in &pages {
+        let mut heading = (pages.len() > 1).then(|| now(page).2);
+        for d in page.children.iter().filter_map(|c| all.iter().find(|d| d.name == *c && top(d))) {
+            if !roots.iter().any(|r| r.1.name == d.name) {
+                roots.push((heading.take(), d));
+            }
+        }
+    }
+    for d in all.iter().filter(|d| top(d)) {
+        if !roots.iter().any(|r| r.1.name == d.name) {
+            roots.push((None, d));
+        }
+    }
+    fn emit(p: &Plugin, d: &ParamDesc, depth: usize, on: bool, now: &dyn Fn(&ParamDesc) -> (bool, bool, String, Vec<String>), open: &dyn Fn(&str, bool) -> bool, out: &mut Vec<Row>) {
+        let (secret, enabled, label, options) = now(d);
+        if secret || depth > 8 {
+            return;
+        }
+        let enabled = on && enabled;
+        match d.kind.as_str() {
+            "Group" => {
+                let is_open = open(&d.name, d.open);
+                out.push(Row::Group { name: d.name.clone(), label, depth, open: is_open });
+                if is_open {
+                    for c in p.desc.params.iter().filter(|c| c.parent == d.name && c.kind != "Page") {
+                        emit(p, c, depth + 1, enabled, now, open, out);
+                    }
+                }
+            }
+            "PushButton" => out.push(Row::Button { name: d.name.clone(), label, depth, enabled, hint: d.hint.clone() }),
+            _ => {
+                let idx = p.specs.get(&d.name).map_or(&[][..], Vec::as_slice);
+                // A Custom parameter has a value and no control.
+                for (k, &index) in idx.iter().enumerate().filter(|_| d.kind != "Custom") {
+                    let label = if idx.len() > 1 { format!("{label} {}", XYZ[k.min(2)].1) } else { label.clone() };
+                    out.push(Row::Param { index, label, depth, enabled, options: (d.kind == "Choice").then(|| options.clone()), hint: d.hint.clone() });
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (heading, d) in roots {
+        let before = out.len();
+        emit(p, d, 0, true, &now, open, &mut out);
+        if let (Some(h), true) = (heading, out.len() > before) {
+            out.insert(before, Row::Heading(h));
+        }
+    }
+    out
+}
+
+/// Milan Pro sends Rec.709 video and does not provide OFX colour management. When a plug-in's input colour space
+/// choice is still at a default that is a camera log space, say so once (until dismissed): the text, None otherwise.
+pub fn colour_hint(plugin: &str, instance: &str, e: &FxEval) -> Option<String> {
+    if lock(&HINTS).0.contains(plugin) {
+        return None;
+    }
+    let p = find(plugin)?;
+    let st = state(instance);
+    p.desc.params.iter().filter(|d| d.kind == "Choice").find_map(|d| {
+        let now = st.as_ref().and_then(|s| s.get(&d.name));
+        let (secret, label, options) = now.map_or((d.secret, &d.label, &d.options), |s| (s.secret, &s.label, &s.options));
+        let named = format!("{} {label}", d.name).to_lowercase();
+        let cur = e.i(&d.name);
+        if secret || !named.contains("input") || !["color", "colour", "gamut"].iter().any(|w| named.contains(w)) || cur as f64 != d.default.first().copied().unwrap_or(0.0) {
+            return None;
+        }
+        let option = options.get(cur)?;
+        let o = option.to_lowercase();
+        ["log", "acescc", "bmdfilm", "intermediate"].iter().any(|w| o.contains(w)).then(|| format!("Milan Pro sends Rec.709 video; set \"{label}\" to Rec.709 / sRGB. It is at its default, \"{option}\", which expects camera log footage."))
+    })
+}
+
 /// R33b: what an OFX instance needs besides its parameters, added where a frame is planned: its instance (FX id), its
 /// time in frames, the height its pictures have at full quality (for the render scale), the frame rate and pixel aspect.
-pub fn add_frame_vals(e: &mut FxEval, instance: &str, t: f64, full_h: f64, fps: f64, par: f64) {
+/// `restored`: Milan holds values for it already (`restored`), so they win over the plug-in's own starting values.
+pub fn add_frame_vals(e: &mut FxEval, instance: &str, restored: bool, t: f64, full_h: f64, fps: f64, par: f64) {
     if !e.id.starts_with(PREFIX) {
         return;
     }
     e.vals.push(("ofx.inst", Val::T(instance.to_string())));
+    e.vals.push(("ofx.restored", Val::F(restored as u8 as f32)));
     e.vals.push(("ofx.time", Val::F((t * fps) as f32)));
     e.vals.push(("ofx.full_h", Val::F(full_h as f32)));
     e.vals.push(("ofx.fps", Val::F(fps as f32)));
     e.vals.push(("ofx.par", Val::F(par as f32)));
     // A plug-in tried again after a failure renders its frames again (they are cached by their plan).
     e.vals.push(("ofx.gen", Val::F(generation() as f32)));
+}
+
+/// `fx` holds values of its own (it was rendered, edited, loaded or made from a preset): they win over what the
+/// plug-in sets up for a new instance.
+pub fn restored(fx: &Fx) -> bool {
+    !fx.params.is_empty() || !fx.text.is_empty()
 }
 
 // ---------------------------------------------------------------- rendering
@@ -368,103 +630,191 @@ pub fn close_hosts() {
     }
 }
 
-/// Run OFX effect `e` on `img` in place. A plug-in that is unknown, turned off or failed leaves it unchanged; one that
-/// fails now is bypassed from here on, with a message (`take_events`).
-pub fn apply(img: &mut ColorImage, e: &FxEval) {
-    let Some(p) = find(e.id) else { return };
-    if failure(e.id).is_some() || img.size[0] == 0 || img.size[1] == 0 {
-        return;
-    }
+/// The request for one frame (or a button) of `p` as `e` evaluates it, for pictures of `size`.
+fn request(p: &Plugin, e: &FxEval, size: [usize; 2]) -> Render {
     let full_h = e.f("ofx.full_h") as f64;
     let par = e.f("ofx.par") as f64;
-    let r = Render {
+    Render {
         index: p.desc.index,
         instance: Some(e.t("ofx.inst")).filter(|s| !s.is_empty()).unwrap_or("milan").to_string(),
         time: e.f("ofx.time") as f64,
-        w: img.size[0] as u32,
-        h: img.size[1] as u32,
-        float: p.float,
-        scale: if full_h > 0.0 { (img.size[1] as f64 / full_h).clamp(1e-3, 1.0) } else { 1.0 },
+        w: size[0] as u32,
+        h: size[1] as u32,
+        depth: p.depth,
+        scale: if full_h > 0.0 { (size[1] as f64 / full_h).clamp(1e-3, 1.0) } else { 1.0 },
         par: if par > 0.0 { par } else { 1.0 },
         fps: e.f("ofx.fps") as f64,
         params: values(&p.desc, e),
+        restored: e.on("ofx.restored"),
         ..Default::default()
-    };
-    if let Err(why) = render(&p.binary, r, img) {
+    }
+}
+
+/// `e`'s plug-in when it runs: known, of `kind`, and not failed this session.
+fn runnable(e: &FxEval, kind: PluginKind, size: [usize; 2]) -> Option<Arc<Plugin>> {
+    find(e.id).filter(|p| p.info.kind == kind && failure(e.id).is_none() && size[0] > 0 && size[1] > 0)
+}
+
+/// Run OFX effect `e` on `img` in place. A plug-in that is unknown, turned off or failed leaves it unchanged; one that
+/// fails now is bypassed from here on, with a message (`take_events`).
+pub fn apply(img: &mut ColorImage, e: &FxEval) {
+    let Some(p) = runnable(e, PluginKind::VideoFx, img.size) else { return };
+    if let Err(why) = render(&p, request(&p, e, img.size), img, None, true) {
         fail(&p, why);
     }
 }
 
-/// Bytes per pixel in shared memory.
-fn bpp(float: bool) -> usize {
-    if float { 16 } else { 4 }
+/// OFX transition `e` from `a` to `b` at progress `x` (0..=1). None when it cannot run (the caller dissolves).
+pub fn transition(e: &FxEval, a: &ColorImage, b: &ColorImage, x: f32) -> Option<ColorImage> {
+    let p = runnable(e, PluginKind::Transition, a.size).filter(|_| a.size == b.size)?;
+    let mut r = request(&p, e, a.size);
+    r.params.push(("Transition".into(), PVal::N(vec![x.clamp(0.0, 1.0) as f64])));
+    let mut out = a.clone();
+    match render(&p, r, &mut out, Some(b), true) {
+        Ok(()) => Some(out),
+        Err(why) => {
+            fail(&p, why);
+            None
+        }
+    }
 }
 
-/// `img` into OFX rows (bottom first), 8-bit or float, premultiplied as Milan keeps it.
-fn put(img: &ColorImage, float: bool, out: &mut [u8]) {
+/// OFX generator `e`'s picture of `w` x `h` at media time `t` (seconds); transparent when it cannot run.
+pub fn generate(e: &FxEval, w: u32, h: u32, t: f64) -> ColorImage {
+    let mut out = ColorImage::new([w as usize, h as usize], Color32::TRANSPARENT);
+    let Some(p) = runnable(e, PluginKind::Generator, out.size) else { return out };
+    let mut r = request(&p, e, out.size);
+    // Outside a frame plan (a thumbnail, the trimmer) there are no frame values: the media time at 30 fps.
+    if e.t("ofx.inst").is_empty() {
+        (r.instance, r.time, r.fps, r.restored) = (format!("gen-{}", e.id), t * 30.0, 30.0, true);
+    }
+    if let Err(why) = render(&p, r, &mut out, None, false) {
+        fail(&p, why);
+        out.pixels.fill(Color32::TRANSPARENT);
+    }
+    out
+}
+
+/// A click on push button `button` of `fx` (an OFX instance) in the FX window, at `fx`'s time `at`: the plug-in's
+/// instance changed action for it runs in its host on a thread of its own, without a time limit (the plug-in may show
+/// a window of its own and wait for the user; `busy` says so and `stop` ends it). What the plug-in changed comes back
+/// through `take_edits` (as the user's own step), its messages through `note`. `button` "" only makes the instance, so
+/// a new FX learns the plug-in's starting values before it is first rendered.
+pub fn press(ctx: Option<&eframe::egui::Context>, fx: &Fx, at: f64, button: &str, size: (u32, u32), fps: f64, par: f64) {
+    let (Some(p), Some(mut e)) = (find(&fx.plugin), crate::engine::plugins::eval(fx, at)) else { return };
+    if failure(&fx.plugin).is_some() || busy(&fx.id).is_some() {
+        return;
+    }
+    add_frame_vals(&mut e, &fx.id, restored(fx), at, size.1 as f64, fps, par);
+    let r = request(&p, &e, [size.0.max(1) as usize, size.1.max(1) as usize]);
+    let (button, ctx) = (button.to_string(), ctx.cloned());
+    let run = move || {
+        let instance = r.instance.clone();
+        match act(&p, r, &button) {
+            Ok(o) => absorb(&p, &instance, o, !button.is_empty()),
+            Err(why) => {
+                lock(&NOTES).insert(instance, format!("Error: {why}"));
+            }
+        }
+        GEN.fetch_add(1, Ordering::Relaxed);
+        if let Some(c) = ctx {
+            c.request_repaint();
+        }
+    };
+    if let Err(e) = std::thread::Builder::new().name("milan-ofx-button".into()).spawn(run) {
+        lock(&NOTES).insert(fx.id.clone(), format!("Error: cannot start the button's thread: {e}"));
+    }
+}
+
+/// Bytes per pixel in shared memory.
+fn bpp(depth: Depth) -> usize {
+    depth.bpp()
+}
+
+fn f32_to_half(v: f32) -> u16 {
+    let b = v.to_bits();
+    let (s, e, m) = (((b >> 16) & 0x8000) as u16, ((b >> 23) & 0xff) as i32 - 112, b & 0x7f_ffff);
+    if e >= 31 {
+        return s | 0x7c00;
+    }
+    if e <= 0 {
+        // Too small for a normal half: a subnormal, or zero.
+        return if e < -10 { s } else { s | (((m | 0x80_0000) >> (1 - e)) + 0x1000 >> 13) as u16 };
+    }
+    // Rounded to nearest; a carry out of the mantissa rightly bumps the exponent.
+    s | ((((e as u32) << 10) | (m >> 13)) + ((m >> 12) & 1)) as u16
+}
+
+fn half_to_f32(h: u16) -> f32 {
+    let (e, m) = ((h >> 10) & 31, (h & 1023) as u32);
+    let v = match e {
+        0 => m as f32 * 2f32.powi(-24),
+        31 => if m == 0 { f32::INFINITY } else { f32::NAN },
+        _ => f32::from_bits(((e as u32 + 112) << 23) | (m << 13)),
+    };
+    if h & 0x8000 != 0 { -v } else { v }
+}
+
+/// `img` into OFX rows (bottom first) at `depth`, premultiplied as Milan keeps it.
+fn put(img: &ColorImage, depth: Depth, out: &mut [u8]) {
     let [w, h] = img.size;
-    let row = w * bpp(float);
+    let row = w * bpp(depth);
     for (y, src) in img.pixels.chunks_exact(w).enumerate() {
         let dst = &mut out[(h - 1 - y) * row..][..row];
-        if float {
-            for (d, s) in dst.chunks_exact_mut(16).zip(src) {
-                for (c, v) in s.to_array().into_iter().enumerate() {
-                    d[c * 4..c * 4 + 4].copy_from_slice(&(v as f32 / 255.0).to_le_bytes());
-                }
-            }
-        } else {
-            dst.copy_from_slice(bytemuck::cast_slice(src));
+        match depth {
+            Depth::Byte => dst.copy_from_slice(bytemuck::cast_slice(src)),
+            Depth::Short => dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&(v as u16 * 257).to_le_bytes())),
+            Depth::Half => dst.chunks_exact_mut(2).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&f32_to_half(v as f32 / 255.0).to_le_bytes())),
+            Depth::Float => dst.chunks_exact_mut(4).zip(src.iter().flat_map(|s| s.to_array())).for_each(|(d, v)| d.copy_from_slice(&(v as f32 / 255.0).to_le_bytes())),
         }
     }
 }
 
 /// OFX rows back into `img`, clamped to valid premultiplied colours.
-fn take(out: &[u8], float: bool, img: &mut ColorImage) {
+fn take(out: &[u8], depth: Depth, img: &mut ColorImage) {
     let [w, h] = img.size;
-    let row = w * bpp(float);
+    let row = w * bpp(depth);
+    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     for (y, dst) in img.pixels.chunks_exact_mut(w).enumerate() {
         let src = &out[(h - 1 - y) * row..][..row];
         for (x, d) in dst.iter_mut().enumerate() {
-            let c: [u8; 4] = if float {
-                let f = |c: usize| f32::from_le_bytes(src[x * 16 + c * 4..x * 16 + c * 4 + 4].try_into().expect("4 bytes"));
-                let a = f(3).clamp(0.0, 1.0);
-                let q = |v: f32| (v * 255.0).round() as u8;
-                [q(f(0).clamp(0.0, a)), q(f(1).clamp(0.0, a)), q(f(2).clamp(0.0, a)), q(a)]
-            } else {
-                [src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]]
-            };
+            let c: [u8; 4] = std::array::from_fn(|c| match depth {
+                Depth::Byte => src[x * 4 + c],
+                Depth::Short => ((u16::from_le_bytes([src[x * 8 + c * 2], src[x * 8 + c * 2 + 1]]) as u32 + 128) / 257) as u8,
+                Depth::Half => q(half_to_f32(u16::from_le_bytes([src[x * 8 + c * 2], src[x * 8 + c * 2 + 1]]))),
+                Depth::Float => q(f32::from_le_bytes(src[x * 16 + c * 4..x * 16 + c * 4 + 4].try_into().expect("4 bytes"))),
+            });
             let a = c[3];
             *d = Color32::from_rgba_premultiplied(c[0].min(a), c[1].min(a), c[2].min(a), a);
         }
     }
 }
 
-/// One frame through the host of `binary` (started when needed). The host is dropped (killed) when it crashes or
+/// Take in what a reply says the plug-in did: its parameters' state, its own edits, its messages.
+fn absorb(p: &Plugin, instance: &str, o: Outcome, by_user: bool) {
+    if let Some(s) = o.state {
+        lock(&STATE).insert(instance.to_string(), Arc::new(s.into_iter().map(|s| (s.name.clone(), s)).collect()));
+    }
+    if !o.edits.is_empty() {
+        lock(&EDITS).push(Edit { instance: instance.to_string(), plugin: p.info.id.to_string(), edits: o.edits, initial: o.initial, by_user });
+    }
+    if !o.messages.is_empty() {
+        lock(&NOTES).insert(instance.to_string(), o.messages.join("\n"));
+    } else if by_user {
+        lock(&NOTES).remove(instance);
+    }
+}
+
+/// The host of `binary`, started when needed; `f` runs with it. The host is dropped (killed) when it crashes or
 /// hangs; an error the plug-in reports leaves it running.
-fn render(binary: &Path, mut r: Render, img: &mut ColorImage) -> Result<(), String> {
+fn with_host(binary: &Path, f: impl FnOnce(&mut Conn) -> Result<Reply, client::Fail>) -> Result<Outcome, String> {
     let slot = lock(&HOSTS).entry(binary.to_path_buf()).or_default().clone();
     let mut g = lock(&slot);
     if g.is_none() {
         *g = Some(Conn::start(binary).map_err(|e| e.to_string())?.0);
     }
-    let conn = g.as_mut().expect("started");
-    let float = r.float;
-    let n = img.size[0] * img.size[1] * bpp(float);
-    let need = 2 * n as u64;
-    if conn.shm.as_ref().is_none_or(|s| s.size < need) {
-        conn.shm = None;
-        // Grown in 16 MB steps, so a slightly larger frame does not remap every time.
-        conn.shm = Some(Shm::create(need.div_ceil(16 << 20) * (16 << 20)).map_err(|e| format!("cannot make frame memory: {e}"))?);
-    }
-    let shm = conn.shm.as_mut().expect("made");
-    put(img, float, &mut shm.bytes()[..n]);
-    (r.shm, r.shm_size, r.out) = (shm.name.clone(), shm.size, n as u64);
-    match conn.request(&Req::Render(r), client::render_timeout()) {
-        Ok(Reply::Rendered) => {
-            let shm = conn.shm.as_mut().expect("made");
-            take(&shm.bytes()[n..2 * n], float, img);
-            Ok(())
-        }
+    match f(g.as_mut().expect("started")) {
+        Ok(Reply::Rendered(o)) => Ok(o),
         Ok(Reply::Error(e)) => Err(e),
         Ok(other) => {
             *g = None;
@@ -475,6 +825,52 @@ fn render(binary: &Path, mut r: Render, img: &mut ColorImage) -> Result<(), Stri
             Err(f.to_string())
         }
     }
+}
+
+/// One frame through `p`'s host: `img` is the first input when `source` (a filter's Source, a transition's
+/// SourceFrom), `second` a transition's SourceTo; the output replaces `img`.
+fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+    let depth = r.depth;
+    let n = img.size[0] * img.size[1] * bpp(depth);
+    r.inputs = source as u32 + second.is_some() as u32;
+    let out = r.inputs as usize * n;
+    let instance = r.instance.clone();
+    let o = with_host(&p.binary, |conn| {
+        let need = (out + n) as u64;
+        if conn.shm.as_ref().is_none_or(|s| s.size < need) {
+            conn.shm = None;
+            // Grown in 16 MB steps, so a slightly larger frame does not remap every time.
+            conn.shm = Some(Shm::create(need.div_ceil(16 << 20) * (16 << 20)).map_err(|e| client::Fail::Io(format!("cannot make frame memory: {e}")))?);
+        }
+        let shm = conn.shm.as_mut().expect("made");
+        if source {
+            put(img, depth, &mut shm.bytes()[..n]);
+        }
+        if let Some(b) = second {
+            put(b, depth, &mut shm.bytes()[n..2 * n]);
+        }
+        (r.shm, r.shm_size, r.out) = (shm.name.clone(), shm.size, out as u64);
+        let reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
+        if matches!(reply, Reply::Rendered(_)) {
+            take(&conn.shm.as_mut().expect("made").bytes()[out..out + n], depth, img);
+        }
+        Ok(reply)
+    })?;
+    absorb(p, &instance, o, false);
+    Ok(())
+}
+
+/// A button's action (or "" to make the instance) in `p`'s host, with no time limit: `busy` names it meanwhile.
+fn act(p: &Plugin, r: Render, button: &str) -> Result<Outcome, String> {
+    let instance = r.instance.clone();
+    with_host(&p.binary, |conn| {
+        lock(&BUSY).insert(instance.clone(), (button.to_string(), conn.killer()));
+        // The user's click lets the plug-in bring a window of its own to the front.
+        conn.allow_foreground();
+        let reply = conn.request(&Req::Button(r, button.to_string()), None);
+        lock(&BUSY).remove(&instance);
+        reply
+    })
 }
 
 #[cfg(test)]

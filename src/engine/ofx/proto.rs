@@ -15,6 +15,9 @@ pub enum Req {
     /// Describe plug-in `index` of the loaded binary (describe, then describeInContext: Filter, else General).
     Describe { index: u32 },
     Render(Render),
+    /// A push button of the instance was clicked (its name), or "" to only create the instance and read its values.
+    /// No picture: `Render::shm` is unused.
+    Button(Render, String),
     /// Testing aid: the host panics (the R32 crash test without a plug-in).
     Panic,
     Quit,
@@ -29,17 +32,59 @@ pub struct Render {
     pub time: f64,
     pub w: u32,
     pub h: u32,
-    /// 32-bit float RGBA, else 8-bit.
-    pub float: bool,
+    pub depth: Depth,
+    /// Pictures before the output: 0 for a generator, 1 for a filter (Source), 2 for a transition (SourceFrom,
+    /// SourceTo), one after the other from the start of the shared memory.
+    pub inputs: u32,
+    /// Milan already holds this instance's values (a saved, copied or edited FX): they replace whatever the plug-in
+    /// sets up in its create instance action. False for a new FX: the plug-in's own starting values (saved defaults,
+    /// a random seed) stand and are all reported back (`Outcome::initial`).
+    pub restored: bool,
     /// Picture pixels per project pixel (Draft and Preview quality render smaller).
     pub scale: f64,
     pub par: f64,
     pub fps: f64,
-    /// The shared memory (`Local\...` name) and its size; the source starts at 0, the output at `out`.
+    /// The shared memory (`Local\...` name) and its size; the inputs start at 0, the output at `out`.
     pub shm: String,
     pub shm_size: u64,
     pub out: u64,
     pub params: Vec<(String, PVal)>,
+}
+
+/// The pixel depth of the pictures in shared memory (RGBA, premultiplied).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Depth {
+    #[default]
+    Byte,
+    Short,
+    Half,
+    Float,
+}
+
+impl Depth {
+    /// Bytes per pixel.
+    pub fn bpp(self) -> usize {
+        match self {
+            Depth::Byte => 4,
+            Depth::Short | Depth::Half => 8,
+            Depth::Float => 16,
+        }
+    }
+
+    /// The OFX name ("OfxBitDepthByte").
+    pub fn ofx(self) -> &'static str {
+        match self {
+            Depth::Byte => "OfxBitDepthByte",
+            Depth::Short => "OfxBitDepthShort",
+            Depth::Half => "OfxBitDepthHalf",
+            Depth::Float => "OfxBitDepthFloat",
+        }
+    }
+
+    /// The depth Milan uses with a plug-in that takes `depths`: float, else 8-bit (Milan's own), else 16-bit.
+    pub fn pick(depths: &[String]) -> Option<Depth> {
+        [Depth::Float, Depth::Byte, Depth::Short, Depth::Half].into_iter().find(|d| depths.iter().any(|x| x == d.ofx()))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -53,8 +98,37 @@ pub enum Reply {
     /// The binary's plug-in count.
     Loaded(u32),
     Described(Box<PluginDesc>),
-    Rendered,
+    /// A frame was rendered, or a button's action ran.
+    Rendered(Outcome),
     Error(String),
+}
+
+/// What the plug-in did besides the picture.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Outcome {
+    /// Values the plug-in set itself (paramSetValue), as stored in the host afterwards.
+    #[serde(default)]
+    pub edits: Vec<(String, PVal)>,
+    /// `edits` are a new instance's starting values (every parameter): they fill in what Milan does not hold yet.
+    #[serde(default)]
+    pub initial: bool,
+    /// Every parameter's hidden / enabled / label / choice options, when they changed since the last reply.
+    #[serde(default)]
+    pub state: Option<Vec<ParamState>>,
+    /// The plug-in's messages during this request, as it worded them ("Error: [id] text").
+    #[serde(default)]
+    pub messages: Vec<String>,
+}
+
+/// What a plug-in can change about a parameter at run time.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ParamState {
+    pub name: String,
+    pub secret: bool,
+    pub enabled: bool,
+    pub label: String,
+    #[serde(default)]
+    pub options: Vec<String>,
 }
 
 /// One plug-in as its describe actions set it up.
@@ -73,14 +147,14 @@ pub struct PluginDesc {
     pub contexts: Vec<String>,
     #[serde(default)]
     pub depths: Vec<String>,
-    /// The context Milan uses ("" when it supports none of them).
+    /// The context Milan uses: Filter, else General, Transition or Generator ("" when it supports none of them).
     #[serde(default)]
     pub context: String,
     #[serde(default)]
     pub params: Vec<ParamDesc>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParamDesc {
     pub name: String,
     pub label: String,
@@ -105,6 +179,25 @@ pub struct ParamDesc {
     pub multiline: bool,
     #[serde(default)]
     pub hint: String,
+    /// kOfxParamPropEnabled as described (greyed when false).
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// A group that starts open.
+    #[serde(default = "yes")]
+    pub open: bool,
+    /// A page's children, in its order.
+    #[serde(default)]
+    pub children: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ParamDesc {
+    fn default() -> Self {
+        serde_json::from_str(r#"{"name":"","label":"","kind":""}"#).expect("the defaults")
+    }
 }
 
 pub fn write_msg<T: Serialize>(w: &mut impl Write, m: &T) -> io::Result<()> {
