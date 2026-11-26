@@ -189,7 +189,7 @@ impl CmdState {
             | ExportVegas | ArchiveProject | ImportMediaFromProject
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
-            | CustomizeKeyboard => true,
+            | CustomizeKeyboard | CommandPalette => true,
             // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
             LayoutVp14 => !v23,
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
@@ -926,6 +926,8 @@ pub const VIEW: &[M] = &[
     S,
     C("&Focus to Timeline", FocusTimeline),
     Sub("Window", WINDOWS),
+    // R47: Milan Pro's own row (VEGAS has no palette).
+    C("Command &Palette...", CommandPalette),
     S,
     // The preview bus it shows plays the Explorer's previews (R57); Milan Pro has none yet.
     K("Mixer Previe&w Fader", false, NotPlanned("R57")),

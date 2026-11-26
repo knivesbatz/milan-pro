@@ -65,6 +65,8 @@ pub enum Command {
     RollBack,
     /// R15: Options › Customize Toolbar, Customize Timeline Toolbar and Customize Keyboard.
     CustomizeToolbar, CustomizeTimelineToolbar, CustomizeKeyboard,
+    /// R47: View › Command Palette, Milan Pro's own (VEGAS has none); its key is `palette::KEY`.
+    CommandPalette,
     // Context-menu and preference commands without default keys
     EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
@@ -407,6 +409,8 @@ pub const TABLE: &[Row] = &[
     (MidiTimecode, "Generate MIDI Timecode", &["F7"], None),
     (MidiClock, "Generate MIDI Clock", &["Shift+F7"], None),
     (MidiTrigger, "Trigger from MIDI Timecode", &["Ctrl+F7"], None),
+    // R47: Milan Pro's own; a chord no VEGAS row has in either look (palette::tests checks).
+    (CommandPalette, "Command Palette", &[super::palette::KEY], None),
 ];
 
 /// Default keys of `cmd` in `look`, as written in the table.

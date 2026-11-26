@@ -21,6 +21,7 @@ pub mod monitors;
 pub mod render_queue;
 mod mixer;
 mod overlays;
+pub mod palette;
 mod pancrop;
 mod plugin_manager;
 mod preview;
