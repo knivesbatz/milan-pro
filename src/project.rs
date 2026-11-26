@@ -101,6 +101,177 @@ pub struct ProjectSettings {
     /// R16a: Project Properties › Summary.
     #[serde(default, skip_serializing_if = "Summary::is_empty")]
     pub summary: Summary,
+    /// R10a: Project Properties › Audio › Master bus mode: the master's channel layout (and the busses' that follow it).
+    /// A stereo track is placed in a 5.1 / 7.1 room by its surround pan. A project saved before R10a is stereo.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "BusMode::is_stereo")]
+    pub layout: BusMode,
+    /// R10a: Project Properties › Audio › Resample and stretch quality: the length of the windowed-sinc kernel the
+    /// varispeed and shuttle resampler uses (Preview 16 taps, Good 32, Best 64).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AudioQuality::is_good")]
+    pub resample_quality: AudioQuality,
+}
+
+/// R10a: the master bus mode (Project Properties › Audio). VEGAS offers Stereo and 5.1 Surround; 7.1 is Milan Pro's.
+/// Channel order is FFmpeg's: FL FR | FC LFE | BL BR | SL SR.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BusMode {
+    #[default]
+    Stereo,
+    Surround51,
+    Surround71,
+}
+
+impl BusMode {
+    pub const ALL: [BusMode; 3] = [BusMode::Stereo, BusMode::Surround51, BusMode::Surround71];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BusMode::Stereo => "Stereo",
+            BusMode::Surround51 => "5.1 Surround",
+            BusMode::Surround71 => "7.1 Surround",
+        }
+    }
+
+    /// Interleaved channels per frame.
+    pub fn channels(self) -> usize {
+        match self {
+            BusMode::Stereo => 2,
+            BusMode::Surround51 => 6,
+            BusMode::Surround71 => 8,
+        }
+    }
+
+    /// The layout of `n` channels (1 = mono, as a template's mono downmix).
+    pub fn of_channels(n: usize) -> Option<BusMode> {
+        match n {
+            1 | 2 => Some(BusMode::Stereo),
+            6 => Some(BusMode::Surround51),
+            8 => Some(BusMode::Surround71),
+            _ => None,
+        }
+    }
+
+    /// FFmpeg's name (`-channel_layout`).
+    pub fn ffmpeg(self) -> &'static str {
+        match self {
+            BusMode::Stereo => "stereo",
+            BusMode::Surround51 => "5.1",
+            BusMode::Surround71 => "7.1",
+        }
+    }
+
+    pub fn surround(self) -> bool {
+        self != BusMode::Stereo
+    }
+
+    fn is_stereo(&self) -> bool {
+        !self.surround()
+    }
+}
+
+/// R10a: the channel layout of an audio track or bus (Track › Channel Layout, the bus's in the Mixing Console). A
+/// mono node sums what it carries to one channel heard on both sides; stereo is VEGAS's track; a 5.1 / 7.1 track
+/// decodes its media to that layout (FFmpeg's channel order) and goes channel for channel into a bus or master of
+/// the same layout, folded down or spread into another (`surround::convert`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioLayout {
+    Mono,
+    #[default]
+    Stereo,
+    Surround51,
+    Surround71,
+}
+
+impl AudioLayout {
+    pub const ALL: [AudioLayout; 4] = [AudioLayout::Mono, AudioLayout::Stereo, AudioLayout::Surround51, AudioLayout::Surround71];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AudioLayout::Mono => "Mono",
+            AudioLayout::Stereo => "Stereo",
+            AudioLayout::Surround51 => "5.1 Surround",
+            AudioLayout::Surround71 => "7.1 Surround",
+        }
+    }
+
+    /// Interleaved channels the mixer carries for it (a mono node is two equal channels).
+    pub fn width(self) -> usize {
+        match self {
+            AudioLayout::Mono | AudioLayout::Stereo => 2,
+            AudioLayout::Surround51 => 6,
+            AudioLayout::Surround71 => 8,
+        }
+    }
+
+    pub fn of(m: BusMode) -> AudioLayout {
+        match m {
+            BusMode::Stereo => AudioLayout::Stereo,
+            BusMode::Surround51 => AudioLayout::Surround51,
+            BusMode::Surround71 => AudioLayout::Surround71,
+        }
+    }
+
+    fn is_stereo(&self) -> bool {
+        *self == AudioLayout::Stereo
+    }
+}
+
+/// R10a: Project Properties › Audio › Resample and stretch quality (VEGAS: Preview, Good, Best).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioQuality {
+    Preview,
+    #[default]
+    Good,
+    Best,
+}
+
+impl AudioQuality {
+    pub const ALL: [AudioQuality; 3] = [AudioQuality::Preview, AudioQuality::Good, AudioQuality::Best];
+
+    pub fn name(self) -> &'static str {
+        ["Preview", "Good", "Best"][self as usize]
+    }
+
+    /// Taps of the resampler's windowed sinc (Good is the 32 every project had before R10a).
+    pub fn taps(self) -> usize {
+        [16, 32, 64][self as usize]
+    }
+
+    fn is_good(&self) -> bool {
+        *self == AudioQuality::Good
+    }
+}
+
+/// R10a: a track's surround pan in a 5.1 / 7.1 project (the Surround Panner window and the track header's panner).
+/// The pan point `x`, `y` is in the room, -1..1 each (y = 1 is the front). `off` are the speakers switched off
+/// (bits in channel order: FL FR C LFE BL BR SL SR), as VEGAS's clicked-out speaker icons. `lfe` sends the track to
+/// the LFE channel only (VEGAS's track LFE button). `smooth` (0..1) is VEGAS's Smoothness: 1 pans nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SurroundPan {
+    pub x: f32,
+    pub y: f32,
+    pub smooth: f32,
+    pub off: u8,
+    pub lfe: bool,
+}
+
+impl Default for SurroundPan {
+    /// The front centre, every speaker on (VEGAS's new track).
+    fn default() -> Self {
+        Self { x: 0.0, y: 1.0, smooth: 0.0, off: 0, lfe: false }
+    }
+}
+
+impl SurroundPan {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Speaker `c` (channel index) is on.
+    pub fn speaker_on(&self, c: usize) -> bool {
+        c < 8 && self.off & (1 << c) == 0
+    }
 }
 
 /// Project Properties › Field order (and a render template's).
@@ -509,11 +680,14 @@ pub struct Bus {
     pub automation: AutoMode,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_controls: bool,
+    /// R10a: the bus's channel layout; None follows the master bus mode (VEGAS's busses are the master's).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "Option::is_none")]
+    pub layout: Option<AudioLayout>,
 }
 
 impl Bus {
     pub fn new(name: String, fx: Vec<Fx>) -> Self {
-        Self { id: uuid::Uuid::new_v4().to_string(), name, volume: 1.0, pan: 0.0, muted: false, fx, envelopes: Vec::new(), out: Out::Master, automation: AutoMode::Read, auto_controls: false }
+        Self { id: uuid::Uuid::new_v4().to_string(), name, volume: 1.0, pan: 0.0, muted: false, fx, envelopes: Vec::new(), out: Out::Master, automation: AutoMode::Read, auto_controls: false, layout: None }
     }
 }
 
@@ -735,6 +909,13 @@ pub struct Track {
     pub sends: Vec<AudioSend>,
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "PanType::is_default")]
     pub pan_type: PanType,
+    /// R10a (audio): the track's surround pan, used when the project's master bus mode is 5.1 or 7.1 (the Pan slider
+    /// and Pan envelope then trim its left-right position).
+    #[serde(default, skip_serializing_if = "SurroundPan::is_default")]
+    pub surround: SurroundPan,
+    /// R10a (audio): the track's channel layout (Stereo, as VEGAS's tracks are).
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AudioLayout::is_stereo")]
+    pub layout: AudioLayout,
     /// R8c (audio): Automation Settings, and Show Automation Controls (the Vol and Pan sliders follow and write the
     /// envelopes instead of trimming).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AutoMode::is_read")]
@@ -848,6 +1029,10 @@ pub struct Clip {
     /// Stream ▸: which of the media's audio streams (audio event) or video streams (video event) plays, from 0.
     #[serde(default)]
     pub stream: u32,
+    /// R10a: Channels ▸ of a multichannel (more than stereo) source: the stereo pair played (0 = channels 1 and 2,
+    /// 1 = 3 and 4, ...), or None for every channel downmixed to stereo (ITU-R BS.775). Nothing for mono and stereo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<u32>,
     /// Switches › Maintain Aspect Ratio (video; on, as in VEGAS): off, the picture is stretched to fill the frame.
     #[serde(default = "yes")]
     pub keep_aspect: bool,
@@ -989,6 +1174,10 @@ pub struct MediaItem {
     pub audio_streams: u32,
     #[serde(default)]
     pub video_streams: u32,
+    /// R10a: channels of the first audio stream (6 for 5.1), from the probe; 0 = not counted (media imported before
+    /// R10a): Channels ▸ then asks ffprobe (`mix::channels`, cached).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub channels: u32,
     /// R6a: a Milan Pro project (`.mnle`) used as media, a nested timeline (`engine::nested`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nested: bool,
@@ -1139,6 +1328,10 @@ pub enum EnvKind {
     /// R8c: an FX parameter (`Fx::auto` on audio track and bus FX; a video track FX's keys), lent to the envelope
     /// editor as 0..=1 of the parameter's range (`edit::FX_ENV`). Never stored in `envelopes`.
     FxParam,
+    /// R10a: an audio track's surround pan point, -1..=1 each (Surround Panner keyframes): x left to right, y back
+    /// to front. They move `Track::surround` in 5.1 / 7.1 projects.
+    SurroundX,
+    SurroundY,
     /// A kind written by a later version: loads (instead of failing the whole project) and is ignored.
     #[serde(other)]
     Unknown,
@@ -1482,6 +1675,8 @@ impl Default for ProjectSettings {
             adjust_media: true,
             bit_depth: 16,
             summary: Summary::default(),
+            layout: BusMode::Stereo,
+            resample_quality: AudioQuality::Good,
         }
     }
 }
@@ -1665,6 +1860,8 @@ impl Track {
             out: Out::Master,
             sends: Vec::new(),
             pan_type: PanType::Balance0,
+            surround: SurroundPan::default(),
+            layout: AudioLayout::Stereo,
             automation: AutoMode::Read,
             auto_controls: false,
             monitor: Monitor::Off,
@@ -1756,6 +1953,7 @@ impl Clip {
             normalized: None,
             channels: ChannelMap::Both,
             stream: 0,
+            pair: None,
             keep_aspect: true,
             reduce_flicker: false,
             resample: None,

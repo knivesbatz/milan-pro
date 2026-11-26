@@ -282,7 +282,12 @@ impl RenderDialog {
         if widgets::checkbox_enabled(ui, self.chosen.audio.is_some(), &mut loud, "Save loudness log next to media file").on_disabled_hover_text("This format has no audio.").changed() {
             self.opts.loudness_log = loud.then_some(prefs.loudness.mode);
         }
-        widgets::checkbox_enabled(ui, false, &mut false, "Enable multichannel mapping").on_disabled_hover_text(super::super::menus::Later("R10a").text());
+        // R10a: a stereo project's busses onto the pairs of a surround template (the master on 1-2, Bus A on 3-4, ...).
+        let stems = project.settings.layout == crate::project::BusMode::Stereo && !project.timeline.audio.buses.is_empty();
+        let wide = self.chosen.audio.as_ref().is_some_and(|a| a.channels > 2);
+        widgets::checkbox_enabled(ui, stems && wide, &mut self.opts.multichannel, "Enable multichannel mapping")
+            .on_hover_text("The master on channels 1 and 2, then each bus that goes to the master on the next pair (Bus A on 3 and 4, Bus B on 5 and 6, ...), as far as the format has channels.")
+            .on_disabled_hover_text("Needs a stereo project with busses and a 5.1 or 7.1 template; a surround project renders its channels as they are.");
         *changed |= ui
             .checkbox(&mut prefs.render_background, "Render in the background (keep editing; progress in the status bar)")
             .on_hover_text("Renders a copy of the project as it is when Render is clicked: later edits do not change the file.")

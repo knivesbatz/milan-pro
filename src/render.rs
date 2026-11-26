@@ -273,6 +273,16 @@ pub fn vcodec(enc: &str) -> Option<&'static VCodec> {
     VCODECS.iter().find(|c| c.enc == enc)
 }
 
+/// R10a: the most channels an audio encoder takes (FFmpeg 9: AAC, FLAC, Opus, Vorbis, ALAC and PCM up to 7.1; AC-3 and
+/// E-AC-3 up to 5.1; MP3 and MP2 stereo).
+pub fn max_channels(enc: &str) -> u8 {
+    match enc {
+        "ac3" | "eac3" => 6,
+        "libmp3lame" | "mp2" => 2,
+        _ => 8,
+    }
+}
+
 pub fn acodec(enc: &str) -> Option<&'static ACodec> {
     ACODECS.iter().find(|c| c.enc == enc)
 }
@@ -452,8 +462,11 @@ impl Template {
             if !c.audio.contains(&k.enc) {
                 return Err(if c.audio.is_empty() { format!("{} has no audio.", c.label) } else { format!("{} cannot hold {} audio.", c.label, k.label) });
             }
-            if !(1..=2).contains(&a.channels) {
-                return Err("Mono or stereo.".into());
+            match a.channels {
+                1 | 2 => {}
+                6 | 8 if a.channels <= max_channels(k.enc) => {}
+                6 | 8 => return Err(format!("{} takes mono or stereo{}.", k.label, if max_channels(k.enc) >= 6 { " or 5.1" } else { "" })),
+                _ => return Err("Mono, stereo, 5.1 or 7.1.".into()),
             }
             if a.bits.is_some_and(|b| ![8, 16, 24, 32].contains(&b)) {
                 return Err("The bit depth is 8, 16, 24 or 32.".into());
@@ -635,7 +648,12 @@ impl Template {
     pub fn audio_line(&self, s: &ProjectSettings) -> Option<String> {
         let a = self.audio.as_ref()?;
         let k = a.codec()?;
-        let ch = if a.channels == 1 { "Mono" } else { "Stereo" };
+        let ch = match a.channels {
+            1 => "Mono",
+            6 => "5.1 Surround",
+            8 => "7.1 Surround",
+            _ => "Stereo",
+        };
         let q = if k.bits { format!("{}-bit", a.bits(s)) } else { format!("{} kbps", a.kbps) };
         Some(format!("{} Hz; {ch}; {}; {q}", a.sample_rate(s.sample_rate, &self.container), k.label))
     }
@@ -667,6 +685,11 @@ fn vid(codec: &str, size: Option<(u32, u32)>, rate: Rate, profile: &str, pix_fmt
 
 fn aud(codec: &str, kbps: u32) -> Option<AudioEnc> {
     Some(AudioEnc { codec: codec.into(), kbps, ..Default::default() })
+}
+
+/// R10a: `aud` with `channels` (6 for 5.1, 8 for 7.1).
+fn aud_ch(codec: &str, kbps: u32, channels: u8) -> Option<AudioEnc> {
+    Some(AudioEnc { codec: codec.into(), kbps, channels, ..Default::default() })
 }
 
 /// The built-in delivery templates. The first five are Milan Pro's original presets, unchanged.
@@ -713,6 +736,15 @@ pub static BUILTIN: LazyLock<Vec<Template>> = LazyLock::new(|| {
         tpl("AC-3 audio", "Dolby Digital AC-3 448 kbps audio.", "ac3", None, aud("ac3", 448)),
         tpl("E-AC-3 audio", "Dolby Digital Plus E-AC-3 640 kbps audio.", "eac3", None, aud("eac3", 640)),
         tpl("AIFF audio", "Uncompressed big-endian PCM audio (.aif).", "aiff", None, aud("pcm", 0)),
+        // R10a: 5.1 and 7.1 surround (a stereo project fills the front pair; a surround project's channels go as they are).
+        tpl("WAV 5.1 Surround", "Uncompressed 5.1 audio (L, R, C, LFE, Ls, Rs) at the project's bit depth.", "wav", None, aud_ch("pcm", 0, 6)),
+        tpl("WAV 7.1 Surround", "Uncompressed 7.1 audio (L, R, C, LFE, Lb, Rb, Ls, Rs) at the project's bit depth.", "wav", None, aud_ch("pcm", 0, 8)),
+        tpl("FLAC 5.1 Surround", "Lossless compressed 5.1 audio at the project's bit depth.", "flac", None, aud_ch("flac", 0, 6)),
+        tpl("AAC 5.1 Surround", "AAC 384 kbps 5.1 audio (.m4a).", "m4a", None, aud_ch("aac", 384, 6)),
+        tpl("AC-3 5.1 Surround", "Dolby Digital AC-3 448 kbps 5.1 audio, as DVD and Blu-ray authoring take it.", "ac3", None, aud_ch("ac3", 448, 6)),
+        tpl("E-AC-3 5.1 Surround", "Dolby Digital Plus E-AC-3 640 kbps 5.1 audio.", "eac3", None, aud_ch("eac3", 640, 6)),
+        tpl("MP4 H.264 (AAC 5.1)", "H.264 at the project size with 5.1 AAC audio.", "mp4", x264(None, Quality(18)), aud_ch("aac", 384, 6)),
+        tpl("MPEG-2 TS (AC-3 5.1)", "MPEG-2 video with 5.1 AC-3 audio in a transport stream (.m2ts) for Blu-ray authoring.", "ts", vid("mpeg2video", None, Vbr { avg: 15_000, max: 25_000 }, "", ""), aud_ch("ac3", 448, 6)),
         // R22: the graphics card's encoder (the device Preferences › Video chose, or the first that passed the test),
         // and the software encoder with a note when none is available.
         tpl("MP4 H.264 (hardware)", "H.264 at the project size on the graphics card's encoder (NVENC, Quick Sync, AMF or Media Foundation, as Preferences > Video allows); in software when none passed the test.", "mp4", vid("h264_hw", None, Quality(23), "", ""), aud("aac", 320)),
@@ -734,11 +766,14 @@ pub struct Opts {
     pub markers: bool,
     /// R16c: Save loudness log next to media file (`<name>_loud.txt`), in this metering mode.
     pub loudness_log: Option<crate::engine::loudness::Mode>,
+    /// R10a: Enable multichannel mapping (a stereo project into a 5.1 / 7.1 template): the master on channels 1 and 2,
+    /// then each bus that goes to the master on the next pair.
+    pub multichannel: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { quickfade: true, stretch: false, rotate: true, markers: false, loudness_log: None }
+        Self { quickfade: true, stretch: false, rotate: true, markers: false, loudness_log: None, multichannel: false }
     }
 }
 

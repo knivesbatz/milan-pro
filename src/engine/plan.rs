@@ -12,7 +12,7 @@ use crate::engine::nested::{self, NestedMix};
 use crate::engine::{generate, lut};
 use crate::engine::plugins::{self, FxEval, PluginKind};
 use crate::engine::raster::MaskPlan;
-use crate::project::{AudioSettings, AutoMode, BlurType, Bus, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, Out, PanCrop, PanType, Project, Resample};
+use crate::project::{AudioSettings, AutoMode, BlurType, Bus, ChannelMap, Clip, Composite, Curve, EnvKind, Envelope, Fx, Halo, Keyframes, MaskMode, MediaItem, MediaType, Motion, Out, PanCrop, PanType, Project, Resample, BusMode, AudioLayout, SurroundPan};
 
 /// A picture source as the decoders need it.
 #[derive(Debug, Clone)]
@@ -840,6 +840,12 @@ pub struct ASrc {
     pub pitch: f32,
     /// R6a: a nested timeline (`path` is its project): its sound is mixed from this, not decoded from `path`.
     pub nested: Option<Arc<NestedMix>>,
+    /// R10a: the stereo pair of a multichannel source (Channels ▸), None for its downmix (`Clip::pair`). Stereo
+    /// decodes only.
+    pub pair: Option<u32>,
+    /// R10a: interleaved channels decoded: 2, or a 5.1 / 7.1 track's 6 / 8 (the media converted to that layout by
+    /// FFmpeg, channel for channel when it already is).
+    pub ch: u8,
 }
 
 /// R4b: how an audio event with a Velocity envelope reads its media (varispeed, `mix::Mixer::block`).
@@ -937,6 +943,14 @@ pub struct ATrack {
     pub out: Option<usize>,
     pub sends: Vec<ASend>,
     pub events: Vec<AEvent>,
+    /// R10a: the surround pan that places a stereo track's output in a 5.1 / 7.1 bus or master, and its Surround Panner
+    /// keyframes (timeline time), which move the pan point.
+    pub surround: Option<SurroundPan>,
+    pub x_env: Option<Envelope>,
+    pub y_env: Option<Envelope>,
+    /// R10a: interleaved channels the track carries (`AudioLayout::width`), and a mono track (its events summed to mono).
+    pub ch: usize,
+    pub mono: bool,
 }
 
 /// R8a: a send to bus `to` (index in `AudioPlan::buses`; `id` keys its glide) at `level`, pre- or post-volume.
@@ -961,6 +975,9 @@ pub struct ABus {
     pub mute_env: Option<Envelope>,
     /// A later bus (always a higher index: busses are in the order they mix) or the master (None).
     pub out: Option<usize>,
+    /// R10a: interleaved channels the bus carries (its layout's, or the master's), and a mono bus.
+    pub ch: usize,
+    pub mono: bool,
 }
 
 #[derive(Debug)]
@@ -983,6 +1000,18 @@ pub struct AudioPlan {
     pub standby: bool,
     /// R18a: Options › Metronome (playback only; never a render).
     pub metronome: Option<crate::engine::mix::Metronome>,
+    /// R10a: the master bus mode: busses and the master carry `layout.channels()` interleaved channels.
+    pub layout: BusMode,
+    /// R10a: taps of the varispeed resampler (Project Properties › Audio › Resample and stretch quality).
+    pub taps: usize,
+    /// R10a: playback in a surround project pushes the master's channels here for the Loudness Meters (None in a render).
+    pub loud: Option<Arc<crate::audio::Ring>>,
+    /// R10a: Render As "Enable multichannel mapping": busses that go to the master are kept apart as stems
+    /// (`Mixer::stems`) instead of being mixed into it.
+    pub stems: bool,
+    /// R10a: playback's master fader, so a surround project's master meter and loudness tap are post-fader as the
+    /// stereo device tap is (None in a render).
+    pub master: Option<Arc<crate::audio::Master>>,
 }
 
 /// R8a: the busses and assignable FX chains in mixing order (each before the bus it goes to), each one's output as an
@@ -1071,6 +1100,9 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
             if muted && !sends.iter().any(|s| s.pre) {
                 return None; // muted or un-soloed: left out
             }
+            // R10a: a 5.1 / 7.1 track decodes its media to its layout; Channels ▸ picks a stereo pair on a stereo track.
+            let ch = t.layout.width() as u8;
+            let pair = |c: &Clip| c.pair.filter(|_| ch == 2);
             let events: Vec<AEvent> = t
                 .clips
                 .iter()
@@ -1081,7 +1113,7 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
                     let stream = c.stream.min(m.streams(false) - 1);
                     let pitch = c.pitch_cents;
                     let nested = kids.get(m.id.as_str()).map(nested_mix);
-                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream, pitch, nested: nested.clone() };
+                    let src = |pos, dur, in_point| ASrc { path: m.path.clone(), pos, dur, in_point: m.file_time(in_point), rate: c.rate, reverse: c.reverse, stream, pitch, nested: nested.clone(), pair: pair(c), ch };
                     let vel = crate::engine::velocity::of(c).map(|_| Varispeed {
                         clip: Clip { fx: Vec::new(), takes: Vec::new(), pan_crop: Default::default(), ..c.clone() },
                         looped: crate::edit::loop_len(c, m),
@@ -1108,7 +1140,7 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
                             .takes
                             .iter()
                             .filter_map(|t| media.get(t.media_id.as_str()).filter(|m| !m.nested).map(|m| (m, t)))
-                            .map(|(m, t)| ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: m.file_time(t.in_point), rate: c.rate, reverse: c.reverse, stream: c.stream.min(m.streams(false) - 1), pitch: c.pitch_cents, nested: None })
+                            .map(|(m, t)| ASrc { path: m.path.clone(), pos: c.position, dur: c.duration, in_point: m.file_time(t.in_point), rate: c.rate, reverse: c.reverse, stream: c.stream.min(m.streams(false) - 1), pitch: c.pitch_cents, nested: None, pair: pair(c), ch })
                             .collect(),
                     })
                 })
@@ -1133,6 +1165,11 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
                 },
                 sends,
                 events,
+                surround: Some(t.surround),
+                x_env: env(e, EnvKind::SurroundX),
+                y_env: env(e, EnvKind::SurroundY),
+                ch: ch as usize,
+                mono: t.layout == AudioLayout::Mono,
             })
         })
         .collect();
@@ -1150,10 +1187,26 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
                 pan_env: env(e, EnvKind::Pan),
                 mute_env: env(e, EnvKind::Mute),
                 out,
+                ch: b.layout.unwrap_or(AudioLayout::of(p.settings.layout)).width(),
+                mono: b.layout == Some(AudioLayout::Mono),
             }
         })
         .collect();
-    AudioPlan { tracks, buses, master_fx: p.timeline.master.audio_fx.clone(), bypass_fx: false, quickfade: 0.0, meters: None, standby: false, metronome: None }
+    AudioPlan {
+        tracks,
+        buses,
+        master_fx: p.timeline.master.audio_fx.clone(),
+        bypass_fx: false,
+        quickfade: 0.0,
+        meters: None,
+        standby: false,
+        metronome: None,
+        layout: p.settings.layout,
+        taps: p.settings.resample_quality.taps(),
+        loud: None,
+        stems: false,
+        master: None,
+    }
 }
 
 /// What a Normalize scan of audio event `c` reads (`mix::peak`): its media's stream from its in point for the span it
@@ -1173,7 +1226,7 @@ pub fn norm_source(p: &Project, c: &Clip) -> Option<(ASrc, f64)> {
     };
     let stream = c.stream.min(m.streams(false) - 1);
     let nested = kid.as_ref().map(nested_mix);
-    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream, pitch: 0.0, nested }, len))
+    Some((ASrc { path: m.path.clone(), pos: 0.0, dur: len, in_point: m.file_time(from), rate: 1.0, reverse: false, stream, pitch: 0.0, nested, pair: c.pair, ch: 2 }, len))
 }
 
 #[cfg(test)]

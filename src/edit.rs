@@ -2491,7 +2491,7 @@ pub fn env_default(kind: EnvKind) -> f32 {
 pub fn env_range(kind: EnvKind) -> (f32, f32) {
     match kind {
         EnvKind::Volume => (-120.0, 6.0),
-        EnvKind::Pan | EnvKind::FadeToColor => (-1.0, 1.0),
+        EnvKind::Pan | EnvKind::FadeToColor | EnvKind::SurroundX | EnvKind::SurroundY => (-1.0, 1.0),
         EnvKind::Velocity => (crate::engine::velocity::MIN, crate::engine::velocity::MAX),
         EnvKind::Supersampling => (0.0, 8.0),
         _ => (0.0, 1.0),
@@ -3565,6 +3565,22 @@ pub fn set_pan_type(project: &mut Project, ids: &[String], pt: PanType) -> bool 
     changed(project, done)
 }
 
+/// R10a: Channel Layout ▸ of audio tracks `ids`.
+pub fn set_track_layout(project: &mut Project, ids: &[String], l: crate::project::AudioLayout) -> bool {
+    let mut done = false;
+    for t in project.timeline.audio_tracks.iter_mut().filter(|t| ids.contains(&t.id) && t.layout != l) {
+        t.layout = l;
+        done = true;
+    }
+    changed(project, done)
+}
+
+/// R10a: bus `id`'s channel layout (None: the master's).
+pub fn set_bus_layout(project: &mut Project, id: &str, l: Option<crate::project::AudioLayout>) -> bool {
+    let done = project.timeline.audio.buses.iter_mut().find(|b| b.id == id && b.layout != l).map(|b| b.layout = l).is_some();
+    changed(project, done)
+}
+
 // ---- Plug-ins ----
 
 /// What an FX window, a plug-in drop or the Color Grading panel edits (decision 0.5). Ids, so it survives edits.
@@ -4127,6 +4143,7 @@ pub fn place_on_new_tracks(p: &mut Project, idx: usize, at: f64) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     /// R12: Render to New Track puts the file at the start of what was rendered, on new tracks above the others.
     #[test]

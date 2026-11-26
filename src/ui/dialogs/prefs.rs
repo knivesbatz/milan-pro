@@ -485,8 +485,10 @@ fn audio_device(ui: &mut Ui, d: &mut Prefs, inputs: &[String], outputs: &[String
             }
         });
     });
-    super::row(ui, "Default rear playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_rear", "None", COMBO_W, Later("R10a")));
-    super::row(ui, "Default center and LFE playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_lfe", "None", COMBO_W, Later("R10a")));
+    // R10a: Milan Pro monitors a surround project as its stereo fold-down on the main device (the render has the channels).
+    const FOLD: Why = Fixed("surround projects are monitored as a stereo fold-down on the stereo and front device; separate rear and center/LFE devices are not offered");
+    super::row(ui, "Default rear playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_rear", "None", COMBO_W, FOLD));
+    super::row(ui, "Default center and LFE playback device:", LABEL_W, false, |ui| super::fixed_combo(ui, "pad_lfe", "None", COMBO_W, FOLD));
     super::row(ui, "Buffer size:", LABEL_W, true, |ui| {
         widgets::combo(ui, "pad_buf", COMBO_W, buffer_text(d.buffer_frames), |ui| {
                 for n in BUFFERS {

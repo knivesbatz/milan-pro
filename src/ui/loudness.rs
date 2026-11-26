@@ -129,19 +129,21 @@ impl Loudness {
         let _ = std::thread::Builder::new().name("milan-loudness".into()).spawn(move || {
             let mut buf = Vec::new();
             ring.take(&mut buf); // what played before the window opened
-            let (mut rate, mut blocking) = (ring.rate.load(Relaxed), s.blocking.load(Relaxed));
-            let mut m = Meter::new(rate, blocking);
+            // R10a: the ring's frames are `stride` wide; `width` of them carry the session's layout (2, 6 or 8).
+            let stride = ring.channels();
+            let (mut rate, mut blocking, mut width) = (ring.rate.load(Relaxed), s.blocking.load(Relaxed), ring.width.load(Relaxed) as usize);
+            let mut m = Meter::with_channels(rate, blocking, width);
             // New readings at most 10 times a second (integrated and range go over the whole programme).
             let (mut dirty, mut shown) = (false, std::time::Instant::now());
             // Ends with the window's state (Milan Pro closing). Drained every 20 ms, so the ring (16384 frames) never
             // fills, even from a 192 kHz device.
             while Arc::strong_count(&s) > 1 {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                let (r, b) = (ring.rate.load(Relaxed), s.blocking.load(Relaxed));
-                let mut fresh = s.reset.swap(false, Relaxed) || (r, b) != (rate, blocking);
+                let (r, b, w) = (ring.rate.load(Relaxed), s.blocking.load(Relaxed), ring.width.load(Relaxed) as usize);
+                let mut fresh = s.reset.swap(false, Relaxed) || (r, b, w) != (rate, blocking, width);
                 if fresh {
-                    (rate, blocking) = (r, b);
-                    m = Meter::new(rate, blocking);
+                    (rate, blocking, width) = (r, b, w);
+                    m = Meter::with_channels(rate, blocking, width);
                 }
                 if s.reset_clip.swap(false, Relaxed) {
                     m.reset_peaks();
@@ -150,12 +152,12 @@ impl Loudness {
                 buf.clear();
                 ring.take(&mut buf);
                 // A NaN frame starts a playback session: the meter starts again there.
-                let from = buf.chunks_exact(2).rposition(|f| f[0].is_nan()).map_or(0, |i| {
-                    m = Meter::new(rate, blocking);
+                let from = buf.chunks_exact(stride).rposition(|f| f[0].is_nan()).map_or(0, |i| {
+                    m = Meter::with_channels(rate, blocking, width);
                     fresh = true;
-                    2 * i + 2
+                    stride * i + stride
                 });
-                m.feed(&buf[from..]);
+                m.feed_frames(&buf[from..], stride);
                 dirty |= from < buf.len();
                 if fresh || (dirty && shown.elapsed() >= std::time::Duration::from_millis(100)) {
                     *s.readings.lock().unwrap_or_else(|p| p.into_inner()) = m.readings();

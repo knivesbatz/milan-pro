@@ -1,9 +1,10 @@
 //! Windowed-sinc resampler (pure): interleaved stereo read at fractional frame positions, for varispeed audio (an
-//! event's Velocity envelope, J / L shuttle). 32 taps, Kaiser window, a polyphase table per anti-alias stretch: read
-//! faster than 1x and the kernel widens (cutoff 1 / ratio), so speeding up does not alias.
+//! event's Velocity envelope, J / L shuttle). 32 taps (R10a: 16 or 64 by Project Properties › Audio › Resample and
+//! stretch quality), Kaiser window, a polyphase table per anti-alias stretch: read faster than 1x and the kernel
+//! widens (cutoff 1 / ratio), so speeding up does not alias.
 
-/// Taps at ratios up to 1x; a kernel `s` times wider has `s` times as many.
-const TAPS: usize = 32;
+/// Taps at ratios up to 1x (Good quality); a kernel `s` times wider has `s` times as many.
+pub const TAPS: usize = 32;
 /// Kernel phases between two input frames (the coefficients in between are interpolated).
 const PHASES: usize = 1024;
 /// Kaiser window beta: about 95 dB of stopband.
@@ -30,8 +31,8 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 impl Table {
-    fn new(stretch: f64) -> Self {
-        let taps = (TAPS as f64 * stretch).ceil() as usize & !1;
+    fn new(stretch: f64, base: usize) -> Self {
+        let taps = (base as f64 * stretch).ceil() as usize & !1;
         let half = (taps / 2) as f64;
         let norm = bessel_i0(BETA);
         let mut k = Vec::with_capacity((PHASES + 1) * taps);
@@ -54,18 +55,34 @@ impl Table {
 }
 
 /// Builds the tables it needs on first use (a few hundred microseconds each).
-#[derive(Default)]
 pub struct Resampler {
     tables: [Option<Box<Table>>; STRETCHES.len()],
+    taps: usize,
+}
+
+impl Default for Resampler {
+    fn default() -> Self {
+        Self::new(TAPS)
+    }
 }
 
 impl Resampler {
+    /// A resampler with `taps` taps at 1x (R10a: `AudioQuality::taps`; 32 is what every project had before).
+    pub fn new(taps: usize) -> Self {
+        Self { tables: Default::default(), taps: taps.clamp(8, 256) & !1 }
+    }
+
+    pub fn taps(&self) -> usize {
+        self.taps
+    }
+
     /// The stereo frame at fractional frame `pos` of `src` (interleaved stereo; frames outside it are silence), read at
     /// `ratio` input frames per output frame (its sign does not matter).
     pub fn read(&mut self, src: &[f32], pos: f64, ratio: f64) -> [f32; 2] {
         let r = ratio.abs();
         let i = STRETCHES.iter().position(|s| r <= s + 1e-9).unwrap_or(STRETCHES.len() - 1);
-        let t = self.tables[i].get_or_insert_with(|| Box::new(Table::new(STRETCHES[i])));
+        let taps = self.taps;
+        let t = self.tables[i].get_or_insert_with(|| Box::new(Table::new(STRETCHES[i], taps)));
         let n = t.taps;
         let base = pos.floor();
         let ph = (pos - base) * PHASES as f64;
@@ -86,11 +103,36 @@ impl Resampler {
         [l, rr]
     }
 
+    /// R10a: `read` for interleaved frames of `ch` channels, into `out` (`ch` wide).
+    pub fn read_n(&mut self, src: &[f32], ch: usize, pos: f64, ratio: f64, out: &mut [f32]) {
+        let r = ratio.abs();
+        let i = STRETCHES.iter().position(|s| r <= s + 1e-9).unwrap_or(STRETCHES.len() - 1);
+        let taps = self.taps;
+        let t = self.tables[i].get_or_insert_with(|| Box::new(Table::new(STRETCHES[i], taps)));
+        let n = t.taps;
+        let base = pos.floor();
+        let ph = (pos - base) * PHASES as f64;
+        let p = (ph as usize).min(PHASES - 1);
+        let w = (ph - p as f64) as f32;
+        let (k0, k1) = (&t.k[p * n..(p + 1) * n], &t.k[(p + 1) * n..(p + 2) * n]);
+        let first = base as i64 - (n as i64 / 2 - 1);
+        let frames = (src.len() / ch.max(1)) as i64;
+        let (j0, j1) = ((-first).clamp(0, n as i64) as usize, (frames - first).clamp(0, n as i64) as usize);
+        out.fill(0.0);
+        for j in j0..j1 {
+            let c = k0[j] + (k1[j] - k0[j]) * w;
+            let f = (first + j as i64) as usize * ch;
+            for (o, x) in out.iter_mut().zip(&src[f..f + ch]) {
+                *o += x * c;
+            }
+        }
+    }
+
     /// Frames a read reaches on each side of its position, at `ratio`.
-    pub fn reach(ratio: f64) -> usize {
+    pub fn reach(&self, ratio: f64) -> usize {
         let r = ratio.abs();
         let s = STRETCHES.iter().copied().find(|s| r <= s + 1e-9).unwrap_or(STRETCHES[STRETCHES.len() - 1]);
-        (TAPS as f64 * s).ceil() as usize / 2 + 1
+        (self.taps as f64 * s).ceil() as usize / 2 + 1
     }
 }
 
@@ -130,6 +172,10 @@ mod tests {
         let hi: Vec<f32> = (0..4800).flat_map(|k| [(w * k as f64).sin() as f32; 2]).collect();
         let peak = (100..1000).map(|k| r.read(&hi, k as f64 * 4.0, 4.0)[0].abs()).fold(0.0f32, f32::max);
         assert!(peak < 1e-3, "{peak}");
-        assert_eq!(Resampler::reach(0.9), 17);
+        assert_eq!(r.reach(0.9), 17);
+        // R10a: Best (64 taps) reaches further and reads whole frames back as exactly; Preview (16) is the short kernel.
+        assert_eq!((Resampler::new(64).reach(0.9), Resampler::new(16).reach(1.0)), (33, 9));
+        let got = Resampler::new(64).read(&src, 40.0, 1.0);
+        assert!((got[0] - 40.0).abs() < 1e-3, "{got:?}");
     }
 }

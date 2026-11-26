@@ -46,7 +46,7 @@ fn ffmpeg() -> Command {
 
 /// Master bus shared with the output thread: L/R fader gain, Dim and Downmix in; peak and RMS levels out (f32 bits in
 /// atomics).
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Master {
     gain: [AtomicU32; 2],
     peak: [AtomicU32; 2],
@@ -70,7 +70,7 @@ impl Master {
         }
     }
 
-    fn gain(&self, ch: usize) -> f32 {
+    pub fn gain(&self, ch: usize) -> f32 {
         f32::from_bits(self.gain[ch].load(Relaxed))
     }
 
@@ -139,31 +139,60 @@ pub struct Ring {
     tail: AtomicUsize,
     pub rate: AtomicU32,
     pub latency_us: AtomicU32,
+    /// R10a: interleaved channels per frame (2 for the input ring; the loudness tap's holds the layout's).
+    ch: usize,
+    /// R10a: the channels of the frames last pushed (a stereo session's frames on a 5.1-wide ring are padded).
+    pub width: AtomicU32,
 }
 
 impl Default for Ring {
     fn default() -> Self {
-        Self { buf: (0..2 * RING).map(|_| AtomicU32::new(0)).collect(), head: AtomicUsize::new(0), tail: AtomicUsize::new(0), rate: AtomicU32::new(0), latency_us: AtomicU32::new(0) }
+        Self::new(2)
+    }
+}
+
+impl std::fmt::Debug for Ring {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Ring({} ch, {} frames waiting)", self.ch, self.len())
     }
 }
 
 impl Ring {
-    /// Producer: append stereo frames; those that do not fit are dropped (nobody is listening).
-    pub fn push(&self, stereo: &[f32]) {
+    /// A ring of `ch`-channel frames.
+    pub fn new(ch: usize) -> Self {
+        let ch = ch.clamp(1, crate::engine::surround::MAX);
+        Self { buf: (0..ch * RING).map(|_| AtomicU32::new(0)).collect(), head: AtomicUsize::new(0), tail: AtomicUsize::new(0), rate: AtomicU32::new(0), latency_us: AtomicU32::new(0), ch, width: AtomicU32::new(ch as u32) }
+    }
+
+    /// Channels per frame.
+    pub fn channels(&self) -> usize {
+        self.ch
+    }
+
+    /// Producer: append frames of this ring's width; those that do not fit are dropped (nobody is listening).
+    pub fn push(&self, frames: &[f32]) {
+        self.push_frames(frames, self.ch);
+    }
+
+    /// R10a: append frames of `width` channels (padded with silence, or cut, to the ring's width); `width` is noted.
+    pub fn push_frames(&self, frames: &[f32], width: usize) {
+        let width = width.max(1);
         let (h, t) = (self.head.load(Relaxed), self.tail.load(Acquire));
-        let n = (stereo.len() / 2).min(RING.saturating_sub(h.wrapping_sub(t)));
-        for (i, f) in stereo.chunks_exact(2).take(n).enumerate() {
-            let k = 2 * (h.wrapping_add(i) % RING);
-            self.buf[k].store(f[0].to_bits(), Relaxed);
-            self.buf[k + 1].store(f[1].to_bits(), Relaxed);
+        let n = (frames.len() / width).min(RING.saturating_sub(h.wrapping_sub(t)));
+        self.width.store(width.min(self.ch) as u32, Relaxed);
+        for (i, f) in frames.chunks_exact(width).take(n).enumerate() {
+            let k = self.ch * (h.wrapping_add(i) % RING);
+            for c in 0..self.ch {
+                self.buf[k + c].store(f.get(c).copied().unwrap_or(0.0).to_bits(), Relaxed);
+            }
         }
         self.head.store(h.wrapping_add(n), Release);
     }
 
-    /// Consumer: append every frame waiting to `out` (stereo).
+    /// Consumer: append every frame waiting to `out` (this ring's width).
     pub fn take(&self, out: &mut Vec<f32>) {
         let at = out.len();
-        out.resize(at + 2 * self.len(), 0.0);
+        out.resize(at + self.ch * self.len(), 0.0);
         self.pop(&mut out[at..]);
     }
 
@@ -180,14 +209,16 @@ impl Ring {
         }
     }
 
-    /// Consumer: the oldest frames into `out` (stereo), silence past what is there.
+    /// Consumer: the oldest frames into `out` (this ring's width), silence past what is there.
     fn pop(&self, out: &mut [f32]) {
         let t = self.tail.load(Relaxed);
-        let n = self.len().min(out.len() / 2);
-        for (i, f) in out.chunks_exact_mut(2).enumerate() {
+        let n = self.len().min(out.len() / self.ch);
+        for (i, f) in out.chunks_exact_mut(self.ch).enumerate() {
             if i < n {
-                let k = 2 * (t.wrapping_add(i) % RING);
-                (f[0], f[1]) = (f32::from_bits(self.buf[k].load(Relaxed)), f32::from_bits(self.buf[k + 1].load(Relaxed)));
+                let k = self.ch * (t.wrapping_add(i) % RING);
+                for (c, v) in f.iter_mut().enumerate() {
+                    *v = f32::from_bits(self.buf[k + c].load(Relaxed));
+                }
             } else {
                 f.fill(0.0);
             }
@@ -353,6 +384,9 @@ struct Feed {
     stop: Arc<AtomicBool>,
     /// The session, so a stamp from an earlier one is never read as this one's.
     serial: u64,
+    /// R10a: a surround project's session: the mix thread meters the master and feeds the loudness ring itself (the
+    /// device callback gets the stereo fold-down).
+    surround: bool,
 }
 
 impl Feed {
@@ -548,10 +582,14 @@ impl Out {
     fn render_at(&mut self, out: &mut [f32], ch: usize, latency: Duration, now: u64) {
         self.shared.calls.fetch_add(1, Relaxed);
         while let Ok(f) = self.feeds.try_recv() {
+            let surround = f.surround;
             if let Some(old) = self.feed.replace(f) {
                 trash(&self.bin, Trash::Feed(old));
             }
-            self.loud.push(&[f32::NAN; 2]); // a new session: the loudness meters start again (VEGAS)
+            if !surround {
+                self.loud.rate.store(self.rate, Relaxed);
+                self.loud.push_frames(&[f32::NAN; 2], 2); // a new session: the loudness meters start again (VEGAS)
+            }
         }
         if self.feed.as_ref().is_some_and(|f| f.stop.load(Relaxed)) {
             if let Some(old) = self.feed.take() {
@@ -599,8 +637,9 @@ impl Out {
                     o[2..].fill(0.0);
                 }
             }
-            if self.feed.is_some() {
-                self.loud.push(&self.ltap[..2 * m]);
+            if self.feed.as_ref().is_some_and(|f| !f.surround) {
+                self.loud.rate.store(self.rate, Relaxed);
+                self.loud.push_frames(&self.ltap[..2 * m], 2);
             }
             done += m;
         }
@@ -775,6 +814,8 @@ struct Session {
     /// The play rate (f64 bits): 1, or a shuttle's, which `set_rate` changes on the fly.
     rate: Arc<AtomicU64>,
     serial: u64,
+    /// R10a: the master bus mode the session plays in (a change stops it: the device feed is of one width).
+    layout: crate::project::BusMode,
     /// Where it started, and whether what is heard has got there (until then the playhead waits at the start).
     from: f64,
     reached: bool,
@@ -879,7 +920,8 @@ impl Player {
             ring: Arc::default(),
             mon: MonPlan::default(),
             mon_meters: Arc::default(),
-            loud: Arc::default(),
+            // R10a: wide enough for a 7.1 master; stereo sessions push padded frames.
+            loud: Arc::new(Ring::new(crate::engine::surround::MAX)),
         };
         p.open();
         p
@@ -1001,7 +1043,8 @@ impl Player {
         let clock = Arc::new(AtomicI64::new(from * 2));
         let stop = Arc::new(AtomicBool::new(false));
         self.serial += 1;
-        let feed = Feed { rx, buf: Vec::new(), pos: 0, f0: from, rate, clock, stop: stop.clone(), serial: self.serial };
+        let layout = project.settings.layout;
+        let feed = Feed { rx, buf: Vec::new(), pos: 0, f0: from, rate, clock, stop: stop.clone(), serial: self.serial, surround: layout.surround() };
         if feeds.try_send(feed).is_err() {
             // The callback has not taken the last ones: it is not running.
             *self.error.lock().unwrap() = Some("Audio output failed: the device is not playing".into());
@@ -1023,7 +1066,7 @@ impl Player {
             .expect("spawn milan-mix");
         let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby, self.metronome);
         let calls = self.calls();
-        self.session = Some(Session { watch: (calls, Instant::now()), stop, slot, hash, rate, serial: self.serial, from: start, reached: false, last: start });
+        self.session = Some(Session { watch: (calls, Instant::now()), stop, slot, hash, rate, serial: self.serial, layout, from: start, reached: false, last: start });
     }
 
     fn calls(&self) -> u64 {
@@ -1049,9 +1092,15 @@ impl Player {
     fn plan(&mut self, project: &Project) -> AudioPlan {
         let mut plan = AudioPlan { bypass_fx: self.bypass_fx, quickfade: if self.quickfade { QUICKFADE } else { 0.0 }, standby: self.standby, ..compile_audio(project) };
         plan.metronome = self.metronome.then(|| mix::Metronome::of(&project.settings));
-        let ids = plan.tracks.iter().map(|t| &t.id).chain(plan.buses.iter().map(|b| &b.id));
-        self.meters = Arc::new(ids.map(|id| (id.clone(), self.meters.get(id).cloned().unwrap_or_default())).collect());
+        // R10a: a surround project's master is metered by the mix thread (`mix::MASTER_METER`), and its loudness tapped there.
+        let surround = plan.layout.surround();
+        let ids = plan.tracks.iter().map(|t| t.id.as_str()).chain(plan.buses.iter().map(|b| b.id.as_str())).chain(surround.then_some(mix::MASTER_METER));
+        self.meters = Arc::new(ids.map(|id| (id.to_string(), self.meters.get(id).cloned().unwrap_or_default())).collect());
         plan.meters = Some(self.meters.clone());
+        if surround {
+            plan.loud = Some(self.loud.clone());
+            plan.master = Some(self.master.clone());
+        }
         plan
     }
 
@@ -1060,6 +1109,12 @@ impl Player {
     pub fn set_plan(&mut self, project: &Project) {
         let hash = (crate::engine::content_hash(project), self.bypass_fx, self.quickfade, self.standby, self.metronome);
         if self.session.as_ref().is_none_or(|s| s.hash == hash) {
+            return;
+        }
+        // R10a: the device feed is stereo or a surround fold-down for the whole session: a new master bus mode ends it.
+        if self.session.as_ref().is_some_and(|s| s.layout != project.settings.layout) {
+            self.stop();
+            *self.error.lock().unwrap_or_else(|p| p.into_inner()) = Some("Playback stopped: the master bus mode changed. Press Play again.".into());
             return;
         }
         let plan = Arc::new(self.plan(project));
@@ -1447,7 +1502,7 @@ mod tests {
     fn session(r: &Rig, serial: u64) -> (SyncSender<Block>, Arc<AtomicI64>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::sync_channel(8);
         let (clock, stop) = (Arc::new(AtomicI64::new(0)), Arc::new(AtomicBool::new(false)));
-        r.feeds.send(Feed { rx, buf: Vec::new(), pos: 0, f0: 0, rate: 1.0, clock: clock.clone(), stop: stop.clone(), serial }).unwrap();
+        r.feeds.send(Feed { rx, buf: Vec::new(), pos: 0, f0: 0, rate: 1.0, clock: clock.clone(), stop: stop.clone(), serial, surround: false }).unwrap();
         (tx, clock, stop)
     }
 

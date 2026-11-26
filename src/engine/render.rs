@@ -13,8 +13,9 @@ use crate::audio::RATE;
 use crate::engine::loudness::{Log as Loudness, Mode};
 use crate::engine::mix::{self, BLOCK, Mixer};
 use crate::engine::plan::{self, VideoPlan, compile_audio};
+use crate::engine::surround;
 use crate::engine::worker::Worker;
-use crate::project::{FieldOrder, Project, ProjectSettings};
+use crate::project::{BusMode, FieldOrder, Project, ProjectSettings};
 use crate::render::{Ctl, Fit, Job, Opts, Template, fit, is_rgb, utc};
 
 /// Share of the progress bar the audio pass takes before the video pass.
@@ -35,10 +36,12 @@ pub fn loudness_log(project: &Project, range: (f64, f64), quickfade: bool, mode:
         if range.1 <= range.0 {
             return Err("Nothing to measure: the timeline is empty".into());
         }
-        let mut l = Loudness::new(RATE);
-        mix_range(&p, range, quickfade, ctl, 1.0, Some(&mut l), |_| true)?;
+        // R10a: a surround project is measured on its layout's channels (BS.1770's weights).
+        let ch = p.settings.layout.channels();
+        let mut l = Loudness::with_channels(RATE, ch);
+        mix_range(&p, range, quickfade, ctl, 1.0, (ch, false), Some(&mut l), |_| true)?;
         let source = p.path.as_ref().map_or_else(|| p.name.clone(), |x| x.display().to_string());
-        let text = l.text(&source, &format!("the project's mix, {RATE} Hz stereo, after the master"), mode, range);
+        let text = l.text(&source, &format!("the project's mix, {RATE} Hz {}, after the master", p.settings.layout.name().to_lowercase()), mode, range);
         std::fs::write(&out, text).map_err(|e| format!("Cannot write the loudness log {}: {e}", out.display()))?;
         ctl.set_log(out);
         Ok(())
@@ -113,7 +116,13 @@ fn video_filter(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit) -> String 
 pub fn encoder_args(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit, fps: &str, audio: &Path, meta: Option<&Path>, out: &Path) -> Vec<String> {
     let st = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     let mut a = st(&["-hide_banner", "-loglevel", "repeat+level+info", "-nostats", "-y"]);
-    let pcm = st(&["-f", "f32le", "-ar", &RATE.to_string(), "-ac", "2", "-i"]);
+    // R10a: the mix is fed at the template's channel count (a mono template takes the stereo mix: ffmpeg folds it).
+    let ch = mix_channels(t);
+    let mut pcm = st(&["-f", "f32le", "-ar", &RATE.to_string(), "-ac", &ch.to_string()]);
+    if ch > 2 {
+        pcm.extend(st(&["-channel_layout", surround::layout_of(ch).ffmpeg()]));
+    }
+    pcm.push("-i".into());
     let mut inputs = 1;
     if t.video.is_some() {
         a.extend(st(&["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{}x{}", f.compose.0, f.compose.1), "-framerate", fps, "-i", "-"]));
@@ -155,6 +164,12 @@ pub fn encoder_args(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit, fps: &
     a
 }
 
+/// R10a: the channels the mix is written with for template `t`: its audio channels, the stereo mix for a mono template
+/// (ffmpeg folds it to mono, as it did before R10a).
+fn mix_channels(t: &Template) -> usize {
+    t.audio.as_ref().map_or(2, |a| (a.channels as usize).max(2))
+}
+
 /// What a render's log records besides its outcome.
 #[derive(Default)]
 struct Log {
@@ -171,7 +186,7 @@ fn render(p: &Project, t: &Template, out: &Path, range: (f64, f64), opts: Opts, 
     ctl.set_temp(vec![part.clone(), tmp.clone(), meta.clone()]);
     let mut log = Log::default();
     // R16c: the loudness of the mix as it goes to the encoder (after the master, before the codec, as VEGAS logs it).
-    let mut loud = opts.loudness_log.filter(|_| t.audio.is_some()).map(|_| Loudness::new(RATE));
+    let mut loud = opts.loudness_log.filter(|_| t.audio.is_some()).map(|_| Loudness::with_channels(RATE, mix_channels(t)));
     let r = t.check().and_then(|()| encode(p, t, range, opts, (&part, &tmp, &meta), ctl, &mut log, loud.as_mut()));
     let _ = std::fs::remove_file(&tmp);
     let _ = std::fs::remove_file(&meta);
@@ -269,7 +284,7 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
         let file = std::fs::File::create(tmp).map_err(|e| format!("Cannot create the render's temp audio {}: {e}", tmp.display()))?;
         let (mut file, mut err) = (BufWriter::new(file), None);
         // A refused write (disk full) leaves its error in `err`.
-        mix_range(p, (a, b), opts.quickfade, ctl, AUDIO_SHARE, loud.take(), |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
+        mix_range(p, (a, b), opts.quickfade, ctl, AUDIO_SHARE, (mix_channels(t), opts.multichannel), loud.take(), |bytes| file.write_all(bytes).map_err(|e| err = Some(e)).is_ok())?;
         if let Some(e) = err.or_else(|| file.flush().err()) {
             return Err(format!("Cannot write the render's temp audio {}: {e}", tmp.display()));
         }
@@ -303,7 +318,7 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
             feed_video(vp, n, f.compose, quality, alpha, stdin, ctl)
         }
         // `move`: stdin closes when the mix ends, which tells the encoder to finish.
-        _ => mix_range(p, (a, b), opts.quickfade, ctl, 1.0, loud, move |bytes| stdin.write_all(bytes).is_ok()),
+        _ => mix_range(p, (a, b), opts.quickfade, ctl, 1.0, (mix_channels(t), opts.multichannel), loud, move |bytes| stdin.write_all(bytes).is_ok()),
     };
     // stdin is closed: the encoder finishes, or is killed when the frames stopped short.
     if !matches!(fed, Ok(true)) {
@@ -340,35 +355,67 @@ fn summary(lines: &[String]) -> String {
 }
 
 /// Mix seconds `a..b` at RATE through the master FX (Bypass All Audio FX never applies to a render), then the master
-/// gain, clamped to [-1, 1], as f32le stereo into `write` (a master limiter's output never reaches the clamp while the
-/// master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`. R16c: `loud` measures
-/// what is written.
-fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share: f64, mut loud: Option<&mut Loudness>, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
-    let plan = plan::AudioPlan { quickfade: if quickfade { plan::QUICKFADE } else { 0.0 }, ..compile_audio(p) };
+/// gain, clamped to [-1, 1], as f32le frames of `out_ch` channels into `write` (a master limiter's output never reaches
+/// the clamp while the master gain is at or under 0 dB). Ok(false): `write` refused the data. Progress goes 0..`share`.
+/// R16c: `loud` measures what is written. R10a: the project's layout is folded down or spread to `out_ch`
+/// (`surround::convert`); in a surround project the left fader gains the left channels, the right the right ones, the
+/// centre and LFE their mean. With `stems` ("Enable multichannel mapping", stereo projects) the master takes channels
+/// 1 and 2 and each bus that goes to the master the next pair (Bus A on 3 and 4, ...), as far as `out_ch` goes.
+fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share: f64, (out_ch, stems): (usize, bool), mut loud: Option<&mut Loudness>, mut write: impl FnMut(&[u8]) -> bool) -> Result<bool, String> {
+    let stems = stems && p.settings.layout == BusMode::Stereo;
+    let plan = plan::AudioPlan { quickfade: if quickfade { plan::QUICKFADE } else { 0.0 }, stems, ..compile_audio(p) };
     let gain = p.timeline.master.gain;
+    let (ch, out_ch) = (plan.layout.channels(), out_ch.max(1));
+    let gains: Vec<f32> = (0..ch)
+        .map(|c| match c {
+            surround::FL | surround::BL | surround::SL => gain[0],
+            surround::FR | surround::BR | surround::SR => gain[1],
+            _ => (gain[0] + gain[1]) * 0.5,
+        })
+        .collect();
     let mut mixer = Mixer::ffmpeg();
     // A render waits for every decoder, however slow, so no gap is baked into the file; Cancel still stops it.
     mixer.render = Some(ctl.cancel_flag());
     let (f0, f1, ahead) = (mix::frame(a), mix::frame(b), RATE as i64);
     // Streams open 1 s before they are needed, so their decoders start in parallel.
     mixer.warm(&plan, f0, (f0 + ahead).min(f1));
-    let (mut f, mut buf, mut bytes) = (f0, Vec::new(), Vec::new());
+    let (mut f, mut buf, mut conv, mut bytes) = (f0, Vec::new(), Vec::new(), Vec::new());
     while f < f1 {
         if ctl.cancelled() {
             return Err("Cancelled".into());
         }
         let n = (f1 - f).min(BLOCK as i64) as usize;
-        buf.resize(n * 2, 0.0);
+        buf.resize(n * ch, 0.0);
         mixer.block(&plan, f, &mut buf);
         if let Some(e) = mixer.error.take() {
             return Err(e);
         }
-        buf.iter_mut().enumerate().for_each(|(i, v)| *v = (*v * gain[i % 2]).clamp(-1.0, 1.0));
+        if ch == 2 {
+            buf.iter_mut().enumerate().for_each(|(i, v)| *v = (*v * gain[i % 2]).clamp(-1.0, 1.0));
+        } else {
+            buf.iter_mut().enumerate().for_each(|(i, v)| *v = (*v * gains[i % ch]).clamp(-1.0, 1.0));
+        }
+        let out: &[f32] = if stems {
+            conv.clear();
+            conv.resize(n * out_ch, 0.0);
+            let st = mixer.stems();
+            for (i, fr) in conv.chunks_exact_mut(out_ch).enumerate() {
+                for (c, o) in fr.iter_mut().enumerate() {
+                    *o = if c < 2 { buf[i * 2 + c] } else { st.get(c / 2 - 1).map_or(0.0, |s| s[i * 2 + c % 2].clamp(-1.0, 1.0)) };
+                }
+            }
+            &conv
+        } else if out_ch == ch {
+            &buf
+        } else {
+            surround::convert(&buf, ch, out_ch, &mut conv);
+            &conv
+        };
         if let Some(l) = loud.as_deref_mut() {
-            l.feed(&buf);
+            l.feed(out);
         }
         bytes.clear();
-        bytes.extend(buf.iter().flat_map(|v| v.to_le_bytes()));
+        bytes.extend(out.iter().flat_map(|v| v.to_le_bytes()));
         if !write(&bytes) {
             return Ok(false);
         }
@@ -447,6 +494,12 @@ mod tests {
         let out = PathBuf::from(format!(r"C:\{}.mp4", "x".repeat(253)));
         let tmp = std::env::temp_dir().join("milan-render-1234-0.f32");
         let s = settings();
+        // R10a: the mix goes in at the template's channels (a mono template takes the stereo mix), with its layout.
+        let mix_in = |t: &Template| match mix_channels(t) {
+            6 => "6 -channel_layout 5.1".to_string(),
+            8 => "8 -channel_layout 7.1".to_string(),
+            n => n.to_string(),
+        };
         for t in BUILTIN.iter() {
             assert_eq!(t.check(), Ok(()), "{}", t.name);
             let a = args(t, &s, &partial(&out));
@@ -461,12 +514,12 @@ mod tests {
                     // R22: a hardware template names the encoder it resolves to (the software one in a test run).
                     let enc = t.resolved().0.video.unwrap().codec;
                     assert!(joined.contains(&format!("-c:v {enc} ")) && joined.contains(&format!("-pix_fmt {}", v.pix_fmt())), "{}: {joined}", t.name);
-                    assert_eq!(joined.contains(&format!("-f f32le -ar 48000 -ac 2 -i {} -map 0:v -map 1:a", tmp.display())), au.is_some(), "{joined}");
+                    assert_eq!(joined.contains(&format!("-f f32le -ar 48000 -ac {} -i {} -map 0:v -map 1:a", mix_in(t), tmp.display())), au.is_some(), "{joined}");
                     assert_eq!(joined.contains("out_color_matrix=bt709") && joined.contains("-colorspace bt709"), !crate::render::is_rgb(v.pix_fmt()), "{joined}");
                 }
                 (None, _) => {
                     assert!(!joined.contains("rawvideo") && !joined.contains("-map") && !joined.contains(".f32"), "{joined}");
-                    assert!(joined.contains("-f f32le -ar 48000 -ac 2 -i - "));
+                    assert!(joined.contains(&format!("-f f32le -ar 48000 -ac {} -i - ", mix_in(t))), "{joined}");
                 }
             }
             if let Some(au) = &t.audio {
@@ -586,6 +639,110 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         job.status()
+    }
+
+    /// R10a: a scratch folder of its own under `%TEMP%/milan-agent/r10`.
+    fn r10_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join("milan-agent").join("r10").join(format!("{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// `path`'s first audio stream as f32 frames, `ac` channels when given (FFmpeg's own conversion), its own otherwise.
+    fn decode_f32(path: &Path, ac: Option<usize>) -> Vec<f32> {
+        let mut cmd = crate::proc::ffmpeg();
+        cmd.args(["-v", "error", "-i"]).arg(path).args(["-map", "0:a:0"]);
+        if let Some(ac) = ac {
+            cmd.args(["-ac", &ac.to_string()]);
+        }
+        let out = cmd.args(["-f", "f32le", "-"]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        out.stdout.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
+    }
+
+    /// Needs ffmpeg. `cargo test --release -- --ignored --test-threads=1 surround_renders`
+    /// R10a acceptance, against FFmpeg's own reference: a 5.1 (and a 7.1) source on a track of its layout in a project
+    /// of that master bus mode renders to a 5.1 (7.1) WAV equal to the source within 1e-4; the same 5.1 source folded
+    /// down by the mixer (a 5.1 track in a stereo project) equals FFmpeg's `-ac 2` downmix within 1e-4; a 5.1 AC-3
+    /// render probes as 6 channels with each sine in its own channel (Goertzel); a stereo track in a 5.1 project at
+    /// the front-left pan point lands on FL alone.
+    #[test]
+    #[ignore]
+    fn surround_renders_match_ffmpeg() {
+        use crate::project::{AudioLayout, BusMode};
+        let dir = r10_dir("surround");
+        let hz = [300.0, 500.0, 700.0, 80.0, 1300.0, 1700.0, 1900.0, 2300.0];
+        let make = |name: &str, layout: &str, n: usize| {
+            let expr: Vec<String> = hz[..n].iter().map(|f| format!("0.25*sin(2*PI*{f}*t)")).collect();
+            let path = dir.join(name);
+            let src = format!("aevalsrc={}:c={layout}:s=48000:d=2", expr.join("|"));
+            assert!(crate::proc::ffmpeg().args(["-v", "error", "-y", "-f", "lavfi", "-i", &src, "-c:a", "pcm_f32le"]).arg(&path).status().unwrap().success());
+            crate::media::probe_media(&path).unwrap()
+        };
+        let project = |m: &MediaItem, mode: BusMode, layout: AudioLayout| {
+            let mut p = Project::new("surround");
+            (p.settings.layout, p.settings.bit_depth) = (mode, 32);
+            let mut c = Clip::from_media(m, 0.0);
+            (c.duration, c.out_point) = (2.0, c.in_point + 2.0);
+            p.timeline.audio_tracks[0].clips.push(c);
+            p.timeline.audio_tracks[0].layout = layout;
+            p.media_pool = vec![m.clone()];
+            p
+        };
+        let find = |n: &str| BUILTIN.iter().find(|t| t.name == n).unwrap();
+        let run = |p: &Project, t: &str, name: &str| {
+            let out = dir.join(name);
+            let opts = Opts { quickfade: false, ..Opts::default() };
+            let job = start(p, find(t), out.clone(), (0.0, 2.0), opts, egui::Context::default());
+            assert_eq!(wait(&job), Status::Done, "{t}");
+            out
+        };
+        let close = |got: &[f32], want: &[f32], what: &str| {
+            assert_eq!(got.len(), want.len(), "{what}: length");
+            let worst = got.iter().zip(want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 1e-4, "{what}: off by {worst}");
+        };
+        let s51 = make("src51.wav", "5.1", 6);
+        assert_eq!(crate::audio::channel_count(&s51.path, 0), Some(6));
+        let reference = decode_f32(&s51.path, None);
+        let out = run(&project(&s51, BusMode::Surround51, AudioLayout::Surround51), "WAV 5.1 Surround", "out51.wav");
+        assert_eq!(crate::audio::channel_count(&out, 0), Some(6));
+        close(&decode_f32(&out, None), &reference, "5.1 to 5.1");
+        let s71 = make("src71.wav", "7.1", 8);
+        let out = run(&project(&s71, BusMode::Surround71, AudioLayout::Surround71), "WAV 7.1 Surround", "out71.wav");
+        close(&decode_f32(&out, None), &decode_f32(&s71.path, None), "7.1 to 7.1");
+        // The mixer's BS.775 fold-down against FFmpeg's -ac 2.
+        let out = run(&project(&s51, BusMode::Stereo, AudioLayout::Surround51), "WAV audio only", "down.wav");
+        close(&decode_f32(&out, None), &decode_f32(&s51.path, Some(2)), "5.1 folded down to stereo");
+        // A stereo track (its decoder folds the source down) gives the same.
+        let out = run(&project(&s51, BusMode::Stereo, AudioLayout::Stereo), "WAV audio only", "down2.wav");
+        close(&decode_f32(&out, None), &decode_f32(&s51.path, Some(2)), "stereo track of a 5.1 source");
+        // AC-3 5.1: six channels, each sine in its own (LFE at 80 Hz, under AC-3's LFE low-pass).
+        let out = run(&project(&s51, BusMode::Surround51, AudioLayout::Surround51), "AC-3 5.1 Surround", "out51.ac3");
+        assert_eq!(crate::audio::channel_count(&out, 0), Some(6));
+        let pcm = decode_f32(&out, None);
+        let mid = &pcm[6 * 4800..6 * 91_200];
+        for c in 0..6 {
+            for (k, f) in hz[..6].iter().enumerate() {
+                let a = crate::engine::mix::tests::goertzel(mid, 6, c, *f);
+                if k == c {
+                    assert!(a > 0.2, "AC-3 channel {c} lacks its {f} Hz sine: {a}");
+                } else {
+                    assert!(a < 0.02, "AC-3 channel {c} has {f} Hz: {a}");
+                }
+            }
+        }
+        // A stereo source panned to the front left of a 5.1 room.
+        let st = make("st.wav", "stereo", 2);
+        let mut p = project(&st, BusMode::Surround51, AudioLayout::Stereo);
+        p.timeline.audio_tracks[0].surround = crate::project::SurroundPan { x: -1.0, y: 1.0, ..Default::default() };
+        let pcm = decode_f32(&run(&p, "WAV 5.1 Surround", "fl.wav"), None);
+        let src = decode_f32(&st.path, None);
+        let fl: Vec<f32> = pcm.chunks_exact(6).map(|f| f[0]).collect();
+        let l: Vec<f32> = src.chunks_exact(2).map(|f| f[0]).collect();
+        close(&fl, &l, "front-left pan point");
+        assert!(pcm.chunks_exact(6).all(|f| f[1..].iter().all(|v| v.abs() < 1e-6)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// R22: a hardware template with hardware forced unavailable renders with the software encoder and says so in the

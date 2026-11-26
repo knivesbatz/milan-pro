@@ -962,6 +962,36 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             return;
         }
     }
+    // R10a: a track's or bus's label menu sets its Channel Layout (a bus may follow the master bus mode).
+    let is_bus = project.timeline.audio.buses.iter().any(|b| b.id == s.key());
+    let track_layout = project.timeline.audio_tracks.iter().find(|x| x.id == s.key()).map(|x| x.layout);
+    if is_bus || track_layout.is_some() {
+        let cur = project.timeline.audio.bus(s.key()).map_or(track_layout, |b| b.layout);
+        let mut pick: Option<Option<AudioLayout>> = None;
+        menus::context(&lr, |ui| {
+            menus::sub(ui, "Channel &Layout", true, |ui| {
+                if is_bus && entry(ui, "Same as Master", "", true, Mark::Radio(cur.is_none())) {
+                    pick = Some(None);
+                }
+                for l in AudioLayout::ALL {
+                    if entry(ui, l.name(), "", true, Mark::Radio(cur == Some(l))) {
+                        pick = Some(Some(l));
+                    }
+                }
+            });
+        });
+        if let Some(l) = pick {
+            let before = project.clone();
+            let done = match (is_bus, l) {
+                (true, l) => edit::set_bus_layout(project, s.key(), l),
+                (false, Some(l)) => edit::set_track_layout(project, &[s.key().to_string()], l),
+                (false, None) => false,
+            };
+            if done {
+                history.push(before);
+            }
+        }
+    }
     if lr.clicked() {
         if let Strip::Track(tid) = s {
             (sel.tracks, sel.list_focus, sel.env) = (vec![tid.clone()], true, None);
