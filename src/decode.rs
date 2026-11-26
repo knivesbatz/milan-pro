@@ -280,6 +280,20 @@ struct FrameRequest {
     fps: Option<f64>,
     /// R6b: `path` is a nested timeline: composed by the engine, never read by ffmpeg.
     nested: bool,
+    /// R40a: the view transform ahead of the scaler (`color::view_transform`; not applied when the proxy is read).
+    pre: String,
+    /// R38: input options before `-i` (an image sequence's), and then `path` is the sequence's pattern.
+    input: Vec<String>,
+}
+
+impl FrameRequest {
+    /// A request for `m` at `time` (file time), `w` x `h`, through the project's colour management.
+    fn for_media(m: &MediaItem, time: f64, width: u32, height: u32, scaler: &'static str, fps: Option<f64>, cm: crate::project::ColorManagement) -> Self {
+        let (input, path) = crate::engine::plan::source_input(m);
+        let pre = if m.generator.is_some() { String::new() } else { crate::engine::color::view_transform(m, cm) };
+        let matrix = if pre.is_empty() { crate::engine::plan::matrix(m) } else { None };
+        FrameRequest { id: 0, path, time, width, height, scaler, matrix, proxy: None, generator: m.generator.clone(), fps, nested: m.nested, pre, input }
+    }
 }
 
 /// The `-ss` that gives the frame on screen at `t` (the latest at or before it). ffmpeg returns the first frame at or
@@ -330,11 +344,25 @@ fn decode_frame(req: &FrameRequest) -> Result<ColorImage, String> {
 
 fn decode_file(req: &FrameRequest, path: &Path) -> Result<ColorImage, String> {
     let mut cmd = crate::proc::ffmpeg();
-    cmd.args(["-v", "error", "-ss", &format!("{:.6}", seek_time(req.time, req.fps)), "-i"])
-        .arg(path)
-        .args(["-frames:v", "1", "-vf"])
+    // A proxy was made through the transform and is a plain file: neither the transform nor the input options apply.
+    let proxy = req.proxy.as_deref() == Some(path);
+    // R41: a transport stream or concat list is opened early and decoded up to the time (`plan::PREROLL`).
+    let t = seek_time(req.time, req.fps);
+    let late = if proxy || req.input.is_empty() { crate::engine::plan::preroll(path) } else { 0.0 };
+    let start = (t - late).max(0.0);
+    cmd.args(["-v", "error"]);
+    // No seek to 0: ffmpeg 9 gives nothing for `-ss 0` on a JPEG or WebP still.
+    if start > 0.0 {
+        cmd.args(["-ss", &format!("{start:.6}")]);
+    }
+    cmd.args(crate::engine::plan::input_args(if proxy { &[] } else { &req.input }, path));
+    if t > start {
+        cmd.args(["-ss", &format!("{:.6}", t - start)]);
+    }
+    cmd.args(["-frames:v", "1", "-vf"])
         .arg(format!(
-            "scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
+            "{}scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
+            if proxy { "" } else { req.pre.as_str() },
             req.width,
             req.height,
             req.scaler,
@@ -364,9 +392,10 @@ pub(crate) fn premultiply(px: &mut [egui::Color32]) {
     }
 }
 
-/// The first frame of `path` (a still) at `w` x `h`, premultiplied.
-pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
-    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None, nested: false })
+/// The first frame of `path` (a still) at `w` x `h`, premultiplied; `pre` is its view transform (R38/R40a: a linear
+/// OpenEXR or Radiance HDR still, `MediaRef::pre`).
+pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str, pre: &str) -> Result<ColorImage, String> {
+    decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None, nested: false, pre: pre.to_string(), input: Vec::new() })
 }
 
 /// Preview state owned by the app: worker channels plus the displayed texture.
@@ -645,8 +674,8 @@ impl Preview {
     }
 
     /// Like `update`, for an explicit source (the Trimmer's media at its own cursor).
-    /// `fps` is the fallback frame rate; `full_w` the width that Size::Full means.
-    pub fn show(&mut self, ctx: &egui::Context, src: Option<(&MediaItem, f64)>, fps: f64, full_w: u32) {
+    /// `fps` is the fallback frame rate; `full_w` the width that Size::Full means; `cm` the project's colour management.
+    pub fn show(&mut self, ctx: &egui::Context, src: Option<(&MediaItem, f64)>, fps: f64, full_w: u32, cm: crate::project::ColorManagement) {
         let max_w = self.width(full_w);
         // A subclip's time is read from its file.
         let src = src.map(|(m, t)| (m, m.file_time(t)));
@@ -659,19 +688,7 @@ impl Preview {
                     let (width, height) = decode_size(m, max_w);
                     // Draft and Preview read the video proxy, as the timeline preview does.
                     let proxy = matches!(self.quality, Quality::Draft | Quality::Preview) && crate::proxy::is_video(m);
-                    let req = FrameRequest {
-                        id: self.next_id,
-                        path: m.path.clone(),
-                        time,
-                        width,
-                        height,
-                        scaler: self.quality.scaler(),
-                        matrix: crate::engine::plan::matrix(m),
-                        proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(),
-                        generator: m.generator.clone(),
-                        fps: Some(rate(m)),
-                        nested: m.nested,
-                    };
+                    let req = FrameRequest { id: self.next_id, proxy: proxy.then(|| crate::proxy::ready(&m.path)).flatten(), ..FrameRequest::for_media(m, time, width, height, self.quality.scaler(), Some(rate(m)), cm) };
                     self.next_id += 1;
                     let _ = self.tx.send(req);
                 }
@@ -807,6 +824,8 @@ impl Thumbs {
     }
 
     /// Thumbnail of `m` at source time `time` (callers quantise it), requesting it on first use.
+    // shortcut: thumbnails always use the default colour management (tone-mapped), whatever the project chose; a
+    // thumbnail is a hint, and the key would otherwise have to carry the setting.
     pub fn get(&mut self, m: &MediaItem, time: f64) -> Option<&TextureHandle> {
         self.receive();
         let time = if m.media_type == MediaType::Image { 0.0 } else { m.file_time(time.max(0.0)) };
@@ -817,7 +836,7 @@ impl Thumbs {
             }
             let (width, height) = decode_size(m, THUMB_WIDTH);
             // Keyed by the source, so thumbnails made before its proxy was ready stay; new ones read the proxy.
-            let req = FrameRequest { id: 0, path: m.path.clone(), time, width, height, scaler: "bilinear", matrix: crate::engine::plan::matrix(m), proxy: None, generator: m.generator.clone(), fps: m.frame_rate, nested: m.nested };
+            let req = FrameRequest::for_media(m, time, width, height, "bilinear", m.frame_rate, crate::project::ColorManagement::default());
             let (lock, cv) = &*self.queue;
             let mut q = lock.lock().unwrap();
             q.push((key.clone(), req, crate::proxy::is_video(m)));

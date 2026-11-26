@@ -43,6 +43,11 @@ pub struct MediaRef {
     pub stream: u32,
     /// Optical Flow: frames are motion-interpolated onto the grid (ffmpeg minterpolate) instead of repeated.
     pub flow: bool,
+    /// R40a: the view transform filters ahead of the scaler (`color::view_transform`; "" for an SDR source). A proxy
+    /// was made through it already, so it is not applied again when the proxy is read.
+    pub pre: String,
+    /// R38: input options before `-i` (an image sequence's `-f image2 -start_number N -framerate R`).
+    pub input: Vec<String>,
 }
 
 impl MediaRef {
@@ -268,10 +273,55 @@ pub fn matrix(m: &MediaItem) -> Option<&'static str> {
     }
 }
 
+/// R38: the `-i` input of `m` as every ffmpeg reader opens it: a still image sequence through the image2 demuxer at its
+/// rate (`-ss` then seeks by frame number), anything else by path.
+pub fn input_args(input: &[String], path: &Path) -> Vec<String> {
+    let mut a: Vec<String> = input.to_vec();
+    a.extend(["-i".to_string(), path.to_string_lossy().into_owned()]);
+    a
+}
+
+/// R41: how far ahead of a seek the readers start in a file without a seek index (MPEG transport and program streams,
+/// a spanned clip's concat list). ffmpeg seeks those by byte position and then waits for the next keyframe, so an
+/// input `-ss` alone lands up to a GOP late; starting this much earlier and dropping the frames before the target is
+/// exact for GOPs up to this long.
+pub const PREROLL: f64 = 3.0;
+
+/// R41/R38: how much earlier than a seek the readers of `path` must start: `PREROLL` for a stream ffmpeg cannot seek
+/// to a keyframe before a time, all of it for an animation (GIF, animated WebP, APNG: a seek lands between frames that
+/// depend on the ones before), 0 for the rest.
+pub fn preroll(path: &Path) -> f64 {
+    let ext = path.extension().unwrap_or_default().to_string_lossy().to_lowercase();
+    match ext.as_str() {
+        "ts" | "m2ts" | "mts" | "m2t" | "mpg" | "mpeg" | "vob" | "m2v" | "ffconcat" => PREROLL,
+        "gif" | "webp" | "png" | "apng" => f64::INFINITY,
+        _ => 0.0,
+    }
+}
+
+/// R38: the input options of `m` (`MediaRef::input`), and the path ffmpeg reads (a sequence's pattern).
+pub fn source_input(m: &MediaItem) -> (Vec<String>, PathBuf) {
+    match &m.sequence {
+        Some(seq) => (["-f", "image2", "-pattern_type", "sequence", "-start_number", &seq.start.to_string(), "-framerate", &crate::render::fps_str(seq.fps)].map(String::from).to_vec(), seq.input_path(&m.path)),
+        None => (Vec::new(), m.path.clone()),
+    }
+}
+
+/// The picture source of `m` as the decoders read it in a project with settings `s` (None for sound, offline media
+/// and unknown generators); R37's corpus test decodes through this.
+#[cfg(test)]
+pub fn source_ref(m: &MediaItem, s: &crate::project::ProjectSettings) -> Option<MediaRef> {
+    media_ref(m, (s.width.max(2) & !1, s.height.max(2) & !1), s)
+}
+
 /// `project` is the project frame size, which generated media without a size of its own render at.
 /// R11: with Adjust source media on, a source keeps its shape in a project of non-square pixels (its square-pixel
 /// width counts `par` times fewer project pixels) and an interlaced one is deinterlaced; off, it is used as it is.
+/// R37: an offline item (an unsupported codec) draws nothing rather than something else.
 fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSettings) -> Option<MediaRef> {
+    if m.unsupported.is_some() {
+        return None;
+    }
     let generator = m.generator.as_ref();
     match generator {
         // A generator this build does not know draws nothing.
@@ -288,16 +338,20 @@ fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSett
     };
     let par = if s.adjust_media && s.par > 0.0 { s.par } else { 1.0 };
     let w = if generator.is_some() { w } else { ((w as f64 / par).round() as u32).max(1) };
+    let (input, path) = source_input(m);
+    // R40a: an HDR or wide-gamut source reaches the Rec.709 timeline through the view transform; R38: a linear still
+    // through its transfer. The scaler's matrix is left to the transform's RGB output then.
+    let pre = if generator.is_some() { String::new() } else { crate::engine::color::view_transform(m, s.color_management) };
     Some(MediaRef {
         id: m.id.as_str().into(),
-        path: m.path.clone(),
+        path,
         w,
         h,
         duration: m.duration,
         fps: m.frame_rate.unwrap_or(0.0),
         still: m.media_type == MediaType::Image || generator.is_some(),
         has_alpha: m.has_alpha || generator.is_some(),
-        matrix: matrix(m),
+        matrix: if pre.is_empty() { matrix(m) } else { None },
         codec: m.codec.clone(),
         deint: if m.interlaced && s.adjust_media { s.deinterlace.filter() } else { "" },
         proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
@@ -305,6 +359,8 @@ fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSett
         offset: m.file_time(0.0),
         stream: 0,
         flow: false,
+        pre,
+        input,
     })
 }
 

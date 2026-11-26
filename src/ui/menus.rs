@@ -8,7 +8,6 @@ use eframe::egui::menu::{BarState, MenuRoot};
 use eframe::egui::text::{LayoutJob, TextFormat};
 use crate::decode::Quality;
 use crate::history::History;
-use crate::media::Importer;
 use crate::project::*;
 use crate::edit::{RippleMode, Switch};
 use crate::engine::sync::By;
@@ -185,7 +184,7 @@ impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
         let v23 = self.look.v23();
         match c {
-            New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
+            New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportCamera | ImportVegas | Properties | Exit | RenderAs | Preferences
             | ExportVegas | ArchiveProject | ImportMediaFromProject
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
@@ -638,6 +637,7 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
 
 const IMPORT: &[M] = &[
     C("&Media...", ImportMedia),
+    C("Camera Card &Folder...", ImportCamera),
     C("&VEGAS Project...", ImportVegas),
     C("Media from &Project...", ImportMediaFromProject),
     V16(&X("&AAF...", AAF)),
@@ -1464,10 +1464,11 @@ pub fn add_marker(project: &mut Project, history: &mut History) {
     project.mark_modified();
 }
 
-/// Pick files and probe them in the background; the app adds the results when they arrive.
-pub fn import_media(ctx: &Context, importer: &Importer) {
+/// Pick media files (File › Import › Media, the Project Media toolbar); the app probes them in the background (R38:
+/// after asking about numbered still sequences) and adds the results when they arrive.
+pub fn pick_media() -> Option<Vec<std::path::PathBuf>> {
     use crate::media::{AUDIO_EXTS, IMAGE_EXTS, PROJECT_EXTS, VIDEO_EXTS};
-    if let Some(paths) = rfd::FileDialog::new()
+    rfd::FileDialog::new()
         .add_filter("All Media", &[VIDEO_EXTS, AUDIO_EXTS, IMAGE_EXTS, PROJECT_EXTS].concat())
         .add_filter("Video", VIDEO_EXTS)
         .add_filter("Audio", AUDIO_EXTS)
@@ -1475,9 +1476,6 @@ pub fn import_media(ctx: &Context, importer: &Importer) {
         .add_filter("Milan Pro Projects (nested)", PROJECT_EXTS)
         .add_filter("All files", &["*"])
         .pick_files()
-    {
-        importer.import(ctx, paths);
-    }
 }
 
 #[cfg(test)]

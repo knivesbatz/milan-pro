@@ -38,11 +38,11 @@ struct Stills {
 }
 
 impl Stills {
-    fn start(&mut self, key: SrcKey, path: &Path, w: u32, h: u32) {
+    fn start(&mut self, key: SrcKey, path: &Path, pre: &str, w: u32, h: u32) {
         if self.pending.insert(key.clone()) {
-            let (tx, path) = (self.tx.clone(), path.to_path_buf());
+            let (tx, path, pre) = (self.tx.clone(), path.to_path_buf(), pre.to_string());
             std::thread::spawn(move || {
-                let img = crate::decode::still(&path, w, h, key.3);
+                let img = crate::decode::still(&path, w, h, key.3, &pre);
                 let _ = tx.send((key, img));
             });
         }
@@ -142,11 +142,11 @@ impl Live<'_> {
             (Some((e, t)), _) => Ok(Arc::new(generate::render(e, w, h, *t))),
             // Playing, a still not decoded yet (pre-warm missed it) loads in the background.
             (None, None) if self.deadline.is_some() => {
-                self.stills.start(key, &s.m.path, w, h);
+                self.stills.start(key, &s.m.path, &s.m.pre, w, h);
                 self.exact = false;
                 return None;
             }
-            (None, None) => crate::decode::still(&s.m.path, w, h, self.q.scaler()).map(Arc::new),
+            (None, None) => crate::decode::still(&s.m.path, w, h, self.q.scaler(), &s.m.pre).map(Arc::new),
             (None, Some(sf)) => {
                 // R23: a paused frame of a heavy source (a seek, a RAM preview build) comes from the disk cache when
                 // it is there, and goes into it once decoded; playback never waits on the disk.
@@ -421,7 +421,7 @@ impl Worker {
             }
             match src.sf {
                 Some(sf) => self.pool.prewarm(&src.m, sf, dw, dh, q, play),
-                None if play => self.stills.start(key, &src.m.path, dw, dh),
+                None if play => self.stills.start(key, &src.m.path, &src.m.pre, dw, dh),
                 None => {}
             }
         }
@@ -807,6 +807,8 @@ pub(crate) mod tests {
             offset: 0.0,
             stream: 0,
             flow: false,
+            pre: String::new(),
+            input: Vec::new(),
         });
         let at = SrcAt { m: m.clone(), sf: None, generator: None, nested: None };
         let solid = |c| Arc::new(ColorImage { size: [4, 4], pixels: vec![c; 16] });
