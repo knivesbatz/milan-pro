@@ -90,6 +90,31 @@ impl PrefsDialog {
     }
 }
 
+/// A 40×26 preview of `look` beside its radio: its toolbar band over its panel and timeline lane, with a track
+/// colour, framed in the dialog's field border (Classic 2006 paints its metal band and 3D edge).
+fn look_swatch(ui: &mut Ui, look: UiLook) {
+    use crate::ui::widgets;
+    let d = theme::get().dialog();
+    let s = theme::Theme::new(LookChoice { look, variant: Variant::Dark });
+    let (r, _) = ui.allocate_exact_size(vec2(40.0, 26.0), Sense::hover());
+    let r = widgets::px(r);
+    let p = ui.painter();
+    let bar = Rect::from_min_size(r.min, vec2(r.width(), 8.0));
+    if s.classic() {
+        widgets::metal_bar(p, bar, &s.metal);
+    } else {
+        p.rect_filled(bar, 0.0, s.toolbar_bg);
+    }
+    p.rect_filled(Rect::from_min_max(bar.left_bottom(), pos2(r.max.x, r.min.y + 16.0)), 0.0, s.panel_bg);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.min.y + 16.0), r.max), 0.0, s.lane_bg);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 6.0, r.min.y + 18.0), pos2(r.max.x - 10.0, r.max.y - 2.0)), 0.0, s.track_color(0));
+    if s.classic() {
+        widgets::bevel(p, r, false, &theme::get().dialog_metal());
+    } else {
+        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, d.field_border), StrokeKind::Inside);
+    }
+}
+
 /// Why a Preferences page has no settings yet.
 fn page_why(page: &str) -> Why {
     match page {
@@ -103,15 +128,14 @@ fn page_why(page: &str) -> Why {
 fn general(ui: &mut Ui, d: &mut Prefs) {
     let v16 = theme::get().look() == UiLook::Vegas16;
     ui.label("General preferences:");
-    let dd = theme::get().dialog();
-    Frame::NONE.fill(dd.field).stroke(Stroke::new(1.0_f32, dd.field_border)).inner_margin(4).show(ui, |ui| {
+    super::field_box(ui, 4, |ui| {
         ui.set_width(ui.available_width());
         ui.set_height(16.0 * 24.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.spacing_mut().interact_size.y = 16.0;
         let r49 = Later("R49").text();
         ui.add_enabled(false, Checkbox::new(&mut false, "Automatically open last project on startup")).on_disabled_hover_text(&r49);
-        ui.add_enabled(false, Checkbox::new(&mut true, "Show logo splash screen on startup")).on_disabled_hover_text(&r49);
+        ui.checkbox(&mut d.show_splash, "Show splash screen at startup");
         let mut pause = d.space_pauses || !v16;
         if ui
             .add_enabled(v16, Checkbox::new(&mut pause, "Make spacebar and F12 Play/Pause instead of Play/Stop"))
@@ -152,7 +176,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         }
     });
     if default_all(ui) {
-        (d.space_pauses, d.show_welcome, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, 4, true, false);
+        (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
         d.overlay_library = None;
     }
 }
@@ -394,6 +418,8 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, timeline_bottom: &mut 
                 // Only VEGAS 23 has interface types.
                 d.look = if look == UiLook::Vegas23 { LookChoice { look, variant: d.look.variant } } else { LookChoice { look, variant: Variant::Dark } };
             }
+            look_swatch(ui, look);
+            ui.add_space(6.0);
         }
     });
     super::group(ui, "Interface Type");

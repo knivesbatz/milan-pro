@@ -47,8 +47,7 @@ impl QueueWindow {
     /// The list and its buttons; true when Close was clicked.
     fn body(&mut self, ui: &mut Ui, queue: &mut RenderQueue) -> bool {
         let t = super::theme::get();
-        let d = t.dialog();
-        Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+        super::dialogs::field_box(ui, 4, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical().id_salt("queue_list").max_height(230.0).min_scrolled_height(230.0).auto_shrink(false).show(ui, |ui| {
                 Grid::new("queue_grid").num_columns(5).striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
@@ -180,8 +179,7 @@ impl BatchRender {
                 }
             });
             ui.label("Render Templates:");
-            let d = super::theme::get().dialog();
-            Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+            super::dialogs::field_box(ui, 4, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical().id_salt("batch_tree").max_height(300.0).min_scrolled_height(300.0).auto_shrink(false).show(ui, |ui| {
                     let mut formats: Vec<String> = Vec::new();

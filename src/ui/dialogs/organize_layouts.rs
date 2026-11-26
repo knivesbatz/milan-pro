@@ -4,7 +4,7 @@
 use eframe::egui::*;
 use crate::ui::dock::Layout;
 use crate::ui::keymap::{Command, shortcut_text};
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme::UiLook;
 
 pub struct OrganizeLayouts {
     /// The slots as arranged so far: each layout with the slot it was saved in.
@@ -62,10 +62,9 @@ impl OrganizeLayouts {
     pub fn show(&mut self, ctx: &Context, look: UiLook) -> Option<Organize> {
         let mut out = None;
         let (hit, close) = super::modal(ctx, "organize_layouts", "Organize Layouts", vec2(420.0, 330.0), |ui| {
-            let d = theme::get().dialog();
             ui.label("Layouts in the View › Window Layouts menu:");
             ui.horizontal_top(|ui| {
-                Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(2).show(ui, |ui| {
+                super::field_box(ui, 2, |ui| {
                     ui.set_width(280.0);
                     ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;

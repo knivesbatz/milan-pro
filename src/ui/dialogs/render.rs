@@ -383,7 +383,6 @@ impl RenderDialog {
                 }
             });
         });
-        let d = theme::get().dialog();
         let listed = self.listed(project, prefs);
         let searching = !self.search.is_empty() || self.filter.favorites || self.filter.match_video || self.filter.match_audio;
         let mut groups: Vec<String> = Vec::new();
@@ -393,7 +392,7 @@ impl RenderDialog {
             }
         }
         let mut star_hit = None;
-        Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+        super::field_box(ui, 4, |ui| {
             ui.set_width(ui.available_width());
             ScrollArea::vertical().id_salt("render_tree").max_height(220.0).auto_shrink(false).show(ui, |ui| {
                 ui.label(RichText::new("Formats").strong());
@@ -431,7 +430,7 @@ impl RenderDialog {
             *changed = true;
         }
         ui.label("Description:");
-        Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(6).show(ui, |ui| {
+        super::field_box(ui, 6, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(90.0);
             self.details(ui, project);

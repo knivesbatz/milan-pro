@@ -3,7 +3,7 @@
 //! the dialog goes; Close ends it.
 use eframe::egui::*;
 use crate::ui::icons::paint_icon;
-use crate::ui::theme::{self, UiLook};
+use crate::ui::theme::UiLook;
 use crate::ui::toolbar::{Bar, SEP, btn};
 
 pub struct CustomizeToolbar {
@@ -62,14 +62,12 @@ impl CustomizeToolbar {
         let before = self.list.clone();
         let title = if self.bar == Bar::Main { "Customize Toolbar" } else { "Customize Timeline Toolbar" };
         let (close, x) = super::modal(ctx, "customize_toolbar", title, vec2(620.0, 420.0), |ui| {
-            let d = theme::get().dialog();
-            let frame = Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(2);
             let (mut close, look) = (false, self.look);
             ui.horizontal_top(|ui| {
                 // One list: rows of glyph and name; the selected row's index.
                 let list = |ui: &mut Ui, salt: &str, ids: &[&'static str], sel: Option<usize>| -> Option<usize> {
                     let mut hit = None;
-                    frame.show(ui, |ui| {
+                    super::field_box(ui, 2, |ui| {
                         ui.set_width(190.0);
                         ScrollArea::vertical().id_salt(salt).max_height(320.0).auto_shrink(false).show(ui, |ui| {
                             ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {

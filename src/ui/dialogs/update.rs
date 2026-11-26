@@ -2,7 +2,6 @@
 use eframe::egui::*;
 use std::path::PathBuf;
 use crate::updater::{CURRENT, State, Updater};
-use super::super::theme;
 
 pub enum UpdateResult {
     /// "Skip this version": remember it so the automatic check stays quiet about it.
@@ -47,8 +46,7 @@ fn body(ui: &mut Ui, state: &State, auto_check: &mut bool) -> Option<usize> {
             ui.label(format!("You have version {CURRENT}."));
             ui.add_space(4.0);
             ui.label("Release notes:");
-            let d = theme::get().dialog();
-            Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+            super::field_box(ui, 4, |ui| {
                 ScrollArea::vertical().max_height(250.0).auto_shrink(false).show(ui, |ui| {
                     ui.label(if r.notes.trim().is_empty() { "(No release notes.)" } else { r.notes.as_str() });
                 });

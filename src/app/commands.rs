@@ -2128,13 +2128,7 @@ impl MeridianApp {
         self.show_update(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
-            let (ok, close) = dialogs::modal(ctx, "about", "About Milan Pro", egui::vec2(360.0, 170.0), |ui| {
-                ui.label(egui::RichText::new(format!("Milan Pro v{}", env!("CARGO_PKG_VERSION"))).strong());
-                ui.label("Open-source nonlinear video editor.");
-                ui.add_space(30.0);
-                dialogs::button_row(ui, &[("OK", true)]).is_some()
-            });
-            self.about = !(ok || close);
+            self.about = !dialogs::about(ctx);
         }
         if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms(), !self.dock.timeline_top()) {
             if new.track_colors != self.prefs.track_colors {
@@ -2561,6 +2555,16 @@ impl MeridianApp {
             // The Edit menu dropped open (look screenshots).
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
+            "paste-attrs" => self.exec(ctx, PasteAttributesSelect),
+            "default-track" => {
+                self.sel.tracks = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()).into_iter().collect();
+                self.exec(ctx, DefaultTrackFx);
+            }
+            "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
+            "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
+            "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
+            "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),
             // R14: the Preview Device page; a floating Trimmer and the external preview (off-screen in the harness).

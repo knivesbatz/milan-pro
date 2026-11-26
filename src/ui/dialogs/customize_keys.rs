@@ -267,9 +267,8 @@ impl CustomizeKeys {
                 ui.add(TextEdit::singleline(&mut self.filter).desired_width(300.0));
             });
             ui.add_space(2.0);
-            let list_frame = Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(2);
             ui.horizontal_top(|ui| {
-                list_frame.show(ui, |ui| {
+                super::field_box(ui, 2, |ui| {
                     ui.set_width(360.0);
                     ScrollArea::vertical().id_salt("key_commands").max_height(330.0).auto_shrink(false).show(ui, |ui| {
                         ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
@@ -296,7 +295,7 @@ impl CustomizeKeys {
                     ui.set_width(280.0);
                     ui.label("Shortcut keys for selected command:");
                     let keys = self.sel.map(|c| self.keys_of(c)).unwrap_or_default();
-                    list_frame.show(ui, |ui| {
+                    super::field_box(ui, 2, |ui| {
                         ui.set_width(270.0);
                         ui.set_min_height(110.0);
                         ui.with_layout(eframe::egui::Layout::top_down_justified(Align::LEFT), |ui| {
@@ -378,7 +377,7 @@ impl CustomizeKeys {
             (true, true) => ("Press a key".to_string(), d.text_disabled),
             (true, false) => ("Click here, then press a key".to_string(), d.text_disabled),
         };
-        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(12.0), color);
+        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, theme::get().font(12.0), color);
     }
 }
 

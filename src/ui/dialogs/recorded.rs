@@ -36,8 +36,7 @@ impl RecordedFiles {
         let (ids, sel, name, confirm) = (&self.ids, &mut self.sel, &mut self.name, &mut self.confirm);
         let (out, close) = super::modal(ctx, "recorded_files", "Recorded Files", vec2(520.0, 280.0), |ui| {
             ui.label("Recorded files:");
-            let d = crate::ui::theme::get().dialog();
-            Frame::NONE.fill(d.field).stroke(Stroke::new(1.0_f32, d.field_border)).inner_margin(4).show(ui, |ui| {
+            super::field_box(ui, 4, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical().max_height(120.0).auto_shrink([false, false]).show(ui, |ui| {
                     for (k, id) in ids.iter().enumerate() {
