@@ -317,7 +317,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 9.1 | Investigate reliable VEGAS-compatible project export | MISSING | Not investigated. The feasible route is a VEGAS-side import script that rebuilds the project through the scripting API. → R26 |
+| 9.1 | Investigate reliable VEGAS-compatible project export | DONE | R26: File › Export › VEGAS Project (via script)... writes `<name>.milan.json` (`interchange/vegas_export.rs`, `vegas_map` in reverse); `tools/vegas/Import from Milan Pro.cs` (and the VEGAS 13 copy) rebuilds it through the scripting API (new or open project, settings, media, tracks, events, reversed subclips, takes, fades, Pan/Crop, Track Motion, envelopes, groups, FX with parameters and keyframes, transitions, generated media, audio FX by name, markers, regions, selection). Both scripts compile against VEGAS 15's `ScriptPortal.Vegas.dll`; the script's JSON reader was run on Milan Pro's output. Round trip `round_trip_through_the_vegas_json`. Not run inside VEGAS here (manual: user). |
 | 9.2 | Never write fake `.veg` files | DONE | Nothing writes `.veg` |
 | 9.3 | OpenTimelineIO | MISSING | → R28 |
 | 9.4 | EDL | MISSING | Import/Export rows greyed (`menus.rs:409, 419`) → R28 |
@@ -1666,6 +1666,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Manual (user, VEGAS 15): a test project with 10 FX and 3 transitions imports, and the report lists the rest.
 
 ### R26: Send a project back to VEGAS (M)
+
+**Status: DONE (compile-checked, not run in VEGAS).** `interchange/vegas_export.rs` writes the version 2 JSON from a Milan project (`vegas_map` in reverse, placeholders back to their plug-in, colours completed from the built-in's defaults, Titles & Text back to RTF, Pan/Crop back to corners, Track Motion back to pixels); File › Export › VEGAS Project (via script)... writes it and reports what has no VEGAS counterpart. `tools/vegas/Import from Milan Pro.cs` (+ VEGAS 13 copy, with its own JSON reader) rebuilds the project through the API. Both scripts were compiled with the .NET Framework `csc` against the installed `ScriptPortal.Vegas.dll` (clean) and the reader was run on a Milan export; running the script inside VEGAS is the user's manual test. Tests `round_trip_through_the_vegas_json`, `the_file_names_vegas_plugins`.
 
 **Scope:** `tools/vegas/Import from Milan Pro.cs` (VEGAS 14+ and 13 copies) reads a `.milan.json` written by File > Export > "VEGAS Project (via script)...". It rebuilds tracks, events, takes, fades, Pan/Crop, envelopes, markers, regions, and mapped FX and transitions through the scripting API. Milan never writes `.veg`.
 

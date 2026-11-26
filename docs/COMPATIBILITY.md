@@ -26,10 +26,10 @@ Other limits:
 
 ## VEGAS projects
 
-Projects come from VEGAS Pro through VEGAS's own scripting API (`tools/vegas/Export to Milan Pro.cs`, which compiles
-against VEGAS Pro 15's `ScriptPortal.Vegas.dll`; the `(VEGAS 13)` copy uses the `Sony.Vegas` namespace of VEGAS Pro
-13 and earlier), never through `.veg` files (`docs/INTERCHANGE.md`). The script has not been run inside VEGAS by the
-developers: the user's VEGAS 15 pass is the acceptance test.
+Projects move between VEGAS Pro and Milan Pro through VEGAS's own scripting API, in both directions, never through
+`.veg` files (`docs/INTERCHANGE.md`). The scripts in `tools/vegas` compile against
+VEGAS Pro 15's `ScriptPortal.Vegas.dll`; the `(VEGAS 13)` copies use the `Sony.Vegas` namespace of VEGAS Pro 13 and
+earlier. They have not been run inside VEGAS by the developers: the user's VEGAS 15 pass is the acceptance test.
 
 ### VEGAS plug-ins that become Milan Pro built-ins (`src/interchange/vegas_map.rs`)
 

@@ -366,10 +366,20 @@ pub fn to_milan(id: &str) -> Option<&'static FxMap> {
     MAP.iter().find(|m| m.vegas.eq_ignore_ascii_case(id))
 }
 
+/// The row that sends Milan plug-in `id` back to VEGAS (the first row naming it: Sharpen goes back as sharpen).
+pub fn to_vegas(milan: &str) -> Option<&'static FxMap> {
+    MAP.iter().find(|m| m.milan == milan)
+}
+
 /// The Milan audio FX for VEGAS audio plug-in `name` ("VEGAS Track EQ", "Sony Track EQ" or "Track EQ").
 pub fn audio_to_milan(name: &str) -> Option<&'static str> {
     let bare = ["VEGAS ", "Sony ", "Sonic Foundry ", "MAGIX "].iter().find_map(|p| name.strip_prefix(p)).unwrap_or(name).trim();
     AUDIO.iter().find(|(v, _)| v.eq_ignore_ascii_case(bare)).map(|x| x.1)
+}
+
+/// The VEGAS name that stands for Milan audio FX `milan`.
+pub fn audio_to_vegas(milan: &str) -> Option<&'static str> {
+    AUDIO.iter().find(|(_, m)| *m == milan).map(|x| x.0)
 }
 
 /// The plug-in id an unmapped VEGAS OFX plug-in is kept under: the OFX host's `ofx:<id>@<major>` with the major
@@ -378,12 +388,27 @@ pub fn placeholder(id: &str) -> String {
     format!("{}{}@1", crate::engine::ofx::PREFIX, normalize(id))
 }
 
+/// A VEGAS id back from a placeholder (`ofx:com.x:y@1` → `com.x:y`); None for anything else.
+pub fn from_placeholder(plugin: &str) -> Option<&str> {
+    let rest = plugin.strip_prefix(crate::engine::ofx::PREFIX)?;
+    Some(rest.rsplit_once('@').map_or(rest, |x| x.0))
+}
+
 impl ParamMap {
     /// VEGAS value → Milan value.
     pub fn to_milan(&self, v: f32) -> f32 {
         match self.table {
             [] => v * self.scale + self.offset,
             t => nearest(t, v, |e| e.0).1,
+        }
+    }
+
+    /// Milan value → VEGAS value (the inverse; a table picks the first VEGAS value that gives this Milan value).
+    pub fn to_vegas(&self, v: f32) -> f32 {
+        match self.table {
+            [] if self.scale != 0.0 => (v - self.offset) / self.scale,
+            [] => 0.0,
+            t => t.iter().find(|e| e.1 == v.round()).unwrap_or_else(|| nearest(t, v, |e| e.1)).0,
         }
     }
 }
@@ -434,22 +459,26 @@ mod tests {
         assert_eq!(m.milan, "milan.fx.gaussian_blur");
         assert_eq!(to_milan("com.sonycreativesoftware:GaussianBlur").map(|m| m.milan), Some("milan.fx.gaussian_blur"));
         assert!(to_milan("com.sonycreativesoftware:filmgrain").is_none());
+        assert_eq!(to_vegas("milan.tr.fade_to_color").map(|m| m.vegas), Some("com.sonycreativesoftware:flash"));
         assert_eq!(placeholder("{Svfx:com.sonycreativesoftware:filmgrain}"), "ofx:com.sonycreativesoftware:filmgrain@1");
+        assert_eq!(from_placeholder("ofx:com.sonycreativesoftware:filmgrain@1"), Some("com.sonycreativesoftware:filmgrain"));
+        assert_eq!(from_placeholder("milan.fx.invert"), None);
         assert_eq!(audio_to_milan("VEGAS Track EQ"), Some("milan.afx.eq"));
         assert_eq!(audio_to_milan("Sony Wave Hammer"), Some("milan.afx.limiter"));
         assert_eq!(audio_to_milan("Acoustic Mirror"), None);
+        assert_eq!(audio_to_vegas("milan.afx.gate"), Some("Track Noise Gate"));
     }
 
     #[test]
-    fn scales_and_tables_convert() {
+    fn scales_and_tables_invert() {
         let blur = &to_milan("com.sonycreativesoftware:gaussianblur").unwrap().params[0];
-        assert!((blur.to_milan(0.06) - 0.012).abs() < 1e-6);
+        assert!((blur.to_milan(0.06) - 0.012).abs() < 1e-6 && (blur.to_vegas(0.012) - 0.06).abs() < 1e-6);
         let push = &to_milan("com.sonycreativesoftware:push").unwrap().params[0];
         // VEGAS Push Left (2) is Milan's Left (0); a value between rows picks the nearest.
-        assert_eq!((push.to_milan(2.0), push.to_milan(2.3)), (0.0, 0.0));
+        assert_eq!((push.to_milan(2.0), push.to_milan(2.3), push.to_vegas(0.0), push.to_vegas(3.0)), (0.0, 0.0, 2.0, 1.0));
         let mirror = &to_milan("com.sonycreativesoftware:mirror").unwrap().params[0];
-        assert_eq!((mirror.to_milan(-90.0), mirror.to_milan(0.0)), (1.0, 2.0));
+        assert_eq!((mirror.to_milan(-90.0), mirror.to_milan(0.0), mirror.to_vegas(0.0)), (1.0, 2.0, 90.0));
         let y = &to_milan("com.sonycreativesoftware:titlesandtext").unwrap().params[2];
-        assert!(y.milan == "y" && (y.to_milan(0.2) - 0.8).abs() < 1e-6);
+        assert!(y.milan == "y" && (y.to_milan(0.2) - 0.8).abs() < 1e-6 && (y.to_vegas(0.8) - 0.2).abs() < 1e-6);
     }
 }

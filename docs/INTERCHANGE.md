@@ -3,13 +3,13 @@
 What each route into and out of Milan Pro carries, converts or loses. OTIO, EDL, FCP7 XML, FCPXML and the AAF route
 come with batches R28 and R29 and will be added here.
 
-## VEGAS Pro (through VEGAS's scripting API)
+## VEGAS Pro, both ways (through VEGAS's scripting API)
 
-Milan Pro never reads or writes `.veg` files (R27 researches the format). Instead a C# script in
-`tools/vegas` (installed next to `MilanPro.exe` in `vegas\`; the `(VEGAS 13)` copy for VEGAS Pro 13 and earlier)
-writes the project through VEGAS's own API as one JSON file (`<name>.milan.json`, format `milan-vegas` version 2).
-The script compiles against VEGAS 15's `ScriptPortal.Vegas.dll`; running it inside VEGAS has not been done here
-(the user's VEGAS 15 pass is the manual acceptance test). The way back (R26) will use the same file.
+Milan Pro never reads or writes `.veg` files (R27 researches the format). Instead two C# scripts in
+`tools/vegas` (installed next to `MilanPro.exe` in `vegas\`; the `(VEGAS 13)` copies for VEGAS Pro 13 and earlier)
+move a project through VEGAS's own API, and one JSON file (`<name>.milan.json`, format `milan-vegas` version 2) is
+the common form. Both scripts compile against VEGAS 15's `ScriptPortal.Vegas.dll`; running them inside VEGAS has
+not been done here (the user's VEGAS 15 pass is the manual acceptance test).
 
 ### VEGAS to Milan Pro: `Export to Milan Pro.cs`, then File > Import > VEGAS Project...
 
@@ -29,3 +29,16 @@ The script compiles against VEGAS 15's `ScriptPortal.Vegas.dll`; running it insi
 
 Picking a `.veg` file in the import dialog instead runs the media scan: the files it names are added to Project
 Media and the dialog explains the script route.
+
+### Milan Pro to VEGAS: File > Export > VEGAS Project (via script)..., then `Import from Milan Pro.cs`
+
+The same table in reverse (`src/interchange/vegas_export.rs`, `vegas_map` run backwards): built-ins that stand for a
+VEGAS plug-in go out as that plug-in with converted parameters and keyframes, `ofx:` placeholders go back to the
+plug-in they came from with every parameter, and Milan's own FX (Exposure, Bezier Masking, Color Grading apart from
+its LUT, the extra blend modes, Pan/Crop masks, pitch changes, nested timelines as media, adjustment events) are
+listed in the export report and left out. The VEGAS-side script asks whether to build a new project, sets the
+project properties, adds media to the pool, and rebuilds tracks, events (reversed ones as reversed subclips),
+takes, fades, Pan/Crop, Track Motion, envelopes, groups, markers, regions, the time selection, FX with their
+parameters and keyframes, transitions, generated media and audio FX by name; what VEGAS lacks (a plug-in not
+installed, a stream a file does not have) is listed when it finishes. Round trip: `vegas_export::tests::round_trip_through_the_vegas_json`
+exports a project and reads it back through the import parser to the same timeline.

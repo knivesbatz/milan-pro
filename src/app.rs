@@ -80,7 +80,8 @@ pub struct MeridianApp {
     /// report shown after it (intro, lines).
     vegas: crate::interchange::VegasImport,
     pending_import: Option<(Project, Vec<String>)>,
-    vegas_report: Option<(String, Vec<String>)>,
+    /// A report dialog: title, intro, lines (a VEGAS import's leftovers, an export's notes).
+    vegas_report: Option<(String, String, Vec<String>)>,
     /// Files dragged to the timeline: probed while they hover, placed when dropped (cancelled by New/Open).
     file_drop: drop::FileDrop,
     /// MILAN_DROP (demo): window point where the demo media pretends to be dragged from Windows, for the screenshot.
