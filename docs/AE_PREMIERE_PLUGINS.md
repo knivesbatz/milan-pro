@@ -618,6 +618,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Files:** `aex/host.rs`, `engine/aex/mod.rs`, `engine/composite.rs`, `ui/choosers.rs`.
 - **Risks:** thin public documentation; few open-source test subjects (none found).
 - **Acceptance:** test plug-in cross-dissolve equals the built-in at p = 0.25/0.5/0.75 (≤ 1 LSB).
+- **Status: DROPPED (2026-11-26) for lack of a public source.** The PF_TransitionSuite pages say `RegisterTransitionInputParam()` is called before adding the other clip's layer parameter, but give no prototype, table, name string or version, and nothing about how progress reaches the effect. No AE-format transitions; the cross-dissolve acceptance test was not written.
 
 ### A8: SmartFX (XL, blocked on decision 2.6(5))
 
@@ -631,6 +632,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Acceptance:** test plug-in SmartFX blur with an expanded `result_rect` matches a Rust reference; `#[ignore]` an
   open-source SmartFX effect (crate example `transformer` or an F's Plugins effect) renders; a plug-in that asks for an
   AEGP suite reports "needs After Effects (AEGP)" and is bypassed.
+- **Status: NOT BUILT.** Decision 2.6(5) was not made (2026-11-26).
 
 ### A9: Compatibility run, report, docs; optional options dialog (M, RESEARCH plus data)
 
