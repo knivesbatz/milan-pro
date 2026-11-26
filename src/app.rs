@@ -243,6 +243,9 @@ pub struct MeridianApp {
     /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
     slideshow: Option<crate::ui::dialogs::Slideshow>,
     audio_transition: Option<crate::ui::dialogs::AudioTransition>,
+    /// R30: Export > Archive Project and Import > Media from Project, open.
+    archive: Option<crate::ui::dialogs::ArchiveDlg>,
+    media_from: Option<crate::ui::dialogs::MediaFromProject>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -554,6 +557,8 @@ impl MeridianApp {
             audio_edits: Default::default(),
             command_props: None,
             slideshow: None,
+            archive: None,
+            media_from: None,
             audio_transition: None,
         };
         if !launch.demo {

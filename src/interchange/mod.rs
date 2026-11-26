@@ -2,7 +2,9 @@
 //! - `vegas`: the `.milan.json` that `tools/vegas/Export to Milan Pro.cs` writes from inside VEGAS, with `vegas_map`
 //!   turning VEGAS's OFX plug-ins into Milan's built-ins (R25), and the `.veg` media scan;
 //! - `vegas_export`: the same JSON written from a Milan project for `tools/vegas/Import from Milan Pro.cs` (R26);
+//! - `archive`: Export › Archive Project and Import › Media from Project (R30).
 //! `docs/INTERCHANGE.md` says what each route carries.
+pub mod archive;
 pub mod vegas;
 pub mod vegas_export;
 pub mod vegas_map;

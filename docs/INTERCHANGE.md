@@ -42,3 +42,14 @@ takes, fades, Pan/Crop, Track Motion, envelopes, groups, markers, regions, the t
 parameters and keyframes, transitions, generated media and audio FX by name; what VEGAS lacks (a plug-in not
 installed, a stream a file does not have) is listed when it finishes. Round trip: `vegas_export::tests::round_trip_through_the_vegas_json`
 exports a project and reads it back through the import parser to the same timeline.
+
+## Project archive and media from another project (R30)
+
+File > Export > Milan Pro Project Archive... copies the project and every media file it uses into a folder (`Media\`
+beside the `.mnle`), saved with relative paths so the folder opens from another drive or machine. "Trim media to
+the ranges used" keeps only the stretches the timeline plays plus handles on either side: audio files are cut
+losslessly (PCM re-written sample-accurately, compressed audio stream-copied to the packet), video is re-encoded
+(H.264 CRF 16 + AAC, as `.mp4`) so the cut is frame-accurate, and every event's in point moves with the cut. Nested
+projects and subclip parents are copied whole; offline files are left as they were and listed. File > Import >
+Media from Project... lists another `.mnle`'s media pool and adds the checked items to Project Media as they were
+probed there.

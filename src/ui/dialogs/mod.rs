@@ -1,6 +1,7 @@
 //! Modal dialogs (§5.15): VP16 draws them as native light Win32 property sheets, VP23 dark. This module holds
 //! the shared frame (title row with ? and ×, tabs, group headings, 75×23 buttons) and the dialogs themselves.
 mod about;
+mod archive;
 mod audio_transition;
 pub mod command_props;
 mod customize_keys;
@@ -8,6 +9,7 @@ mod customize_toolbar;
 mod default_track;
 mod event_props;
 mod goto;
+mod media_from_project;
 mod organize_layouts;
 mod paste_attrs;
 mod paste_repeat;
@@ -24,6 +26,7 @@ mod update;
 mod welcome;
 
 pub use about::about;
+pub use archive::ArchiveDlg;
 pub use audio_transition::AudioTransition;
 pub use command_props::CommandProps;
 pub use customize_keys::CustomizeKeys;
@@ -31,6 +34,7 @@ pub use customize_toolbar::CustomizeToolbar;
 pub use default_track::DefaultTrackProps;
 pub use event_props::EventProps;
 pub use goto::{TimeEntry, TimeMode};
+pub use media_from_project::MediaFromProject;
 pub use slideshow::Slideshow;
 pub use organize_layouts::{Organize, OrganizeLayouts};
 pub use paste_attrs::PasteAttrs;

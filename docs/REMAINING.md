@@ -583,7 +583,7 @@ What matters most:
 | Professional rendering engine | PARTIAL | R22 (R11, R12 DONE) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
-| VEGAS project import/interchange | PARTIAL | R25-R30 |
+| VEGAS project import/interchange | PARTIAL | R25, R26, R27, R30 DONE; R28, R29 |
 | Automatic GitHub updater | PARTIAL | R46 |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
@@ -769,7 +769,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R18b (DONE): video track Set Default Track Properties.
 - R10a (re-assigned from R4b by R18b): Project Properties › Audio › Resample and stretch quality.
 - R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
-- R30: Tools > Advanced Save (VP23).
+- R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
 - R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
 - R53: Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
@@ -1718,6 +1718,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** round-trip tests; Resolve-exported sample XMLs import (fixtures made by the user, or hand-written to the DTD).
 
 ### R30: Project archive and import media from project (M)
+
+**Status: DONE.** `interchange/archive.rs` (`plan`, `trim_range`, `estimate`, `run`, `media_of`), `ui/dialogs/archive.rs` (Archive Project: folder, trim with handles, the media list with sizes and used ranges, progress on a worker thread with Cancel, the result with Open Folder; also Tools › Advanced Save in VP23), `ui/dialogs/media_from_project.rs` (check boxes, items already in the project greyed, one undo step). Trimming: PCM re-written sample-accurately, compressed audio stream-copied, video re-encoded (H.264 CRF 16 + AAC) so the cut is frame-accurate; in points move with the cut; subclip parents and nested projects are copied whole. Tests `plan_finds_used_ranges_and_dedupes_files`, `names_stay_unique`, `sizes_read_well`, ignored `archive_copies_trims_and_reopens_from_another_drive` (two files, trimmed with handles, the saved project rewritten to a dead drive letter and reopened through its relative paths). Screenshot `%TEMP%\milan-review\r25\archive-classic.png`.
 
 **Scope**
 - File > Export > Milan Pro Project Archive: copy the project and all media (option: trim media to used ranges plus handles, re-encoding with stream copy where possible) into a folder, with relative paths.

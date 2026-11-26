@@ -58,6 +58,8 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
+            || self.archive.is_some()
+            || self.media_from.is_some()
             || self.overlays.modal()
     }
 
@@ -884,6 +886,13 @@ impl MeridianApp {
                         }
                         Err(e) => self.message = Some(format!("Export failed: {e}")),
                     }
+                }
+            }
+            // R30
+            ArchiveProject => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
+            ImportMediaFromProject => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).pick_file() {
+                    self.media_from = Some(dialogs::MediaFromProject::new(path));
                 }
             }
             Properties => self.settings.open(&self.project),
@@ -2196,6 +2205,28 @@ impl MeridianApp {
         if self.vegas_report.as_ref().is_some_and(|(title, intro, lines)| dialogs::report(ctx, title, intro, lines)) {
             self.vegas_report = None;
         }
+        // R30: Archive Project, and Media from Project (the checked items join Project Media as one undo step).
+        if self.archive.as_mut().is_some_and(|d| d.show(ctx, &self.project)) {
+            self.archive = None;
+        }
+        if let Some(items) = self.media_from.as_mut().and_then(|d| d.show(ctx, &self.project.media_pool)) {
+            self.media_from = None;
+            if !items.is_empty() {
+                let before = self.project.clone();
+                let (generated, files): (Vec<_>, Vec<_>) = items.into_iter().partition(|m| m.generator.is_some());
+                let mut added = crate::media::merge_new(&mut self.project.media_pool, files);
+                for g in generated {
+                    if !self.project.media_pool.iter().any(|m| m.id == g.id) {
+                        self.project.media_pool.push(g);
+                        added = true;
+                    }
+                }
+                if added {
+                    self.history.push(before);
+                    self.project.mark_modified();
+                }
+            }
+        }
         self.show_time_entry(ctx);
         // R18a: Command Properties (Insert › Command, or Edit on a command marker's tag).
         if let Some(i) = ui::take_command_edit(ctx).filter(|_| self.command_props.is_none()) {
@@ -2966,6 +2997,7 @@ impl MeridianApp {
                 self.prefs.layouts.insert(layout_key(look, 4), self.dock.layout("Editing"));
                 self.exec(ctx, OrganizeLayouts);
             }
+            "archive" => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
             "vegas-report" => {
                 let lines = [
                     "Video 1: the event at 1.000 s: event FX: VEGAS Film Grain (com.sonycreativesoftware:filmgrain) is not available in Milan Pro; kept disabled as an OFX placeholder",
