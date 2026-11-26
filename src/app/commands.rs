@@ -58,6 +58,7 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
+            || self.rel.modal()
             || self.archive.is_some()
             || self.media_from.is_some()
             || self.prerender.is_some()
@@ -126,6 +127,7 @@ impl MeridianApp {
             armed: self.focus_of(false).is_some_and(|i| tl.audio_tracks[i].armed),
             any_armed: tl.audio_tracks.iter().any(|t| t.armed),
             recording: self.rec_start.is_some(),
+            rollback: self.rel.previous.is_some(),
             input_level: self.input.as_ref().map(|_| self.input_level),
             edge_mode: self.sel.edge.is_some(),
             mute_audio: self.mute_audio,
@@ -852,6 +854,14 @@ impl MeridianApp {
                 let r = menus::save_as(&mut self.project);
                 self.save_result(r);
             }
+            // R42: a numbered copy beside the file, with a note; a project never saved (or read-only) is saved as first.
+            SaveVersion => match self.project.path.clone() {
+                Some(p) if !self.project.read_only => self.rel.save_version = Some(dialogs::SaveVersion::new(&p)),
+                _ => {
+                    let r = menus::save_as(&mut self.project);
+                    self.save_result(r);
+                }
+            },
             RenderAs => self.render.open(&self.project),
             RenderToNewTrack => self.render.open_new_track(&self.project),
             // R23: VEGAS builds the RAM preview over the loop region, or from the cursor on; Shift+M and Clean Up.
@@ -928,7 +938,11 @@ impl MeridianApp {
             }
             UnfinishedFeatures => self.unfinished_open = true,
             About => self.about = true,
-            CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO),
+            CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
+            // R46: Help › Roll Back to Previous Version: the kept installer, after the save prompt.
+            RollBack => self.rel.rollback = Some(false),
+            // R44: a folder of system info, FFmpeg details, preferences, logs and crash reports.
+            DiagnosticReport => self.rel.diagnostics = Some(dialogs::Diagnostics::start(ctx, self.prefs.crash_privacy)),
             // Edit
             // A drag in progress holds its own undo step until release; undoing under it would stack a half drag.
             Undo | Redo | UndoAll if self.dragging() => {}
@@ -2038,9 +2052,22 @@ impl MeridianApp {
                         None => return,
                     },
                 };
-                match Project::load(&path) {
-                    Ok(p) => p,
-                    Err(e) => return self.message = Some(format!("Could not open {}: {e}", path.display())),
+                // R42: a file this build cannot read offers its .bak or autosave; one it can is checked and its notes shown.
+                match Project::open(&path) {
+                    Ok(o) => {
+                        if !o.notes.is_empty() {
+                            log::warn!("open {}: {}", path.display(), o.notes.join(" | "));
+                            self.rel.open_notes = Some((format!("{} opened with notes:", path.display()), o.notes));
+                        }
+                        o.project
+                    }
+                    Err(e) => {
+                        log::error!("open {}: {e}", path.display());
+                        return match crate::project::CorruptOffer::find(&path, e.to_string()) {
+                            Some(o) => self.rel.corrupt = Some(o),
+                            None => self.message = Some(format!("Could not open {}: {e}", path.display())),
+                        };
+                    }
                 }
             }
             MenuAction::ImportVegas => {
@@ -2184,6 +2211,7 @@ impl MeridianApp {
             }
         }
         self.show_update(ctx);
+        self.show_reliability(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
             self.about = !dialogs::about(ctx);
@@ -2204,6 +2232,9 @@ impl MeridianApp {
             self.look = new.look;
             self.prefs = new;
             self.save_prefs();
+            // R44: the logger follows the preferences at once.
+            crate::logger::set_level(crate::logger::level_from_name(&self.prefs.log_level));
+            crate::logger::set_privacy(self.prefs.crash_privacy);
             if rescan {
                 self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
             }
@@ -2493,7 +2524,13 @@ impl MeridianApp {
         use crate::updater::State;
         self.updater.poll(ctx, self.prefs.skipped_update.as_deref());
         let mut auto_check = self.prefs.auto_update;
-        let mut res = dialogs::update_window(ctx, &mut self.updater, &mut auto_check);
+        // R46: the roll-back copy follows the preference; no install while recording (a render is R12's guard below).
+        self.updater.keep_previous = self.prefs.keep_previous.then(crate::updater::previous_dir).flatten();
+        let blocked = crate::updater::install_guard(false, self.rec_start.is_some());
+        if matches!(self.updater.state, State::Ready(..)) && self.rel.previous.is_none() {
+            self.rel.previous = crate::updater::previous_dir().and_then(|d| crate::updater::rollback_target(&d));
+        }
+        let mut res = dialogs::update_window(ctx, &mut self.updater, &mut auto_check, blocked);
         if self.updater.auto {
             // MILAN_UPDATE_AUTO (end-to-end test): install without clicks; any other outcome ends the run.
             match &self.updater.state {
@@ -2503,7 +2540,7 @@ impl MeridianApp {
                 }
                 // With MILAN_SCREENSHOT the message stays up for the screenshot, which then closes the app.
                 State::Message(m) if self.shot.is_none() => {
-                    eprintln!("update: {m}");
+                    log::warn!("update: {m}");
                     self.updater.dismiss();
                     self.request(ctx, MenuAction::Exit);
                 }
@@ -2654,6 +2691,8 @@ impl MeridianApp {
             // The Edit menu dropped open (look screenshots).
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // R44/R46 review: Preferences on Milan Pro's own Update page.
+            "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab(crate::ui::theme::get().look()))),
             // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
             // copy): the dialog needs an event in the clipboard.
@@ -2667,6 +2706,16 @@ impl MeridianApp {
             "default-track" => {
                 self.sel.tracks = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()).into_iter().collect();
                 self.exec(ctx, DefaultTrackFx);
+            }
+            // R43 review: the Recover Projects dialog over two made-up crashed sessions.
+            "recover" => self.rel.recover = Some(dialogs::Recover::new(crate::autosave::demo_items(&self.project))),
+            // R44 review: the offer made at the start after a crash, over a made-up report beside the demo media.
+            "crash-offer" => {
+                let dir = crate::demo::media_dir().join("crashes");
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("crash-20261126-083012.txt");
+                let _ = std::fs::write(&path, format!("Milan Pro {} crash report (made up for the screenshot)\n", crate::updater::CURRENT));
+                self.rel.crash_offer = Some(path);
             }
             "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
@@ -3056,7 +3105,7 @@ impl MeridianApp {
                 ];
                 self.vegas_report = Some((IMPORT_TITLE.into(), IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
             }
-            "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
+            "update" => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
             m => {
                 if let Some(k) = m.strip_prefix("menu:").and_then(|k| k.parse::<usize>().ok()) {
                     menus::request_open(ctx, k);

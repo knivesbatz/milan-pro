@@ -59,6 +59,10 @@ pub enum Command {
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, UnfinishedFeatures, CheckForUpdates, About,
+    /// R44: Help › Create Diagnostic Report.
+    DiagnosticReport,
+    /// R46: Help › Roll Back to Previous Version.
+    RollBack,
     /// R15: Options › Customize Toolbar, Customize Timeline Toolbar and Customize Keyboard.
     CustomizeToolbar, CustomizeTimelineToolbar, CustomizeKeyboard,
     // Context-menu and preference commands without default keys

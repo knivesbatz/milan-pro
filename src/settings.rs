@@ -30,6 +30,20 @@ pub struct Prefs {
     pub recent_max: usize,
     /// Preferences › General: "Check for updates automatically" (on startup).
     pub auto_update: bool,
+    /// R43: Preferences › General: autosave on, every `autosave_minutes` (1-60; VEGAS's 2), keeping `autosave_keep`
+    /// copies per project (1-20).
+    pub autosave_on: bool,
+    pub autosave_minutes: u32,
+    pub autosave_keep: u32,
+    /// R44: Preferences › Update: the log level ("error" ... "trace"), "crash reports leave out file names and paths",
+    /// and the crash report last offered at startup (so it is offered once).
+    pub log_level: String,
+    pub crash_privacy: bool,
+    pub crash_seen: Option<String>,
+    /// R46: Preferences › Update: the channel (Stable, or Preview with pre-releases) and whether the current version's
+    /// installer is kept in `%LOCALAPPDATA%\MilanPro\updates\previous\` before an update, for Help › Roll Back.
+    pub update_channel: crate::updater::Channel,
+    pub keep_previous: bool,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
@@ -264,6 +278,14 @@ impl Default for Prefs {
             recent: Vec::new(),
             recent_max: 4,
             auto_update: true,
+            autosave_on: true,
+            autosave_minutes: 2,
+            autosave_keep: 5,
+            log_level: "info".into(),
+            crash_privacy: false,
+            crash_seen: None,
+            update_channel: Default::default(),
+            keep_previous: false,
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
@@ -337,6 +359,11 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    /// R43: the autosave interval in minutes, 0 when off.
+    pub fn autosave_minutes(&self) -> u32 {
+        if self.autosave_on { self.autosave_minutes.clamp(1, 60) } else { 0 }
+    }
+
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
     pub fn float_dock(&self, look: UiLook) -> bool {
         self.float_dock.unwrap_or(look.v23())
@@ -349,6 +376,11 @@ impl Prefs {
 
     fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("prefs.json"))
+    }
+
+    /// R44: the preferences file (for the diagnostic report).
+    pub fn file() -> Option<PathBuf> {
+        Self::path()
     }
 
     pub fn load() -> Self {

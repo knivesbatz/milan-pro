@@ -52,7 +52,7 @@ pub fn below_normal(child: &Child) {
         use windows_sys::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, SetPriorityClass};
         // SAFETY: the handle is the live child's own process handle.
         if unsafe { SetPriorityClass(child.as_raw_handle() as _, BELOW_NORMAL_PRIORITY_CLASS) } == 0 {
-            eprintln!("proc: SetPriorityClass failed: {}", io::Error::last_os_error());
+            log::warn!("proc: SetPriorityClass failed: {}", io::Error::last_os_error());
         }
     }
     #[cfg(not(windows))]
@@ -72,7 +72,7 @@ pub fn below_normal_thread() {
         use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
         // SAFETY: the pseudo-handle of the calling thread.
         if unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) } == 0 {
-            eprintln!("proc: SetThreadPriority failed: {}", io::Error::last_os_error());
+            log::warn!("proc: SetThreadPriority failed: {}", io::Error::last_os_error());
         }
     }
 }
@@ -109,14 +109,14 @@ mod job {
         *JOB.get_or_init(|| unsafe {
             let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
             if h.is_null() {
-                eprintln!("proc: CreateJobObjectW failed: {}", std::io::Error::last_os_error());
+                log::warn!("proc: CreateJobObjectW failed: {}", std::io::Error::last_os_error());
                 return 0;
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             let size = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
             if SetInformationJobObject(h, JobObjectExtendedLimitInformation, &info as *const _ as *const _, size) == 0 {
-                eprintln!("proc: SetInformationJobObject failed: {}", std::io::Error::last_os_error());
+                log::warn!("proc: SetInformationJobObject failed: {}", std::io::Error::last_os_error());
             }
             h as usize
         })
@@ -125,7 +125,7 @@ mod job {
     pub fn assign(child: &std::process::Child) {
         let h = job();
         if h != 0 && unsafe { AssignProcessToJobObject(h as _, child.as_raw_handle() as _) } == 0 {
-            eprintln!("proc: AssignProcessToJobObject failed: {}", std::io::Error::last_os_error());
+            log::warn!("proc: AssignProcessToJobObject failed: {}", std::io::Error::last_os_error());
         }
     }
 }

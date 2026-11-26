@@ -3,11 +3,28 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+pub mod migrate;
+pub mod validate;
+
+/// R42: the project file format this build writes. 0 means a file from before versioning (every file up to Milan Pro
+/// 0.7.0); `migrate` brings older files up, and a newer one opens read-only (`Project::read_only`).
+pub const FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
+    /// R42: `FORMAT_VERSION` of the build that wrote the file (absent = 0, pre-versioning).
+    #[serde(default)]
+    pub format_version: u32,
     pub name: String,
     #[serde(skip)]
     pub path: Option<PathBuf>,
+    /// R42: the note given to File › Save Version for this file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_note: Option<String>,
+    /// R42: the file was written by a newer Milan Pro (`format_version` above this build's): Save becomes Save As, so
+    /// the original is never silently written over by an older build that may have dropped parts of it.
+    #[serde(skip)]
+    pub read_only: bool,
     pub settings: ProjectSettings,
     pub timeline: Timeline,
     pub media_pool: Vec<MediaItem>,
@@ -1293,8 +1310,11 @@ fn fade_colors() -> [[u8; 3]; 2] {
 impl Project {
     pub fn new(name: &str) -> Self {
         Self {
+            format_version: FORMAT_VERSION,
             name: name.to_string(),
             path: None,
+            version_note: None,
+            read_only: false,
             settings: ProjectSettings::default(),
             timeline: Timeline::new(),
             media_pool: Vec::new(),
@@ -1303,32 +1323,53 @@ impl Project {
         }
     }
 
-    /// Writes a temp file and renames it over `path`, so a failed save never damages the old file.
-    /// On error, name, path and modified are left unchanged.
+    /// Writes a temp file and renames it over `path`, so a failed save never damages the old file. R42: the file
+    /// being written over is kept first as `<name>.mnle.bak` (as VEGAS keeps `.veg.bak`), and the file carries this
+    /// build's `FORMAT_VERSION`. On error, name, path and modified are left unchanged.
     pub fn save(&mut self, path: &PathBuf) -> anyhow::Result<()> {
         // The project is named after its file, so titles and autosave backups are per-project.
         let name = file_stem(path).unwrap_or_else(|| self.name.clone());
         let old_name = std::mem::replace(&mut self.name, name);
+        let old_version = std::mem::replace(&mut self.format_version, FORMAT_VERSION);
         // Media paths are also kept relative to the project, so a moved folder or a new drive letter still finds them.
         let dir = path.parent().map(std::path::absolute).and_then(Result::ok);
         for m in &mut self.media_pool {
             m.rel_path = dir.as_deref().and_then(|d| relative(&m.path, d));
         }
-        let res =serde_json::to_string_pretty(self).map_err(anyhow::Error::from).and_then(|json| write_atomic(path, &json));
+        let res = serde_json::to_string_pretty(self)
+            .map_err(anyhow::Error::from)
+            .and_then(|json| keep_backup(path).and_then(|_| write_atomic(path, &json)));
         match res {
             Ok(()) => {
                 self.path = Some(path.clone());
                 self.modified = false;
+                self.read_only = false;
             }
-            Err(_) => self.name = old_name,
+            Err(_) => (self.name, self.format_version) = (old_name, old_version),
         }
         res
     }
 
     pub fn load(path: &PathBuf) -> anyhow::Result<Self> {
+        Ok(Self::open(path)?.project)
+    }
+
+    /// R42: `load` with what the user should hear about: a file from a newer Milan Pro opens read-only, and
+    /// `validate` repairs what it safely can and lists the rest. Nothing is written back until the user saves.
+    pub fn open(path: &PathBuf) -> anyhow::Result<Opened> {
         let json = std::fs::read_to_string(path)?;
         // Notepad and PowerShell may save the hand-edited file with a BOM.
-        let mut project: Self = serde_json::from_str(json.trim_start_matches('\u{feff}'))?;
+        let mut value: serde_json::Value = serde_json::from_str(json.trim_start_matches('\u{feff}'))?;
+        let from = value.get("format_version").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let mut notes = Vec::new();
+        let read_only = from > u64::from(FORMAT_VERSION);
+        if read_only {
+            notes.push(format!("{} was saved by a newer Milan Pro (file format {from}; this build reads {FORMAT_VERSION}). It opens read-only: Save becomes Save As.", path.display()));
+        } else if from < u64::from(FORMAT_VERSION) {
+            value = migrate::migrate(value, from as u32);
+        }
+        let mut project: Self = serde_json::from_value(value)?;
+        project.read_only = read_only;
         if let Some(stem) = file_stem(path) {
             project.name = stem;
         }
@@ -1343,7 +1384,25 @@ impl Project {
         }
         project.path = Some(path.clone());
         project.timeline.zoom = 1.0;
-        Ok(project)
+        notes.extend(validate::validate(&mut project));
+        Ok(Opened { project, notes })
+    }
+
+    /// R44: what a crash report says about the project: counts only, never a path or a media name.
+    pub fn summary(&self) -> String {
+        let tl = &self.timeline;
+        let events: usize = tl.video_tracks.iter().chain(&tl.audio_tracks).map(|t| t.clips.len()).sum();
+        format!(
+            "{} video and {} audio tracks, {events} events, {} media items, {}x{} at {} fps, format {}{}",
+            tl.video_tracks.len(),
+            tl.audio_tracks.len(),
+            self.media_pool.len(),
+            self.settings.width,
+            self.settings.height,
+            self.settings.frame_rate,
+            self.format_version,
+            if self.modified { ", unsaved changes" } else { "" }
+        )
     }
 
     pub fn mark_modified(&mut self) {
@@ -1746,6 +1805,54 @@ impl Clip {
 /// VEGAS's default "Smooth" fade curve, an S-curve from 0 to 1 (ffmpeg afade curve=hsin).
 pub fn smooth_fade(x: f64) -> f64 {
     (1.0 - (std::f64::consts::PI * x).cos()) * 0.5
+}
+
+/// R42: a project file opened (`Project::open`) with the notes the user should see about it.
+pub struct Opened {
+    pub project: Project,
+    pub notes: Vec<String>,
+}
+
+/// R42: the backup Save keeps of the file it writes over: `Show.mnle` → `Show.mnle.bak` (VEGAS: `.veg.bak`).
+pub fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".bak");
+    path.with_file_name(name)
+}
+
+/// Copy the file at `path`, if there is one, to `backup_path` before it is written over.
+fn keep_backup(path: &Path) -> anyhow::Result<()> {
+    if path.is_file() {
+        std::fs::copy(path, backup_path(path)).map_err(|e| anyhow::anyhow!("could not keep the backup {}: {e}", backup_path(path).display()))?;
+    }
+    Ok(())
+}
+
+/// R42: what an unreadable project file can be opened from instead: its `.mnle.bak` and its latest autosave, when
+/// they exist. None when there is neither.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorruptOffer {
+    pub path: PathBuf,
+    pub error: String,
+    pub backup: Option<PathBuf>,
+    pub autosave: Option<PathBuf>,
+}
+
+impl CorruptOffer {
+    pub fn find(path: &Path, error: String) -> Option<Self> {
+        let backup = Some(backup_path(path)).filter(|p| p.is_file());
+        let autosave = crate::autosave::autosave_for(path).filter(|p| p.is_file());
+        (backup.is_some() || autosave.is_some()).then(|| Self { path: path.to_path_buf(), error, backup, autosave })
+    }
+
+    /// Open `file` (the backup or autosave) as an unsaved copy named after the broken project: Save asks where, so the
+    /// backup itself is never written over by what was recovered from it.
+    pub fn open_copy(&self, file: &Path) -> anyhow::Result<Project> {
+        let mut p = Project::load(&file.to_path_buf())?;
+        p.name = file_stem(&self.path).unwrap_or(p.name);
+        (p.path, p.modified) = (None, true);
+        Ok(p)
+    }
 }
 
 pub(crate) fn write_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
@@ -2515,5 +2622,78 @@ mod tests {
         let m: MediaType = serde_json::from_str(r#""Vector""#).unwrap();
         assert_eq!((c, k, m), (Composite::SourceAlpha, Curve::Smooth, MediaType::Unknown));
         assert_eq!(serde_json::from_str::<T>(r#"{"c":"Screen"}"#).unwrap().c, Composite::Screen);
+    }
+
+    /// R42: a file from a newer build opens read-only (Save becomes Save As); a v0 file (no format_version) is migrated.
+    #[test]
+    fn newer_format_opens_read_only_and_v0_migrates() {
+        let dir = temp_dir("fmt");
+        let path = dir.join("Future.mnle");
+        Project::new("x").save(&path).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["format_version"], serde_json::json!(FORMAT_VERSION));
+        v["format_version"] = serde_json::json!(FORMAT_VERSION + 1);
+        std::fs::write(&path, v.to_string()).unwrap();
+        let o = Project::open(&path).unwrap();
+        assert!(o.project.read_only, "a newer file is read-only");
+        assert_eq!(o.project.format_version, FORMAT_VERSION + 1);
+        assert!(o.notes.iter().any(|n| n.contains("read-only")), "{:?}", o.notes);
+        // Saved elsewhere (Save As), the copy is this build's format and editable.
+        let mut ro = o.project;
+        ro.save(&dir.join("Copy.mnle")).unwrap();
+        assert!(!ro.read_only && ro.format_version == FORMAT_VERSION);
+        assert!(Project::open(&path).unwrap().project.read_only, "the original is untouched");
+        // A pre-versioning file (0.7.0 and before) has no format_version: it migrates to the current one, with no notes.
+        v.as_object_mut().unwrap().remove("format_version");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let o = Project::open(&path).unwrap();
+        assert!((o.project.format_version, o.project.read_only) == (FORMAT_VERSION, false) && o.notes.is_empty(), "{:?}", o.notes);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R42: Save keeps the file it writes over as .mnle.bak; the first save of a new file makes none.
+    #[test]
+    fn save_keeps_the_previous_file_as_bak() {
+        let dir = temp_dir("bak");
+        let path = dir.join("Show.mnle");
+        let bak = backup_path(&path);
+        assert_eq!(bak, dir.join("Show.mnle.bak"));
+        let mut p = Project::new("Untitled");
+        p.save(&path).unwrap();
+        assert!(!bak.exists(), "no backup before there was a file");
+        let first = std::fs::read_to_string(&path).unwrap();
+        p.timeline.video_tracks[0].clips.push(Clip::new("c", 2.0, 3.0));
+        p.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), first, "the backup is the previous content");
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), first);
+        p.timeline.video_tracks[0].clips.push(Clip::new("d", 6.0, 3.0));
+        let second = std::fs::read_to_string(&path).unwrap();
+        p.save(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), second, "one backup, of the last save");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R42: a truncated project file cannot be opened; the offer names its backup, which opens as an unsaved copy.
+    #[test]
+    fn a_truncated_file_offers_the_backup() {
+        let dir = temp_dir("trunc");
+        let path = dir.join("Show.mnle");
+        let mut p = Project::new("Untitled");
+        p.timeline.video_tracks[0].clips.push(Clip::new("c", 2.0, 3.0));
+        p.save(&path).unwrap();
+        p.save(&path).unwrap(); // now there is a .bak
+        let json = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, &json[..json.len() / 2]).unwrap();
+        let err = Project::open(&path).err().expect("a truncated file does not open").to_string();
+        let offer = CorruptOffer::find(&path, err.clone()).expect("the backup is offered");
+        assert_eq!(offer.backup.as_deref(), Some(backup_path(&path).as_path()));
+        assert_eq!(offer.error, err);
+        let copy = offer.open_copy(offer.backup.as_deref().unwrap()).unwrap();
+        assert_eq!((copy.name.as_str(), copy.path.is_none(), copy.modified), ("Show", true, true));
+        assert_eq!(copy.timeline.video_tracks[0].clips.len(), 1);
+        // No backup and no autosave: nothing to offer.
+        std::fs::remove_file(backup_path(&path)).unwrap();
+        assert_eq!(CorruptOffer::find(&path, err).map(|o| o.backup), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

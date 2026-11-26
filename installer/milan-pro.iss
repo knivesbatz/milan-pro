@@ -72,7 +72,8 @@ Name: "{autodesktop}\Milan Pro"; Filename: "{app}\MilanPro.exe"; Tasks: desktopi
 [Run]
 Filename: "{app}\MilanPro.exe"; Description: "{cm:LaunchProgram,Milan Pro}"; Flags: nowait postinstall skipifsilent
 ; In-app updater: "Setup.exe /SILENT ... /RELAUNCH=<running MilanPro.exe>" starts the updated app when done.
-Filename: "{app}\MilanPro.exe"; Flags: nowait runasoriginaluser; Check: RelaunchRequested; AfterInstall: Relaunched
+; R46: --after-update starts the roll-back start counter (updater::start_marker); a first frame clears it.
+Filename: "{app}\MilanPro.exe"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: RelaunchRequested; AfterInstall: Relaunched
 
 [Code]
 var

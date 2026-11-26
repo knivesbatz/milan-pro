@@ -74,6 +74,8 @@ pub struct CmdState {
     pub quantize: bool,
     /// An event is on the clipboard.
     pub clipboard: bool,
+    /// R46: an earlier version's installer is kept (Help › Roll Back to Previous Version).
+    pub rollback: bool,
     /// A time selection exists.
     pub selection: bool,
     pub looping: bool,
@@ -183,9 +185,9 @@ impl CmdState {
     pub fn enabled(&self, c: Command) -> bool {
         let v23 = self.look.v23();
         match c {
-            New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
+            New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
             | ExportVegas | ArchiveProject | ImportMediaFromProject
-            | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
+            | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
             // VP16 has one docking area and the Classic layout; VP23 four areas and the Source / Timeline Top layouts.
@@ -193,6 +195,7 @@ impl CmdState {
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => v23,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
             LayoutUser(n) => self.layouts.get(n).is_some_and(Option::is_some),
+            RollBack => self.rollback,
             Welcome => v23,
             OpenRecent(i) => i < self.recent.len(),
             Undo | UndoAll => self.can_undo,
@@ -425,7 +428,6 @@ impl Why {
 /// Why `c` is greyed out whatever is selected; None for commands that work (they may still need a selection).
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
-        SaveVersion => Later("R42"),
         SurroundPanner => Later("R10b"),
         Help | WhatsThis => Later("R53"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
@@ -1218,6 +1220,8 @@ pub const HELP: &[M] = &[
     V16(&X("&Welcome...", Fixed("only in the VEGAS 23 look (File > Welcome Screen)"))),
     S,
     C("Check for &Updates...", CheckForUpdates),
+    C("Create &Diagnostic Report...", DiagnosticReport),
+    C("&Roll Back to Previous Version...", RollBack),
     V23(&X("Download User Manual", Later("R53"))),
     S,
     C("About Milan Pro...", About),
@@ -1434,8 +1438,9 @@ pub fn context_at(owner: &Response, open_at: Option<Pos2>, add: impl FnOnce(&mut
 /// Save to the current path, or Save As if the project has none. Ok(false): Save As was cancelled.
 pub fn save(project: &mut Project) -> Result<bool, String> {
     match project.path.clone() {
-        Some(path) => save_to(project, &path),
-        None => save_as(project),
+        // R42: a file from a newer Milan Pro is never written over by this build: Save becomes Save As.
+        Some(path) if !project.read_only => save_to(project, &path),
+        _ => save_as(project),
     }
 }
 
@@ -2038,6 +2043,7 @@ mod tests {
             multicam_create: true,
             multicam_track: true,
             multicam: true,
+            rollback: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()
