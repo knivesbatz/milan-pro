@@ -2602,6 +2602,8 @@ impl MeridianApp {
                 self.sel.tracks = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()).into_iter().collect();
                 self.exec(ctx, DefaultTrackFx);
             }
+            // R43 review: the Recover Projects dialog over two made-up crashed sessions.
+            "recover" => self.rel.recover = Some(dialogs::Recover::new(crate::autosave::demo_items(&self.project))),
             "scopes" => self.dock.open(crate::ui::dock::Panel::VideoScopes),
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),

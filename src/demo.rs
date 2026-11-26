@@ -11,6 +11,9 @@
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
 //! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
+//! - `MILAN_HOLD=1` (with `MILAN_SCREENSHOT`): the run never takes its screenshot or exits; it stays open off-screen
+//!   until killed (R43's crash-recovery test). `MILAN_APPDATA=<folder>` moves autosave and session files there, and
+//!   `MILAN_AUTOSAVE_NOW=1` autosaves at the first tick (both in `autosave.rs`).
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;
@@ -184,7 +187,8 @@ impl Shot {
             self.quiet_since = None;
         }
         let quiet = now - *self.quiet_since.get_or_insert(now);
-        if !self.requested && ((now - start > 1.5 && quiet > 0.5) || now - start > 8.0) {
+        let hold = std::env::var_os("MILAN_HOLD").is_some_and(|v| v == "1");
+        if !hold && !self.requested && ((now - start > 1.5 && quiet > 0.5) || now - start > 8.0) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }

@@ -30,6 +30,11 @@ pub struct Prefs {
     pub recent_max: usize,
     /// Preferences › General: "Check for updates automatically" (on startup).
     pub auto_update: bool,
+    /// R43: Preferences › General: autosave on, every `autosave_minutes` (1-60; VEGAS's 2), keeping `autosave_keep`
+    /// copies per project (1-20).
+    pub autosave_on: bool,
+    pub autosave_minutes: u32,
+    pub autosave_keep: u32,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
@@ -249,6 +254,9 @@ impl Default for Prefs {
             recent: Vec::new(),
             recent_max: 4,
             auto_update: true,
+            autosave_on: true,
+            autosave_minutes: 2,
+            autosave_keep: 5,
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
@@ -315,6 +323,11 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    /// R43: the autosave interval in minutes, 0 when off.
+    pub fn autosave_minutes(&self) -> u32 {
+        if self.autosave_on { self.autosave_minutes.clamp(1, 60) } else { 0 }
+    }
+
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
     pub fn float_dock(&self, look: UiLook) -> bool {
         self.float_dock.unwrap_or(look.v23())

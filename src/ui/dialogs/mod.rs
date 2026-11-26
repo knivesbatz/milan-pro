@@ -39,7 +39,7 @@ pub use paste_attrs::PasteAttrs;
 pub use paste_repeat::PasteRepeat;
 pub use prefs::PrefsDialog;
 pub use recorded::{Recorded, RecordedFiles};
-pub use recover::{CorruptChoice, corrupt_window};
+pub use recover::{CorruptChoice, Recover, RecoverChoice, corrupt_window};
 pub use save_version::SaveVersion;
 pub use remove_fx::RemoveAssignableFx;
 pub use render::{RenderDialog, open_file, open_folder};

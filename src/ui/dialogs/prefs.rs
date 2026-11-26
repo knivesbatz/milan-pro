@@ -156,6 +156,16 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         widgets::checkbox_enabled(ui, false, &mut on, "Recently used project list").on_disabled_hover_text(ALWAYS_ON.text());
         widgets::spin(ui, &mut d.recent_max, 1.0, |d| d.range(1..=9));
     });
+    // R43: autosave (a backup copy in AppData, never the project file) and how many copies are kept per project.
+    ui.horizontal(|ui| {
+        widgets::checkbox(ui, &mut d.autosave_on, "Save a backup copy of the project every");
+        widgets::spin_enabled(ui, d.autosave_on, &mut d.autosave_minutes, 1.0, |s| s.range(1..=60));
+        ui.label("minutes");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Backup copies kept per project:");
+        widgets::spin_enabled(ui, d.autosave_on, &mut d.autosave_keep, 1.0, |s| s.range(1..=20));
+    });
     ui.add_enabled_ui(false, |ui| {
         let r49 = Later("R49").text();
         ui.label("Temporary files folder:").on_disabled_hover_text(&r49);
@@ -179,6 +189,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     });
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
+        (d.autosave_on, d.autosave_minutes, d.autosave_keep) = (true, 2, 5);
         d.overlay_library = None;
     }
 }

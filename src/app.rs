@@ -560,6 +560,12 @@ impl MeridianApp {
             audio_transition: None,
             rel: Default::default(),
         };
+        // R43: autosave and session markers run outside the harness, or in it when MILAN_APPDATA points them at a test folder.
+        app.rel.autosave = !launch.demo || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
+        app.autosave.force_first = app.rel.autosave && app.shot.is_some() && std::env::var_os("MILAN_AUTOSAVE_NOW").is_some();
+        if app.rel.autosave {
+            app.offer_recovery();
+        }
         if !launch.demo {
             app.prefs.overlays_placed = true;
             if !overlays_into.is_empty() {
@@ -1175,8 +1181,9 @@ impl eframe::App for MeridianApp {
         }
         self.queue_win.show(ctx, &mut self.queue);
         self.settings.show(ctx, &mut self.project, &mut self.history);
-        if !self.demo {
-            self.autosave.tick(ctx, &self.project);
+        if self.rel.autosave {
+            let parents: Vec<&Project> = self.parents.iter().map(|p| &p.project).collect();
+            self.autosave.tick(ctx, &self.project, &parents, self.prefs.autosave_minutes(), self.prefs.autosave_keep.clamp(1, 20));
         }
 
         // A clip selection replaces a media selection in Properties.
@@ -1257,6 +1264,9 @@ impl eframe::App for MeridianApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         // R34b: plug-in editor windows close with Milan (their hosts die with it too, in the Job Object).
         crate::engine::aplug::close_editors();
+        if self.rel.autosave {
+            self.autosave.clean_exit();
+        }
         if self.demo || self.shot.is_some() {
             return;
         }
