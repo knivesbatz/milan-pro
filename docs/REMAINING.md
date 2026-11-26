@@ -725,7 +725,7 @@ Batches follow the user's priority order, adjusted for dependencies. R0 goes fir
 | 2 | VEGAS familiarity | R13, R14, R15, R16a, R16b, R16c, R6a, R6b, R17a, R17b, R18a, R18b |
 | 3 | Preview performance | R19, R20, R21a, R21b, R21c, R22, R23 |
 | 4 | Project compatibility | R25, R26, R27, R28, R29, R30 |
-| 5 | Plug-in compatibility | R31, R32, R33a, R33b, R33c, R34a, R34b, R35 |
+| 5 | Plug-in compatibility | R31, R32, R33a, R33b, R33c, R34a, R34b, R35; AE-format effects A0-A9 (`docs/AE_PREMIERE_PLUGINS.md`) |
 | 6 | Media support | R37, R38, R39, R40a, R40b, R10a, R10b, R41 |
 | 7 | Reliability | R42, R43, R44, R45a, R45b, R46 |
 | 8 | Modern interface | R47, R48, R49 |
@@ -1859,6 +1859,12 @@ No product code unless the research finds a stable, documented structure. If it 
 **Deliverables:** a working CLAP path; `docs/compat/dx-audio.md` with results.
 
 **Acceptance tests:** a CLAP test plug-in (for example Surge XT effects, GPL, user-installed) processes audio; the DMO report is written.
+
+---
+
+### A0-A9: AE-format (.aex) effect hosting (plan: `docs/AE_PREMIERE_PLUGINS.md`)
+
+**Status: A0-A5 and A9 DONE (2026-11-26, experimental, off by default); A6 and A7 DROPPED for lack of a public source; A8 BLOCKED on decision 2.6(5).** Owner's decision of 2026-11-26: Milan's own declarations from public documentation, no Adobe SDK material (`CONTRIBUTING.md`, `tests/no_adobe_material.rs`, `docs/compat/aex-provenance.md`). A1: PiPL reader and writer (bounds-checked, in Milan's process as data), folders and search rules, Blocked/unsupported classification, Plug-In Manager rows and the experimental switch with the trademark notice. A2-A5: the host's `aex` personality (`src/bin/milan-plugin-host/aex/`): global and parameter setup into the OFX registry (`aex:<match name>`, keys `p<id>`), the tier-a callbacks and suites, 8-bit render through shared memory, sequence setup/resetup/flatten/setdown with `Fx.blob` saved in the project, supervision (changed values back to the project, greyed/hidden state to the FX window), checkout of other frames and layer parameters over a nested pipe request (`Reply::NeedFrame`). Tests: `engine::aex::tests` (`--ignored --test-threads=1`), host unit tests in `aex/{suites,convert,mod}.rs`. **Caveat: the declarations are proven self-consistent only** (Milan's own test plug-in); the tests over open-source plug-ins (`MILAN_AEX_TEST_DIR`) have not been run, and many layout facts are class R (not on any public page) in the provenance table. Left: run the §3.2 open-source plug-ins; ARB parameter callbacks; parameter curves for checkouts of values at other times; field rendering; `PF_Cmd_DO_DIALOG`; float (needs a public description of Premiere's pixel-format suite); transitions (needs one of the transition suite).
 
 ---
 
