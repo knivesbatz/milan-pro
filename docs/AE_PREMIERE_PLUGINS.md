@@ -298,6 +298,16 @@ Manager pane. In the UI the plug-in kind is labelled "AE-format effect".
 Residual risks to state openly: Adobe may object regardless; a vendor may object to their plug-in running in an
 unlisted host; the provenance of layout facts (2.4) is the part a lawyer should look at hardest.
 
+**Decision (owner, 2026-11-26; this is the A0 sign-off).** Build it with **Milan's own bindings**: hand-written
+`#[repr(C)]` declarations from public documentation and observation of the test plug-in, each item with a provenance
+note (`docs/compat/aex-provenance.md`); **no Adobe SDK material** of any kind in the repo, the build or a release (no
+headers, samples, PiPL tool, translations of them, no `after-effects`/`after-effects-sys`/`premiere-sys` crates,
+nothing generated from SDK headers). Source (2) of 2.4 (the `after-effects` crate's generated bindings) is therefore
+**not** used, even as a reference. Points 1-4 and 6-9 above stand as written. Point 5 is **not** decided: the host
+identity stays `'PrMr'`, `serial_num` 0, and A8 (SmartFX, which needs the opt-in "After Effects dialect") stays
+unbuilt. The rule for contributors is in `CONTRIBUTING.md`; `tests/no_adobe_material.rs` fails `cargo test` (which
+CI runs) on the SDK's copyright line, its confidentiality banner or the name of its main effect header.
+
 ---
 
 ## 3. Feasibility tiers
@@ -497,11 +507,15 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 ### A0: Legal sign-off and provenance scaffold (S, no code)
 
 - **Scope:** owner (ideally with counsel) confirms 2.6, especially points 2 and 5. Add `docs/compat/aex-provenance.md`
-  (table: item, value, source URL / observation), the CONTRIBUTING rule, a CI grep that fails on "Adobe Systems
-  Incorporated" / "ADOBE CONFIDENTIAL" / `AE_Effect.h` in the tree, the trademark notice text.
+  (table: item, value, source URL / observation), the CONTRIBUTING rule, a CI grep that fails on the SDK's copyright
+  line (the company's pre-2018 name), its confidentiality banner and the name of its main effect header in the tree
+  (the exact strings are assembled in the test, so this text does not trip it), the trademark notice text.
 - **Files:** `docs/compat/aex-provenance.md`, `CONTRIBUTING.md`, CI script.
 - **Risks:** the answer may be "do not build this"; then stop here.
 - **Acceptance:** the grep job fails on a fixture file containing the strings and passes on the tree.
+- **Status: DONE (2026-11-26).** Decision recorded in 2.6. The check is `tests/no_adobe_material.rs`
+  (`the_tree_has_no_adobe_sdk_material`, `the_check_fires_on_a_fixture`), run by `cargo test`, which
+  `.github/workflows/ci.yml` runs; no separate CI job was needed.
 
 ### A1: PiPL reader, discovery, Plug-In Manager rows (M)
 
