@@ -1,5 +1,5 @@
-//! Screenshot + demo harness, driven by environment variables:
-//! - `MILAN_LOOK` = classic2006 | vegas16 | vegas23 | vegas23-white: look for this run (not persisted).
+//! Screenshot + demo harness, driven by environment variables (`MILAN_LOOK`, which chose among the looks of 0.8.0 and
+//! earlier, is no longer read; scripts that still pass it get the one look):
 //! - `MILAN_DIALOG=menu-edit`: the Edit menu dropped open (see `open_from_env` for the dialogs).
 //! - `MILAN_DEMO=1`: demo project on generated media (cached in %TEMP%\milan-demo); no autosave or prefs writes.
 //! - `MILAN_SCREENSHOT=<file.png>`: 1920×1080 px unfocused window, wait for frames to settle, save, exit.
@@ -21,10 +21,9 @@ use std::path::{Path, PathBuf};
 use crate::media::probe_media;
 use crate::project::{Clip, MediaItem, Project, Track, TrackKind};
 use crate::ui::ClipRef;
-use crate::ui::theme::{LookChoice, Theme};
+use crate::ui::theme::Theme;
 
 pub struct Launch {
-    pub look: Option<LookChoice>,
     pub demo: bool,
     pub screenshot: Option<PathBuf>,
     pub panels: Vec<String>,
@@ -37,7 +36,6 @@ impl Launch {
     pub fn from_env() -> Self {
         let var = |k| std::env::var(k).ok().filter(|v| !v.is_empty());
         Self {
-            look: var("MILAN_LOOK").and_then(|v| LookChoice::parse(&v)),
             demo: var("MILAN_DEMO").is_some_and(|v| v != "0"),
             screenshot: var("MILAN_SCREENSHOT").map(PathBuf::from),
             panels: var("MILAN_PANELS").map(|v| v.split(',').map(|s| s.trim().to_lowercase()).collect()).unwrap_or_default(),

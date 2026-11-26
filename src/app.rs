@@ -19,7 +19,7 @@ use crate::render;
 use crate::settings::{layout_key, Prefs, SettingsDialog};
 use crate::ui::chrome;
 use crate::ui::dock::{Area, Builtin, Dock, LayoutRef, Panel};
-use crate::ui::theme::{self, LookChoice, Theme, UiLook};
+use crate::ui::theme::{self, Theme};
 use crate::ui::dialogs::{PrefsDialog, RenderDialog, Welcome};
 use crate::ui::keymap::{Command, Keymap};
 use crate::engine::plugins::PluginKind;
@@ -96,9 +96,8 @@ pub struct MeridianApp {
     /// New/Open/Exit waiting on the "Save changes?" prompt.
     confirm: Option<MenuAction>,
     about: bool,
-    look: LookChoice,
     dock: Dock,
-    /// The layout last loaded or saved in this look: Reload Selected Layout goes back to it, Save Layout saves over a
+    /// The layout last loaded or saved: Reload Selected Layout goes back to it, Save Layout saves over a
     /// user slot. None after its slot was deleted.
     layout: Option<LayoutRef>,
     /// Save Layout As: the name and slot being chosen.
@@ -110,8 +109,6 @@ pub struct MeridianApp {
     customize_bar: Option<crate::ui::dialogs::CustomizeToolbar>,
     /// `prefs.layouts` keys changed here since the last save; the others are taken from disk (another window's).
     layouts_changed: std::collections::BTreeSet<String>,
-    /// Native window decorations are on (VP16) or off (VP23 custom title bar).
-    decorated: bool,
     /// MILAN_DEMO: nothing is written to the user's autosave or prefs.
     demo: bool,
     /// R9: audio devices may be opened (not in the screenshot harness, which never plays or records).
@@ -355,10 +352,10 @@ impl MeridianApp {
         ui::keymap::install(&cc.egui_ctx);
         // The demo harness never reads or writes the user's preferences.
         let mut prefs = if launch.demo { Prefs::default() } else { Prefs::load() };
-        // Once: the Overlays window joins each look's saved last layout, beside Media Generators (user slots stay).
+        // Once: the Overlays window joins the saved last layout, beside Media Generators (user slots stay).
         let mut overlays_into = Vec::new();
         if !prefs.overlays_placed {
-            for (k, l) in prefs.layouts.iter_mut().filter(|(k, _)| k.ends_with(":last")) {
+            for (k, l) in prefs.layouts.iter_mut().filter(|(k, _)| *k == "last") {
                 if ui::place_in_layout(l) {
                     overlays_into.push(k.clone());
                 }
@@ -369,7 +366,6 @@ impl MeridianApp {
             (true, _) => ui::OverlaysView::new(crate::demo::media_dir().join("overlay-packs"), None),
             (false, dir) => ui::OverlaysView::new(dir.clone().unwrap_or_else(crate::overlays::default_library), crate::overlays::Index::file()),
         };
-        let look = launch.look.unwrap_or(prefs.look);
         // Before the first project: its audio track starts with this chain.
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
@@ -388,10 +384,7 @@ impl MeridianApp {
         crate::engine::hw::start(!launch.demo, false);
         crate::engine::caches::configure(&prefs);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
-        theme::set(&cc.egui_ctx, look);
-        // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
-        let look = theme::get().choice;
-        let welcome = (look.look.v23() && prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        let welcome = (prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
         std::thread::spawn(|| {
             crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT);
             crate::engine::render::clean_temp(&std::env::temp_dir());
@@ -422,7 +415,7 @@ impl MeridianApp {
             }
         }
         for name in &launch.panels {
-            if let Some(&p) = Panel::ALL.iter().find(|p| p.title(look.look).replace(' ', "").eq_ignore_ascii_case(name)) {
+            if let Some(&p) = Panel::ALL.iter().find(|p| p.title().replace(' ', "").eq_ignore_ascii_case(name)) {
                 dock.open(p);
             }
         }
@@ -496,7 +489,6 @@ impl MeridianApp {
             play_loop: None,
             confirm: None,
             about: false,
-            look,
             dock,
             layout: Some(LayoutRef::Builtin(Builtin::Default)),
             layout_as: None,
@@ -504,7 +496,6 @@ impl MeridianApp {
             customize_keys: None,
             customize_bar: None,
             layouts_changed: Default::default(),
-            decorated: look.look != UiLook::Vegas23,
             demo: launch.demo,
             devices: launch.screenshot.is_none(),
             env_dialog: launch.screenshot.is_some(),
@@ -790,19 +781,13 @@ impl eframe::App for MeridianApp {
         ui::automation::begin_frame(ctx, self.playing);
         let mut menu_action = None;
 
-        // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
+        // Title: "Untitled - Milan Pro" (in the OS title bar).
         let title = format!("{}{}{} - Milan Pro", self.project.name, if self.project.read_only { " (read-only)" } else { "" }, if self.project.modified { " *" } else { "" });
         // R44: what a crash report says about the project (paths only when the privacy option is off).
         let summary = self.project.summary();
         crate::logger::set_project(format!("{} ({}): {summary}", self.project.name, self.project.path.as_ref().map_or("unsaved".to_string(), |p| p.display().to_string())), summary.clone());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         let t = theme::get();
-        // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.
-        let native = t.look() != UiLook::Vegas23;
-        if self.decorated != native {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(native));
-            self.decorated = native;
-        }
 
         let mut drag = self.file_drag(ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.frame)).show(ctx, |ui| {
@@ -814,15 +799,12 @@ impl eframe::App for MeridianApp {
             self.dock.bounds = egui::Rect::from_min_max(egui::pos2(full.min.x, a.toolbar.max.y), egui::pos2(full.max.x, a.status.min.y));
             chrome::paint_bands(ui.painter(), &t, &a, full);
 
-            // Menu: own row (VP16 white, Classic 2006 metal) or inline in the custom title bar (VP23); popups get the
-            // menu style.
+            // Menu: its own metal row under the OS title bar; popups get the menu style.
             ui::menus::publish_state(ctx, self.cmd_state());
-            chrome::with_menu_style(ctx, &t, || {
-                if native { chrome::menu_row(ui, a.menu, ui::draw_menu_bar) } else { chrome::title_bar(ui, a.menu, &title, ui::draw_menu_bar) }
-            });
+            chrome::with_menu_style(ctx, &t, || chrome::menu_row(ui, a.menu, ui::draw_menu_bar));
 
             let mut row = ui.new_child(egui::UiBuilder::new().max_rect(a.toolbar).layout(egui::Layout::left_to_right(egui::Align::Center)));
-            let ids = ui::Bar::Main.buttons(&self.prefs.toolbars, t.look());
+            let ids = ui::Bar::Main.buttons(&self.prefs.toolbars);
             ui::draw_main_toolbar(&mut row, &ids, &mut self.project, &self.history);
 
             // Dock windows.
@@ -841,7 +823,7 @@ impl eframe::App for MeridianApp {
             let (mut console_prefs, console_open) = (false, self.dock.is_open(Panel::MixingConsole));
             let mut scopes_prefs = false;
             let (mut plugin_rescan, mut ofx_changed) = (false, false);
-            let (modal, look, float_dock) = (self.modal_open(), t.look(), self.prefs.float_dock(t.look()));
+            let (modal, float_dock) = (self.modal_open(), self.prefs.float_dock());
             // R16a: Edit Details edits as the timeline does; its last edit's ripple, for Post-Edit Ripple.
             let (details_opts, mut details_edit) = (self.edit_opts(), None);
             let mut content = |panel, bar: &mut egui::Ui, body: &mut egui::Ui| {
@@ -850,7 +832,7 @@ impl eframe::App for MeridianApp {
                 if vctx.viewport_id() != egui::ViewportId::ROOT {
                     let blocked = modal || vctx.wants_keyboard_input() || ui::menus::any_open(&vctx);
                     let over_dock = ui::over_plain_key_area(&vctx) | ui::over_tool_window(&vctx);
-                    for c in self.keymap.poll(&vctx, look, ui::keymap::Scope { blocked, over_dock }) {
+                    for c in self.keymap.poll(&vctx, ui::keymap::Scope { blocked, over_dock }) {
                         ui::menus::send(&vctx, c);
                     }
                 }
@@ -1059,7 +1041,7 @@ impl eframe::App for MeridianApp {
                 None if self.rate_drag => (self.shuttle, self.rate_drag) = (0.0, false),
                 _ => {}
             }
-            let ids = ui::Bar::Timeline.buttons(&self.prefs.toolbars, t.look());
+            let ids = ui::Bar::Timeline.buttons(&self.prefs.toolbars);
             ui::draw_transport(
                 ui,
                 a.transport,
@@ -1086,9 +1068,6 @@ impl eframe::App for MeridianApp {
                     s.job.cancel();
                 }
             }
-            if !native {
-                chrome::resize_edges(ui, full);
-            }
         });
         self.sync_sel();
         if let Some(k) = ui::take_crumb(ctx) {
@@ -1099,16 +1078,6 @@ impl eframe::App for MeridianApp {
             self.splash = None;
         }
 
-        // A new look (Preferences) applies live; each look keeps its own last layout.
-        if self.look != t.choice {
-            theme::set(ctx, self.look);
-            self.look = theme::get().choice;
-            self.dock = look_dock(&mut self.prefs, &self.dock, t.look(), &theme::get());
-            self.layouts_changed.insert(layout_key(t.look(), "last"));
-            self.layout = Some(LayoutRef::Builtin(Builtin::Default));
-            self.prefs.look = self.look;
-            self.save_prefs();
-        }
         if ctx.input(|i| i.viewport().close_requested()) && self.rec_start.is_some() {
             // The take goes on the timeline first, so the save prompt below covers it.
             self.stop_recording();
@@ -1327,7 +1296,7 @@ impl MeridianApp {
             log::warn!("could not read the preferences; the window layout is not saved");
             return;
         };
-        p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
+        p.layouts.insert(layout_key("last"), self.dock.layout(""));
         p.overlays_placed = true; // this layout has the Overlays window placed already (or closed on purpose)
         if let Err(e) = p.save() {
             log::warn!("could not save the window layout: {e}");
@@ -1335,19 +1304,13 @@ impl MeridianApp {
     }
 }
 
-/// The dock for `t`'s look: the default, then that look's last layout if there is one.
+/// The dock: the default, then the last layout if there is one.
 fn last_dock(prefs: &Prefs, t: &Theme) -> Dock {
     let mut d = Dock::new(t);
-    if let Some(l) = prefs.layouts.get(&layout_key(t.look(), "last")) {
+    if let Some(l) = prefs.layouts.get(&layout_key("last")) {
         d.apply(l, t);
     }
     d
-}
-
-/// Switching looks: keep `dock` as the old look's last layout and bring back the new look's.
-fn look_dock(prefs: &mut Prefs, dock: &Dock, from: UiLook, to: &Theme) -> Dock {
-    prefs.layouts.insert(layout_key(from, "last"), dock.layout(""));
-    last_dock(prefs, to)
 }
 
 /// Apply the Master Bus faders' `gain` to the project: one undo step per gesture (a drag, a click, a wheel step or a
@@ -1389,25 +1352,22 @@ mod tests {
     }
 
     #[test]
-    fn layouts_save_restore_and_stay_per_look() {
-        let (t16, t23) = (Theme::new(LookChoice::VEGAS16), Theme::new(LookChoice::VEGAS23));
+    fn layouts_save_and_restore() {
+        let t = Theme::new();
         let mut prefs = Prefs::default();
+        assert_eq!(last_dock(&prefs, &t).groups, Dock::new(&t).groups);
         // SaveLayoutUser(3), a move, LayoutUser(3): the groups come back.
-        let mut d = last_dock(&prefs, &t16);
+        let mut d = last_dock(&prefs, &t);
         d.toggle(Panel::MasterBus);
-        prefs.layouts.insert(layout_key(UiLook::Vegas16, 3), d.layout("Three"));
+        prefs.layouts.insert(layout_key(3), d.layout("Three"));
         let saved = d.groups.clone();
         d.open(Panel::Properties);
         d.toggle(Panel::VideoPreview);
         assert_ne!(d.groups, saved);
-        d.apply(&prefs.layouts[&layout_key(UiLook::Vegas16, 3)], &t16);
+        d.apply(&prefs.layouts[&layout_key(3)], &t);
         assert_eq!(d.groups, saved);
-        // To VP23 and back: each look gets its own last layout.
-        let mut d23 = look_dock(&mut prefs, &d, UiLook::Vegas16, &t23);
-        assert_eq!(d23.groups, Dock::new(&t23).groups);
-        d23.open(Panel::Properties);
-        let back = look_dock(&mut prefs, &d23, UiLook::Vegas23, &t16);
-        assert_eq!(back.groups, saved);
-        assert!(last_dock(&prefs, &t23).is_open(Panel::Properties));
+        // The last layout comes back at the next start.
+        prefs.layouts.insert(layout_key("last"), d.layout(""));
+        assert_eq!(last_dock(&prefs, &t).groups, saved);
     }
 }

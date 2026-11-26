@@ -112,7 +112,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 4.1 | Feels familiar to VEGAS users | DONE | VP16 and VP23 looks, menus, keymap (`ui/theme.rs`, `ui/menus.rs`, `ui/keymap.rs`) |
+| 4.1 | Feels familiar to VEGAS users | DONE | The VEGAS 23 window layout, menus and keymap under Milan Pro's one look (`ui/theme.rs`, `ui/menus.rs`, `ui/keymap.rs`; `docs/UI_SPEC.md`) |
 | 4.2 | Media / project explorer | DONE | `ui/explorer.rs`, `ui/media_panel.rs` |
 | 4.3 | Preview monitor | DONE | `ui/preview.rs`, `decode.rs`, `engine/worker.rs` |
 | 4.4 | Multitrack timeline | DONE | `ui/timeline/` |
@@ -122,18 +122,18 @@ What matters most:
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
 | 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
-| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named per look) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R10a, re-assigned from R4b by R18b). → R10a, R40b |
+| 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named as VEGAS 23 names it) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. Still greyed, each naming its batch: pixel format, gamma, ACES, view transform, HDR (R40b), bus mode (R10a), resample quality (R10a, re-assigned from R4b by R18b). → R10a, R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), VP16 Formats tree and Filters, VP23 Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. Enable multichannel mapping stays greyed → R10a. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
-| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators per look, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). The track header's Edit Visible Button Set is still greyed (re-assigned from R15 by R18b). → R49 |
+| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). The track header's Edit Visible Button Set is still greyed (re-assigned from R15 by R18b). → R49 |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
 | 4.16 | Consistent icons | DONE | `ui/icons.rs` (967 lines of vector icons) |
-| 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics per look |
+| 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics (`docs/UI_SPEC.md` §4) |
 | 4.18 | Modern dark theme | DONE | VP16 and VP23 dark (`theme.rs`) |
 | 4.19 | Optional light theme | DONE | VP23 `Variant::White` (`theme.rs:17-21`) |
 | 4.20 | Smooth but restrained animations | PARTIAL | Only egui defaults plus transition-thumbnail animation (`choosers.rs:16`). There is no central animation policy, and the Windows "show animations" setting is not honoured. → R48 |
 | 4.21 | Resizable and dockable panels | DONE | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options; (R14) floating windows (`Dock::show_floating`, one egui viewport each; Undock, or drag a tab off the docking areas), dragging a tab to the main window's edge docks it in that area, a floating window moved over the dock docks under "Allow floating windows to dock" (Ctrl inverts it). Tests: `drop_targets`, `drag_tab_out_floats_it`, `floating_windows_open_close_dock_and_cycle`. |
-| 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 per look (`settings.rs`, batch 11); (R13) the built-in VEGAS layouts Classic (VEGAS Pro 14), Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. (R16b) Color Correction has VEGAS's Video Scopes column (539 px) between the group and Video Preview. |
+| 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 (`settings.rs`, batch 11; 0.8.0's per-look slots carry over, `settings::migrate_look_keys`); (R13) the built-in VEGAS layouts Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. (R16b) Color Correction has VEGAS's Video Scopes column (539 px) between the group and Video Preview. |
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
@@ -473,7 +473,7 @@ What matters most:
 | 15.4 | Recovery after crashes | DONE | R43: `%APPDATA%\MilanPro\sessions\<pid>.json` lists the open projects and their autosaves, removed on a clean exit; at start, markers of pids no longer running (`OpenProcess`) whose autosaves are newer than their projects open the Recover Projects dialog: Open (as an unsaved copy), Discard, Keep for later (`autosave::{stale_sessions, recoverable}`, `dialogs::Recover`) |
 | 15.5 | Undo/redo history | DONE | `history.rs`, history list on the Undo split button |
 | 15.6 | Non-destructive editing | DONE | |
-| 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, VEGAS 23 look) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
+| 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, as VEGAS 23) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
 | 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
 | 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
 | 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
@@ -1152,7 +1152,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - VU ballistics unit test: a 1 kHz step reaches 99% in 300 ms ±10%.
 - Peak hold 2 s.
 - Every master-bus button works and its label is gone.
-- Screenshot harness of the Mixing Console in both looks.
+- Screenshot harness of the Mixing Console.
 
 ### R8c: Automation write and FX parameter envelopes (M-L)
 
@@ -1331,10 +1331,10 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 ### R15: Customize Keyboard and Customize Toolbar (M)
 
 **Status: DONE.** Built as designed below, except:
-- Keyboard maps follow VEGAS rather than JSON import/export: Save As writes the keys as a named .ini map in %APPDATA%\MilanPro\Keyboard, the Keyboard map list loads one (a map copied into that folder is listed), Delete removes one, and [Default] restores the table. A map holds every look's changed keys. The command name saved is the `Command` variant's derived `Debug` text, not a hand-written `name()`.
+- Keyboard maps follow VEGAS rather than JSON import/export: Save As writes the keys as a named .ini map in %APPDATA%\MilanPro\Keyboard, the Keyboard map list loads one (a map copied into that folder is listed), Delete removes one, and [Default] restores the table. A map holds the changed keys (maps saved by 0.8.0 keep their VEGAS 23 section). The command name saved is the `Command` variant's derived `Debug` text, not a hand-written `name()`.
 - VEGAS's per-window contexts (Global, Timeline, Trimmer...) are not built: Milan Pro's keymap is global. Keys are single strokes; the table's Alt+D chords can be removed or taken, not recorded.
 - The Shortcut keys box says which command a pressed key belongs to ("Shortcut currently used by"); Add then takes it from that command, so no key does two things. Reset gives the selected command its default keys back, taking them from whichever commands had them.
-- The toolbar dialogs are VEGAS's (the Windows toolbar dialog): changes show at once, Reset restores VEGAS's buttons for the look, Close ends it. The main toolbar can take the edit buttons of the timeline toolbar; the play buttons stay on the timeline toolbar, which has the play state. Toolbar tooltips show the user's keys; the play buttons' tooltips keep their fixed text.
+- The toolbar dialogs are VEGAS's (the Windows toolbar dialog): changes show at once, Reset restores VEGAS's buttons, Close ends it. The main toolbar can take the edit buttons of the timeline toolbar; the play buttons stay on the timeline toolbar, which has the play state. Toolbar tooltips show the user's keys; the play buttons' tooltips keep their fixed text.
 
 **Scope**
 - Options > Customize Keyboard: a command list (searchable), key capture, conflict warning, reset one/all, per-look profiles, import/export (JSON).
@@ -1588,7 +1588,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 **Files:** `Cargo.toml`, `main.rs` (renderer choice), `engine/composite.rs` (trait), `engine/gpu/mod.rs`, `engine/gpu/*.wgsl` (new), `engine/worker.rs`, `engine/render.rs`, `settings.rs`.
 
-**Risk:** the UI's own painting moves to wgpu too. Rerun the screenshot harness for both looks.
+**Risk:** the UI's own painting moves to wgpu too. Rerun the screenshot harness.
 
 **Acceptance tests**
 - Parity tests run when an adapter exists, else they skip: random plans with 1-4 layers and each blend mode, max abs diff ≤ 2.
@@ -2081,12 +2081,12 @@ No product code unless the research finds a stable, documented structure. If it 
 
 **Files:** `ui/palette.rs` (new), `ui/keymap.rs`, `app/commands.rs`.
 
-**Acceptance tests:** ranking unit tests ("tm" → Track Motion first); the default key does not collide with any `TABLE` key in either look.
+**Acceptance tests:** ranking unit tests ("tm" → Track Motion first); the default key does not collide with any `TABLE` key.
 
 ### R48: High-DPI, high-refresh and animation policy (M)
 
 **Scope**
-- The screenshot harness renders key windows (main, FX window, render dialog, preferences, Pan/Crop) at zoom 1.0, 1.25, 1.5 and 2.0 for both looks, and checks that text bounding boxes stay inside their containers (an egui layout check, not pixels).
+- The screenshot harness renders key windows (main, FX window, render dialog, preferences, Pan/Crop) at zoom 1.0, 1.25, 1.5 and 2.0, and checks that text bounding boxes stay inside their containers (an egui layout check, not pixels).
 - View > Interface Scale (Auto, 100-200%) preference.
 - The preview present path is checked at 144 Hz (no extra repaints while paused).
 - Animation policy: one `theme::anim(ms)` helper; respect the Windows `SPI_GETCLIENTAREAANIMATION` setting (windows-sys `Win32_UI_WindowsAndMessaging`, already enabled).
@@ -2142,7 +2142,7 @@ Each crate gets its own tests. `egui` types in the engine (`ColorImage`, `Color3
 
 **Scope:** the reference document the brief asked for first. It covers:
 - the VEGAS Pro 15.0 build 177 install (section 4.1 here, expanded);
-- the relationship to the VP16 and VP23 looks;
+- the relationship to the VEGAS 16 and VEGAS 23 references Milan Pro's layout follows;
 - project formats (`.veg`, `.vf`, `.veg.bak`, `.sfk` peaks, `.sfvp0` proxies);
 - media formats per FileIO plug-in;
 - render formats;

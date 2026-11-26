@@ -1,58 +1,32 @@
 //! Band above the lanes (§5.9.1–5.9.2, §5.9.6, §5.9.8): time display, loop bar with yellow flags, marker bar, R18a's
-//! CD layout bar and command bar, timecode ruler with grid lines, selection overlay and the per-look playhead.
+//! CD layout bar and command bar, timecode ruler with grid lines, selection overlay and the playhead.
 use eframe::egui::*;
 use crate::edit;
 use crate::history::History;
 use crate::project::*;
-use crate::ui::theme::{self, Theme, UiLook};
+use crate::ui::theme::{self, Theme};
 use super::{Geo, Rename, TlState, SNAP_PX};
 
-/// Time display at the top of the track list (§5.9.1): gripper dots, cursor timecode right-aligned with 8 px padding.
+/// Time display at the top of the track list (§5.9.1): the cursor timecode right-aligned with 8 px padding.
 /// `crumbs`: R6b's breadcrumb runs along the top, so the time sits lower.
 pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs: bool) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
-    if t.classic() {
-        // Black LCD well sunk into the metal (Vegas 5–7).
-        crate::ui::widgets::metal(p, r, &t.metal);
-        crate::ui::widgets::sunken(p, r.shrink2(vec2(3.0, 4.0)), t.time_display_bg, &t.metal);
-    } else {
-        p.rect_filled(r, 0.0, t.time_display_bg);
-    }
-    if v16 {
-        let b = &t.bevel;
-        let line = |y: f32, c| p.rect_filled(Rect::from_x_y_ranges(r.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
-        line(r.min.y, b.time_display_1);
-        line(r.min.y + 1.0, b.time_display_2);
-        line(r.max.y - 1.0, b.time_display_bottom);
-    }
-    // Gripper: one column of 2 px dots on a 5 px pitch from the top (refs: VP16 ~8 dark dots, dark2026 6 light dots).
-    let (dot, n) = if v16 { (t.line_dark, 8) } else if t.classic() { (t.line_dark, 0) } else { (t.ruler_text, 6) };
+    // Black LCD well sunk into the metal (Vegas 5–7).
+    crate::ui::widgets::metal(p, r, &t.metal);
+    crate::ui::widgets::sunken(p, r.shrink2(vec2(3.0, 4.0)), t.time_display_bg, &t.metal);
     let cy = r.center().y.round();
-    for k in 0..n {
-        let d = Rect::from_min_size(pos2(r.min.x + 3.0, r.min.y + 4.0 + 5.0 * k as f32), vec2(2.0, 2.0));
-        p.rect_filled(d, 0.0, dot);
-    }
-    let font = if t.font.time_display_semibold { t.semibold(t.font.time_display) } else { t.font(t.font.time_display) };
+    let font = t.bold(t.font.time_display);
     let tc = project.settings.ruler_time(project.timeline.cursor_position);
     let y = if crumbs { cy + 7.0 } else { cy };
     p.with_clip_rect(r).text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, tc, font, t.time_display_text);
 }
 
-/// (loop bar, marker bar, ruler) rows of the band: VP16 loop 2–6 · markers 8–21 · ruler 31–46 · line 47;
-/// VP23 markers 14 · loop 8, then a dark line and a 14 px ruler standing on the bottom line (dark2026). The ruler stands
-/// on the band's bottom, under the CD layout and command bars when they are shown (`band_h`).
-pub(super) fn band_rows(t: &Theme, band: Rect) -> (Rect, Rect, Rect) {
+/// (loop bar, marker bar, ruler) rows of the band. The ruler stands on the band's bottom, under the CD layout and
+/// command bars when they are shown (`band_h`).
+pub(super) fn band_rows(band: Rect) -> (Rect, Rect, Rect) {
     let row = |y0: f32, h: f32| Rect::from_x_y_ranges(band.x_range(), Rangef::new(band.min.y + y0, band.min.y + y0 + h));
-    if t.look() == UiLook::Vegas16 {
-        (row(2.0, 5.0), row(8.0, 14.0), row(band.height() - 17.0, 16.0))
-    } else if t.classic() {
-        // Loop 2–8 · markers 8–22 · ruler 18 px on the band's bottom line.
-        (row(2.0, 6.0), row(8.0, 14.0), row(band.height() - 19.0, 18.0))
-    } else {
-        let h = band.height();
-        (row(14.0, 8.0), row(0.0, 14.0), row(h - 15.0, 14.0))
-    }
+    // Loop 2–8 · markers 8–22 · ruler 18 px on the band's bottom line.
+    (row(2.0, 6.0), row(8.0, 14.0), row(band.height() - 19.0, 18.0))
 }
 
 /// R18a: the CD layout bar and the command bar: 14 px rows under the marker bar, each shown while the project has CD
@@ -66,7 +40,7 @@ const COMMAND: Color32 = Color32::from_rgb(0x59, 0x89, 0xFF);
 const PRERENDERED: Color32 = Color32::from_rgb(0x3C, 0x8C, 0xDC);
 const RAM_PREVIEW: Color32 = Color32::from_rgb(0x4C, 0xC0, 0x4C);
 
-/// The band's height: the look's, plus the CD layout and command bars that are shown.
+/// The band's height, plus the CD layout and command bars that are shown.
 pub(super) fn band_h(t: &Theme, tl: &Timeline) -> f32 {
     t.m.band_h + BAR_H * (tl.cd_layout() as u8 + !tl.commands.is_empty() as u8) as f32
 }
@@ -243,8 +217,7 @@ pub(super) fn snapped(ui: &Ui, project: &Project, t: f64, g: &Geo, snapping: boo
 
 /// Loop bar (create / resize / move / double-click = whole project) and marker tags (click, drag, rename).
 pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut History, st: &mut TlState, snapping: bool) {
-    let t = theme::get();
-    let (loop_r, marker_r, _) = band_rows(&t, g.band);
+    let (loop_r, marker_r, _) = band_rows(g.band);
     let fps = project.settings.frame_rate;
 
     let lr = ui.interact(loop_r.expand2(vec2(0.0, 1.0)), ui.id().with("loop_bar"), Sense::click_and_drag());
@@ -374,32 +347,15 @@ pub(super) fn interact(ui: &Ui, g: &Geo, project: &mut Project, history: &mut Hi
 pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop: bool) {
     let t = theme::get();
     let band = g.band;
-    let (loop_r, marker_r, ruler) = band_rows(&t, band);
-    let v16 = t.look() == UiLook::Vegas16;
-    let classic = t.classic();
+    let (loop_r, marker_r, ruler) = band_rows(band);
     let fps = project.settings.frame_rate;
     let hline = |x: Rangef, y: f32, c: Color32| p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
-    if classic {
-        // Metal band; the ruler row is a lighter strip with an etched line above it and a shadow line under it.
-        crate::ui::widgets::metal(p, band, &t.metal);
-        p.rect_filled(ruler, 0.0, t.band_bg);
-        hline(band.x_range(), band.min.y, t.metal.light);
-        crate::ui::widgets::etched_h(p, band.x_range(), ruler.min.y - 2.0, &t.metal);
-        hline(band.x_range(), band.max.y - 1.0, t.metal.shadow);
-    } else {
-        p.rect_filled(band, 0.0, t.band_bg);
-    }
-    if v16 {
-        let b = &t.bevel;
-        hline(band.x_range(), band.min.y, b.band_1);
-        hline(band.x_range(), band.min.y + 1.0, b.band_2);
-        hline(band.x_range(), ruler.min.y - 2.0, t.band_separator);
-        hline(band.x_range(), ruler.min.y - 1.0, b.band_bottom);
-        hline(band.x_range(), ruler.max.y, t.line_dark);
-    } else if !classic {
-        hline(band.x_range(), ruler.min.y - 1.0, t.line_dark);
-        hline(band.x_range(), band.max.y - 1.0, t.line_dark);
-    }
+    // Metal band; the ruler row is a lighter strip with an etched line above it and a shadow line under it.
+    crate::ui::widgets::metal(p, band, &t.metal);
+    p.rect_filled(ruler, 0.0, t.band_bg);
+    hline(band.x_range(), band.min.y, t.metal.light);
+    crate::ui::widgets::etched_h(p, band.x_range(), ruler.min.y - 2.0, &t.metal);
+    hline(band.x_range(), band.max.y - 1.0, t.metal.shadow);
 
     // Ruler: 1 px major ticks 11 px tall, minor ticks 3 px, labels 4 px right of the tick, baseline 3 px up.
     let p_r = p.with_clip_rect(ruler.intersect(p.clip_rect()));
@@ -420,9 +376,6 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         for k in 1..n_minor {
             let mx = g.to_x(time + major * k as f64 / n_minor as f64).floor();
             p_r.rect_filled(Rect::from_min_max(pos2(mx, ruler.max.y - 3.0), pos2(mx + 1.0, ruler.max.y)), 0.0, t.ruler_minor_tick);
-            if v16 {
-                p_r.rect_filled(Rect::from_min_max(pos2(mx + 1.0, ruler.max.y - 3.0), pos2(mx + 2.0, ruler.max.y)), 0.0, t.ruler_minor_shadow);
-            }
         }
     }
 
@@ -431,18 +384,14 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     let (a, b) = project.timeline.loop_region.unwrap_or((0.0, 0.0));
     let (xa, xb) = (g.to_x(a).floor(), g.to_x(b).floor());
     if b > a {
-        if v16 || classic {
-            let cy = loop_r.center().y.floor();
-            p_b.rect_filled(Rect::from_min_max(pos2(xa, cy - 1.0), pos2(xb + 1.0, cy + 2.0)), 0.0, t.loop_sel_line);
-        } else {
-            p_b.rect_filled(Rect::from_min_max(pos2(xa, loop_r.min.y), pos2(xb + 1.0, loop_r.max.y)), 0.0, t.loop_bar_off);
-        }
+        let cy = loop_r.center().y.floor();
+        p_b.rect_filled(Rect::from_min_max(pos2(xa, cy - 1.0), pos2(xb + 1.0, cy + 2.0)), 0.0, t.loop_sel_line);
     }
     let fy = loop_r.min.y;
     let flag = |pts: Vec<Pos2>| p_b.add(Shape::convex_polygon(pts, t.loop_flag, Stroke::NONE));
     flag(vec![pos2(xa, fy), pos2(xa + 6.0, fy), pos2(xa, fy + 6.0)]);
     flag(vec![pos2(xb + 1.0 - 6.0, fy), pos2(xb + 1.0, fy), pos2(xb + 1.0, fy + 6.0)]);
-    if (v16 || classic) && b > a {
+    if b > a {
         // Length tag: white box, black text, at the right end (§5.9.2).
         let len = if s.ruler.format == RulerFormat::TimeFrames { short_tc(b - a, fps) } else { s.ruler_len(b - a) };
         let text = format!("+{len}");
@@ -479,17 +428,11 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         p_b.text(pos2(tag.max.x + 3.0, tag.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), t.text);
     }
 
-    // R18a: the CD layout bar and the command bar: a separator over each, the track regions' spans as a line (VP16), and
-    // their tags in VEGAS's CD Track, CD Index and Command Marker colours with the number inside and the label beside.
+    // R18a: the CD layout bar and the command bar: a separator over each, and their tags in VEGAS's CD Track, CD Index and Command Marker colours with the number inside and the label beside.
     let tl = &project.timeline;
     let (cd, cmd) = bar_rows(band, tl);
     for row in [cd, cmd].into_iter().flatten() {
-        hline(band.x_range(), row.min.y - 1.0, if v16 { t.band_separator } else { t.line_dark });
-    }
-    if let (Some(row), true) = (cd, v16) {
-        for c in &tl.cd_tracks {
-            hline(Rangef::new(g.to_x(c.start).floor(), g.to_x(c.end).floor()), row.max.y - 1.0, CD_TRACK);
-        }
+        hline(band.x_range(), row.min.y - 1.0, t.line_dark);
     }
     for (b, tag) in bar_tags(g, tl) {
         if tag.max.x < band.min.x - 200.0 || tag.min.x > band.max.x {
@@ -508,16 +451,14 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         }
     }
 
-    // Region tags: start and end tags with the same number; the start carries the label (VP16: plus a line).
+    // Region tags: start and end tags with the same number, a line between them; the start carries the label.
     for (i, r) in project.timeline.regions.iter().enumerate() {
         let (xa, xb) = (g.to_x(r.start).floor(), g.to_x(r.end).floor());
         if xb < band.min.x || xa > band.max.x {
             continue;
         }
         let num = (i + 1).to_string();
-        if v16 || classic {
-            hline(Rangef::new(xa, xb), marker_r.max.y - 1.0, t.region_line);
-        }
+        hline(Rangef::new(xa, xb), marker_r.max.y - 1.0, t.region_line);
         for (k, x) in [xa, xb - 12.0].into_iter().enumerate() {
             let tag = Rect::from_min_size(pos2(x, marker_r.min.y), vec2(13.0, 14.0));
             p_b.rect_filled(tag, 0.0, t.region_flag);
@@ -530,17 +471,11 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
     }
 }
 
-/// Grid lines (Options › Grid Spacing, `Geo::grid`) through the lanes: dashed 2/2 (16), dotted 1/2 (23 dark) or 3/3
-/// (23 White). Drawn as one mesh of pixel quads: egui turns 1×1 rects into feathered line segments that vanish.
+/// Grid lines (Options › Grid Spacing, `Geo::grid`) through the lanes, dotted 1/2. Drawn as one mesh of pixel quads: egui turns 1×1 rects into feathered line segments that vanish.
 pub(super) fn paint_grid(p: &Painter, g: &Geo) {
     let t = theme::get();
     let (step, phase) = g.grid;
-    let (on, off) = match t.look() {
-        UiLook::Vegas16 => (2.0, 2.0),
-        UiLook::Classic2006 => (1.0, 2.0),
-        _ if t.dark_mode => (1.0, 2.0),
-        _ => (3.0, 3.0),
-    };
+    let (on, off) = (1.0, 2.0);
     let first = ((g.scroll_x - phase) / step).floor().max(0.0) as i64;
     let last = ((g.scroll_x - phase + g.lanes.width() as f64 / g.pps) / step).ceil() as i64;
     let mut mesh = Mesh::default();
@@ -562,14 +497,10 @@ pub(super) fn paint_grid(p: &Painter, g: &Geo) {
 pub(super) fn paint_selection(p: &Painter, g: &Geo, region: Option<(f64, f64)>) {
     let t = theme::get();
     if let Some((a, b)) = region.filter(|(a, b)| b > a) {
-        let (_, _, ruler) = band_rows(&t, g.band);
+        let (_, _, ruler) = band_rows(g.band);
         let r = Rect::from_x_y_ranges(Rangef::new(g.to_x(a).floor(), g.to_x(b).floor() + 1.0), Rangef::new(ruler.min.y, g.lanes.max.y));
         let clip = Rect::from_x_y_ranges(g.lanes.x_range(), r.y_range());
         p.rect_filled(r.intersect(clip), 0.0, t.selection_overlay);
-        if t.look() == UiLook::Vegas23 {
-            // Thin olive edge at the selection start (c_ui_tl).
-            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(r.min.x, r.min.x + 1.0), r.y_range()).intersect(clip), 0.0, t.loop_sel_edge);
-        }
     }
 }
 
@@ -578,7 +509,7 @@ pub(super) fn paint_selection(p: &Painter, g: &Geo, region: Option<(f64, f64)>) 
 pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64, ripple: bool) {
     let t = theme::get();
     let line = if ripple { t.event_selected_border_ripple } else { t.playhead_line };
-    let (_, _, ruler) = band_rows(&t, g.band);
+    let (_, _, ruler) = band_rows(g.band);
     let x = g.to_x(time).floor();
     if x < g.lanes.min.x - 5.0 || x > g.lanes.max.x + 5.0 {
         return;
@@ -586,27 +517,15 @@ pub(super) fn paint_playhead(p: &Painter, g: &Geo, time: f64, ripple: bool) {
     let p = p.with_clip_rect(Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(ruler.min.y, g.lanes.max.y)).intersect(p.clip_rect()));
     let col = |x0: f32, c: Color32| p.rect_filled(Rect::from_min_max(pos2(x0, ruler.min.y), pos2(x0 + 1.0, g.lanes.max.y)), 0.0, c);
     let rb = ruler.max.y;
-    if t.look() != UiLook::Vegas23 {
-        // VP16: black line plus a 1 px shadow to its right; white 9×12 flag with two dark ticks, tip on the ruler
-        // bottom. Classic 2006: the same flag over an electric-blue line.
-        col(x, line);
-        col(x + 1.0, t.playhead_outline);
-        let x0 = x - 4.0;
-        p.rect_filled(Rect::from_min_max(pos2(x0, rb - 12.0), pos2(x0 + 9.0, rb - 4.0)), 0.0, t.playhead_head);
-        p.add(Shape::convex_polygon(vec![pos2(x0, rb - 4.0), pos2(x0 + 9.0, rb - 4.0), pos2(x0 + 4.5, rb)], t.playhead_head, Stroke::NONE));
-        for dx in [3.0, 5.0] {
-            p.rect_filled(Rect::from_min_size(pos2(x0 + dx, rb - 11.0), vec2(1.0, 4.0)), 0.0, t.fader_thumb_bar);
-        }
-    } else {
-        // Red line with a dark 1 px side (both sides on Dark, right only on White); pentagon head 9×15, dark outline.
-        if t.dark_mode {
-            col(x - 1.0, t.playhead_outline);
-        }
-        col(x + 1.0, t.playhead_outline);
-        col(x, line);
-        let x0 = x - 4.0;
-        let pts = vec![pos2(x0, rb - 15.0), pos2(x0 + 9.0, rb - 15.0), pos2(x0 + 9.0, rb - 5.0), pos2(x0 + 4.5, rb), pos2(x0, rb - 5.0)];
-        p.add(Shape::convex_polygon(pts, t.playhead_head, Stroke::new(1.0_f32, t.playhead_outline)));
+    // An electric-blue line with a 1 px dark outline to its right; a white 9×12 flag with two dark ticks, tip on the
+    // ruler bottom.
+    col(x, line);
+    col(x + 1.0, t.playhead_outline);
+    let x0 = x - 4.0;
+    p.rect_filled(Rect::from_min_max(pos2(x0, rb - 12.0), pos2(x0 + 9.0, rb - 4.0)), 0.0, t.playhead_head);
+    p.add(Shape::convex_polygon(vec![pos2(x0, rb - 4.0), pos2(x0 + 9.0, rb - 4.0), pos2(x0 + 4.5, rb)], t.playhead_head, Stroke::NONE));
+    for dx in [3.0, 5.0] {
+        p.rect_filled(Rect::from_min_size(pos2(x0 + dx, rb - 11.0), vec2(1.0, 4.0)), 0.0, t.fader_thumb_bar);
     }
 }
 
@@ -679,18 +598,18 @@ mod tests {
     /// ruler moves down by their height; tags are numbered as VEGAS numbers them.
     #[test]
     fn cd_and_command_bars_follow_their_markers() {
-        let t = crate::ui::theme::Theme::new(crate::ui::theme::LookChoice::VEGAS16);
+        let t = crate::ui::theme::Theme::new();
         let mut tl = Timeline::new();
         assert_eq!(band_h(&t, &tl), t.m.band_h);
         let band = Rect::from_min_size(Pos2::ZERO, vec2(400.0, band_h(&t, &tl)));
-        assert_eq!((bar_rows(band, &tl), band_rows(&t, band).2.min.y), ((None, None), 31.0));
+        assert_eq!((bar_rows(band, &tl), band_rows(band).2.min.y), ((None, None), 23.0));
         tl.cd_tracks = vec![CdTrack { start: 4.0, end: 6.0, ..Default::default() }, CdTrack { start: 0.0, end: 4.0, name: "One".into(), ..Default::default() }];
         tl.cd_indexes = vec![1.0, 2.0, 5.0, 9.0];
         tl.commands.push(CommandMarker { command: "URL".into(), ..Default::default() });
         let band = Rect::from_min_size(Pos2::ZERO, vec2(400.0, band_h(&t, &tl)));
         let (cd, cmd) = bar_rows(band, &tl);
-        assert_eq!((band.height(), cd.unwrap().min.y, cmd.unwrap().min.y, band_rows(&t, band).2.min.y), (t.m.band_h + 28.0, 22.0, 36.0, 59.0));
-        assert!(cmd.unwrap().max.y <= band_rows(&t, band).2.min.y);
+        assert_eq!((band.height(), cd.unwrap().min.y, cmd.unwrap().min.y, band_rows(band).2.min.y), (t.m.band_h + 28.0, 22.0, 36.0, 51.0));
+        assert!(cmd.unwrap().max.y <= band_rows(band).2.min.y);
         let n = |b: BarTag| b.text(&tl).0;
         assert_eq!((n(BarTag::CdTrack(0, false)), n(BarTag::CdTrack(1, true)), n(BarTag::CdIndex(1)), n(BarTag::CdIndex(2)), n(BarTag::CdIndex(3))), ("2".into(), "1".into(), "3".into(), "2".into(), String::new()));
         assert_eq!(BarTag::CdTrack(1, false).text(&tl).1, "One");

@@ -1,13 +1,10 @@
-# Milan Pro: "Classic 2006" look specification
+# Milan Pro: interface specification
 
-Status: implementation spec, Stages 1–3 complete (2026-11-26). Companion to `VEGAS_UI_SPEC.md`, which keeps the two VEGAS looks.
-`UiLook::Classic2006` is the default look of a new install (preferences without a look choice, and `MILAN_DEMO`);
-`MILAN_LOOK=classic2006` (also `classic`, `2006`, `c2006`) selects it in the harness.
-
-The look reproduces the chrome of the 2005–2007 Windows NLEs on top of the VEGAS 23 **layout**: the docking areas on
-all four sides, the built-in layouts, the tab strips at the bottom of each group, the menus, toolbar sets, commands and
-keys all come from the VEGAS 23 code paths (`UiLook::v23()`); only the drawing changes. The window keeps the **native
-Windows title bar** (every 2006 application did) and the menu is a classic **in-window menu row** under it.
+Status: implementation spec (2026-11-26). Milan Pro draws one look of its own: the chrome of the 2005–2007 Windows
+NLEs on top of the VEGAS Pro 23 **layout** described in `VEGAS_UI_SPEC.md`: the docking areas on all four sides, the
+built-in layouts, the tab strips at the bottom of each group, the menus, toolbar sets, commands and keys. The window
+keeps the **native Windows title bar** (every 2006 application did) and the menu is a classic **in-window menu row**
+under it.
 
 Evidence tags: **[R]** a convention taken from the named application (seen in its manual, reviews or screenshots of
 the time); **[W]** a Windows 2000 / XP system value (system colour table); **[I]** inferred or a design decision
@@ -32,7 +29,7 @@ corners, soft drop shadows, translucency, anti-aliased icon art.
 
 ---
 
-## 2. Colour tokens (`Theme::classic2006`, `theme.rs`)
+## 2. Colour tokens (`Theme::new`, `theme.rs`)
 
 ### 2.1 Brushed metal (`Metal`)
 
@@ -58,7 +55,7 @@ the texture is made once per context (`TextureWrapMode::Repeat`), so a bar costs
 | Token | Hex | Note |
 |---|---|---|
 | `frame` (gutters, splitter base) | `#5C6168` | gunmetal [I] |
-| `panel_bg` (dock window bodies, Stage 2) | `#C9CCD1` | light panel grey [I] |
+| `panel_bg` (dock window bodies) | `#C9CCD1` | light panel grey [I] |
 | `band_bg` (ruler row, empty header column) | `#AEB3BA` | [I] |
 | `lane_bg` / `empty_lane_bg` | `#3C4047` / `#2F3339` | dark gunmetal timeline well [R Premiere 2.0 dark, Avid] |
 | `tab_strip_bg` | `#9EA3AA` | darker metal behind the tabs (painted as metal tinted `#B4B8BE`) |
@@ -67,7 +64,7 @@ the texture is made once per context (`TextureWrapMode::Repeat`), so a bar costs
 | `input_bg` / `input_placeholder` | `#FFFFFF` / `#808080` | sunken white fields [W Window] |
 | `tooltip_bg` / `tooltip_text` / `tooltip_border` | `#FFFFE1` / `#000000` / `#000000` | [W InfoBackground] |
 | `accent` | `#0096E0` | electric blue: selection, hyperlinks, FX dots [I] |
-| `button_active_bg` / `button_hover_bg` | `#9CD3F0` / `#E4E6E9` | egui widget states (dialogs, Stage 2) |
+| `button_active_bg` / `button_hover_bg` | `#9CD3F0` / `#E4E6E9` | egui widget states (dialogs) |
 
 ### 2.3 Menus (XP classic popups)
 
@@ -113,7 +110,7 @@ the texture is made once per context (`TextureWrapMode::Repeat`), so a bar costs
 Status bar: metal band, a light edge above it, **sunken panes** (`widgets::sunken`, fill `metal.mid`) around the
 message pane and each read-out on the right. [W]
 
-Dialogs (Stage 2 draws them; the tokens exist now, `Theme::dialog`): body `#D4D0C8`, fields white with `#808080`
+Dialogs (`Theme::dialog`): body `#D4D0C8`, fields white with `#808080`
 borders, etched group rules `#808080` over white, default button accent `#316AC5`. [W]
 
 ---
@@ -129,7 +126,7 @@ borders, etched group rules `#808080` over white, default button accent `#316AC5
 
 ---
 
-## 4. Metrics (`Metrics` in `Theme::classic2006`)
+## 4. Metrics (`Metrics` in `Theme::new`)
 
 | | px | Note |
 |---|---|---|
@@ -169,7 +166,7 @@ transport 1027–1055, status 1059–1079 (`chrome::tests::default_bands_match_s
 * **`dotted_splitter`**: metal with 1 px dark/light dot pairs every 3 px.
 * **`groove`** + **`thumb`**: sunken 3 px slider groove, 11×15 chrome thumb with a dark centre line (the Vegas fader
   handle; automation controls tint it with their envelope colour).
-* **Scrollbars** (`timeline/scroll.rs::paint_classic`): flat `scroll_track`, chrome ◂ ▸ ▴ ▾ buttons with black
+* **Scrollbars** (`timeline/scroll.rs::paint_bars`): flat `scroll_track`, chrome ◂ ▸ ▴ ▾ buttons with black
   triangles, chrome thumb with two grip lines, chrome + / − / magnifier buttons.
 * **Tabs** (`dock.rs::classic_tab`): metal face, light left/top edge, dark right and bottom edges, hanging under the
   content (tabs at the bottom) or standing on it (Preferences › tabs on top); the active tab joins the content, is
@@ -179,18 +176,18 @@ transport 1027–1055, status 1059–1079 (`chrome::tests::default_bands_match_s
 
 ---
 
-## 6. What stays the same
+## 6. Layout and workflow
 
-Layout, docking, commands, shortcuts (the VEGAS 23 key map, `keymap::look_name` → `vp23`), the toolbar button sets
-(`Bar::defaults(UiLook::Vegas23)`), menus (`M::V23` rows), the Welcome dialog, VP23-only windows (Color Grading,
-Project Notes). Saved layouts and toolbars are keyed `c2006:*` because the metrics differ from VP23's. The two VEGAS
-looks are untouched (`theme::tests`).
+Layout, docking, commands, shortcuts (the VEGAS 23 key map), the toolbar button sets (`Bar::defaults`), the menus, the
+Start dialog and the VEGAS 23 windows (Color Grading, Project Notes) follow `VEGAS_UI_SPEC.md`; only the drawing is
+Milan Pro's own. Saved layouts and toolbars are keyed by slot (`last`, `0`-`9`, `toolbar`, `timeline_toolbar`);
+preferences saved by 0.8.0 and earlier carry their layouts, toolbars and keys over (`settings::migrate_look_keys`).
 
 ---
 
-## 7. Icons (`icons.rs`, Classic pen)
+## 7. Icons (`icons.rs`)
 
-The coloured VP16 shapes, rendered as 2006 pixel art:
+Coloured shapes, rendered as 2006 pixel art:
 
 * 1 px strokes on pixel centres (`at_s`), fills on pixel edges (`at_f`); widths rounded to whole pixels.
 * A **1 px `#202020` outline** round every filled shape (`poly`, `fill`, `dot`), none when the icon is drawn in one
@@ -200,14 +197,14 @@ The coloured VP16 shapes, rendered as 2006 pixel art:
   icon tones (`#3366CC #6699FF #00A0C0 #339933 #99CC66 #CC6666 #FFCC33 #CC9933 #F0E0C0`). [W][I]
 * "Paper" (pages, sheets, pointers) is white; ink is black; no drop shadow, no rounded corners.
 * Mute / Solo are bold black **M** / **S** letters on the chrome button (the button's Active state shows the toggle);
-  the fader thumb glyph is a chrome block with a centre line; ≡ is the "More" glyph (Vegas), the hamburger of VP16.
-* Every icon of `Icon::ALL` paints in all three looks (`icons::tests::every_icon_paints_in_every_look`).
+  the fader thumb glyph is a chrome block with a centre line; ≡ is the "More" glyph (Vegas).
+* Every icon of `Icon::ALL` paints, plain and tinted (`icons::tests::every_icon_paints`).
 
 ---
 
-## 8. Stage 2: dock window contents, dialogs, brand
+## 8. Dock window contents, dialogs, brand
 
-### 8.1 Dock windows (`widgets.rs` shared painters, one classic branch per window)
+### 8.1 Dock windows (`widgets.rs` shared painters)
 
 * **List boxes** (`scroll_pane`): a sunken white field (`sunken`, 2 px 3D edge) holding the tree / list / tile grid;
   `pane_split` is a dotted metal splitter. [W]
@@ -235,7 +232,7 @@ The coloured VP16 shapes, rendered as 2006 pixel art:
   category chips are chrome buttons (the current one pressed) and their description strip a sunken pane. [W]
 * **Tool windows** (Pan/Crop, Track Motion, FX) and **floating windows**: the classic caption (§8.2) on the tool
   windows; floating windows (native OS caption) get a raised 3D frame round their contents.
-* egui scroll bars in this look: grey face handle on the white rail (`scroll.foreground_color` off).
+* egui scroll bars: grey face handle on the white rail (`scroll.foreground_color` off).
 
 ### 8.2 Dialogs (`dialogs/mod.rs`, one shared frame)
 
@@ -253,36 +250,34 @@ The coloured VP16 shapes, rendered as 2006 pixel art:
 * **egui controls** (`style`): white fields with a `#808080` edge, `#D4D0C8` button faces with a `#404040` edge, no
   rounding, no shadows; combo popups white with a dark border; the `#316AC5` selection. (Check boxes and radios stay
   egui's flat drawing on those colours: a polish item.)
-* **Preferences › Display › Interface Look**: a 40×26 swatch beside each radio painted from that look's own tokens
-  (toolbar band, panel, lane, first track colour; the Classic one a metal bar in a sunken edge).
 * **Preferences › General**: "Show splash screen at startup" (`Prefs::show_splash`, on by default).
-* **Welcome** (`Welcome::show_classic`): a 540×522 "Milan Pro" dialog: the splash art, a *Start* group with New
+* **Welcome** (`Welcome::show`): a 540×522 "Milan Pro" dialog: the splash art, a *Start* group with New
   Project (default), Advanced Settings… and Open Project…, the recent projects in a sunken list, "Show this dialog at
-  startup", Close. Same results as the VP23 screen (FullHD 29.970p for New).
+  startup", Close (FullHD 29.970p for New).
 * **About** (`dialogs::about`): `about-banner-480x120.png` over "Milan Pro version x" (Tahoma bold), licence and a
   *Credits* group, OK.
 
 ### 8.3 Brand and splash
 
-* `Icon::Logo` paints `milan-pro-256.png` (the chrome M) in this look (`widgets::brand_tex`, decoded once per
-  context; tinted when the icon is). The VEGAS looks keep their monogram.
+* `Icon::Logo` paints `milan-pro-256.png` (the chrome M) (`widgets::brand_tex`, decoded once per context; tinted
+  when the icon is).
 * **Splash** (`ui/splash.rs`): a 520×320 borderless, non-resizable, always-on-top viewport built with
   `with_active(false)` and no taskbar button, centred on the main window's monitor, showing `splash-520x320.png` with a
   cyan progress bar along its bottom for 1.2 s, then closed. Never in an off-screen run (`MILAN_SCREENSHOT`,
-  `MILAN_UPDATE_AUTO`: `Splash::wanted`), and off with the preference. Shown in every look.
+  `MILAN_UPDATE_AUTO`: `Splash::wanted`), and off with the preference.
 
 ### 8.4 Harness
 
-`MILAN_DIALOG` gained `paste-attrs`, `default-track`, `scopes`, `loudness`, `edit-details`, `plugin-manager` (the
-other dialogs already had values). Stage 2 screenshots: `%TEMP%\milan-review\c2006s2\`.
+`MILAN_DIALOG` has a value for every dialog and window (`open_from_env`); `MILAN_LOOK` is no longer read (old scripts
+may still pass it).
 
-### 8.5 Stage 3: the polish pass (complete)
+### 8.5 Polish
 
-* **Classic controls everywhere egui draws them** (`widgets.rs` §8.6): check boxes, radio buttons, combo boxes,
+* **Windows 2000 controls everywhere egui draws them** (`widgets.rs` §8.6): check boxes, radio buttons, combo boxes,
   spinners (drag values), sliders, progress bars, text fields and push buttons go through one set of wrappers
   (`widgets::checkbox`, `radio`, `radio_value`, `combo`, `spin`, `slider`, `progress`, `edit`, `push_button`,
-  `small_push`; `_enabled` forms for `Ui::add_enabled`). The VEGAS looks get egui's control exactly as before; Classic
-  2006 lets egui lay out and run the control and paints the Windows 2000 one over it. The dialogs' `classic_button`
+  `small_push`; `_enabled` forms for `Ui::add_enabled`): egui lays out and runs the control and the Windows 2000 one
+  is painted over it. The dialogs' `classic_button`
   and `sized_button` are the same painter (`classic_push`).
 * **Bodies finished**: the Trimmer's strips sit in a sunken well, its transport and read-outs on a metal bar with
   the In / Out / Length as cyan LCD digits in a black well; Color Grading's wheels and curves are on sunken dark wells
@@ -299,11 +294,10 @@ other dialogs already had values). Stage 2 screenshots: `%TEMP%\milan-review\c20
   node; dots keep one phase (`dotted` on even pixels).
 * **Floating windows** carry the Windows 2000 tool-window caption (`classic_caption`, the small bevelled × closes,
   dragging it moves the window) under the OS title bar, which cannot be restyled.
-* **Consistency**: no rounded corners, soft shadows, translucent panel fills or VP23 dark panels remain in this look
-  (the translucent fills left are overlays: time selection, drop ghosts, the Trimmer's in/out shading); every text
+* **Consistency**: no rounded corners, soft shadows, translucent panel fills or dark panels remain (the translucent fills left are overlays: time selection, drop ghosts, the Trimmer's in/out shading); every text
   face is Tahoma through `Theme::font`.
 * **Performance**: the metal painters are unchanged; `bench_playback` (release, alone) still holds 30 fps at 1–4
-  layers (see §8.7).
+  layers.
 
 Deliberately left as-is:
 
@@ -325,13 +319,8 @@ Deliberately left as-is:
 | `spin_buttons` | two raised 13 px faces with black ▴ ▾ at the right end of a sunken field; they step the value [W] |
 | `progress_blocks` | sunken face-grey well, `#316AC5` blocks two thirds as wide as tall, 2 px apart [W] |
 | `classic_push` | `#D4D0C8` face, 2 px bevel (sunken while pressed, label shifted), black ring on the default button, greyed label with a white emboss when disabled [W] |
-| `slider` (classic path) | `groove` + 11×15 chrome `thumb`, then the value spinner and the label [R Vegas] |
+| `slider` | `groove` + 11×15 chrome `thumb`, then the value spinner and the label [R Vegas] |
 | `edit` | egui's field with a 5 / 3 px margin and the sunken 2 px edge over it [W] |
 
 The palette comes from `widgets::skin`: the `#D4D0C8` property-sheet one inside a dialog (`dialogs::style` fills the
 panel with the dialog page colour), the metal one in the dock windows.
-
-### 8.7 Stage 3 results
-
-Screenshots: `%TEMP%\milan-review\c2006s3\` (the Stage 2 set plus `color-grading`, `external-preview`; `float`
-shows the floating Trimmer drawn in the main window). `bench_playback` after Stage 3: see the commit message.

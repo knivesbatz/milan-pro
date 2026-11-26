@@ -1,6 +1,5 @@
-//! File › Render As (VP16, light native dialog with a Formats tree) / File › Render (VP23, dark dialog with a
-//! category tree and a template grid), §5.15.1 and §5.15.3. Templates are the built-in delivery templates and the
-//! user's own (kept in the preferences); Customize Template edits a copy. Render puts the render in the render queue
+//! File › Render (the VEGAS 23 dialog: a category tree and a template grid, VEGAS_UI_SPEC.md §5.15.3). Templates are
+//! the built-in delivery templates and the user's own (kept in the preferences); Customize Template edits a copy. Render puts the render in the render queue
 //! (`render::RenderQueue`, R12), which renders a snapshot of the project through the engine and leaves a log. As in
 //! VEGAS the dialog shows the progress and blocks editing, unless Render in the background is on: then it is a
 //! window, Render closes it and the status bar shows the progress. Also Tools › Render to New Track.
@@ -11,9 +10,9 @@ use crate::project::{Project, format_timecode};
 use crate::render::{BUILTIN, JobState, Opts, RenderQueue, Template, content_end};
 use crate::settings::Prefs;
 use super::template::{Closed, Editor};
-use super::super::theme::{self, UiLook};
+use super::super::theme;
 
-/// VP23 left tree: (label, depth). Rows 3-10 are `Template::usecase` 0-7.
+/// The left tree: (label, depth). Rows 3-10 are `Template::usecase` 0-7.
 const TREE23: [(&str, u8); 14] = [
     ("Favorites", 0),
     ("Recent", 0),
@@ -31,7 +30,7 @@ const TREE23: [(&str, u8); 14] = [
     ("Audio", 0),
 ];
 
-/// Filters (VP16) / Filter (VP23): what the template list leaves out.
+/// Filter: what the template list leaves out.
 #[derive(Default, Clone, Copy)]
 struct Filter {
     favorites: bool,
@@ -68,9 +67,7 @@ pub struct RenderDialog {
     search: String,
     filter: Filter,
     node: usize,
-    /// VP16 tree: the format groups expanded.
-    expanded: Vec<String>,
-    /// VP23 View › Details (a table) instead of Thumbnails.
+    /// View › Details (a table) instead of Thumbnails.
     details: bool,
     editor: Option<Editor>,
 }
@@ -97,7 +94,6 @@ impl Default for RenderDialog {
             search: String::new(),
             filter: Filter::default(),
             node: 2,
-            expanded: vec![BUILTIN[0].format()],
             details: false,
             editor: None,
         }
@@ -143,11 +139,10 @@ impl RenderDialog {
             return false;
         }
         let mut changed = false;
-        let v16 = theme::get().look() == UiLook::Vegas16;
-        let title = if self.to_new_track { "Render to New Track" } else if v16 { "Render As" } else { "Render" };
-        let size = if v16 { vec2(640.0, 720.0) } else { vec2(960.0, 540.0) };
+        let title = if self.to_new_track { "Render to New Track" } else { "Render" };
+        let size = vec2(960.0, 540.0);
         let bg = self.background;
-        let body = |ui: &mut Ui| if v16 { self.body16(ui, project, prefs, queue, &mut changed) } else { self.body23(ui, project, prefs, queue, &mut changed) };
+        let body = |ui: &mut Ui| self.body(ui, project, prefs, queue, &mut changed);
         let (action, close) = if bg { super::window(ctx, "render_as", title, size, body) } else { super::modal(ctx, "render_as", title, size, body) };
         if let Some(ed) = &mut self.editor {
             match ed.show(ctx, &project.settings, &mut prefs.render_templates, &mut changed) {
@@ -268,7 +263,7 @@ impl RenderDialog {
         ui.label(format!("Length: {} ({what})", format_timecode(b - a, s.frame_rate)));
     }
 
-    /// Render Options (VP16 group; VP23's gear menu): stretch, rotation, markers, the loudness log (R16c); multichannel waits for R10a; R12's
+    /// Render Options (the gear menu): stretch, rotation, markers, the loudness log (R16c); multichannel waits for R10a; R12's
     /// Render in the background (off, as VEGAS).
     fn options(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, changed: &mut bool) {
         let video = self.chosen.video.is_some();
@@ -374,80 +369,7 @@ impl RenderDialog {
         }
     }
 
-    fn body16(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, changed: &mut bool) -> Option<bool> {
-        ui.label("Output File");
-        self.output_fields(ui);
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            widgets::edit(ui, TextEdit::singleline(&mut self.search).hint_text("Search render templates").desired_width(300.0));
-            ui.menu_button("Filters ⏷", |ui| {
-                widgets::checkbox(ui, &mut self.filter.favorites, "Show favorites only");
-                let mut m = self.filter.match_video && self.filter.match_audio;
-                if widgets::checkbox(ui, &mut m, "Match project settings").changed() {
-                    (self.filter.match_video, self.filter.match_audio) = (m, m);
-                }
-            });
-        });
-        let listed = self.listed(project, prefs);
-        let searching = !self.search.is_empty() || self.filter.favorites || self.filter.match_video || self.filter.match_audio;
-        let mut groups: Vec<String> = Vec::new();
-        for t in &listed {
-            if !groups.contains(&t.format()) {
-                groups.push(t.format());
-            }
-        }
-        let mut star_hit = None;
-        super::field_box(ui, 4, |ui| {
-            ui.set_width(ui.available_width());
-            ScrollArea::vertical().id_salt("render_tree").max_height(220.0).auto_shrink(false).show(ui, |ui| {
-                ui.label(RichText::new("Formats").strong());
-                for g in &groups {
-                    let open = searching || self.expanded.contains(g);
-                    if ui.selectable_label(false, format!("{} {g}", if open { "⏷" } else { "⏵" })).clicked() {
-                        match self.expanded.iter().position(|x| x == g) {
-                            Some(k) => {
-                                self.expanded.remove(k);
-                            }
-                            None => self.expanded.push(g.clone()),
-                        }
-                    }
-                    if open {
-                        for t in listed.iter().filter(|t| &t.format() == g) {
-                            ui.horizontal(|ui| {
-                                ui.add_space(24.0);
-                                if star(ui, prefs.render_favorites.contains(&t.name)) {
-                                    star_hit = Some(t.name.clone());
-                                }
-                                if ui.selectable_label(self.chosen == **t, &t.name).clicked() {
-                                    self.chosen = (*t).clone();
-                                }
-                            });
-                        }
-                    }
-                }
-                if groups.is_empty() {
-                    ui.label("No templates match.");
-                }
-            });
-        });
-        if let Some(n) = star_hit {
-            toggle_favorite(prefs, n);
-            *changed = true;
-        }
-        ui.label("Description:");
-        super::field_box(ui, 6, |ui| {
-            ui.set_width(ui.available_width());
-            ui.set_min_height(90.0);
-            self.details(ui, project);
-        });
-        self.customize_button(ui, "Customize Template...", vec2(0.0, 0.0));
-        super::group(ui, "Render Options");
-        ui.add_enabled_ui(!self.running(), |ui| self.options(ui, project, prefs, changed));
-        ui.add_space(4.0);
-        self.footer(ui, project, queue, "Render")
-    }
-
-    fn body23(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, changed: &mut bool) -> Option<bool> {
+    fn body(&mut self, ui: &mut Ui, project: &Project, prefs: &mut Prefs, queue: &mut RenderQueue, changed: &mut bool) -> Option<bool> {
         let t = theme::get();
         let d = t.dialog();
         ui.horizontal(|ui| {
@@ -488,14 +410,13 @@ impl RenderDialog {
             })
             .collect();
         let mut star_hit = None;
-        let classic = t.classic();
         ui.horizontal_top(|ui| {
             // Category tree.
             white_box(ui, 4, |ui| {
                 ui.set_width(190.0);
                 ui.set_height(380.0);
                 // Frames inherit the row's horizontal layout; the tree is a column.
-                ui.vertical(|ui| self.tree23(ui));
+                ui.vertical(|ui| self.tree(ui));
             });
             ui.vertical(|ui| {
                 white_box(ui, 6, |ui| {
@@ -503,7 +424,7 @@ impl RenderDialog {
                     ui.set_height(170.0);
                     ScrollArea::vertical().id_salt("render_grid_scroll").auto_shrink(false).show(ui, |ui| {
                         if self.details {
-                            Grid::new("render_details").num_columns(4).striped(!classic).show(ui, |ui| {
+                            Grid::new("render_details").num_columns(4).striped(false).show(ui, |ui| {
                                 for h in ["", "Name", "Format", "Video"] {
                                     ui.label(RichText::new(h).strong());
                                 }
@@ -525,26 +446,20 @@ impl RenderDialog {
                                 for (n, tp) in shown.iter().enumerate() {
                                     let (r, hit) = ui.allocate_exact_size(vec2(170.0, 56.0), Sense::click());
                                     let p = ui.painter();
-                                    if classic {
-                                        // A raised bevelled tile, pressed in (blue tint) when chosen.
-                                        let state = if self.chosen == **tp { widgets::Chrome::Active } else if hit.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
-                                        widgets::chrome_button(p, r, state, &t.dialog_metal());
-                                    } else if self.chosen == **tp {
-                                        p.rect_filled(r, t.m.widget_radius, t.preset_tile_selected);
-                                    } else if hit.hovered() {
-                                        p.rect_filled(r, t.m.widget_radius, t.button_hover_bg);
-                                    }
+                                    // A raised bevelled tile, pressed in (blue tint) when chosen.
+                                    let state = if self.chosen == **tp { widgets::Chrome::Active } else if hit.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
+                                    widgets::chrome_button(p, r, state, &t.dialog_metal());
                                     let icon = Rect::from_min_size(r.min + vec2(4.0, 8.0), vec2(34.0, 26.0));
-                                    p.rect_stroke(icon, if classic { 0.0 } else { 2.0 }, Stroke::new(if classic { 1.0_f32 } else { 1.5_f32 }, d.text), StrokeKind::Inside);
+                                    p.rect_stroke(icon, 0.0, Stroke::new(1.0_f32, d.text), StrokeKind::Inside);
                                     if tp.video.is_some() {
                                         let c = icon.center();
                                         p.add(Shape::convex_polygon(vec![c + vec2(-4.0, -6.0), c + vec2(6.0, 0.0), c + vec2(-4.0, 6.0)], d.text, Stroke::NONE));
                                     } else {
                                         p.circle_filled(icon.center(), 6.0, d.text);
                                     }
-                                    let ink = if classic { t.text } else if self.chosen == **tp { t.text_bright } else { t.text_dim };
+                                    let ink = t.text;
                                     let w = r.max.x - icon.max.x - 10.0;
-                                    let title = p.layout_no_wrap(tp.name.clone(), t.bold(if classic { 11.0 } else { 12.0 }), d.text);
+                                    let title = p.layout_no_wrap(tp.name.clone(), t.bold(11.0), d.text);
                                     p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 6.0), title, d.text);
                                     let desc = p.layout(tp.notes.clone(), t.font(11.0), ink, w);
                                     p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 22.0), desc, ink);
@@ -588,7 +503,7 @@ impl RenderDialog {
         render
     }
 
-    fn tree23(&mut self, ui: &mut Ui) {
+    fn tree(&mut self, ui: &mut Ui) {
         widgets::edit(ui, TextEdit::singleline(&mut self.search).hint_text("Search").desired_width(180.0));
         for (k, (label, depth)) in TREE23.iter().enumerate() {
             ui.horizontal(|ui| {
@@ -643,14 +558,9 @@ impl RenderDialog {
 }
 
 /// Render to New Track's file name: "<project> (rendered)".
-/// A white box of the VP23 Render dialog: its flat field, or a sunken 3D field box in Classic 2006.
+/// A white box of the Render dialog: a sunken 3D field box.
 fn white_box(ui: &mut Ui, margin: i8, add: impl FnOnce(&mut Ui)) {
-    let t = theme::get();
-    if t.classic() {
-        super::field_box(ui, margin, add);
-    } else {
-        Frame::NONE.fill(t.dialog().field).inner_margin(margin).show(ui, add);
-    }
+    super::field_box(ui, margin, add);
 }
 
 fn new_track_name(project: &Project) -> String {

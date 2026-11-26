@@ -10,18 +10,14 @@ use crate::project::{Project, ProjectSettings};
 use crate::ui::dialogs;
 use crate::ui::dock::Layout;
 use crate::ui::menus::{Later, NotPlanned, Why};
-use crate::ui::theme::{self, LookChoice, UiLook};
 
 /// Per-user app preferences. Unknown or missing fields fall back to defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
-    pub look: LookChoice,
-    /// Preferences › Display › Track Colors (sRGB); None = the look's palette.
+    /// Preferences › Display › Track Colors (sRGB); None = the default palette.
     pub track_colors: Option<[[u8; 3]; 8]>,
-    /// VP16 Preferences › General: "Make spacebar and F12 Play/Pause instead of Play/Stop".
-    pub space_pauses: bool,
-    /// VP23 Welcome screen on startup.
+    /// The Start dialog at startup.
     pub show_welcome: bool,
     /// Preferences › General: "Show splash screen at startup" (`ui::splash`).
     pub show_splash: bool,
@@ -84,14 +80,14 @@ pub struct Prefs {
     pub video_bus: bool,
     /// R8b: View › Audio Bus Tracks, and the Mixing Console's layout.
     pub bus_tracks: bool,
-    /// R8c: View › Show OFX Effect Envelopes (Beta, VP23): video track FX keys are drawn as envelopes (off, as in VEGAS).
+    /// R8c: View › Show OFX Effect Envelopes (Beta, VEGAS 23): video track FX keys are drawn as envelopes (off, as in VEGAS).
     pub ofx_envelopes: bool,
     pub console: crate::ui::ConsolePrefs,
     /// R8b: the audio track header's Show Output Meters, Use Vertical Meters and Channel Width (0-2) for its meter.
     pub output_meters: bool,
     pub vertical_meters: bool,
     pub meter_width: u8,
-    /// VP23 plug-in chooser favourites (plug-in ids).
+    /// Plug-in chooser favourites (plug-in ids).
     pub fx_favorites: Vec<String>,
     /// Preferences › Editing: "Cut-to-overlap conversion" length (seconds) a transition dropped on a cut makes.
     pub cut_overlap: f64,
@@ -110,8 +106,9 @@ pub struct Prefs {
     pub device_type: crate::audio::DeviceType,
     pub playback_device: Option<String>,
     pub buffer_frames: u32,
-    /// Window layouts by `layout_key`: each look's last layout ("vp16:last") and user slots 0-9 ("vp16:3").
-    /// Entries that do not parse are dropped, so a bad one never costs the rest of the preferences.
+    /// Window layouts by `layout_key`: the last layout ("last") and user slots 0-9 ("3"). Entries that do not parse
+    /// are dropped, so a bad one never costs the rest of the preferences; 0.8.0's per-look keys are carried over
+    /// (`migrate_look_keys`).
     #[serde(deserialize_with = "lenient_layouts")]
     pub layouts: BTreeMap<String, Layout>,
     /// R11: the user's render templates (Customize Template › Save), the favourite templates' names and the names of
@@ -126,8 +123,8 @@ pub struct Prefs {
     /// edge) and "Position tabs at top of docked windows"; both off, as in VEGAS.
     pub auto_hide_docks: bool,
     pub tabs_on_top: bool,
-    /// R14: Preferences › Display › "Allow floating windows to dock (hold Ctrl to override)"; None = the look's
-    /// default (off in VEGAS 16, on in VEGAS 23, as their installs show it).
+    /// R14: Preferences › Display › "Allow floating windows to dock (hold Ctrl to override)"; None = the default (on,
+    /// as VEGAS 23's install has it).
     pub float_dock: Option<bool>,
     /// R14: Preferences › Preview Device (Windows Graphics Card): the display (`\\.\DISPLAY2`; None = the first one that
     /// is not the primary), "Scale output to fit display" (off), "Display frames in Video Preview window during
@@ -136,12 +133,15 @@ pub struct Prefs {
     pub ext_fit: bool,
     pub ext_in_window: bool,
     pub ext_rotate: bool,
-    /// R15: Options › Customize Keyboard: per look, the commands whose keys the user changed (`keymap::Overrides`),
-    /// and the keyboard map last chosen (None = [Default]; maps are .ini files in `keyboard_dir`).
+    /// R15: Options › Customize Keyboard: the commands whose keys the user changed (`keymap::Overrides`; 0.8.0 kept
+    /// them per look, `lenient_keys`), and the keyboard map last chosen (None = [Default]; maps are .ini files in
+    /// `keyboard_dir`).
+    #[serde(deserialize_with = "lenient_keys")]
     pub keys: crate::ui::keymap::Overrides,
     pub key_map: Option<String>,
     /// R15: Options › Customize Toolbar / Customize Timeline Toolbar: a bar's buttons by `toolbar::Bar::key`
-    /// ("vp16:toolbar"); a bar not listed has the look's default buttons.
+    /// ("toolbar"); a bar not listed has its default buttons.
+    #[serde(deserialize_with = "lenient_toolbars")]
     pub toolbars: BTreeMap<String, Vec<String>>,
     /// R16b: the Video Scopes window's scopes, their settings and Update Scopes while Playing.
     pub scopes: crate::ui::ScopePrefs,
@@ -162,7 +162,7 @@ pub struct Prefs {
     /// R31: the OFX plug-in folders the user added and the plug-ins turned off in the Plug-In Manager.
     pub ofx: crate::engine::ofx::OfxPrefs,
     /// Overlay packs: Preferences › General › the library folder (None = Documents\Milan Pro\Overlay Packs), and the
-    /// Overlays window was put once beside Media Generators in the saved last layouts.
+    /// Overlays window was put once beside Media Generators in the saved last layout.
     pub overlay_library: Option<PathBuf>,
     pub overlays_placed: bool,
     /// R22: Preferences › Video › "Video decode acceleration": "" Automatic (heavy sources on the hwaccel that measured
@@ -236,15 +236,29 @@ impl EnvView {
     }
 }
 
-/// Key of a saved layout: `slot` is "last" or a user slot number; VP23 Dark and White share one, Classic 2006 (its
-/// own metrics) has its own.
-pub fn layout_key(look: UiLook, slot: impl std::fmt::Display) -> String {
-    let k = match look {
-        UiLook::Vegas16 => "vp16",
-        UiLook::Vegas23 => "vp23",
-        UiLook::Classic2006 => "c2006",
+/// Key of a saved layout or toolbar: `slot` is "last", a user slot number, "toolbar" or "timeline_toolbar".
+pub fn layout_key(slot: impl std::fmt::Display) -> String {
+    slot.to_string()
+}
+
+/// Preferences saved by 0.8.0 and earlier kept layouts and toolbars per look ("c2006:last", "vp23:3", "vp16:toolbar"):
+/// each slot takes the key without a look if there is one, else the one of the default look ("c2006:"), else VEGAS
+/// 23's ("vp23:", the same layout structure). VEGAS 16's ("vp16:", one docking area) are dropped.
+pub fn migrate_look_keys<V>(m: BTreeMap<String, V>) -> BTreeMap<String, V> {
+    let rank = |k: &str| match k.split_once(':') {
+        None => Some((0, k.to_string())),
+        Some(("c2006", s)) => Some((1, s.to_string())),
+        Some(("vp23", s)) => Some((2, s.to_string())),
+        Some(_) => None,
     };
-    format!("{k}:{slot}")
+    let mut best: BTreeMap<String, (u8, V)> = BTreeMap::new();
+    for (k, v) in m {
+        let Some((r, slot)) = rank(&k) else { continue };
+        if best.get(&slot).is_none_or(|b| r < b.0) {
+            best.insert(slot, (r, v));
+        }
+    }
+    best.into_iter().map(|(k, (_, v))| (k, v)).collect()
 }
 
 /// The layouts to save: those on `disk` (another window may have saved some), with this window's `changed` keys
@@ -262,17 +276,37 @@ pub fn merge_layouts(disk: BTreeMap<String, Layout>, mut mine: BTreeMap<String, 
 
 fn lenient_layouts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Layout>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
-        serde_json::Value::Object(m) => m.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?))).collect(),
+        serde_json::Value::Object(m) => migrate_look_keys(m.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?))).collect()),
         _ => BTreeMap::new(),
     })
+}
+
+fn lenient_toolbars<'de, D: serde::Deserializer<'de>>(d: D) -> Result<BTreeMap<String, Vec<String>>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Object(m) => migrate_look_keys(m.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?))).collect()),
+        _ => BTreeMap::new(),
+    })
+}
+
+/// The Customize Keyboard keys: 0.8.0 saved them per look ({"vp23": {...}, "vp16": {...}}; the VEGAS 23 ones are the
+/// keys the default look used), later builds flat ({"Split": ["S"]}). Entries that do not parse are dropped.
+fn lenient_keys<'de, D: serde::Deserializer<'de>>(d: D) -> Result<crate::ui::keymap::Overrides, D::Error> {
+    use serde_json::Value;
+    let Value::Object(m) = Value::deserialize(d)? else { return Ok(Default::default()) };
+    let flat = |m: serde_json::Map<String, Value>| m.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_value(v).ok()?))).collect();
+    if m.values().any(Value::is_object) {
+        return Ok(match m.into_iter().find(|(k, _)| k == "vp23") {
+            Some((_, Value::Object(v))) => flat(v),
+            _ => Default::default(),
+        });
+    }
+    Ok(flat(m))
 }
 
 impl Default for Prefs {
     fn default() -> Self {
         Self {
-            look: LookChoice::default(),
             track_colors: None,
-            space_pauses: false,
             show_welcome: true,
             show_splash: true,
             recent: Vec::new(),
@@ -365,8 +399,8 @@ impl Prefs {
     }
 
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
-    pub fn float_dock(&self, look: UiLook) -> bool {
-        self.float_dock.unwrap_or(look.v23())
+    pub fn float_dock(&self) -> bool {
+        self.float_dock.unwrap_or(true)
     }
 
     /// R9: the output device these preferences choose.
@@ -517,14 +551,13 @@ impl SettingsDialog {
 
     pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History) {
         let Some((d, buses)) = &mut self.draft else { return };
-        let v23 = theme::get().look().v23();
         let tab = &mut self.tab;
         let changed = *d != project.settings || *buses != project.timeline.audio.buses.len();
         let (hit, close) = dialogs::modal(ctx, "project_properties", "Project Properties", egui::vec2(427.0, 696.0), |ui| {
-            let row: &[&str] = if v23 { &["Video", "Audio", "Ruler", "Summary", "Audio CD", "Advanced"] } else { &["Video", "Audio", "Ruler", "Summary", "Audio CD"] };
+            let row: &[&str] = &["Video", "Audio", "Ruler", "Summary", "Audio CD", "Advanced"];
             dialogs::tabs(ui, &[row], tab);
             dialogs::page(ui, 590.0, |ui| match *tab {
-                0 => video_tab(ui, d, project, v23),
+                0 => video_tab(ui, d, project),
                 1 => audio_tab(ui, d, buses),
                 2 => ruler_tab(ui, d),
                 3 => summary_tab(ui, d),
@@ -552,7 +585,7 @@ impl SettingsDialog {
     }
 }
 
-fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool) {
+fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
     let current = TEMPLATES.iter().find(|t| (t.1, t.2) == (d.width, d.height) && (t.3 - d.frame_rate).abs() < 0.001);
     ui.horizontal(|ui| {
         ui.label("Template:");
@@ -621,10 +654,8 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
         ("View transform:", "Off", Later("R40b")),
     ];
-    if v23 {
-        grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
-        grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
-    }
+    grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
+    grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
     for (k, (label, value, why)) in grid.into_iter().enumerate() {
         dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
@@ -655,10 +686,10 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     dialogs::row(ui, "Resample mode:", 175.0, true, |ui| {
         use crate::project::Resample::*;
         // VEGAS 23 calls Smart "Frame blend" and offers Optical Flow in place of Force.
-        let modes = if v23 { [Smart, OpticalFlow, Disable] } else { [Smart, Force, Disable] };
-        widgets::combo(ui, "pp_resample", 200.0, resample_name(d.resample, v23), |ui| {
+        let modes = [Smart, OpticalFlow, Disable];
+        widgets::combo(ui, "pp_resample", 200.0, resample_name(d.resample), |ui| {
             for m in modes {
-                ui.selectable_value(&mut d.resample, m, resample_name(m, v23));
+                ui.selectable_value(&mut d.resample, m, resample_name(m));
             }
         });
     });
@@ -677,16 +708,14 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
     });
 }
 
-/// Project Properties › Resample mode, as each look names it.
-fn resample_name(r: crate::project::Resample, v23: bool) -> &'static str {
+/// Project Properties › Resample mode, as VEGAS 23 names it.
+fn resample_name(r: crate::project::Resample) -> &'static str {
     use crate::project::Resample::*;
-    match (r, v23) {
-        (Smart, false) => "Smart resample",
-        (Smart, true) => "Frame blend",
-        (Force, _) => "Force resample",
-        (Disable, false) => "Disable resample",
-        (Disable, true) => "Disable resampling",
-        (OpticalFlow, _) => "Optical Flow",
+    match r {
+        Smart => "Frame blend",
+        Force => "Force resample",
+        Disable => "Disable resampling",
+        OpticalFlow => "Optical Flow",
     }
 }
 
@@ -757,16 +786,17 @@ mod tests {
 
     #[test]
     fn prefs_roundtrip_and_tolerate_missing_fields() {
-        let p = Prefs { look: LookChoice::VEGAS23_WHITE, track_colors: Some([[1, 2, 3]; 8]), ..Default::default() };
+        let p = Prefs { track_colors: Some([[1, 2, 3]; 8]), ..Default::default() };
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
-        // New installs (no look chosen) get Classic 2006; preferences saved by older builds keep their VEGAS look.
-        assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::CLASSIC2006, true, 4, true, true, 5.0));
+        assert_eq!((d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (true, 4, true, true, 5.0));
         assert!(d.show_splash, "the splash is on by default");
-        let old = serde_json::from_str::<Prefs>(r#"{"look":{"look":"Vegas16","variant":"Dark"}}"#).unwrap();
-        assert_eq!(old.look, LookChoice::VEGAS16);
-        assert_eq!((layout_key(UiLook::Classic2006, "last"), layout_key(UiLook::Vegas16, 1)), ("c2006:last".to_string(), "vp16:1".to_string()));
+        // The look 0.8.0 saved is ignored; nothing else is lost.
+        let old = serde_json::from_str::<Prefs>(r#"{"look":{"look":"Vegas16","variant":"Dark"},"recent_max":7}"#).unwrap();
+        assert_eq!(old, Prefs { recent_max: 7, ..Default::default() });
+        assert!(!json.contains("\"look\""));
+        assert_eq!((layout_key("last"), layout_key(1)), ("last".to_string(), "1".to_string()));
         assert_eq!((d.auto_crossfade, d.auto_ripple, d.ripple_mode, d.ignore_grouping, d.quickfade), (true, false, crate::edit::RippleMode::Affected, false, true));
         assert!(d.show_envelopes && d.lock_envelopes && !d.auto_proxy);
         assert!(d.fx_favorites.is_empty() && d.cut_overlap == 1.0 && d.default_track_fx.is_none() && d.cursor_preview == 3.0);
@@ -779,13 +809,13 @@ mod tests {
         assert!(!d.auto_hide_docks && !d.tabs_on_top);
         let k = Prefs { auto_hide_docks: true, tabs_on_top: true, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&k).unwrap()).unwrap(), k);
-        // R14: old preferences dock floating windows as each look's install does, and preview externally on the first
+        // R14: old preferences dock floating windows as VEGAS 23's install does, and preview externally on the first
         // secondary display at 1:1, with frames in the Video Preview window too and the output rotation applied.
-        assert!(!d.float_dock(UiLook::Vegas16) && d.float_dock(UiLook::Vegas23) && d.float_dock(UiLook::Classic2006));
+        assert!(d.float_dock());
         assert!(d.ext_display.is_none() && !d.ext_fit && d.ext_in_window && d.ext_rotate);
         let e = Prefs { float_dock: Some(false), ext_display: Some(r"\\.\DISPLAY2".into()), ext_fit: true, ext_in_window: false, ext_rotate: false, ..Default::default() };
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&e).unwrap()).unwrap(), e);
-        assert!(!e.float_dock(UiLook::Vegas23));
+        assert!(!e.float_dock());
         // R17b: old preferences leave the multicamera audio alone and show the grid on the external monitor too (VEGAS).
         assert!(!d.multicam_audio && !d.multicam_full);
         let m = Prefs { multicam_audio: true, multicam_full: true, ..Default::default() };
@@ -807,8 +837,8 @@ mod tests {
         // R15: old preferences have the default keys and toolbars; custom ones read back.
         assert!(d.keys.is_empty() && d.key_map.is_none() && d.toolbars.is_empty());
         let mut c = Prefs { key_map: Some("Mine".into()), ..Default::default() };
-        c.keys.entry("vp23".into()).or_default().insert("Split".into(), vec!["Ctrl+Shift+F5".into()]);
-        c.toolbars.insert("vp16:toolbar".into(), vec!["Save".into(), "|".into(), "Split".into()]);
+        c.keys.insert("Split".into(), vec!["Ctrl+Shift+F5".into()]);
+        c.toolbars.insert("toolbar".into(), vec!["Save".into(), "|".into(), "Split".into()]);
         assert_eq!(serde_json::from_str::<Prefs>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
         assert_eq!(Prefs::parse(Ok(r#"{"keys":{"vp23":5},"toolbars":3,"quantize":false}"#.into())).map(|p| (p.keys.is_empty(), p.toolbars.is_empty(), p.quantize)), Some((true, true, false)));
         let mine = crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() };
@@ -848,21 +878,20 @@ mod tests {
     /// A broken `layouts` (not a map, or a bad entry) loses only what is broken, never the other preferences.
     #[test]
     fn corrupt_layouts_fall_back() {
-        let t = crate::ui::theme::Theme::new(LookChoice::VEGAS16);
+        let t = crate::ui::theme::Theme::new();
         let good = crate::ui::dock::Dock::new(&t).layout("Mine");
         let mut p = Prefs { quantize: false, ..Default::default() };
-        p.layouts.insert(layout_key(UiLook::Vegas16, 3), good.clone());
+        p.layouts.insert(layout_key(3), good.clone());
         let json = serde_json::to_string(&p).unwrap();
         assert_eq!(serde_json::from_str::<Prefs>(&json).unwrap(), p);
-        assert_eq!(layout_key(UiLook::Vegas23, "last"), "vp23:last");
 
         let whole = json.replace(r#""layouts":{"#, r#""layouts":5,"x":{"#);
         let d = serde_json::from_str::<Prefs>(&whole).unwrap();
         assert!(d.layouts.is_empty() && !d.quantize);
-        let entry = json.replace(r#""layouts":{"#, r#""layouts":{"vp16:last":{"groups":"x"},"vp16:4":{"name":"Future","groups":[{"tabs":["Hub"],"active":0,"width":1}],"height":null,"track_list_w":1},"#);
+        let entry = json.replace(r#""layouts":{"#, r#""layouts":{"last":{"groups":"x"},"4":{"name":"Future","groups":[{"tabs":["Hub"],"active":0,"width":1}],"height":null,"track_list_w":1},"#);
         let d = serde_json::from_str::<Prefs>(&entry).unwrap();
-        assert_eq!(d.layouts.keys().collect::<Vec<_>>(), ["vp16:3"]);
-        assert_eq!(d.layouts["vp16:3"], good);
+        assert_eq!(d.layouts.keys().collect::<Vec<_>>(), ["3"]);
+        assert_eq!(d.layouts["3"], good);
     }
 
     /// A file that is there but unreadable is None (never defaults to write back); a missing one is the defaults.
@@ -917,14 +946,72 @@ mod tests {
     /// Another window's saved slot survives this window's save; this window's changed slots win.
     #[test]
     fn merge_keeps_other_windows_layouts() {
-        let t = crate::ui::theme::Theme::new(LookChoice::VEGAS16);
+        let t = crate::ui::theme::Theme::new();
         let l = |n: &str| crate::ui::dock::Dock::new(&t).layout(n);
-        let disk = BTreeMap::from([("vp16:3".to_string(), l("Theirs")), ("vp16:4".to_string(), l("Disk4"))]);
-        let mine = BTreeMap::from([("vp16:4".to_string(), l("Mine4")), ("vp16:5".to_string(), l("Stale5"))]);
-        let m = merge_layouts(disk.clone(), mine.clone(), &BTreeSet::from(["vp16:4".to_string()]));
-        assert_eq!(m.iter().map(|(k, v)| (k.as_str(), v.name.as_str())).collect::<Vec<_>>(), [("vp16:3", "Theirs"), ("vp16:4", "Mine4")]);
+        let disk = BTreeMap::from([("3".to_string(), l("Theirs")), ("4".to_string(), l("Disk4"))]);
+        let mine = BTreeMap::from([("4".to_string(), l("Mine4")), ("5".to_string(), l("Stale5"))]);
+        let m = merge_layouts(disk.clone(), mine.clone(), &BTreeSet::from(["4".to_string()]));
+        assert_eq!(m.iter().map(|(k, v)| (k.as_str(), v.name.as_str())).collect::<Vec<_>>(), [("3", "Theirs"), ("4", "Mine4")]);
         // R13: a slot this window deleted (Organize Layouts) goes from the file too.
-        let m = merge_layouts(disk, mine, &BTreeSet::from(["vp16:3".to_string()]));
-        assert_eq!(m.keys().collect::<Vec<_>>(), ["vp16:4"]);
+        let m = merge_layouts(disk, mine, &BTreeSet::from(["3".to_string()]));
+        assert_eq!(m.keys().collect::<Vec<_>>(), ["4"]);
+    }
+
+    /// Preferences 0.8.0 saved in each of its looks (tests/fixtures, written by 0.8.0's own `Prefs`) load without
+    /// error; the window layouts, toolbars and keys of the look the app draws (saved under 0.8.0's default look, else
+    /// VEGAS 23, the same layout structure) carry over by slot, VEGAS 16's do not, and the file saved again has no look
+    /// in it.
+    #[test]
+    fn old_prefs_carry_layouts_over() {
+        use crate::ui::dock::{Area, Dock, Layout, Panel};
+        let t = crate::ui::theme::Theme::new();
+        let raw = |text: &str, key: &str| -> Layout { serde_json::from_value(serde_json::from_str::<serde_json::Value>(text).unwrap()["layouts"][key].clone()).unwrap() };
+        let load = |text: &str| {
+            let p = serde_json::from_str::<Prefs>(text).unwrap();
+            let again = serde_json::to_string(&p).unwrap();
+            assert!(!again.contains("\"look\"") && !again.contains("c2006:") && !again.contains("vp23") && !again.contains("vp16"), "{again}");
+            assert_eq!(serde_json::from_str::<Prefs>(&again).unwrap(), p, "a migrated file reads back the same");
+            p
+        };
+
+        // Saved in 0.8.0's default look: its own last layout and slot 3; slot 5 from the VEGAS 23 look (no Classic one there);
+        // its main toolbar; the VEGAS 23 keys it used. VEGAS 16's layout, toolbar and keys are dropped.
+        let text = include_str!("../tests/fixtures/prefs-0.8.0-classic2006.json");
+        let p = load(text);
+        assert_eq!(p.layouts.keys().collect::<Vec<_>>(), ["3", "5", "last"]);
+        assert_eq!((&p.layouts["last"], &p.layouts["3"], &p.layouts["5"]), (&raw(text, "c2006:last"), &raw(text, "c2006:3"), &raw(text, "vp23:5")));
+        assert_eq!(p.toolbars, BTreeMap::from([("toolbar".to_string(), vec!["New".to_string(), "Open".into(), "|".into(), "Render".into()])]));
+        assert_eq!(p.keys, crate::ui::keymap::Overrides::from([("Split".to_string(), vec!["Ctrl+Shift+F5".to_string()])]));
+        assert!(p.overlays_placed);
+        // The window comes back as it was left: Master Bus closed, Trimmer in the right docking area, top area 420 px.
+        let mut d = Dock::new(&t);
+        d.apply(&p.layouts["last"], &t);
+        assert!(!d.is_open(Panel::MasterBus) && d.groups.iter().any(|g| g.area == Area::Right && g.tabs == [Panel::Trimmer]) && d.height == Some(420.0));
+        assert_eq!(crate::ui::Bar::Main.buttons(&p.toolbars), ["New", "Open", "|", "Render"]);
+        assert_eq!(crate::ui::Bar::Timeline.buttons(&p.toolbars), crate::ui::Bar::Timeline.defaults());
+
+        // Saved in VEGAS 23 (White): its layouts, timeline toolbar and keys.
+        let text = include_str!("../tests/fixtures/prefs-0.8.0-vegas23.json");
+        let p = load(text);
+        assert_eq!(p.layouts.keys().collect::<Vec<_>>(), ["2", "last"]);
+        assert_eq!((&p.layouts["last"], &p.layouts["2"]), (&raw(text, "vp23:last"), &raw(text, "vp23:2")));
+        assert_eq!(p.toolbars.keys().collect::<Vec<_>>(), ["timeline_toolbar"]);
+        assert_eq!(p.keys, crate::ui::keymap::Overrides::from([("Preferences".to_string(), vec!["Ctrl+,".to_string()])]));
+        let mut d = Dock::new(&t);
+        d.apply(&p.layouts["last"], &t);
+        // Master Bus in the left docking area, the Trimmer in front of the Video Preview.
+        assert!(d.groups.iter().any(|g| g.area == Area::Left && g.tabs == [Panel::MasterBus]));
+        assert!(d.groups.iter().any(|g| g.tabs == [Panel::VideoPreview, Panel::Trimmer] && g.active == 1));
+        assert_eq!(crate::ui::Bar::Timeline.buttons(&p.toolbars), ["Play", "Pause", "|", "Split"]);
+
+        // Saved in VEGAS 16: its one-area layouts, toolbar and keys do not fit; the defaults, the rest kept.
+        let p = load(include_str!("../tests/fixtures/prefs-0.8.0-vegas16.json"));
+        assert!(p.layouts.is_empty() && p.toolbars.is_empty() && p.keys.is_empty());
+        assert!(p.overlays_placed);
+        assert_eq!(Prefs { overlays_placed: true, ..Default::default() }, p);
+
+        // The newer key wins over a 0.8.0 one of the same slot.
+        let m = migrate_look_keys(BTreeMap::from([("last".to_string(), 1), ("c2006:last".into(), 2), ("vp23:last".into(), 3), ("vp23:1".into(), 4), ("c2006:1".into(), 5), ("vp16:2".into(), 6)]));
+        assert_eq!(m, BTreeMap::from([("last".to_string(), 1), ("1".into(), 5)]));
     }
 }

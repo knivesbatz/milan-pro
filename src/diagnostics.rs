@@ -251,7 +251,7 @@ mod tests {
         std::fs::create_dir_all(root.join("crashes")).unwrap();
         std::fs::write(root.join("logs").join("milan-2026-01-01.log"), "a line\n").unwrap();
         std::fs::write(root.join("crashes").join("crash-20260101-000000.txt"), "boom\n").unwrap();
-        std::fs::write(root.join("prefs.json"), r#"{"recent":["C:/secret.mnle"],"look":{"look":"Vegas16","variant":"Dark"}}"#).unwrap();
+        std::fs::write(root.join("prefs.json"), r#"{"recent":["C:/secret.mnle"],"tabs_on_top":true}"#).unwrap();
         let dir = root.join("report");
         let r = create(&dir, Some(&root.join("prefs.json")), Some(&root.join("logs")), Some(&root.join("crashes")), true).unwrap();
         assert_eq!(r.sections.iter().map(|(n, _)| *n).collect::<Vec<_>>(), SECTIONS);
@@ -265,7 +265,7 @@ mod tests {
         }
         assert!(!system.contains("Executable:"), "privacy leaves the exe path out");
         let prefs = std::fs::read_to_string(dir.join("prefs.json")).unwrap();
-        assert!(!prefs.contains("secret") && prefs.contains("Vegas16"), "{prefs}");
+        assert!(!prefs.contains("secret") && prefs.contains("tabs_on_top"), "{prefs}");
         assert!(dir.join("logs").join("milan-2026-01-01.log").exists());
         assert!(dir.join("crashes").join("crash-20260101-000000.txt").exists());
         assert!(std::fs::read_to_string(dir.join("README.txt")).unwrap().contains("system.txt"));

@@ -1,0 +1,380 @@
+{
+  "look": {
+    "look": "Classic2006",
+    "variant": "Dark"
+  },
+  "track_colors": null,
+  "space_pauses": false,
+  "show_welcome": true,
+  "show_splash": true,
+  "recent": [],
+  "recent_max": 4,
+  "auto_update": true,
+  "autosave_on": true,
+  "autosave_minutes": 2,
+  "autosave_keep": 5,
+  "log_level": "info",
+  "crash_privacy": false,
+  "crash_seen": null,
+  "update_channel": "Stable",
+  "keep_previous": false,
+  "skipped_update": null,
+  "quantize": true,
+  "still_len": 5.0,
+  "auto_crossfade": true,
+  "quickfade": true,
+  "snap_grid": false,
+  "snap_all": false,
+  "grid": "RulerMarks",
+  "auto_ripple": false,
+  "ripple_mode": "Affected",
+  "ignore_grouping": false,
+  "show_envelopes": true,
+  "hidden_envelopes": [],
+  "lock_envelopes": true,
+  "auto_proxy": false,
+  "extra_blend_modes": false,
+  "gpu": "",
+  "nested_breadcrumb": false,
+  "video_bus": false,
+  "bus_tracks": false,
+  "ofx_envelopes": false,
+  "console": {
+    "channel_list": true,
+    "channels": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "regions": [
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ],
+    "width": 1,
+    "inputs": true
+  },
+  "output_meters": true,
+  "vertical_meters": true,
+  "meter_width": 1,
+  "fx_favorites": [],
+  "cut_overlap": 1.0,
+  "cursor_preview": 3.0,
+  "default_track_fx": null,
+  "default_video_track": {
+    "height": null,
+    "composite": null,
+    "fx": null
+  },
+  "record_input": null,
+  "record_offset_ms": 0.0,
+  "device_type": "SoundMapper",
+  "playback_device": null,
+  "buffer_frames": 0,
+  "layouts": {
+    "c2006:3": {
+      "name": "Classic Three",
+      "groups": [
+        {
+          "tabs": [
+            "ProjectMedia",
+            "MediaGenerators",
+            "Overlays",
+            "Transitions",
+            "VideoFx",
+            "ColorGrading"
+          ],
+          "active": 0,
+          "width": 0.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "VideoPreview",
+            "Trimmer"
+          ],
+          "active": 0,
+          "width": 750.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "MasterBus"
+          ],
+          "active": 0,
+          "width": 120.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "Explorer"
+          ],
+          "active": 0,
+          "width": 320.0,
+          "area": "Left"
+        }
+      ],
+      "height": null,
+      "track_list_w": 250.0,
+      "bottom_h": null,
+      "left_w": null,
+      "right_w": null,
+      "hidden": [],
+      "floating": []
+    },
+    "c2006:last": {
+      "name": "",
+      "groups": [
+        {
+          "tabs": [
+            "Explorer",
+            "ProjectMedia",
+            "MediaGenerators",
+            "Overlays",
+            "Transitions",
+            "VideoFx",
+            "ColorGrading"
+          ],
+          "active": 1,
+          "width": 0.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "VideoPreview"
+          ],
+          "active": 0,
+          "width": 750.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "Trimmer"
+          ],
+          "active": 0,
+          "width": 320.0,
+          "area": "Right"
+        }
+      ],
+      "height": 420.0,
+      "track_list_w": 250.0,
+      "bottom_h": null,
+      "left_w": null,
+      "right_w": null,
+      "hidden": [],
+      "floating": []
+    },
+    "vp16:last": {
+      "name": "",
+      "groups": [
+        {
+          "tabs": [
+            "ProjectMedia",
+            "Explorer",
+            "Transitions",
+            "VideoFx",
+            "MediaGenerators",
+            "Overlays"
+          ],
+          "active": 0,
+          "width": 0.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "VideoPreview",
+            "Trimmer"
+          ],
+          "active": 0,
+          "width": 835.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "MasterBus"
+          ],
+          "active": 0,
+          "width": 125.0,
+          "area": "Top"
+        }
+      ],
+      "height": null,
+      "track_list_w": 251.0,
+      "bottom_h": null,
+      "left_w": null,
+      "right_w": null,
+      "hidden": [],
+      "floating": []
+    },
+    "vp23:5": {
+      "name": "Twenty-three Five",
+      "groups": [
+        {
+          "tabs": [
+            "Explorer",
+            "ProjectMedia",
+            "MediaGenerators",
+            "Overlays",
+            "Transitions",
+            "VideoFx",
+            "ColorGrading"
+          ],
+          "active": 1,
+          "width": 0.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "VideoPreview",
+            "Trimmer"
+          ],
+          "active": 0,
+          "width": 750.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "MasterBus"
+          ],
+          "active": 0,
+          "width": 120.0,
+          "area": "Top"
+        }
+      ],
+      "height": null,
+      "track_list_w": 250.0,
+      "bottom_h": null,
+      "left_w": null,
+      "right_w": null,
+      "hidden": [],
+      "floating": []
+    },
+    "vp23:last": {
+      "name": "",
+      "groups": [
+        {
+          "tabs": [
+            "Explorer",
+            "ProjectMedia",
+            "MediaGenerators",
+            "Overlays",
+            "Transitions",
+            "VideoFx",
+            "ColorGrading"
+          ],
+          "active": 1,
+          "width": 0.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "VideoPreview",
+            "Trimmer"
+          ],
+          "active": 1,
+          "width": 750.0,
+          "area": "Top"
+        },
+        {
+          "tabs": [
+            "MasterBus"
+          ],
+          "active": 0,
+          "width": 120.0,
+          "area": "Top"
+        }
+      ],
+      "height": null,
+      "track_list_w": 250.0,
+      "bottom_h": null,
+      "left_w": null,
+      "right_w": null,
+      "hidden": [],
+      "floating": []
+    }
+  },
+  "render_templates": [],
+  "render_favorites": [],
+  "render_recent": [],
+  "render_background": false,
+  "auto_hide_docks": false,
+  "tabs_on_top": false,
+  "float_dock": null,
+  "ext_display": null,
+  "ext_fit": false,
+  "ext_in_window": true,
+  "ext_rotate": true,
+  "keys": {
+    "vp16": {
+      "Undo": [
+        "F9"
+      ]
+    },
+    "vp23": {
+      "Split": [
+        "Ctrl+Shift+F5"
+      ]
+    }
+  },
+  "key_map": null,
+  "toolbars": {
+    "c2006:toolbar": [
+      "New",
+      "Open",
+      "|",
+      "Render"
+    ],
+    "vp16:timeline_toolbar": [
+      "Play",
+      "Stop"
+    ]
+  },
+  "scopes": {
+    "view": "Vectorscope",
+    "levels": {
+      "setup": false,
+      "studio": false
+    },
+    "composite": false,
+    "magnified": false,
+    "hist": "Luminance",
+    "while_playing": false
+  },
+  "loudness": {
+    "mode": "Ebu",
+    "blocking": false,
+    "range": 3,
+    "wide": false,
+    "absolute": false,
+    "show_true_peak": false,
+    "labels": true,
+    "hold_peaks": false,
+    "hold_valleys": false,
+    "open_editor": true
+  },
+  "multicam_audio": false,
+  "multicam_full": false,
+  "audio_editor": null,
+  "metronome": false,
+  "media_markers": false,
+  "marker_labels": false,
+  "event_length": false,
+  "ofx": {
+    "folders": [],
+    "vst_folders": [],
+    "disabled": [],
+    "hints_seen": []
+  },
+  "overlay_library": null,
+  "overlays_placed": true,
+  "hw_decode": "",
+  "hw_encode": "",
+  "ram_preview_mb": 200,
+  "disk_cache_mb": 0,
+  "prerender_folder": null,
+  "prerender_template": null
+}

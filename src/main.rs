@@ -55,15 +55,11 @@ fn main() -> eframe::Result<()> {
             launch.rollback_offer = updater::start_marker(&dir, updater::CURRENT, std::env::args().any(|a| a == "--after-update"));
         }
     }
-    let look = launch.look.unwrap_or_else(|| prefs.as_ref().map(|p| p.look).unwrap_or_default());
-    launch.look = Some(look);
-    // VP23 draws its own 32 px title bar (4.6); VP16 and Classic 2006 use the OS title bar. The app switches
-    // decorations live on look changes.
+    // The OS title bar; the menu row is drawn under it.
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Untitled - Milan Pro")
         .with_inner_size([1600.0, 900.0])
         .with_min_inner_size([960.0, 540.0])
-        .with_decorations(look.look != ui::theme::UiLook::Vegas23)
         .with_icon(icon());
     if offscreen_run(launch.screenshot.is_some()) {
         // The app resizes to 1920x1080 px on its first frame.

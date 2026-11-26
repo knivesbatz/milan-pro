@@ -10,7 +10,7 @@ use crate::engine::aplug;
 use crate::engine::ofx::{self, OfxPrefs, ScanCache, Status, scan};
 use crate::engine::plugins::{self, PluginKind};
 use super::icons::{Icon, paint_icon};
-use super::theme::{self, UiLook};
+use super::theme;
 use super::toolbar::tool_button;
 use super::widgets;
 
@@ -171,7 +171,7 @@ pub fn plugin_manager_toolbar(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut O
     let t = theme::get();
     let mut out = ManagerOut::default();
     let (icon, _) = ui.allocate_exact_size(vec2(22.0, t.m.button), Sense::hover());
-    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(icon.center(), vec2(16.0, 16.0)), Icon::Search, None);
     widgets::search_field(ui, &mut pm.query, "Search plug-ins", 160.0);
     ui.add_space(6.0);
     out.rescan = tool_button(ui, Icon::Refresh, "Rescan: read every OFX, VST3 and CLAP plug-in again and try failed ones again", !pm.scanning(), false).clicked();
@@ -228,7 +228,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
     let strip_h = 26.0;
     let body = Rect::from_min_max(area.min, pos2(area.max.x, area.max.y - strip_h));
     let rows = pm.rows();
-    let row_h = if t.look() == UiLook::Vegas16 { widgets::ROW_H } else { 26.0 };
+    let row_h = 26.0;
     widgets::scroll_pane(ui, body, "plugin_list", |ui| {
         let cols: Vec<(&str, f32)> = [("", CHECK_W)].into_iter().chain(COLS).collect();
         widgets::header_row(ui, &cols);
@@ -244,12 +244,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
             let bx = Rect::from_center_size(pos2(resp.rect.min.x + CHECK_W * 0.5, resp.rect.center().y), vec2(12.0, 12.0));
             let hit = ui.interact(bx.expand(3.0), resp.id.with("on"), if ext { Sense::click() } else { Sense::hover() });
             let p = ui.painter();
-            if t.classic() {
-                widgets::sunken(p, bx, if ext { t.input_bg } else { t.metal.face }, &t.metal);
-            } else {
-                p.rect_filled(bx, 0.0, t.input_bg);
-                p.rect_stroke(bx, 0.0, Stroke::new(1.0_f32, if ext { t.text_dim } else { t.text_dim.gamma_multiply(0.5) }), StrokeKind::Inside);
-            }
+            widgets::sunken(p, bx, if ext { t.input_bg } else { t.metal.face }, &t.metal);
             if on {
                 let c = bx.center();
                 let s = Stroke::new(1.5_f32, if !ext { t.text_dim } else if sel { Color32::WHITE } else { t.text });
@@ -268,7 +263,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
             let color = if sel { Color32::WHITE } else if !on { t.text_dim } else { t.text };
             let status_color = if matches!(r.status, Status::Failed(_)) && !sel { t.warning_text } else { color };
             let x = resp.rect.min.x + CHECK_W;
-            paint_icon(ui.painter(), Rect::from_min_size(pos2(x + 4.0, resp.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, t.look(), sel.then_some(Color32::WHITE));
+            paint_icon(ui.painter(), Rect::from_min_size(pos2(x + 4.0, resp.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, sel.then_some(Color32::WHITE));
             widgets::row_cells(ui, Rect::from_min_max(pos2(x + 18.0, resp.rect.min.y), resp.rect.max), &[("", COLS[0].1 - 18.0)], std::slice::from_ref(&r.name), color);
             let at = |k: usize| x + COLS[..k].iter().map(|c| c.1).sum::<f32>();
             widgets::row_cells(ui, Rect::from_min_max(pos2(at(1), resp.rect.min.y), resp.rect.max), &COLS[1..3], &[r.kind.to_string(), r.group.clone()], color);
@@ -284,11 +279,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
     // Details: "Name, OFX, status: why, file".
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
     let p = ui.painter();
-    if t.classic() {
-        widgets::sunken(p, strip, t.metal.mid, &t.metal);
-    } else {
-        p.rect_filled(strip, 0.0, t.toolbar_bg);
-    }
+    widgets::sunken(p, strip, t.metal.mid, &t.metal);
     if let Some(r) = pm.sel.as_ref().and_then(|k| rows.iter().find(|r| r.key == *k)) {
         let status = match &r.status {
             Status::Failed(w) => format!("Failed: {w}"),

@@ -9,7 +9,7 @@ mod edit_details;
 mod explorer;
 pub mod fonts;
 mod fx_window;
-#[allow(dead_code)] // toolkit for the look stages; not every icon is placed yet
+#[allow(dead_code)] // the icon toolkit; not every icon is placed yet
 pub mod icons;
 mod keyframes;
 pub mod keymap;
@@ -278,10 +278,9 @@ pub struct EditOpts {
     /// View › Video Bus Track; R8b: View › Audio Bus Tracks.
     pub video_bus: bool,
     pub bus_tracks: bool,
-    /// R18a: View › Event Media Markers › Show Markers and Show Marker Labels; View › Event Length (VEGAS 23).
+    /// R18a: View › Event Media Markers › Show Markers and Show Marker Labels.
     pub media_markers: bool,
     pub marker_labels: bool,
-    pub event_length: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

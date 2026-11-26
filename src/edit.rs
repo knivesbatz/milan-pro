@@ -1270,7 +1270,7 @@ pub fn paste_repeat(project: &mut Project, clips: &[(bool, usize, Clip)], at: f6
     ids
 }
 
-/// Select All After Cursor (VP23): every event that starts at or after `t`.
+/// Select All After Cursor (VEGAS 23): every event that starts at or after `t`.
 pub fn select_after(project: &Project, t: f64) -> Vec<String> {
     all_clips(&project.timeline).filter(|c| c.position >= t - 1e-9).map(|c| c.id.clone()).collect()
 }

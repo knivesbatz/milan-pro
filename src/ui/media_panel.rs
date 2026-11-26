@@ -149,23 +149,16 @@ pub fn draw_media_toolbar(
     }
     // Import Media…: icon + text + ▾ in one hover box.
     let (rect, resp) = ui.allocate_exact_size(vec2(124.0, t.m.button), Sense::click());
-    if t.classic() {
-        use super::widgets::Chrome;
-        widgets::chrome_button(ui.painter(), rect, if resp.hovered() { Chrome::Hover } else { Chrome::Raised }, &t.metal);
-    } else if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(t.m.widget_radius), t.button_hover_bg);
-    }
+    use super::widgets::Chrome;
+    widgets::chrome_button(ui.painter(), rect, if resp.hovered() { Chrome::Hover } else { Chrome::Raised }, &t.metal);
     let icon = Rect::from_min_size(pos2(rect.min.x + 3.0, rect.center().y - 8.0), vec2(16.0, 16.0));
-    paint_icon(ui.painter(), icon, Icon::Import, t.look(), None);
+    paint_icon(ui.painter(), icon, Icon::Import, None);
     ui.painter().text(pos2(icon.max.x + 4.0, rect.center().y), Align2::LEFT_CENTER, "Import Media...", t.font(t.font.ui), t.text);
-    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(16.0, 16.0)), Icon::DropDown, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(16.0, 16.0)), Icon::DropDown, None);
     if resp.on_hover_text("Import Media...").clicked() {
         import_media(ui.ctx(), importer);
     }
     tool_button(ui, Icon::Capture, &NotPlanned("R59").tip("Capture Video"), false, false);
-    if t.look() == super::theme::UiLook::Vegas16 {
-        inert_button(ui, Icon::DeviceMedia, &NotPlanned("R59").tip("Import from Device"), false);
-    }
     inert_button(ui, Icon::WebMedia, &NotPlanned("R59").tip("Get Media from the Web"), false);
     if tool_button(ui, Icon::Delete, "Remove Selected Media from Project", selected.is_some(), false).clicked() {
         remove_media(project, history, std::mem::take(&mut view.sel));
@@ -417,11 +410,11 @@ const ITEM_VIEW: &[menus::M] = &[
 ];
 
 const ITEM_V23: &[menus::M] = &[
-    V23(&S),
-    V23(&X("Tempo Detection", NotPlanned("R57"))),
-    V23(&X("Detect Scenes and Add to Timeline", NotPlanned("R57"))),
-    V23(&X("Detect Scenes and Add to Timeline from Cursor", NotPlanned("R57"))),
-    V23(&X("Detect Scenes and Create Subclips", NotPlanned("R57"))),
+    S,
+    X("Tempo Detection", NotPlanned("R57")),
+    X("Detect Scenes and Add to Timeline", NotPlanned("R57")),
+    X("Detect Scenes and Add to Timeline from Cursor", NotPlanned("R57")),
+    X("Detect Scenes and Create Subclips", NotPlanned("R57")),
 ];
 
 /// The Project Media item menu's tables, for the Unfinished Features list.
@@ -442,7 +435,7 @@ fn tree(ui: &mut Ui, view: &mut MediaView) {
     let (mut by_type, mut story) = (view.by_type_open, view.storyboard_open);
     // Custom Bins has an expander but no bins inside yet.
     let mut custom = false;
-    let bin = if theme::get().look() == theme::UiLook::Vegas16 { Icon::MediaBin } else { Icon::TrackVideo };
+    let bin = Icon::TrackVideo;
     node(ui, 0, None, bin, "All Media", Node::All);
     node(ui, 0, Some(&mut by_type), bin, "Media By Type", Node::ByType);
     if by_type {
@@ -502,7 +495,7 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
 fn proxy_badge(p: &Painter, tr: Pos2) {
     let t = theme::get();
     let r = Rect::from_min_max(tr - vec2(13.0, 0.0), tr + vec2(0.0, 13.0));
-    p.rect_filled(r, t.radius(2), t.accent);
+    p.rect_filled(r, 0.0, t.accent);
     p.text(r.center(), Align2::CENTER_CENTER, "P", t.font(10.0), Color32::WHITE);
 }
 
@@ -546,7 +539,7 @@ fn list(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(
         let m = &project.media_pool[i];
         let r = widgets::list_row(ui, ROW_H, sel.contains(&i));
         let icon = if m.media_type == MediaType::Audio { Icon::TrackAudio } else { Icon::TrackVideo };
-        paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, t.look(), None);
+        paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, None);
         let color = if sel.contains(&i) { Color32::WHITE } else { t.text };
         let name = ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
         if crate::proxy::ready(&m.path).is_some() {

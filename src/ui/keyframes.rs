@@ -136,7 +136,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     // VEGAS always shows the first keyframe, even before anything is keyed.
     let keys = if keys.is_empty() { &[(0.0, Curve::Smooth)][..] } else { keys };
     let t = theme::get();
-    let ink = lane_ink(&t);
+    let ink = t;
     let body = rect.with_max_y(rect.max.y - BTN_H);
     let labels = body.with_max_x(body.min.x + LABEL_W);
     let area = body.with_min_x(labels.max.x + 1.0);
@@ -225,25 +225,16 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     ];
     let p = ui.painter_at(rect);
     let row = Rect::from_min_max(pos2(rect.min.x, body.max.y), rect.max);
-    let classic = t.classic();
-    if classic {
-        // Metal button row under a sunken lane well, chrome buttons, a black LCD time read-out.
-        super::widgets::metal_bar(&p, row, &t.metal);
-        super::widgets::bevel(&p, body, false, &t.metal);
-    } else {
-        p.rect_filled(row, 0.0, t.toolbar_bg);
-    }
+    // Metal button row under a sunken lane well, chrome buttons, a black LCD time read-out.
+    super::widgets::metal_bar(&p, row, &t.metal);
+    super::widgets::bevel(&p, body, false, &t.metal);
     for (k, (tip, act)) in buttons.into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(row.min.x + 4.0 + 26.0 * k as f32 + if k > 0 { 8.0 } else { 0.0 }, row.min.y + 3.0), vec2(22.0, 20.0));
         let enabled = k == 0 || act.is_some();
         let b = ui.interact(r, ui.id().with(("kf_btn", k)), if enabled { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
-        if classic {
-            use super::widgets::Chrome;
-            let state = if k == 0 && st.sync { Chrome::Active } else if enabled && b.hovered() { Chrome::Hover } else { Chrome::Raised };
-            super::widgets::chrome_button(&p, r, state, &t.metal);
-        } else if (k == 0 && st.sync) || (enabled && b.hovered()) {
-            p.rect_filled(r, CornerRadius::same(2), if k == 0 && st.sync { t.accent.gamma_multiply(0.6) } else { t.button_hover_bg });
-        }
+        use super::widgets::Chrome;
+        let state = if k == 0 && st.sync { Chrome::Active } else if enabled && b.hovered() { Chrome::Hover } else { Chrome::Raised };
+        super::widgets::chrome_button(&p, r, state, &t.metal);
         glyph(&p, r, k, if enabled { t.icon } else { t.text_disabled });
         if b.clicked() {
             if k == 0 {
@@ -254,21 +245,16 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
         }
     }
     let tc = Rect::from_min_max(pos2(row.max.x - 96.0, row.min.y + 3.0), pos2(row.max.x - 4.0, row.max.y - 3.0));
-    if classic {
-        super::widgets::sunken(&p, tc, t.time_display_bg, &t.metal);
-        p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.bold(11.0), t.time_display_text);
-    } else {
-        p.rect_filled(tc, 0.0, t.kf_lane);
-        p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.font(12.0), ink.text);
-    }
+    super::widgets::sunken(&p, tc, t.time_display_bg, &t.metal);
+    p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.bold(11.0), t.time_display_text);
 
     // ---- Painting ----
-    let p = if classic { p.with_clip_rect(body.shrink(2.0).intersect(p.clip_rect())) } else { p };
+    let p = p.with_clip_rect(body.shrink(2.0).intersect(p.clip_rect()));
     p.rect_filled(labels, 0.0, t.panel_bg);
     p.rect_filled(labels.with_max_y(ruler.max.y), 0.0, t.kf_ruler);
     let r0 = Rect::from_x_y_ranges(labels.x_range(), lane0.y_range());
     p.rect_filled(r0, 0.0, t.kf_row_sel);
-    p.text(r0.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, name, t.font(11.0), if classic { t.text } else { t.text_bright });
+    p.text(r0.left_center() + vec2(6.0, 0.0), Align2::LEFT_CENTER, name, t.font(11.0), t.text);
     p.rect_filled(ruler, 0.0, t.kf_ruler);
     let mut y = lanes.min.y;
     let mut alt = false;
@@ -317,7 +303,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
 /// read-only; Some(k) when lane k's name is clicked. Lanes that do not fit are left out.
 pub fn passive_lanes(ui: &Ui, rect: Rect, span: f64, fps: f64, lanes: &[(&str, &[f64])]) -> Option<usize> {
     let t = theme::get();
-    let ink = lane_ink(&t);
+    let ink = t;
     // The controller's layout: label column, ruler, then its own lane.
     let body = rect.with_max_y(rect.max.y - BTN_H);
     let area = body.with_min_x(body.min.x + LABEL_W + 1.0);
@@ -343,12 +329,6 @@ pub fn passive_lanes(ui: &Ui, rect: Rect, span: f64, fps: f64, lanes: &[(&str, &
         }
     }
     picked
-}
-
-/// The ruler and lanes are dark in every look, White too: what is drawn on them takes VP23 Dark's ink there.
-fn lane_ink(t: &theme::Theme) -> theme::Theme {
-    // VP23 White keeps the dark controller; Classic 2006's lanes are light and take its black ink.
-    if t.dark_mode || t.classic() { t.clone() } else { theme::Theme::vegas23_dark() }
 }
 
 /// Button glyphs: 0 Sync (a padlock), 1 First, 2 Previous, 3 Next, 4 Last, 5 Create (◆+), 6 Delete (◆×).

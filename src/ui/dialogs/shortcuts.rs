@@ -1,22 +1,20 @@
-//! Help › Keyboard Shortcuts: the keys of the current look, the user's (Customize Keyboard) where set.
+//! Help › Keyboard Shortcuts: the keys, the user's (Customize Keyboard) where set.
 use eframe::egui::*;
 use super::super::keymap::{self, TABLE};
-use super::super::{menus, theme};
+use super::super::menus;
 
 /// Shows the list while `open`; × / Esc / OK close it.
 pub fn shortcuts_window(ctx: &Context, open: &mut bool) {
     if !*open {
         return;
     }
-    let look = theme::get().look();
-    let binds = keymap::active(look);
+    let binds = keymap::active();
     // Commands the user gave keys that the table has no row for go by their menu path.
-    let named = if binds.len() > TABLE.len() { menus::named_commands(look) } else { Vec::new() };
-    let classic = theme::get().classic();
+    let named = if binds.len() > TABLE.len() { menus::named_commands() } else { Vec::new() };
     let (ok, close) = super::modal(ctx, "keyboard_shortcuts", "Keyboard Shortcuts", vec2(520.0, 600.0), |ui| {
         let list = |ui: &mut Ui| {
-            ScrollArea::vertical().max_height(if classic { 486.0 } else { 490.0 }).auto_shrink(false).show(ui, |ui| {
-                Grid::new("shortcut_grid").num_columns(2).striped(!classic).spacing(vec2(16.0, 2.0)).show(ui, |ui| {
+            ScrollArea::vertical().max_height(486.0).auto_shrink(false).show(ui, |ui| {
+                Grid::new("shortcut_grid").num_columns(2).striped(false).spacing(vec2(16.0, 2.0)).show(ui, |ui| {
                     for (k, (cmd, keys)) in binds.iter().enumerate() {
                         if keys.is_empty() {
                             continue;
@@ -28,12 +26,8 @@ pub fn shortcuts_window(ctx: &Context, open: &mut bool) {
                 });
             });
         };
-        // Classic 2006: the list in a sunken white box (no stripes).
-        if classic {
-            super::field_box(ui, 0, list);
-        } else {
-            list(ui);
-        }
+        // The list in a sunken white box (no stripes).
+        super::field_box(ui, 0, list);
         ui.add_space(4.0);
         ui.label("Num keys are on the numeric keypad, which Milan Pro cannot tell from the top row: use the other key listed, or the menu.");
         ui.add_space(4.0);

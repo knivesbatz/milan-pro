@@ -10,7 +10,7 @@ use crate::project::*;
 use crate::ui::{EnvSel, Selection};
 use super::super::keymap::Command::*;
 use super::super::menus::{self, Fixed, Later, M, M::*, Mark, NotPlanned, cmd, entry, inert, off, sep, sub};
-use super::super::theme::{self, UiLook};
+use super::super::theme;
 use super::ruler::band_rows;
 use super::{FADE_PX, GROUP_H, Geo, Head, Rename, Row, TlState, envelopes};
 
@@ -65,7 +65,6 @@ const CUT_PX: f32 = 8.0;
 
 /// `env` is the View › Envelopes rows hidden (`EditOpts::hidden_envs`), None while envelopes are not shown.
 fn target(g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Selection, p: Pos2, env: Option<u16>) -> Option<Target> {
-    let t = theme::get();
     let tl = &project.timeline;
     if Rect::from_min_size(g.rect.min, vec2(g.header_w, g.band.height())).contains(p) {
         return Some(Target::TimeDisplay);
@@ -74,7 +73,7 @@ fn target(g: &Geo, rows: &[Row], heads: &[Head], project: &Project, sel: &Select
         if let Some((b, _)) = super::ruler::bar_tags(g, tl).into_iter().find(|(_, r)| r.contains(p)) {
             return Some(Target::Bar(b));
         }
-        let (loop_r, marker_r, _) = band_rows(&t, g.band);
+        let (loop_r, marker_r, _) = band_rows(g.band);
         if marker_r.contains(p) {
             let tag = |x: f32| Rect::from_min_size(pos2(x, marker_r.min.y), TAG).contains(p);
             if let Some(i) = tl.markers.iter().position(|m| tag(g.to_x(m.position).floor())) {
@@ -585,10 +584,10 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         return;
     }
     if v {
-        // The hidden video buttons (§5.9.3): Bypass Motion Blur, Track Motion and, in VP16, Track FX and Compositing
-        // Mode; then Make Compositing Parent / Child, and a parent's Parent Composite Mode and Parent Motion.
+        // The hidden video buttons (§5.9.3): Bypass Motion Blur and Track Motion; then Make Compositing Parent / Child,
+        // and a parent's Parent Composite Mode and Parent Motion.
         let tr = &project.timeline.video_tracks[i];
-        let (id, cur, locked, bypass, child, pmode) = (tr.id.clone(), tr.composite, tr.locked, tr.bypass_blur, tr.child, tr.parent_mode);
+        let (id, locked, bypass, child, pmode) = (tr.id.clone(), tr.locked, tr.bypass_blur, tr.child, tr.parent_mode);
         let parent = edit::is_parent(&project.timeline, i);
         if entry(ui, "&Bypass Motion Blur", "", !locked, Mark::Check(bypass)) {
             history.push(project.clone());
@@ -598,20 +597,7 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         if entry(ui, "Track &Motion...", "", true, Mark::None) {
             crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::TrackMotion(id.clone()));
         }
-        // VP23 shows the fx and Comp buttons on the header, so only VP16 lists them here.
-        if theme::get().look() == UiLook::Vegas16 {
-            if entry(ui, "Track &FX...", "", true, Mark::None) {
-                crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id.clone())));
-            }
-            sub(ui, "&Compositing Mode", true, |ui| {
-                if let Some(m) = crate::ui::trackmotion::composite_menu(ui, cur, !locked) {
-                    let before = project.clone();
-                    if edit::set_composite(project, &id, m) {
-                        history.push(before);
-                    }
-                }
-            });
-        }
+        // The fx and Comp buttons are on the header.
         // Make Compositing Child joins the parent above (the top track has none); Make Compositing Parent leaves it.
         let ids = if sel.tracks.contains(&id) { sel.tracks.clone() } else { vec![id.clone()] };
         for (label, to_child, on) in [("Make Compositing &Parent", false, child), ("Make Compositing &Child", true, !child && i > 0)] {
@@ -641,13 +627,9 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         // becomes the focus, then Arm toggles it, as the header's Arm button does.
         let (id, armed) = (project.timeline.audio_tracks[i].id.clone(), project.timeline.audio_tracks[i].armed);
         let st = menus::state(ui.ctx());
-        if entry(ui, "&Arm for Record", &super::super::keymap::shortcut_text(Arm, st.look), !st.recording, Mark::Check(armed)) {
+        if entry(ui, "&Arm for Record", &super::super::keymap::shortcut_text(Arm), !st.recording, Mark::Check(armed)) {
             (sel.tracks, sel.list_focus, sel.env) = (vec![id.clone()], true, None);
             menus::send(ui.ctx(), Arm);
-        }
-        // VP16 keeps the audio Track FX button hidden too (VP23 shows it on the header).
-        if theme::get().look() == UiLook::Vegas16 && entry(ui, "Track &FX...", "", true, Mark::None) {
-            crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id)));
         }
         sep(ui);
     }
@@ -728,10 +710,9 @@ fn track_group(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &
         }
     }
     sep(ui);
-    let look = menus::state(ui.ctx()).look;
     let first = grp.as_ref().and_then(|g| g.tracks.first().cloned());
     for (label, solo, c, on) in [("&Mute Track Group", false, GroupMute, grp.as_ref().is_some_and(|g| g.muted)), ("&Solo Track Group", true, GroupSolo, grp.as_ref().is_some_and(|g| g.solo))] {
-        if entry(ui, label, &super::super::keymap::shortcut_text(c, look), first.is_some(), Mark::Check(on)) {
+        if entry(ui, label, &super::super::keymap::shortcut_text(c), first.is_some(), Mark::Check(on)) {
             if let Some(f) = &first {
                 undoable(project, history, &|p| edit::toggle_track_groups(p, std::slice::from_ref(f), solo));
             }
@@ -757,7 +738,6 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
     if i >= project.timeline.tracks(v).len() {
         return;
     }
-    let v23 = theme::get().look().v23();
     let rename = |ui: &mut Ui, project: &Project, st: &mut TlState| {
         if entry(ui, "&Rename", "F2", true, Mark::None) {
             st.rename = Some((Rename::Track(v, i), project.timeline.tracks(v)[i].name.clone()));
@@ -781,9 +761,7 @@ fn track_header(ui: &mut Ui, project: &mut Project, history: &mut History, sel: 
         cmd(ui, "Set De&fault Track Properties...", DefaultTrackFx);
         sep(ui);
         track_group_and_color(ui, project, history, sel, st, v, i);
-        if v23 {
-            cmd(ui, "Select All After Cursor", SelectAfterCursor);
-        }
+        cmd(ui, "Select All After Cursor", SelectAfterCursor);
     } else {
         if entry(ui, "Hide", "", true, Mark::None) {
             // The clicked track, or every selected track when it is one of them; a view change (no undo step).
@@ -837,7 +815,7 @@ fn lane(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String
     if v {
         sep(ui);
         sub(ui, "Fade Colors", true, |ui| fade_colors(ui, project, history, st, i));
-        menus::show(ui, &[V23(&C("Insert Slideshow", InsertSlideshow))]);
+        menus::show(ui, &[C("Insert Slideshow", InsertSlideshow)]);
     } else {
         if entry(ui, "FX Automation Envelopes", "", true, Mark::None) {
             crate::ui::automation::open_chooser(ui.ctx(), &project.timeline.audio_tracks[i].id);
@@ -998,11 +976,11 @@ const EVENT_TAIL: &[M] = &[
     X("Remove Sync Link from Selected Events", NotPlanned("R58")),
     S,
     C("&Properties...", EventProperties),
-    V23(&S),
-    V23(&C("Motion Tracking", MotionTracking)),
-    V23(&X("Add Missing Stream for Selected Event", NotPlanned("R58"))),
-    V23(&C("Open Nested Timeline", NestedOpen)),
-    V23(&X("Beat Detection", NotPlanned("R57"))),
+    S,
+    C("Motion Tracking", MotionTracking),
+    X("Add Missing Stream for Selected Event", NotPlanned("R58")),
+    C("Open Nested Timeline", NestedOpen),
+    X("Beat Detection", NotPlanned("R57")),
 ];
 
 const VIDEO_EVENT: &[M] = &[

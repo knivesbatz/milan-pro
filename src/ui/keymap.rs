@@ -1,11 +1,10 @@
-//! Commands and the default keymap (§7). One table holds every default binding for both looks; the menus read
-//! their shortcut text from it and the app turns key presses into `Command`s through it. R15: the keys the user set
-//! in Options › Customize Keyboard (per look) replace a command's row (`set_overrides`).
+//! Commands and the default keymap (VEGAS_UI_SPEC.md §7, the VEGAS 23 keys). One table holds every default binding;
+//! the menus read their shortcut text from it and the app turns key presses into `Command`s through it. R15: the keys
+//! the user set in Options › Customize Keyboard replace a command's row (`set_overrides`).
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, RwLock};
 use eframe::egui::{Context, Event, Key, Modifiers};
 use super::dock::Panel;
-use super::theme::UiLook;
 use crate::decode::Quality;
 
 /// Everything a menu item, context menu or shortcut can ask the app to do. Commands Milan Pro cannot carry out
@@ -52,8 +51,7 @@ pub enum Command {
     BusTracks, VideoBusTrack, MediaMarkers, TakeInfo, Waveforms, EventButtons, FadeLengths, EdgeFrames, EventHeaders,
     NextWindow, PrevWindow, PreviewQuality(Quality),
     // Docking and layouts
-    ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutDefault, LayoutVp14,
-    LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
+    ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutDefault, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop, LayoutUser(usize), SaveLayoutUser(usize), SaveLayout,
     SaveLayoutAs, OrganizeLayouts, ReloadLayout,
     // Windows
     FocusTimeline, Window(Panel), ShowWindow(Panel), SurroundPanner,
@@ -70,9 +68,9 @@ pub enum Command {
     /// R47: View › Command Palette, Milan Pro's own (VEGAS has none); its key is `palette::KEY`.
     CommandPalette,
     // Context-menu and preference commands without default keys
-    EventOpenInTrimmer, EventSelectInMedia, EventProperties, SpacePlayPause, EventReverse, EventMute, LockEnvelopes,
+    EventOpenInTrimmer, EventSelectInMedia, EventProperties, EventReverse, EventMute, LockEnvelopes,
     ChooseActiveTake, DeleteActiveTake, DeleteTake,
-    /// Edit › Select › Exit (Expanded) Edit Mode; Select All After Cursor (VP23); the event menu's Select Events to End.
+    /// Edit › Select › Exit (Expanded) Edit Mode; Select All After Cursor; the event menu's Select Events to End.
     ExitEditMode, SelectAfterCursor, SelectEventsToEnd,
     /// Options › Mute All Audio / Mute All Video (playback only).
     MuteAllAudio, MuteAllVideo,
@@ -96,7 +94,7 @@ pub enum Command {
     /// Frame at Cursor, and its transitions' Transition Progress.
     EventVelocity, FreezeFrame, TransitionProgress,
     /// R8c: Insert/Remove Envelope › Volume, Pan or Mute on the selected audio events (the event menu); View › Show OFX
-    /// Effect Envelopes (Beta, VP23).
+    /// Effect Envelopes (Beta).
     EventEnvelope(crate::project::EnvKind), OfxEnvelopes,
     /// Edit › Editing Tool items and the transport tool radios.
     Tool(super::EditTool),
@@ -153,7 +151,6 @@ impl Command {
         use super::dock::Builtin as B;
         Some(match self {
             LayoutDefault => B::Default,
-            LayoutVp14 => B::Classic,
             LayoutAudio => B::AudioMixing,
             LayoutColor => B::ColorCorrection,
             LayoutSource => B::Source,
@@ -163,271 +160,266 @@ impl Command {
     }
 }
 
-/// One row of §7: command, name (Help › Keyboard Shortcuts), VP23 keys, VP16 keys when they differ (`Some(&[])` =
-/// none). A key is "Ctrl+Shift+Z"; a chord is two strokes separated by a space ("Alt+D D"); "Num 5" is a numpad
+/// One row of §7: command, name (Help › Keyboard Shortcuts), keys. A key is "Ctrl+Shift+Z"; a chord is two strokes separated by a space ("Alt+D D"); "Num 5" is a numpad
 /// key, which egui cannot tell from the digit row, so it is listed but never matched.
-type Row = (Command, &'static str, &'static [&'static str], Option<&'static [&'static str]>);
+type Row = (Command, &'static str, &'static [&'static str]);
 
 pub const TABLE: &[Row] = &[
     // File
-    (New, "New", &["Ctrl+N"], None),
-    (NewEmpty, "New, skipping Properties", &["Ctrl+Shift+N"], None),
-    (Open, "Open", &["Ctrl+O"], None),
-    (Close, "Close", &["Ctrl+F4"], None),
-    (Save, "Save", &["Ctrl+S"], None),
-    (SaveAs, "Save As", &["Ctrl+Shift+S"], Some(&[])),
-    (SaveVersion, "Save Version", &["Ctrl+Alt+S"], Some(&[])),
-    (Properties, "Properties", &["Alt+Enter"], None),
-    (Exit, "Exit", &["Alt+F4"], None),
+    (New, "New", &["Ctrl+N"]),
+    (NewEmpty, "New, skipping Properties", &["Ctrl+Shift+N"]),
+    (Open, "Open", &["Ctrl+O"]),
+    (Close, "Close", &["Ctrl+F4"]),
+    (Save, "Save", &["Ctrl+S"]),
+    (SaveAs, "Save As", &["Ctrl+Shift+S"]),
+    (SaveVersion, "Save Version", &["Ctrl+Alt+S"]),
+    (Properties, "Properties", &["Alt+Enter"]),
+    (Exit, "Exit", &["Alt+F4"]),
     // Edit
-    (Undo, "Undo", &["Ctrl+Z", "Alt+Backspace"], None),
-    (Redo, "Redo", &["Ctrl+Shift+Z", "Ctrl+Y"], None),
-    (Cut, "Cut", &["Ctrl+X", "Shift+Delete"], None),
-    (Copy, "Copy", &["Ctrl+C", "Ctrl+Insert"], None),
-    (Paste, "Paste", &["Ctrl+V", "Shift+Insert"], None),
-    (PasteInsert, "Paste Insert", &["Ctrl+Shift+V"], None),
-    (PasteRepeat, "Paste Repeat", &["Ctrl+B"], None),
-    (Delete, "Delete", &["Delete"], None),
-    (Trim, "Trim", &["Ctrl+T"], None),
-    (TrimStart, "Trim Start", &["Alt+["], None),
-    (TrimEnd, "Trim End", &["Alt+]"], None),
-    (Split, "Split", &["S"], None),
-    (SmartSplit, "Smart Split", &["Alt+S"], Some(&[])),
-    (RenameEvent, "Rename event", &["F2"], Some(&[])),
-    (SelectAll, "Select All", &["Ctrl+A"], None),
-    (SelectNone, "Select None", &["Ctrl+Shift+A"], None),
-    (NormalTool, "Normal Edit Tool", &["Ctrl+D"], None),
-    (NextTool, "Next Tool", &["D"], None),
-    (PrevTool, "Previous Tool", &["Shift+D"], None),
-    (Group, "Group: Create New", &["G"], None),
-    (RemoveFromGroup, "Group: Remove From", &["U"], None),
-    (ClearGroup, "Group: Clear", &["Ctrl+U"], None),
-    (SelectGroup, "Group: Select All", &["Shift+G"], None),
-    (IgnoreGrouping, "Ignore Event Grouping", &["Ctrl+Shift+U"], None),
-    (NextTake, "Next Take", &["T"], None),
-    (PrevTake, "Previous Take", &["Shift+T"], None),
-    (RippleAffected, "Post-Edit Ripple: Affected Tracks", &["F"], None),
-    (RippleBus, "Post-Edit Ripple: Tracks, Bus Tracks, Markers, Regions", &["Ctrl+F"], None),
-    (RippleAll, "Post-Edit Ripple: All Tracks, Markers, Regions", &["Ctrl+Shift+F"], None),
-    (AutoRipple, "Auto Ripple", &["Ctrl+L"], None),
-    (AutoCrossfade, "Automatic Crossfades", &["Ctrl+Shift+X"], None),
-    (NestedCreate, "Create Nested Timeline", &["Alt+C"], Some(&[])),
-    (NestedOpen, "Open Nested Timeline", &["Alt+N"], Some(&[])),
-    (NestedParent, "Open Parent Timeline", &["Alt+P"], Some(&[])),
-    (RenderToNewTrack, "Render to New Track", &["Ctrl+M"], None),
-    (OpenInAudioEditor, "Open in Audio Editor", &["Ctrl+E"], None),
-    (Multicam, "Enable Multicamera Editing", &["Ctrl+Shift+D"], None),
+    (Undo, "Undo", &["Ctrl+Z", "Alt+Backspace"]),
+    (Redo, "Redo", &["Ctrl+Shift+Z", "Ctrl+Y"]),
+    (Cut, "Cut", &["Ctrl+X", "Shift+Delete"]),
+    (Copy, "Copy", &["Ctrl+C", "Ctrl+Insert"]),
+    (Paste, "Paste", &["Ctrl+V", "Shift+Insert"]),
+    (PasteInsert, "Paste Insert", &["Ctrl+Shift+V"]),
+    (PasteRepeat, "Paste Repeat", &["Ctrl+B"]),
+    (Delete, "Delete", &["Delete"]),
+    (Trim, "Trim", &["Ctrl+T"]),
+    (TrimStart, "Trim Start", &["Alt+["]),
+    (TrimEnd, "Trim End", &["Alt+]"]),
+    (Split, "Split", &["S"]),
+    (SmartSplit, "Smart Split", &["Alt+S"]),
+    (RenameEvent, "Rename event", &["F2"]),
+    (SelectAll, "Select All", &["Ctrl+A"]),
+    (SelectNone, "Select None", &["Ctrl+Shift+A"]),
+    (NormalTool, "Normal Edit Tool", &["Ctrl+D"]),
+    (NextTool, "Next Tool", &["D"]),
+    (PrevTool, "Previous Tool", &["Shift+D"]),
+    (Group, "Group: Create New", &["G"]),
+    (RemoveFromGroup, "Group: Remove From", &["U"]),
+    (ClearGroup, "Group: Clear", &["Ctrl+U"]),
+    (SelectGroup, "Group: Select All", &["Shift+G"]),
+    (IgnoreGrouping, "Ignore Event Grouping", &["Ctrl+Shift+U"]),
+    (NextTake, "Next Take", &["T"]),
+    (PrevTake, "Previous Take", &["Shift+T"]),
+    (RippleAffected, "Post-Edit Ripple: Affected Tracks", &["F"]),
+    (RippleBus, "Post-Edit Ripple: Tracks, Bus Tracks, Markers, Regions", &["Ctrl+F"]),
+    (RippleAll, "Post-Edit Ripple: All Tracks, Markers, Regions", &["Ctrl+Shift+F"]),
+    (AutoRipple, "Auto Ripple", &["Ctrl+L"]),
+    (AutoCrossfade, "Automatic Crossfades", &["Ctrl+Shift+X"]),
+    (NestedCreate, "Create Nested Timeline", &["Alt+C"]),
+    (NestedOpen, "Open Nested Timeline", &["Alt+N"]),
+    (NestedParent, "Open Parent Timeline", &["Alt+P"]),
+    (RenderToNewTrack, "Render to New Track", &["Ctrl+M"]),
+    (OpenInAudioEditor, "Open in Audio Editor", &["Ctrl+E"]),
+    (Multicam, "Enable Multicamera Editing", &["Ctrl+Shift+D"]),
     // Playback
-    (PlayStop, "Play/Stop (back to the start)", &[], Some(&["Space", "F12"])),
-    (PlayPause, "Play/Pause", &["Space", "Enter", "Ctrl+F12"], Some(&["Enter", "Ctrl+F12"])),
-    (PlayFromStart, "Play from Start", &["Shift+Space", "Shift+F12"], None),
-    (PlayAnyWindow, "Play from any window", &["Ctrl+Space", "F12"], Some(&["Ctrl+Space"])),
-    (Stop, "Stop", &["Escape"], None),
-    (Loop, "Loop Playback", &["Q", "Ctrl+Shift+L"], None),
-    (Record, "Record", &["Ctrl+R"], None),
-    (Arm, "Arm track for record", &["Ctrl+Alt+R"], None),
-    (ShuttleReverse, "Shuttle reverse (repeat = faster)", &["J"], None),
-    (ShuttlePause, "Shuttle pause", &["K"], None),
-    (ShuttleForward, "Shuttle forward (repeat = faster)", &["L"], None),
-    (PreviewAtCursor, "Preview at cursor", &["Num 0", "Ctrl+Shift+Space"], None),
-    (DimMaster, "Dim master", &["Ctrl+Shift+F12"], None),
-    (Prerender, "Selectively Prerender Video", &["Shift+M"], None),
-    (RamPreview, "Build Dynamic RAM Preview", &["Shift+B"], None),
-    (CleanPrerender, "Clean Up Prerendered Video", &[], None),
-    (ClearRamPreview, "Clear Dynamic RAM Preview", &[], None),
-    (ExternalMonitor, "Preview on External Monitor", &["Alt+Shift+4"], None),
+    (PlayStop, "Play/Stop (back to the start)", &[]),
+    (PlayPause, "Play/Pause", &["Space", "Enter", "Ctrl+F12"]),
+    (PlayFromStart, "Play from Start", &["Shift+Space", "Shift+F12"]),
+    (PlayAnyWindow, "Play from any window", &["Ctrl+Space", "F12"]),
+    (Stop, "Stop", &["Escape"]),
+    (Loop, "Loop Playback", &["Q", "Ctrl+Shift+L"]),
+    (Record, "Record", &["Ctrl+R"]),
+    (Arm, "Arm track for record", &["Ctrl+Alt+R"]),
+    (ShuttleReverse, "Shuttle reverse (repeat = faster)", &["J"]),
+    (ShuttlePause, "Shuttle pause", &["K"]),
+    (ShuttleForward, "Shuttle forward (repeat = faster)", &["L"]),
+    (PreviewAtCursor, "Preview at cursor", &["Num 0", "Ctrl+Shift+Space"]),
+    (DimMaster, "Dim master", &["Ctrl+Shift+F12"]),
+    (Prerender, "Selectively Prerender Video", &["Shift+M"]),
+    (RamPreview, "Build Dynamic RAM Preview", &["Shift+B"]),
+    (CleanPrerender, "Clean Up Prerendered Video", &[]),
+    (ClearRamPreview, "Clear Dynamic RAM Preview", &[]),
+    (ExternalMonitor, "Preview on External Monitor", &["Alt+Shift+4"]),
     // Cursor
-    (GoToStart, "Go to Project Start", &["Ctrl+Home", "W"], None),
-    (GoToEnd, "Go to Project End", &["Ctrl+End"], None),
-    (SelOrViewStart, "Go to Time Selection/View Start", &["Home"], None),
-    (SelOrViewEnd, "Go to Time Selection/View End", &["End"], None),
-    (PrevFrame, "Move Left by Frame", &["Alt+Left"], None),
-    (NextFrame, "Move Right by Frame", &["Alt+Right"], None),
-    (PixelLeft, "Move Left by Pixel", &["Left"], None),
-    (PixelRight, "Move Right by Pixel", &["Right"], None),
-    (GridLeft, "Move Left by Grid Marks", &["PageUp"], None),
-    (GridRight, "Move Right by Grid Marks", &["PageDown"], None),
-    (PrevMarker, "Move Left by Marker/Region", &["Ctrl+Left"], None),
-    (NextMarker, "Move Right by Marker/Region", &["Ctrl+Right"], None),
-    (SelectToNextMarker, "Time Select Right by Marker/Region", &["Ctrl+Shift+Right"], None),
-    (PrevEditPoint, "Move Left by Event Edit Points", &["Ctrl+Alt+Left"], None),
-    (NextEditPoint, "Move Right by Event Edit Points", &["Ctrl+Alt+Right"], None),
-    (SelEventStart, "Move Left by Selected Event", &["Ctrl+["], None),
-    (SelEventEnd, "Move Right by Selected Event", &["Ctrl+]"], None),
-    (GoTo, "Go to Time", &["Ctrl+G"], None),
-    (Marker(1), "Go to marker 1", &["1"], None),
-    (Marker(2), "Go to marker 2", &["2"], None),
-    (Marker(3), "Go to marker 3", &["3"], None),
-    (Marker(4), "Go to marker 4", &["4"], None),
-    (Marker(5), "Go to marker 5", &["5"], None),
-    (Marker(6), "Go to marker 6", &["6"], None),
-    (Marker(7), "Go to marker 7", &["7"], None),
-    (Marker(8), "Go to marker 8", &["8"], None),
-    (Marker(9), "Go to marker 9", &["9"], None),
-    (Marker(10), "Go to marker 10", &["0"], None),
-    (CenterView, "Center View around Cursor", &["\\"], None),
-    (CursorToPlayhead, "Move Cursor to Playhead", &["Alt+Down"], None),
-    (JogLeft, "Jog left (edge mode: trim left)", &["F3"], None),
-    (JogRight, "Jog right (edge mode: trim right)", &["F9"], None),
+    (GoToStart, "Go to Project Start", &["Ctrl+Home", "W"]),
+    (GoToEnd, "Go to Project End", &["Ctrl+End"]),
+    (SelOrViewStart, "Go to Time Selection/View Start", &["Home"]),
+    (SelOrViewEnd, "Go to Time Selection/View End", &["End"]),
+    (PrevFrame, "Move Left by Frame", &["Alt+Left"]),
+    (NextFrame, "Move Right by Frame", &["Alt+Right"]),
+    (PixelLeft, "Move Left by Pixel", &["Left"]),
+    (PixelRight, "Move Right by Pixel", &["Right"]),
+    (GridLeft, "Move Left by Grid Marks", &["PageUp"]),
+    (GridRight, "Move Right by Grid Marks", &["PageDown"]),
+    (PrevMarker, "Move Left by Marker/Region", &["Ctrl+Left"]),
+    (NextMarker, "Move Right by Marker/Region", &["Ctrl+Right"]),
+    (SelectToNextMarker, "Time Select Right by Marker/Region", &["Ctrl+Shift+Right"]),
+    (PrevEditPoint, "Move Left by Event Edit Points", &["Ctrl+Alt+Left"]),
+    (NextEditPoint, "Move Right by Event Edit Points", &["Ctrl+Alt+Right"]),
+    (SelEventStart, "Move Left by Selected Event", &["Ctrl+["]),
+    (SelEventEnd, "Move Right by Selected Event", &["Ctrl+]"]),
+    (GoTo, "Go to Time", &["Ctrl+G"]),
+    (Marker(1), "Go to marker 1", &["1"]),
+    (Marker(2), "Go to marker 2", &["2"]),
+    (Marker(3), "Go to marker 3", &["3"]),
+    (Marker(4), "Go to marker 4", &["4"]),
+    (Marker(5), "Go to marker 5", &["5"]),
+    (Marker(6), "Go to marker 6", &["6"]),
+    (Marker(7), "Go to marker 7", &["7"]),
+    (Marker(8), "Go to marker 8", &["8"]),
+    (Marker(9), "Go to marker 9", &["9"]),
+    (Marker(10), "Go to marker 10", &["0"]),
+    (CenterView, "Center View around Cursor", &["\\"]),
+    (CursorToPlayhead, "Move Cursor to Playhead", &["Alt+Down"]),
+    (JogLeft, "Jog left (edge mode: trim left)", &["F3"]),
+    (JogRight, "Jog right (edge mode: trim right)", &["F9"]),
     // Selection
-    (SetSelStart, "Set Selection Start", &["I"], None),
-    (SetSelEnd, "Set Selection End", &["O"], None),
-    (SelectLoopRegion, "Select Loop Region", &["Shift+Q"], None),
-    (RestoreSelection, "Restore Previous Time Selection", &["Backspace"], None),
-    (SelPrevEvent, "Set Selection to Previous Selected Event", &["Ctrl+Shift+["], None),
-    (SelNextEvent, "Set Selection to Next Selected Event", &["Ctrl+Shift+]"], None),
-    (SelectEventStart, "Select Event Start / previous event edge (edge-trimming mode)", &["[", "Num 7"], None),
-    (SelectEventEnd, "Select Event End / next event edge (edge-trimming mode)", &["]", "Num 9"], None),
-    (ExpandedEdit, "Enter/Exit Expanded Edit Mode", &["Num 5"], None),
+    (SetSelStart, "Set Selection Start", &["I"]),
+    (SetSelEnd, "Set Selection End", &["O"]),
+    (SelectLoopRegion, "Select Loop Region", &["Shift+Q"]),
+    (RestoreSelection, "Restore Previous Time Selection", &["Backspace"]),
+    (SelPrevEvent, "Set Selection to Previous Selected Event", &["Ctrl+Shift+["]),
+    (SelNextEvent, "Set Selection to Next Selected Event", &["Ctrl+Shift+]"]),
+    (SelectEventStart, "Select Event Start / previous event edge (edge-trimming mode)", &["[", "Num 7"]),
+    (SelectEventEnd, "Select Event End / next event edge (edge-trimming mode)", &["]", "Num 9"]),
+    (ExpandedEdit, "Enter/Exit Expanded Edit Mode", &["Num 5"]),
     // Event nudge
-    (NudgeFrameLeft, "Move selected events left 1 frame (edge mode: trim)", &["Num 1", "Alt+,"], None),
-    (NudgeFrameRight, "Move selected events right 1 frame (edge mode: trim)", &["Num 3", "Alt+."], None),
-    (NudgePixelLeft, "Move selected events left 1 pixel (edge mode: trim)", &["Num 4", "Alt+Shift+,"], None),
-    (NudgePixelRight, "Move selected events right 1 pixel (edge mode: trim)", &["Num 6", "Alt+Shift+."], None),
-    (NudgeTrackUp, "Move selected events up a track", &["Num 8", "Alt+PageUp"], None),
-    (NudgeTrackDown, "Move selected events down a track", &["Num 2", "Alt+PageDown"], None),
-    (PitchUp, "Pitch up a semitone", &["="], None),
-    (PitchDown, "Pitch down a semitone", &["-"], None),
-    (PitchCentUp, "Pitch up a cent", &["Ctrl+="], None),
-    (PitchCentDown, "Pitch down a cent", &["Ctrl+-"], None),
-    (PitchOctUp, "Pitch up an octave", &["Shift+="], None),
-    (PitchOctDown, "Pitch down an octave", &["Shift+-"], None),
+    (NudgeFrameLeft, "Move selected events left 1 frame (edge mode: trim)", &["Num 1", "Alt+,"]),
+    (NudgeFrameRight, "Move selected events right 1 frame (edge mode: trim)", &["Num 3", "Alt+."]),
+    (NudgePixelLeft, "Move selected events left 1 pixel (edge mode: trim)", &["Num 4", "Alt+Shift+,"]),
+    (NudgePixelRight, "Move selected events right 1 pixel (edge mode: trim)", &["Num 6", "Alt+Shift+."]),
+    (NudgeTrackUp, "Move selected events up a track", &["Num 8", "Alt+PageUp"]),
+    (NudgeTrackDown, "Move selected events down a track", &["Num 2", "Alt+PageDown"]),
+    (PitchUp, "Pitch up a semitone", &["="]),
+    (PitchDown, "Pitch down a semitone", &["-"]),
+    (PitchCentUp, "Pitch up a cent", &["Ctrl+="]),
+    (PitchCentDown, "Pitch down a cent", &["Ctrl+-"]),
+    (PitchOctUp, "Pitch up an octave", &["Shift+="]),
+    (PitchOctDown, "Pitch down an octave", &["Shift+-"]),
     // Markers
-    (InsertMarker, "Insert Marker", &["M"], None),
-    (InsertRegion, "Insert Region", &["R"], None),
-    (InsertCommand, "Insert Command", &["C"], None),
-    (CdTrack, "Insert Audio CD Track Region", &["N"], None),
-    (CdIndex, "Insert Audio CD Track Index", &["Shift+N"], None),
+    (InsertMarker, "Insert Marker", &["M"]),
+    (InsertRegion, "Insert Region", &["R"]),
+    (InsertCommand, "Insert Command", &["C"]),
+    (CdTrack, "Insert Audio CD Track Region", &["N"]),
+    (CdIndex, "Insert Audio CD Track Index", &["Shift+N"]),
     // Tracks
-    (InsertAudioTrack, "Insert Audio Track", &["Ctrl+Q"], None),
-    (InsertVideoTrack, "Insert Video Track", &["Ctrl+Shift+Q"], None),
-    (InsertAdjustmentTrack, "Insert Adjustment Track", &["Ctrl+Shift+Alt+Q"], Some(&[])),
-    (MuteTrack, "Mute track", &["Z"], None),
-    (MuteExclusive, "Exclusive mute", &["Shift+Z"], None),
-    (SoloTrack, "Solo track", &["X"], None),
-    (SoloExclusive, "Exclusive solo", &["Shift+X"], None),
-    (GroupMute, "Mute track group", &["Ctrl+Alt+Z"], None),
-    (GroupSolo, "Solo track group", &["Ctrl+Alt+X"], None),
-    (FocusPrevTrack, "Focus previous track", &["Alt+Shift+Up"], None),
-    (FocusNextTrack, "Focus next track", &["Alt+Shift+Down"], None),
-    (ToggleListFocus, "Track list / timeline focus", &["Tab"], None),
-    (VolumeEnvelope, "Volume envelope", &["V"], None),
-    (PanEnvelope, "Pan envelope", &["P"], None),
-    (RemoveVolumeEnvelope, "Remove volume envelope", &["Shift+V"], None),
-    (RemovePanEnvelope, "Remove pan envelope", &["Shift+P"], None),
-    (NextFxEnvelope, "Next FX envelope", &["E"], None),
-    (PrevFxEnvelope, "Previous FX envelope", &["Shift+E"], None),
-    (ShowEnvelopes, "Show Envelopes", &["Ctrl+Shift+E"], None),
+    (InsertAudioTrack, "Insert Audio Track", &["Ctrl+Q"]),
+    (InsertVideoTrack, "Insert Video Track", &["Ctrl+Shift+Q"]),
+    (InsertAdjustmentTrack, "Insert Adjustment Track", &["Ctrl+Shift+Alt+Q"]),
+    (MuteTrack, "Mute track", &["Z"]),
+    (MuteExclusive, "Exclusive mute", &["Shift+Z"]),
+    (SoloTrack, "Solo track", &["X"]),
+    (SoloExclusive, "Exclusive solo", &["Shift+X"]),
+    (GroupMute, "Mute track group", &["Ctrl+Alt+Z"]),
+    (GroupSolo, "Solo track group", &["Ctrl+Alt+X"]),
+    (FocusPrevTrack, "Focus previous track", &["Alt+Shift+Up"]),
+    (FocusNextTrack, "Focus next track", &["Alt+Shift+Down"]),
+    (ToggleListFocus, "Track list / timeline focus", &["Tab"]),
+    (VolumeEnvelope, "Volume envelope", &["V"]),
+    (PanEnvelope, "Pan envelope", &["P"]),
+    (RemoveVolumeEnvelope, "Remove volume envelope", &["Shift+V"]),
+    (RemovePanEnvelope, "Remove pan envelope", &["Shift+P"]),
+    (NextFxEnvelope, "Next FX envelope", &["E"]),
+    (PrevFxEnvelope, "Previous FX envelope", &["Shift+E"]),
+    (ShowEnvelopes, "Show Envelopes", &["Ctrl+Shift+E"]),
     // Snapping
-    (Snapping, "Enable Snapping", &["F8"], None),
-    (SnapGrid, "Snap to Grid", &["Ctrl+F8"], None),
-    (SnapMarkers, "Snap to Markers", &["Shift+F8"], None),
-    (SnapAllEvents, "Snap to All Events", &["Ctrl+Shift+F8"], None),
-    (Quantize, "Quantize to Frames", &["Alt+F8"], None),
+    (Snapping, "Enable Snapping", &["F8"]),
+    (SnapGrid, "Snap to Grid", &["Ctrl+F8"]),
+    (SnapMarkers, "Snap to Markers", &["Shift+F8"]),
+    (SnapAllEvents, "Snap to All Events", &["Ctrl+Shift+F8"]),
+    (Quantize, "Quantize to Frames", &["Alt+F8"]),
     // Zoom
-    (ZoomIn, "Zoom in horizontally", &["Up"], None),
-    (ZoomOut, "Zoom out horizontally", &["Down"], None),
-    (ZoomSelection, "Zoom Selection / zoom in large", &["Ctrl+Up"], None),
-    (ZoomOutLarge, "Zoom out large", &["Ctrl+Down"], None),
-    (ZoomFramePerThumb, "One frame per thumbnail", &["Alt+Up"], None),
-    (WaveZoomIn, "Waveform zoom in", &["Shift+Up"], None),
-    (WaveZoomOut, "Waveform zoom out", &["Shift+Down"], None),
-    (TracksTaller, "All tracks taller", &["Ctrl+Shift+Up"], None),
-    (TracksShorter, "All tracks shorter", &["Ctrl+Shift+Down"], None),
-    (MinimizeTracks, "Minimize/restore all tracks", &["`"], None),
-    (DefaultTrackHeights, "Default track heights", &["Ctrl+`"], None),
+    (ZoomIn, "Zoom in horizontally", &["Up"]),
+    (ZoomOut, "Zoom out horizontally", &["Down"]),
+    (ZoomSelection, "Zoom Selection / zoom in large", &["Ctrl+Up"]),
+    (ZoomOutLarge, "Zoom out large", &["Ctrl+Down"]),
+    (ZoomFramePerThumb, "One frame per thumbnail", &["Alt+Up"]),
+    (WaveZoomIn, "Waveform zoom in", &["Shift+Up"]),
+    (WaveZoomOut, "Waveform zoom out", &["Shift+Down"]),
+    (TracksTaller, "All tracks taller", &["Ctrl+Shift+Up"]),
+    (TracksShorter, "All tracks shorter", &["Ctrl+Shift+Down"]),
+    (MinimizeTracks, "Minimize/restore all tracks", &["`"]),
+    (DefaultTrackHeights, "Default track heights", &["Ctrl+`"]),
     // View
-    (BusTracks, "Audio Bus Tracks", &["B"], None),
-    (VideoBusTrack, "Video Bus Track", &["Ctrl+Shift+B"], None),
-    (MediaMarkers, "Show Event Media Markers", &["Ctrl+Shift+K"], None),
-    (TakeInfo, "Active Take Information", &["Ctrl+Shift+I"], None),
-    (Waveforms, "Audio Event Waveforms", &["Ctrl+Shift+W"], None),
-    (EventButtons, "Event Buttons", &["Ctrl+Shift+C"], None),
-    (FadeLengths, "Event Fade Lengths", &["Ctrl+Shift+T"], None),
-    (EdgeFrames, "Video Event Edge Edit Frames", &["Ctrl+Shift+O"], None),
-    (EventHeaders, "Event Headers", &["Ctrl+Alt+M"], Some(&[])),
-    (NextWindow, "Next window", &["F6", "Ctrl+Tab"], None),
-    (PrevWindow, "Previous window", &["Shift+F6", "Ctrl+Shift+Tab"], None),
+    (BusTracks, "Audio Bus Tracks", &["B"]),
+    (VideoBusTrack, "Video Bus Track", &["Ctrl+Shift+B"]),
+    (MediaMarkers, "Show Event Media Markers", &["Ctrl+Shift+K"]),
+    (TakeInfo, "Active Take Information", &["Ctrl+Shift+I"]),
+    (Waveforms, "Audio Event Waveforms", &["Ctrl+Shift+W"]),
+    (EventButtons, "Event Buttons", &["Ctrl+Shift+C"]),
+    (FadeLengths, "Event Fade Lengths", &["Ctrl+Shift+T"]),
+    (EdgeFrames, "Video Event Edge Edit Frames", &["Ctrl+Shift+O"]),
+    (EventHeaders, "Event Headers", &["Ctrl+Alt+M"]),
+    (NextWindow, "Next window", &["F6", "Ctrl+Tab"]),
+    (PrevWindow, "Previous window", &["Shift+F6", "Ctrl+Shift+Tab"]),
     // Docking
-    (ToggleDocks, "Minimize/restore all docks", &["F11", "Alt+`"], Some(&["F11"])),
-    (TopDock, "Top dock", &["Alt+F11"], Some(&[])),
-    (BottomDock, "Bottom dock", &["Ctrl+Alt+F11"], Some(&[])),
-    (RightDock, "Right dock", &["Ctrl+Shift+F11"], Some(&[])),
-    (CollapseTrackList, "Collapse track headers", &["Ctrl+F11"], Some(&["Shift+F11"])),
-    (MaximizeTimeline, "Maximize timeline", &["Ctrl+Alt+Shift+F11"], Some(&["Ctrl+F11"])),
-    (LayoutDefault, "Default Layout", &["Alt+D D"], None),
-    (LayoutVp14, "Classic Layout", &[], Some(&["Alt+D V"])),
-    (LayoutAudio, "Audio Mixing Layout", &["Alt+D A"], None),
-    (LayoutColor, "Color Correction Layout", &["Alt+D C"], None),
-    (LayoutSource, "Source Window Layout", &["Alt+D S"], Some(&[])),
-    (LayoutTimelineTop, "Timeline Top Layout", &["Alt+D T"], Some(&[])),
-    (LayoutUser(0), "User layout 0", &["Alt+D 0"], None),
-    (LayoutUser(1), "User layout 1", &["Alt+D 1"], None),
-    (LayoutUser(2), "User layout 2", &["Alt+D 2"], None),
-    (LayoutUser(3), "User layout 3", &["Alt+D 3"], None),
-    (LayoutUser(4), "User layout 4", &["Alt+D 4"], None),
-    (LayoutUser(5), "User layout 5", &["Alt+D 5"], None),
-    (LayoutUser(6), "User layout 6", &["Alt+D 6"], None),
-    (LayoutUser(7), "User layout 7", &["Alt+D 7"], None),
-    (LayoutUser(8), "User layout 8", &["Alt+D 8"], None),
-    (LayoutUser(9), "User layout 9", &["Alt+D 9"], None),
-    (SaveLayoutUser(0), "Save user layout 0", &["Ctrl+Alt+D 0"], None),
-    (SaveLayoutUser(1), "Save user layout 1", &["Ctrl+Alt+D 1"], None),
-    (SaveLayoutUser(2), "Save user layout 2", &["Ctrl+Alt+D 2"], None),
-    (SaveLayoutUser(3), "Save user layout 3", &["Ctrl+Alt+D 3"], None),
-    (SaveLayoutUser(4), "Save user layout 4", &["Ctrl+Alt+D 4"], None),
-    (SaveLayoutUser(5), "Save user layout 5", &["Ctrl+Alt+D 5"], None),
-    (SaveLayoutUser(6), "Save user layout 6", &["Ctrl+Alt+D 6"], None),
-    (SaveLayoutUser(7), "Save user layout 7", &["Ctrl+Alt+D 7"], None),
-    (SaveLayoutUser(8), "Save user layout 8", &["Ctrl+Alt+D 8"], None),
-    (SaveLayoutUser(9), "Save user layout 9", &["Ctrl+Alt+D 9"], None),
+    (ToggleDocks, "Minimize/restore all docks", &["F11", "Alt+`"]),
+    (TopDock, "Top dock", &["Alt+F11"]),
+    (BottomDock, "Bottom dock", &["Ctrl+Alt+F11"]),
+    (RightDock, "Right dock", &["Ctrl+Shift+F11"]),
+    (CollapseTrackList, "Collapse track headers", &["Ctrl+F11"]),
+    (MaximizeTimeline, "Maximize timeline", &["Ctrl+Alt+Shift+F11"]),
+    (LayoutDefault, "Default Layout", &["Alt+D D"]),
+    (LayoutAudio, "Audio Mixing Layout", &["Alt+D A"]),
+    (LayoutColor, "Color Correction Layout", &["Alt+D C"]),
+    (LayoutSource, "Source Window Layout", &["Alt+D S"]),
+    (LayoutTimelineTop, "Timeline Top Layout", &["Alt+D T"]),
+    (LayoutUser(0), "User layout 0", &["Alt+D 0"]),
+    (LayoutUser(1), "User layout 1", &["Alt+D 1"]),
+    (LayoutUser(2), "User layout 2", &["Alt+D 2"]),
+    (LayoutUser(3), "User layout 3", &["Alt+D 3"]),
+    (LayoutUser(4), "User layout 4", &["Alt+D 4"]),
+    (LayoutUser(5), "User layout 5", &["Alt+D 5"]),
+    (LayoutUser(6), "User layout 6", &["Alt+D 6"]),
+    (LayoutUser(7), "User layout 7", &["Alt+D 7"]),
+    (LayoutUser(8), "User layout 8", &["Alt+D 8"]),
+    (LayoutUser(9), "User layout 9", &["Alt+D 9"]),
+    (SaveLayoutUser(0), "Save user layout 0", &["Ctrl+Alt+D 0"]),
+    (SaveLayoutUser(1), "Save user layout 1", &["Ctrl+Alt+D 1"]),
+    (SaveLayoutUser(2), "Save user layout 2", &["Ctrl+Alt+D 2"]),
+    (SaveLayoutUser(3), "Save user layout 3", &["Ctrl+Alt+D 3"]),
+    (SaveLayoutUser(4), "Save user layout 4", &["Ctrl+Alt+D 4"]),
+    (SaveLayoutUser(5), "Save user layout 5", &["Ctrl+Alt+D 5"]),
+    (SaveLayoutUser(6), "Save user layout 6", &["Ctrl+Alt+D 6"]),
+    (SaveLayoutUser(7), "Save user layout 7", &["Ctrl+Alt+D 7"]),
+    (SaveLayoutUser(8), "Save user layout 8", &["Ctrl+Alt+D 8"]),
+    (SaveLayoutUser(9), "Save user layout 9", &["Ctrl+Alt+D 9"]),
     // Windows
-    (FocusTimeline, "Focus to Timeline", &["Alt+0"], None),
-    (Window(Panel::Explorer), "Explorer", &["Alt+1"], None),
-    (Window(Panel::Trimmer), "Trimmer", &["Alt+2"], None),
-    (Window(Panel::MasterBus), "Master Bus", &["Alt+3"], None),
-    (Window(Panel::VideoPreview), "Video Preview", &["Alt+4"], None),
-    (Window(Panel::ProjectMedia), "Project Media", &["Alt+5"], None),
-    (Window(Panel::ProjectNotes), "Project Notes", &["Alt+6"], Some(&[])),
-    (Window(Panel::EditDetails), "Edit Details", &["Ctrl+Alt+4"], Some(&["Alt+6"])),
-    (Window(Panel::Transitions), "Transitions", &["Alt+7"], None),
-    (Window(Panel::VideoFx), "Video FX", &["Alt+8"], None),
-    (Window(Panel::MediaGenerators), "Media Generators", &["Alt+9"], None),
-    (Window(Panel::PluginManager), "Plug-In Manager", &["Ctrl+Alt+1"], None),
-    (Window(Panel::VideoScopes), "Video Scopes", &["Ctrl+Alt+2"], None),
-    (SurroundPanner, "Surround Panner", &["Ctrl+Alt+3"], None),
-    (Window(Panel::MixingConsole), "Mixing Console", &["Ctrl+Alt+5"], Some(&["Ctrl+Alt+6"])),
-    (DeviceExplorer, "Device Explorer", &["Ctrl+Alt+6"], Some(&["Ctrl+Alt+7"])),
-    (Window(Panel::LoudnessMeters), "Loudness Meters", &["Ctrl+Alt+7"], Some(&["Ctrl+Alt+8"])),
-    (Dashboard, "Dashboard", &["Ctrl+Alt+8"], Some(&[])),
-    (Window(Panel::ColorGrading), "Color Grading", &["Alt+G"], Some(&[])),
-    (MotionTracking, "Motion Tracking", &["Alt+M"], Some(&[])),
-    (TextToSpeech, "Text to Speech", &["Ctrl+Shift+P"], Some(&[])),
+    (FocusTimeline, "Focus to Timeline", &["Alt+0"]),
+    (Window(Panel::Explorer), "Explorer", &["Alt+1"]),
+    (Window(Panel::Trimmer), "Trimmer", &["Alt+2"]),
+    (Window(Panel::MasterBus), "Master Bus", &["Alt+3"]),
+    (Window(Panel::VideoPreview), "Video Preview", &["Alt+4"]),
+    (Window(Panel::ProjectMedia), "Project Media", &["Alt+5"]),
+    (Window(Panel::ProjectNotes), "Project Notes", &["Alt+6"]),
+    (Window(Panel::EditDetails), "Edit Details", &["Ctrl+Alt+4"]),
+    (Window(Panel::Transitions), "Transitions", &["Alt+7"]),
+    (Window(Panel::VideoFx), "Video FX", &["Alt+8"]),
+    (Window(Panel::MediaGenerators), "Media Generators", &["Alt+9"]),
+    (Window(Panel::PluginManager), "Plug-In Manager", &["Ctrl+Alt+1"]),
+    (Window(Panel::VideoScopes), "Video Scopes", &["Ctrl+Alt+2"]),
+    (SurroundPanner, "Surround Panner", &["Ctrl+Alt+3"]),
+    (Window(Panel::MixingConsole), "Mixing Console", &["Ctrl+Alt+5"]),
+    (DeviceExplorer, "Device Explorer", &["Ctrl+Alt+6"]),
+    (Window(Panel::LoudnessMeters), "Loudness Meters", &["Ctrl+Alt+7"]),
+    (Dashboard, "Dashboard", &["Ctrl+Alt+8"]),
+    (Window(Panel::ColorGrading), "Color Grading", &["Alt+G"]),
+    (MotionTracking, "Motion Tracking", &["Alt+M"]),
+    (TextToSpeech, "Text to Speech", &["Ctrl+Shift+P"]),
     // Misc
-    (Help, "Contents and Index", &["F1"], None),
-    (WhatsThis, "What's This?", &["Shift+F1"], None),
-    (ContextMenu, "Context menu", &["Shift+F10"], None),
-    (RebuildPeaks, "Rebuild Audio Peaks", &["Shift+F5"], None),
-    (MidiTimecode, "Generate MIDI Timecode", &["F7"], None),
-    (MidiClock, "Generate MIDI Clock", &["Shift+F7"], None),
-    (MidiTrigger, "Trigger from MIDI Timecode", &["Ctrl+F7"], None),
-    // R47: Milan Pro's own; a chord no VEGAS row has in either look (palette::tests checks).
-    (CommandPalette, "Command Palette", &[super::palette::KEY], None),
+    (Help, "Contents and Index", &["F1"]),
+    (WhatsThis, "What's This?", &["Shift+F1"]),
+    (ContextMenu, "Context menu", &["Shift+F10"]),
+    (RebuildPeaks, "Rebuild Audio Peaks", &["Shift+F5"]),
+    (MidiTimecode, "Generate MIDI Timecode", &["F7"]),
+    (MidiClock, "Generate MIDI Clock", &["Shift+F7"]),
+    (MidiTrigger, "Trigger from MIDI Timecode", &["Ctrl+F7"]),
+    // R47: Milan Pro's own; a chord no VEGAS row has (palette::tests checks).
+    (CommandPalette, "Command Palette", &[super::palette::KEY]),
 ];
 
-/// Default keys of `cmd` in `look`, as written in the table.
-pub fn default_keys(cmd: Command, look: UiLook) -> &'static [&'static str] {
-    TABLE
-        .iter()
-        .find(|r| r.0 == cmd)
-        .map_or(&[], |r| if look == UiLook::Vegas16 { r.3.unwrap_or(r.2) } else { r.2 })
+/// Default keys of `cmd`, as written in the table.
+pub fn default_keys(cmd: Command) -> &'static [&'static str] {
+    TABLE.iter().find(|r| r.0 == cmd).map_or(&[], |r| r.2)
 }
 
-/// R15: Customize Keyboard's keys by look (`look_name`), then by command (`name`): the commands whose keys differ from
-/// the table's, with their keys (none = unbound). Names no command of that look has are ignored.
-pub type Overrides = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+/// R15: Customize Keyboard's keys by command (`name`): the commands whose keys differ from the table's, with their
+/// keys (none = unbound). Names no command has are ignored.
+pub type Overrides = BTreeMap<String, Vec<String>>;
 
-/// A look's keys: every command of the table, then every other command the overrides give keys, with its keys.
+/// The keys: every command of the table, then every other command the overrides give keys, with its keys.
 pub type Bindings = Vec<(Command, Vec<String>)>;
 
 /// The name a command's keys are saved under: its variant as written in this file ("SaveAs", "Marker(3)").
@@ -436,17 +428,14 @@ pub fn name(c: Command) -> String {
     format!("{c:?}")
 }
 
-/// The key of a look in `Overrides` (VEGAS 23 Dark and White share one).
-pub fn look_name(look: UiLook) -> &'static str {
-    if look == UiLook::Vegas16 { "vp16" } else { "vp23" }
-}
-
-/// `look`'s keys with `ov` applied. Keys that do not parse are dropped.
-pub fn bindings(ov: &Overrides, look: UiLook) -> Bindings {
-    let mut out: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0, look).iter().map(|k| k.to_string()).collect())).collect();
-    let Some(mine) = ov.get(look_name(look)).filter(|m| !m.is_empty()) else { return out };
-    let named = super::menus::named_commands(look);
-    for (n, keys) in mine {
+/// The keys with `ov` applied. Keys that do not parse are dropped.
+pub fn bindings(ov: &Overrides) -> Bindings {
+    let mut out: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0).iter().map(|k| k.to_string()).collect())).collect();
+    if ov.is_empty() {
+        return out;
+    }
+    let named = super::menus::named_commands();
+    for (n, keys) in ov {
         let Some(c) = named.iter().map(|x| x.1).find(|c| name(*c) == *n) else { continue };
         let keys: Vec<String> = keys.iter().filter(|k| k.starts_with("Num ") || parse(k).is_some()).cloned().collect();
         match out.iter_mut().find(|b| b.0 == c) {
@@ -457,26 +446,22 @@ pub fn bindings(ov: &Overrides, look: UiLook) -> Bindings {
     out
 }
 
-/// Both looks' keys as the app uses them: the table's until `set_overrides`.
-static ACTIVE: LazyLock<RwLock<[Bindings; 2]>> = LazyLock::new(|| RwLock::new([UiLook::Vegas16, UiLook::Vegas23].map(|l| bindings(&Overrides::new(), l))));
-
-fn slot(look: UiLook) -> usize {
-    (look != UiLook::Vegas16) as usize
-}
+/// The keys as the app uses them: the table's until `set_overrides`.
+static ACTIVE: LazyLock<RwLock<Bindings>> = LazyLock::new(|| RwLock::new(bindings(&Overrides::new())));
 
 /// Use the keys of `ov` from now on (startup, Customize Keyboard › OK).
 pub fn set_overrides(ov: &Overrides) {
-    *ACTIVE.write().unwrap() = [UiLook::Vegas16, UiLook::Vegas23].map(|l| bindings(ov, l));
+    *ACTIVE.write().unwrap() = bindings(ov);
 }
 
-/// The keys in use in `look`.
-pub fn active(look: UiLook) -> Bindings {
-    ACTIVE.read().unwrap()[slot(look)].clone()
+/// The keys in use.
+pub fn active() -> Bindings {
+    ACTIVE.read().unwrap().clone()
 }
 
-/// Keys of `cmd` in `look`, the user's if set.
-pub fn keys(cmd: Command, look: UiLook) -> Vec<String> {
-    ACTIVE.read().unwrap()[slot(look)].iter().find(|b| b.0 == cmd).map(|b| b.1.clone()).unwrap_or_default()
+/// Keys of `cmd`, the user's if set.
+pub fn keys(cmd: Command) -> Vec<String> {
+    ACTIVE.read().unwrap().iter().find(|b| b.0 == cmd).map(|b| b.1.clone()).unwrap_or_default()
 }
 
 /// The commands of `binds` other than `cmd` holding a key that clashes with `key`, with that key: the same key, or a
@@ -517,14 +502,14 @@ pub fn capture(ctx: &Context) -> Option<String> {
 }
 
 /// Shortcut text shown right-aligned in menus: the first binding, chords as "Alt+D, D".
-pub fn shortcut_text(cmd: Command, look: UiLook) -> String {
+pub fn shortcut_text(cmd: Command) -> String {
     // Insert › Audio Envelopes › Volume / Pan show the V / P that insert them.
     let cmd = match cmd {
         Command::ToggleEnvelope(crate::project::EnvKind::Volume) => Command::VolumeEnvelope,
         Command::ToggleEnvelope(crate::project::EnvKind::Pan) => Command::PanEnvelope,
         c => c,
     };
-    keys(cmd, look).first().map(|k| fmt_key(k)).unwrap_or_default()
+    keys(cmd).first().map(|k| fmt_key(k)).unwrap_or_default()
 }
 
 /// A table key for display: chords as "Alt+D, D".
@@ -595,14 +580,14 @@ pub struct Scope {
 }
 
 impl Keymap {
-    /// Turn this frame's key presses into commands for `look`. Matched presses are removed from the input so
-    /// egui widgets do not also act on them.
-    pub fn poll(&mut self, ctx: &Context, look: UiLook, scope: Scope) -> Vec<Command> {
+    /// Turn this frame's key presses into commands. Matched presses are removed from the input so egui widgets do
+    /// not also act on them.
+    pub fn poll(&mut self, ctx: &Context, scope: Scope) -> Vec<Command> {
         if scope.blocked {
             self.chord = None;
             return Vec::new();
         }
-        self.poll_with(ctx, &ACTIVE.read().unwrap()[slot(look)], scope)
+        self.poll_with(ctx, &ACTIVE.read().unwrap(), scope)
     }
 
     fn poll_with(&mut self, ctx: &Context, binds: &Bindings, scope: Scope) -> Vec<Command> {
@@ -712,26 +697,24 @@ mod tests {
 
     #[test]
     fn table_parses_and_has_no_duplicate_keys() {
-        for look in [UiLook::Vegas16, UiLook::Vegas23] {
-            let mut seen: Vec<(Option<Stroke>, Stroke, Command)> = Vec::new();
-            for row in TABLE {
-                for k in default_keys(row.0, look) {
-                    if k.starts_with("Num ") {
-                        continue;
-                    }
-                    let p = parse(k).unwrap_or_else(|| panic!("bad key {k:?}"));
-                    if let Some(d) = seen.iter().find(|s| s.0 == p.0 && s.1 == p.1) {
-                        panic!("{k} bound to both {:?} and {:?} in {look:?}", d.2, row.0);
-                    }
-                    seen.push((p.0, p.1, row.0));
+        let mut seen: Vec<(Option<Stroke>, Stroke, Command)> = Vec::new();
+        for row in TABLE {
+            for k in default_keys(row.0) {
+                if k.starts_with("Num ") {
+                    continue;
                 }
+                let p = parse(k).unwrap_or_else(|| panic!("bad key {k:?}"));
+                if let Some(d) = seen.iter().find(|s| s.0 == p.0 && s.1 == p.1) {
+                    panic!("{k} bound to both {:?} and {:?}", d.2, row.0);
+                }
+                seen.push((p.0, p.1, row.0));
             }
         }
-        assert_eq!(shortcut_text(PlayStop, UiLook::Vegas16), "Space");
-        assert_eq!(shortcut_text(PlayPause, UiLook::Vegas23), "Space");
-        assert_eq!(shortcut_text(SaveAs, UiLook::Vegas16), "");
-        assert_eq!(shortcut_text(LayoutDefault, UiLook::Vegas23), "Alt+D, D");
-        assert_eq!(shortcut_text(ToggleEnvelope(crate::project::EnvKind::Pan), UiLook::Vegas23), "P");
+        assert_eq!(shortcut_text(PlayStop), "");
+        assert_eq!(shortcut_text(PlayPause), "Space");
+        assert_eq!(shortcut_text(SaveAs), "Ctrl+Shift+S");
+        assert_eq!(shortcut_text(LayoutDefault), "Alt+D, D");
+        assert_eq!(shortcut_text(ToggleEnvelope(crate::project::EnvKind::Pan)), "P");
         assert_eq!(mnemonic("Time && Fra&mes"), ("Time & Frames".to_string(), Some(10)));
         assert_eq!(mnemonic_key("E&xit"), Some(Key::X));
     }
@@ -744,35 +727,32 @@ mod tests {
         let key = |k: Key, m: Modifiers| -> Vec<Event> {
             [true, false].map(|pressed| Event::Key { key: k, physical_key: Some(k), pressed, repeat: false, modifiers: m }).to_vec()
         };
-        let mut run = |events: Vec<Event>, look| {
+        let mut run = |events: Vec<Event>| {
             let mut out = Vec::new();
             let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
-                out = km.poll(ctx, look, Scope { blocked: false, over_dock: false });
+                out = km.poll(ctx, Scope { blocked: false, over_dock: false });
             });
             out
         };
-        assert_eq!(run(key(Key::Space, Modifiers::NONE), UiLook::Vegas16), vec![PlayStop]);
-        assert_eq!(run(key(Key::Space, Modifiers::NONE), UiLook::Vegas23), vec![PlayPause]);
-        assert_eq!(run(key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT), UiLook::Vegas23), vec![Redo]);
-        assert_eq!(run(key(Key::D, Modifiers::ALT), UiLook::Vegas23), vec![]);
-        assert_eq!(run(key(Key::D, Modifiers::NONE), UiLook::Vegas23), vec![LayoutDefault]);
-        assert_eq!(run(key(Key::D, Modifiers::NONE), UiLook::Vegas23), vec![NextTool]);
-        assert_eq!(run(key(Key::Num3, Modifiers::NONE), UiLook::Vegas23), vec![Marker(3)]);
-        for look in [UiLook::Vegas16, UiLook::Vegas23] {
-            assert_eq!(run(key(Key::D, Modifiers::ALT), look), vec![]);
-            assert_eq!(run(key(Key::Num5, Modifiers::NONE), look), vec![LayoutUser(5)]);
-            assert_eq!(run(key(Key::D, Modifiers::CTRL | Modifiers::ALT), look), vec![]);
-            assert_eq!(run(key(Key::Num5, Modifiers::NONE), look), vec![SaveLayoutUser(5)]);
-        }
+        assert_eq!(run(key(Key::Space, Modifiers::NONE)), vec![PlayPause]);
+        assert_eq!(run(key(Key::Z, Modifiers::COMMAND | Modifiers::SHIFT)), vec![Redo]);
+        assert_eq!(run(key(Key::D, Modifiers::ALT)), vec![]);
+        assert_eq!(run(key(Key::D, Modifiers::NONE)), vec![LayoutDefault]);
+        assert_eq!(run(key(Key::D, Modifiers::NONE)), vec![NextTool]);
+        assert_eq!(run(key(Key::Num3, Modifiers::NONE)), vec![Marker(3)]);
+        assert_eq!(run(key(Key::D, Modifiers::ALT)), vec![]);
+        assert_eq!(run(key(Key::Num5, Modifiers::NONE)), vec![LayoutUser(5)]);
+        assert_eq!(run(key(Key::D, Modifiers::CTRL | Modifiers::ALT)), vec![]);
+        assert_eq!(run(key(Key::Num5, Modifiers::NONE)), vec![SaveLayoutUser(5)]);
         // R2: the numeric keypad nudges have keys egui can tell apart.
-        assert_eq!(run(key(Key::Comma, Modifiers::ALT), UiLook::Vegas23), vec![NudgeFrameLeft]);
-        assert_eq!(run(key(Key::Period, Modifiers::ALT | Modifiers::SHIFT), UiLook::Vegas16), vec![NudgePixelRight]);
-        assert_eq!(run(key(Key::OpenBracket, Modifiers::NONE), UiLook::Vegas23), vec![SelectEventStart]);
+        assert_eq!(run(key(Key::Comma, Modifiers::ALT)), vec![NudgeFrameLeft]);
+        assert_eq!(run(key(Key::Period, Modifiers::ALT | Modifiers::SHIFT)), vec![NudgePixelRight]);
+        assert_eq!(run(key(Key::OpenBracket, Modifiers::NONE)), vec![SelectEventStart]);
         // Over the dock a plain digit is the window's, unless it ends a chord.
         let mut over = |events: Vec<Event>| {
             let mut out = Vec::new();
             let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
-                out = km.poll(ctx, UiLook::Vegas23, Scope { blocked: false, over_dock: true });
+                out = km.poll(ctx, Scope { blocked: false, over_dock: true });
             });
             out
         };
@@ -799,7 +779,7 @@ mod tests {
         let mut run = |e: Event, modifiers: Modifiers| {
             let mut out = Vec::new();
             let _ = ctx.run(egui::RawInput { events: vec![e], modifiers, ..Default::default() }, |ctx| {
-                out = km.poll(ctx, UiLook::Vegas23, Scope { blocked: false, over_dock: false });
+                out = km.poll(ctx, Scope { blocked: false, over_dock: false });
             });
             out
         };
@@ -812,22 +792,19 @@ mod tests {
         assert_eq!(run(Event::Copy, Modifiers::COMMAND), vec![Copy]);
     }
 
-    /// R15: an override replaces a command's keys (or gives keys to one the table has none for) in its look only;
-    /// unknown names and keys that do not parse are ignored; clashes are found; no overrides is the table again.
+    /// R15: an override replaces a command's keys (or gives keys to one the table has none for); unknown names and keys that do not parse are ignored; clashes are found; no overrides is the table again.
     #[test]
     fn overrides_replace_defaults_and_clashes_are_found() {
         let mut ov = Overrides::new();
-        let vp23 = ov.entry("vp23".into()).or_default();
-        vp23.insert(name(Split), vec!["Ctrl+Shift+F5".into(), "Nonsense+Q".into()]);
-        vp23.insert(name(Preferences), vec!["Ctrl+,".into()]);
-        vp23.insert("NoSuchCommand".into(), vec!["F4".into()]);
-        vp23.insert(name(Undo), vec![]);
-        let b = bindings(&ov, UiLook::Vegas23);
+        ov.insert(name(Split), vec!["Ctrl+Shift+F5".into(), "Nonsense+Q".into()]);
+        ov.insert(name(Preferences), vec!["Ctrl+,".into()]);
+        ov.insert("NoSuchCommand".into(), vec!["F4".into()]);
+        ov.insert(name(Undo), vec![]);
+        let b = bindings(&ov);
         let get = |b: &Bindings, c| b.iter().find(|x| x.0 == c).map(|x| x.1.clone());
         assert_eq!(get(&b, Split), Some(vec!["Ctrl+Shift+F5".to_string()]));
         assert_eq!(get(&b, Preferences), Some(vec!["Ctrl+,".to_string()]));
         assert_eq!(get(&b, Undo), Some(vec![]));
-        assert_eq!(get(&bindings(&ov, UiLook::Vegas16), Split), Some(vec!["S".to_string()]), "the other look keeps its keys");
         assert_eq!(conflicts(&b, "Ctrl+O", Split), vec![(Open, "Ctrl+O".to_string())]);
         assert!(conflicts(&b, "Alt+D", Split).iter().any(|c| c == &(LayoutDefault, "Alt+D D".to_string())), "Alt+D starts the layout chords");
         assert!(conflicts(&b, "Ctrl+Shift+F5", Split).is_empty() && conflicts(&b, "S", NextTool).is_empty());
@@ -845,10 +822,8 @@ mod tests {
         assert_eq!(run(Key::S, Modifiers::NONE), vec![]);
         assert_eq!(run(Key::Comma, Modifiers::CTRL), vec![Preferences]);
         assert_eq!(run(Key::Z, Modifiers::CTRL), vec![]);
-        for look in [UiLook::Vegas16, UiLook::Vegas23] {
-            let table: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0, look).iter().map(|k| k.to_string()).collect())).collect();
-            assert_eq!(bindings(&Overrides::new(), look), table);
-        }
+        let table: Bindings = TABLE.iter().map(|r| (r.0, default_keys(r.0).iter().map(|k| k.to_string()).collect())).collect();
+        assert_eq!(bindings(&Overrides::new()), table);
     }
 
     /// A captured key reads back as the same stroke, and Ctrl+Shift+X (sent by egui as Cut) is captured whole.

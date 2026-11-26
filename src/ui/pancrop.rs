@@ -144,11 +144,7 @@ impl PanCropWin {
             let mid = Rect::from_min_max(pos2(full.min.x, bar.max.y + 4.0), pos2(full.max.x, kf_r.min.y - 5.0));
             let grid_r = mid.with_max_x(mid.min.x + 200.0);
             let ws_r = mid.with_min_x(grid_r.max.x + 5.0);
-            if t.classic() {
-                super::widgets::metal_bar(ui.painter(), bar, &t.metal);
-            } else {
-                ui.painter().rect_filled(bar, 0.0, t.toolbar_bg);
-            }
+            super::widgets::metal_bar(ui.painter(), bar, &t.metal);
             let mut bar_ui = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(vec2(4.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
             self.ws.toolbar(&mut bar_ui);
             if self.mask {

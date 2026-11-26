@@ -7,34 +7,26 @@ use std::time::{Duration, Instant};
 use crate::project::Project;
 use super::{theme, toolbar};
 
-/// `rect` is the status bar body (17 px VP16 / 20 px VP23); edge lines are painted by the frame.
+/// `rect` is the status bar body (20 px); its light edge is painted by the frame.
 /// `progress`: a background job's status ("Creating video proxy 2 of 5: 43%"), followed by a Cancel link whose hover
 /// text is the second string. Returns true when Cancel was clicked.
 pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Option<&str>, progress: Option<(&str, &str)>) -> bool {
     let t = theme::get();
     let p = ui.painter();
-    if !t.classic() {
-        p.rect_filled(rect, 0.0, t.status_bg);
-    }
     let font = t.font(t.font.status);
     let hint = toolbar::take_hint(ui.ctx());
     let (left, color) = match (hint, message) {
         (Some(h), _) => (h, t.text),
         (None, Some(m)) => (m.to_owned(), t.warning_text),
-        // VP16 leaves the last operation's status here (project open/render), "Complete: 00:00:00" (steam_vp16).
-        (None, None) if t.look() == theme::UiLook::Vegas16 => ("Complete: 00:00:00".to_owned(), t.text),
         (None, None) => (String::new(), t.text),
     };
     let y = rect.center().y;
-    // Classic 2006: sunken panes (Windows status bar), the message pane taking what the right panes leave.
-    let classic = t.classic();
+    // Sunken panes (Windows status bar), the message pane taking what the right panes leave.
     let pane = |r: Rect| {
-        if classic {
-            super::widgets::sunken(p, Rect::from_min_max(pos2(r.min.x, rect.min.y + 2.0), pos2(r.max.x, rect.max.y - 2.0)), t.metal.mid, &t.metal);
-        }
+        super::widgets::sunken(p, Rect::from_min_max(pos2(r.min.x, rect.min.y + 2.0), pos2(r.max.x, rect.max.y - 2.0)), t.metal.mid, &t.metal);
     };
     // Right to left: record time, then the job's Cancel link and progress.
-    let mut x = rect.max.x - if classic { 8.0 } else { 6.0 };
+    let mut x = rect.max.x - 8.0;
     let put = |x: &mut f32, g: std::sync::Arc<Galley>, gap: f32| {
         *x -= g.size().x;
         let at = pos2(*x, (y - g.size().y * 0.5).round());
@@ -45,7 +37,7 @@ pub fn draw_status_bar(ui: &mut Ui, rect: Rect, project: &Project, message: Opti
     if let Some(r) = record_time(project) {
         let g = p.layout_no_wrap(format!("Record Time (2 channels): {r}"), font.clone(), t.text);
         pane(Rect::from_min_max(pos2(x - g.size().x - 6.0, rect.min.y), pos2(x + 4.0, rect.max.y)));
-        put(&mut x, g, if classic { 18.0 } else { 36.0 });
+        put(&mut x, g, 18.0);
     }
     let mut cancel = false;
     if let Some((progress, stop)) = progress {

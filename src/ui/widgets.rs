@@ -1,11 +1,10 @@
 //! Small painted widgets shared by the dock windows: tree rows, list rows and headers, the 5 px pane splitter,
-//! search fields and preview tiles; and the Classic 2006 brushed-metal / 3D-bevel painters every bar uses
-//! (CLASSIC_2006_SPEC.md §2, §4).
+//! search fields and preview tiles; and the brushed-metal / 3D-bevel painters every bar uses (UI_SPEC.md §2, §4).
 use eframe::egui::*;
 use super::icons::{Icon, paint_icon};
-use super::theme::{self, Metal, Theme, UiLook};
+use super::theme::{self, Metal, Theme};
 
-// ---- Classic 2006 metal and bevels ----
+// ---- Metal and bevels ----
 
 /// Side of the brushed streak texture; it repeats over every bar.
 const STREAK: usize = 64;
@@ -280,13 +279,9 @@ pub fn led_bar(p: &Painter, well: Rect, y: f32, to_y: &dyn Fn(f32) -> f32, t: &T
     p.add(mesh);
 }
 
-/// Sunken meter well in Classic 2006 (3D edge round the dark well), the flat well elsewhere.
+/// Sunken meter well (3D edge round the dark well).
 pub fn meter_well(p: &Painter, well: Rect, t: &Theme) {
-    if t.classic() {
-        sunken(p, well.expand(2.0), t.meter_bg, &t.metal);
-    } else {
-        p.rect_filled(well, 0.0, t.meter_bg);
-    }
+    sunken(p, well.expand(2.0), t.meter_bg, &t.metal);
 }
 
 /// The brand bitmaps (assets/brand), decoded once per context.
@@ -334,13 +329,12 @@ pub fn header_metal(p: &Painter, r: Rect, t: &Theme, selected: bool) {
     metal_tinted(p, r, &t.metal, tint);
 }
 
-// ---- Classic 2006 skins over egui's controls (CLASSIC_2006_SPEC.md §8.6) ----
+// ---- Windows 2000 skins over egui's controls (UI_SPEC.md §8.6) ----
 //
 // egui draws its check boxes, radio buttons, combo boxes, drag values, sliders, progress bars, text fields and push
-// buttons flat. In Classic 2006 the wrappers below let egui lay out and run the control (clicks, drags, keyboard,
-// the combo list) and paint the Windows 2000 control over it through one set of painters: `check_box`,
-// `radio_mark`, `combo_frame`, `spin_buttons`, `progress_blocks`, `classic_push` and the sunken `bevel` of a field.
-// The VEGAS looks get egui's control exactly as before.
+// buttons flat. The wrappers below let egui lay out and run the control (clicks, drags, keyboard, the combo list) and
+// paint the Windows 2000 control over it through one set of painters: `check_box`, `radio_mark`, `combo_frame`,
+// `spin_buttons`, `progress_blocks`, `classic_push` and the sunken `bevel` of a field.
 
 /// The 3D palette the controls on this `ui` are drawn with: the `#D4D0C8` property-sheet one inside a dialog
 /// (`dialogs::style` fills the panel with the dialog page colour), the metal one in the dock windows.
@@ -492,7 +486,7 @@ pub fn classic_push(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default
     resp
 }
 
-/// egui's check box; Classic 2006 paints `check_box` over its box.
+/// egui's check box with `check_box` painted over its box.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
     checkbox_enabled(ui, true, checked, text)
 }
@@ -500,14 +494,12 @@ pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetText>) ->
 pub fn checkbox_enabled(ui: &mut Ui, enabled: bool, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
     let resp = ui.add_enabled(enabled, Checkbox::new(checked, text));
     let t = theme::get();
-    if t.classic() {
-        let (_, big) = ui.spacing().icon_rectangles(resp.rect);
-        check_box(ui.painter(), big, *checked, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
-    }
+    let (_, big) = ui.spacing().icon_rectangles(resp.rect);
+    check_box(ui.painter(), big, *checked, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
     resp
 }
 
-/// egui's radio button; Classic 2006 paints `radio_mark` over its circle.
+/// egui's radio button with `radio_mark` painted over its circle.
 pub fn radio(ui: &mut Ui, on: bool, text: impl Into<WidgetText>) -> Response {
     radio_enabled(ui, true, on, text)
 }
@@ -515,10 +507,8 @@ pub fn radio(ui: &mut Ui, on: bool, text: impl Into<WidgetText>) -> Response {
 pub fn radio_enabled(ui: &mut Ui, enabled: bool, on: bool, text: impl Into<WidgetText>) -> Response {
     let resp = ui.add_enabled(enabled, RadioButton::new(on, text));
     let t = theme::get();
-    if t.classic() {
-        let (_, big) = ui.spacing().icon_rectangles(resp.rect);
-        radio_mark(ui.painter(), big, on, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
-    }
+    let (_, big) = ui.spacing().icon_rectangles(resp.rect);
+    radio_mark(ui.painter(), big, on, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
     resp
 }
 
@@ -532,13 +522,10 @@ pub fn radio_value<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, text: i
     resp
 }
 
-/// egui's combo box (`ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add)`); Classic 2006
-/// paints `combo_frame` over its button (the field white, face-grey when disabled).
+/// egui's combo box (`ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add)`) with
+/// `combo_frame` painted over its button (the field white, face-grey when disabled).
 pub fn combo<R>(ui: &mut Ui, id: impl std::hash::Hash, width: f32, text: impl Into<WidgetText>, add: impl FnOnce(&mut Ui) -> R) -> InnerResponse<Option<R>> {
     let t = theme::get();
-    if !t.classic() {
-        return ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add);
-    }
     let m = skin(ui, &t);
     let fill = if ui.is_enabled() { t.input_bg } else { m.face };
     let out = ui
@@ -562,13 +549,10 @@ fn flat_field_visuals(ui: &mut Ui, fill: Color32) {
     }
 }
 
-/// egui's drag value (`ui.add(build(DragValue::new(v)))`); Classic 2006 draws it as a spinner: a sunken white field
+/// egui's drag value (`ui.add(build(DragValue::new(v)))`) drawn as a spinner: a sunken white field
 /// with `spin_buttons` at its right end that step the value by `step`.
 pub fn spin<N: emath::Numeric>(ui: &mut Ui, v: &mut N, step: f64, build: impl for<'a> FnOnce(DragValue<'a>) -> DragValue<'a>) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        return ui.add(build(DragValue::new(v)));
-    }
     let m = skin(ui, &t);
     let enabled = ui.is_enabled();
     let fill = if enabled { t.input_bg } else { m.face };
@@ -599,9 +583,6 @@ pub fn spin<N: emath::Numeric>(ui: &mut Ui, v: &mut N, step: f64, build: impl fo
 
 /// `spin` through `Ui::add_enabled`.
 pub fn spin_enabled<N: emath::Numeric>(ui: &mut Ui, enabled: bool, v: &mut N, step: f64, build: impl for<'a> FnOnce(DragValue<'a>) -> DragValue<'a>) -> Response {
-    if !theme::get().classic() {
-        return ui.add_enabled(enabled, build(DragValue::new(v)));
-    }
     ui.add_enabled_ui(enabled, |ui| spin(ui, v, step, build)).inner
 }
 
@@ -617,23 +598,10 @@ pub struct Slide<'a> {
     pub clamp: bool,
 }
 
-/// egui's horizontal slider; Classic 2006 draws the Vegas fader: a sunken `groove` with the chrome `thumb`, then
+/// A horizontal slider drawn as the Vegas fader: a sunken `groove` with the chrome `thumb`, then
 /// the value as a spinner and the label.
 pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s: Slide) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        let mut sl = Slider::new(v, range).show_value(!s.no_value);
-        if !s.text.is_empty() {
-            sl = sl.text(s.text);
-        }
-        if s.log {
-            sl = sl.logarithmic(true);
-        }
-        if s.clamp {
-            sl = sl.clamping(SliderClamping::Always);
-        }
-        return ui.add(sl);
-    }
     let m = skin(ui, &t);
     let (lo, hi) = (*range.start(), *range.end());
     if s.clamp {
@@ -672,21 +640,9 @@ pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s:
     out.inner | out.response
 }
 
-/// egui's progress bar (`text` shown, else the percentage; `width` or the available width); Classic 2006 draws
-/// `progress_blocks` with the text in black over them.
+/// A progress bar (`text` shown, else the percentage; `width` or the available width): `progress_blocks` with the text in black over them.
 pub fn progress(ui: &mut Ui, frac: f32, text: Option<String>, width: Option<f32>) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        let mut pb = ProgressBar::new(frac);
-        if let Some(w) = width {
-            pb = pb.desired_width(w);
-        }
-        pb = match text {
-            Some(s) => pb.text(s),
-            None => pb.show_percentage(),
-        };
-        return ui.add(pb);
-    }
     let w = width.unwrap_or_else(|| ui.available_size_before_wrap().x.max(96.0));
     let (r, resp) = ui.allocate_exact_size(vec2(w, ui.spacing().interact_size.y), Sense::hover());
     let p = ui.painter();
@@ -695,23 +651,20 @@ pub fn progress(ui: &mut Ui, frac: f32, text: Option<String>, width: Option<f32>
     resp
 }
 
-/// egui's text field (`ui.add(te)`); Classic 2006 paints the sunken 2 px edge round it.
+/// egui's text field (`ui.add(te)`) with the sunken 2 px edge painted round it.
 pub fn edit(ui: &mut Ui, te: TextEdit<'_>) -> Response {
     edit_enabled(ui, true, te)
 }
 
 pub fn edit_enabled(ui: &mut Ui, enabled: bool, te: TextEdit<'_>) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        return ui.add_enabled(enabled, te);
-    }
     // Room for the 2 px edge round the text; egui's response rect is the inner one (inside the margin).
     let resp = ui.add_enabled(enabled, te.margin(Margin::symmetric(5, 3)));
     bevel(ui.painter(), resp.rect.expand2(vec2(5.0, 3.0)), false, &skin(ui, &t));
     resp
 }
 
-/// egui's push button (`ui.button(text)`); Classic 2006 draws `classic_push` sized to the label.
+/// A push button (`ui.button(text)`): `classic_push` sized to the label.
 pub fn push_button(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
     push_button_enabled(ui, true, text)
 }
@@ -719,30 +672,21 @@ pub fn push_button(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
 pub fn push_button_enabled(ui: &mut Ui, enabled: bool, text: impl Into<WidgetText>) -> Response {
     let t = theme::get();
     let text = text.into();
-    if !t.classic() {
-        return ui.add_enabled(enabled, Button::new(text));
-    }
     let label = text.text().to_owned();
     let w = ui.painter().layout_no_wrap(label.clone(), t.font(11.0), t.text).size().x + 16.0;
     let h = ui.spacing().interact_size.y.max(21.0);
     classic_push(ui, &label, vec2(w, h), enabled && ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
 }
 
-/// egui's small button (`ui.small_button(text)`, the × of a row); Classic 2006 a 16×16 `classic_push`.
+/// A small button (`ui.small_button(text)`, the × of a row): a 16×16 `classic_push`.
 pub fn small_push(ui: &mut Ui, text: &str) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        return ui.small_button(text);
-    }
     classic_push(ui, text, vec2(16.0, 16.0), ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
 }
 
 /// `small_push` through `Ui::add_enabled` (`Button::new(text).small()`).
 pub fn small_push_enabled(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     let t = theme::get();
-    if !t.classic() {
-        return ui.add_enabled(enabled, Button::new(text).small());
-    }
     classic_push(ui, text, vec2(16.0, 16.0), enabled && ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
 }
 
@@ -754,96 +698,65 @@ pub fn px(r: Rect) -> Rect {
 }
 
 /// One tree node. Returns (row response, expander clicked).
-/// `expanded`: None = leaf. VP16 draws ⊞/⊟ boxes and a white label box when selected; VP23 ▸/▾ and an accent row.
+/// `expanded`: None = leaf. ⊞/⊟ boxes, dotted tree lines, and the highlight bar on the label when selected.
 pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<Icon>, label: &str, selected: bool) -> (Response, bool) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
-    let c06 = t.classic();
     let w = ui.available_width().max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::click_and_drag());
     let p = ui.painter();
     let x0 = rect.min.x + 4.0 + depth as f32 * 16.0;
     let cy = rect.center().y;
-    if selected && !v16 && !c06 {
-        p.rect_filled(rect, 0.0, t.accent);
-    } else if resp.hovered() && !v16 && !c06 {
-        p.rect_filled(rect, 0.0, t.button_hover_bg);
-    }
     let exp_rect = Rect::from_center_size(pos2(x0 + 5.0, cy), vec2(9.0, 9.0));
-    if c06 {
-        // Classic TreeView lines: from the node to its icon, from the parent's column to the node, and down that
-        // column from the last connector at this depth (the parent's box, or the previous sibling's row) to this
-        // row's, so the line ends at the last child. Rows come in order, each drawing the column above itself; the
-        // connectors are kept per list (`ui.id()`) for this pass.
-        let (ex, ey) = (exp_rect.center().x.floor(), cy.floor());
-        let ink = t.metal.shadow;
-        dotted(p, pos2(if expanded.is_some() { exp_rect.max.x.floor() } else { ex }, ey), pos2(x0 + 13.0, ey), ink);
-        let key = ui.id().with("tree_lines");
-        let pass = ui.ctx().cumulative_pass_nr();
-        let mut st: (u64, Vec<f32>) = ui.data(|d| d.get_temp(key)).filter(|s: &(u64, Vec<f32>)| s.0 == pass).unwrap_or((pass, Vec::new()));
-        if depth > 0 {
-            let col = ex - 16.0;
-            dotted(p, pos2(col, ey), pos2(if expanded.is_some() { exp_rect.min.x.floor() } else { ex }, ey), ink);
-            if let Some(&from) = st.1.get(depth).filter(|y| y.is_finite()) {
-                dotted(p, pos2(col, from), pos2(col, ey), ink);
-            }
+    // TreeView lines: from the node to its icon, from the parent's column to the node, and down that column from the
+    // last connector at this depth (the parent's box, or the previous sibling's row) to this row's, so the line ends at
+    // the last child. Rows come in order, each drawing the column above itself; the connectors are kept per list
+    // (`ui.id()`) for this pass.
+    let (ex, ey) = (exp_rect.center().x.floor(), cy.floor());
+    let ink = t.metal.shadow;
+    dotted(p, pos2(if expanded.is_some() { exp_rect.max.x.floor() } else { ex }, ey), pos2(x0 + 13.0, ey), ink);
+    let key = ui.id().with("tree_lines");
+    let pass = ui.ctx().cumulative_pass_nr();
+    let mut st: (u64, Vec<f32>) = ui.data(|d| d.get_temp(key)).filter(|s: &(u64, Vec<f32>)| s.0 == pass).unwrap_or((pass, Vec::new()));
+    if depth > 0 {
+        let col = ex - 16.0;
+        dotted(p, pos2(col, ey), pos2(if expanded.is_some() { exp_rect.min.x.floor() } else { ex }, ey), ink);
+        if let Some(&from) = st.1.get(depth).filter(|y| y.is_finite()) {
+            dotted(p, pos2(col, from), pos2(col, ey), ink);
         }
-        st.1.truncate(depth + 1);
-        st.1.resize(depth + 1, f32::NAN);
-        st.1[depth] = ey;
-        if expanded == Some(true) {
-            st.1.push(exp_rect.max.y.floor());
-        }
-        ui.data_mut(|d| d.insert_temp(key, st));
     }
+    st.1.truncate(depth + 1);
+    st.1.resize(depth + 1, f32::NAN);
+    st.1[depth] = ey;
+    if expanded == Some(true) {
+        st.1.push(exp_rect.max.y.floor());
+    }
+    ui.data_mut(|d| d.insert_temp(key, st));
     let mut toggled = false;
     if let Some(open) = expanded {
         let er = ui.interact(exp_rect.expand(3.0), resp.id.with("exp"), Sense::click());
         toggled = er.clicked();
         let p = ui.painter();
-        if c06 {
-            // ⊞ / ⊟: a white 9×9 box with a grey edge and a black + or −, on whole pixels.
-            let b = px(exp_rect);
-            p.rect_filled(b, 0.0, t.input_bg);
-            p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.metal.shadow), StrokeKind::Inside);
-            let c = b.center().floor();
-            p.rect_filled(Rect::from_min_max(pos2(c.x - 2.0, c.y), pos2(c.x + 3.0, c.y + 1.0)), 0.0, t.text);
-            if !open {
-                p.rect_filled(Rect::from_min_max(pos2(c.x, c.y - 2.0), pos2(c.x + 1.0, c.y + 3.0)), 0.0, t.text);
-            }
-        } else if v16 {
-            p.rect_filled(exp_rect, 0.0, t.text_bright);
-            p.rect_stroke(exp_rect, 0.0, Stroke::new(1.0_f32, t.text_dim), StrokeKind::Inside);
-            let c = exp_rect.center();
-            p.hline(Rangef::new(c.x - 2.5, c.x + 2.5), c.y, Stroke::new(1.0_f32, t.frame));
-            if !open {
-                p.vline(c.x, Rangef::new(c.y - 2.5, c.y + 2.5), Stroke::new(1.0_f32, t.frame));
-            }
-        } else {
-            let c = exp_rect.center();
-            let pts = if open {
-                vec![pos2(c.x - 3.5, c.y - 2.0), pos2(c.x + 3.5, c.y - 2.0), pos2(c.x, c.y + 2.5)]
-            } else {
-                vec![pos2(c.x - 2.0, c.y - 3.5), pos2(c.x + 2.5, c.y), pos2(c.x - 2.0, c.y + 3.5)]
-            };
-            p.add(Shape::convex_polygon(pts, t.text, Stroke::NONE));
+        // ⊞ / ⊟: a white 9×9 box with a grey edge and a black + or −, on whole pixels.
+        let b = px(exp_rect);
+        p.rect_filled(b, 0.0, t.input_bg);
+        p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.metal.shadow), StrokeKind::Inside);
+        let c = b.center().floor();
+        p.rect_filled(Rect::from_min_max(pos2(c.x - 2.0, c.y), pos2(c.x + 3.0, c.y + 1.0)), 0.0, t.text);
+        if !open {
+            p.rect_filled(Rect::from_min_max(pos2(c.x, c.y - 2.0), pos2(c.x + 1.0, c.y + 3.0)), 0.0, t.text);
         }
     }
     let mut x = x0 + 14.0;
     if let Some(icon) = icon {
-        paint_icon(ui.painter(), Rect::from_min_size(pos2(x, cy - 8.0), vec2(16.0, 16.0)), icon, t.look(), None);
+        paint_icon(ui.painter(), Rect::from_min_size(pos2(x, cy - 8.0), vec2(16.0, 16.0)), icon, None);
         x += 20.0;
     }
     let p = ui.painter();
-    let color = if selected && v16 { t.frame } else if selected { Color32::WHITE } else { t.text };
+    let color = if selected { Color32::WHITE } else { t.text };
     let galley = p.layout_no_wrap(label.to_owned(), t.font(t.font.ui), color);
     let text_pos = pos2(x, (cy - galley.size().y * 0.5).round());
-    if selected && v16 {
-        let box_r = Rect::from_min_size(text_pos - vec2(2.0, 1.0), galley.size() + vec2(4.0, 2.0));
-        p.rect_filled(box_r, 0.0, t.text_bright);
-        p.rect_stroke(box_r, 0.0, Stroke::new(1.0_f32, t.frame), StrokeKind::Inside);
-    } else if selected && c06 {
-        // Classic: the highlight bar covers the label only, with a dotted focus rectangle.
+    if selected {
+        // The highlight bar covers the label only, with a dotted focus rectangle.
         let box_r = px(Rect::from_min_size(text_pos - vec2(2.0, 1.0), galley.size() + vec2(4.0, 2.0)));
         p.rect_filled(box_r, 0.0, t.menu_popup_hover);
         let (a, b) = (box_r.min, box_r.max - vec2(1.0, 1.0));
@@ -856,22 +769,13 @@ pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<
     (resp, toggled)
 }
 
-/// Full-width list row (accent fill when selected, hover fill otherwise; Classic 2006: the `#316AC5` highlight bar
-/// over a white list box, no hover fill, a light rule under each row).
+/// Full-width list row: the `#316AC5` highlight bar over a white list box when selected, no hover fill.
 pub fn list_row(ui: &mut Ui, height: f32, selected: bool) -> Response {
     let t = theme::get();
     let w = ui.available_width().max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click_and_drag());
-    if t.classic() {
-        if selected {
-            ui.painter().rect_filled(rect, 0.0, t.menu_popup_hover);
-        }
-        return resp;
-    }
     if selected {
-        ui.painter().rect_filled(rect, 0.0, t.accent);
-    } else if resp.hovered() {
-        ui.painter().rect_filled(rect, 0.0, t.button_hover_bg);
+        ui.painter().rect_filled(rect, 0.0, t.menu_popup_hover);
     }
     resp
 }
@@ -881,44 +785,33 @@ pub fn header_row(ui: &mut Ui, cols: &[(&str, f32)]) -> Option<usize> {
     header_row_sorted(ui, cols, None)
 }
 
-/// `header_row` with the sorted column marked: Classic 2006 draws raised bevelled header buttons with a ▲ / ▼ sort
-/// arrow on `sort` = (column, ascending); the VEGAS looks draw their flat header (no arrow).
+/// `header_row` with the sorted column marked: raised bevelled header buttons with a ▲ / ▼ sort arrow on `sort` =
+/// (column, ascending).
 pub fn header_row_sorted(ui: &mut Ui, cols: &[(&str, f32)], sort: Option<(usize, bool)>) -> Option<usize> {
     let t = theme::get();
     let w = ui.available_width().max(cols.iter().map(|c| c.1).sum());
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::click());
     let p = ui.painter();
-    if t.classic() {
-        // Windows header control: one raised button per column, a blank one filling the rest of the row.
-        let m = &t.metal;
-        let mut x = rect.min.x;
-        let ends: Vec<f32> = cols.iter().map(|c| c.1).chain([f32::INFINITY]).collect();
-        for (k, cw) in ends.iter().enumerate() {
-            let x1 = (x + cw).min(rect.max.x);
-            if x1 <= x {
-                break;
-            }
-            let r = Rect::from_min_max(pos2(x, rect.min.y), pos2(x1, rect.max.y));
-            p.rect_filled(r, 0.0, m.face);
-            bevel(p, r, true, m);
-            if let Some((title, _)) = cols.get(k) {
-                p.with_clip_rect(r.shrink(2.0).intersect(ui.clip_rect())).text(pos2(x + 6.0, rect.center().y), Align2::LEFT_CENTER, *title, t.font(t.font.ui), t.text);
-                if let Some((_, asc)) = sort.filter(|s| s.0 == k) {
-                    let ar = Rect::from_center_size(pos2(x1 - 10.0, rect.center().y), vec2(8.0, 8.0));
-                    arrow(p, ar, (0.0, if asc { -1.0 } else { 1.0 }), m.shadow);
-                }
-            }
-            x = x1;
+    // Windows header control: one raised button per column, a blank one filling the rest of the row.
+    let m = &t.metal;
+    let mut x = rect.min.x;
+    let ends: Vec<f32> = cols.iter().map(|c| c.1).chain([f32::INFINITY]).collect();
+    for (k, cw) in ends.iter().enumerate() {
+        let x1 = (x + cw).min(rect.max.x);
+        if x1 <= x {
+            break;
         }
-    } else {
-        p.rect_filled(rect, 0.0, t.toolbar_bg);
-        p.hline(rect.x_range(), rect.max.y - 0.5, Stroke::new(1.0_f32, t.frame));
-        let mut x = rect.min.x;
-        for (title, cw) in cols {
-            p.text(pos2(x + 6.0, rect.center().y), Align2::LEFT_CENTER, *title, t.font(t.font.ui), t.text);
-            x += cw;
-            p.vline(x - 0.5, rect.y_range(), Stroke::new(1.0_f32, t.frame));
+        let r = Rect::from_min_max(pos2(x, rect.min.y), pos2(x1, rect.max.y));
+        p.rect_filled(r, 0.0, m.face);
+        bevel(p, r, true, m);
+        if let Some((title, _)) = cols.get(k) {
+            p.with_clip_rect(r.shrink(2.0).intersect(ui.clip_rect())).text(pos2(x + 6.0, rect.center().y), Align2::LEFT_CENTER, *title, t.font(t.font.ui), t.text);
+            if let Some((_, asc)) = sort.filter(|s| s.0 == k) {
+                let ar = Rect::from_center_size(pos2(x1 - 10.0, rect.center().y), vec2(8.0, 8.0));
+                arrow(p, ar, (0.0, if asc { -1.0 } else { 1.0 }), m.shadow);
+            }
         }
+        x = x1;
     }
     let px = resp.clicked().then(|| resp.interact_pointer_pos()).flatten()?.x - rect.min.x;
     cols.iter().scan(0.0, |end, c| {
@@ -944,12 +837,8 @@ pub fn row_cells(ui: &Ui, rect: Rect, cols: &[(&str, f32)], values: &[String], c
     }
 }
 
-/// Classic 2006 grid lines of a details list (Edit Details): a light rule under the row and one between the columns.
+/// Grid lines of a details list (Edit Details): a light rule under the row and one between the columns.
 pub fn grid_lines(p: &Painter, rect: Rect, cols: &[(&str, f32)]) {
-    let t = theme::get();
-    if !t.classic() {
-        return;
-    }
     let c = Color32::from_rgb(0xC0, 0xC0, 0xC0);
     let y = rect.max.y.floor() - 1.0;
     p.rect_filled(Rect::from_x_y_ranges(rect.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
@@ -968,11 +857,7 @@ pub fn pane_split(ui: &mut Ui, area: Rect, width: &mut f32, id: &str) -> (Rect, 
     let left = Rect::from_min_max(area.min, pos2(area.min.x + w, area.max.y));
     let split = Rect::from_min_max(pos2(left.max.x, area.min.y), pos2(left.max.x + 5.0, area.max.y));
     let right = Rect::from_min_max(pos2(split.max.x, area.min.y), area.max);
-    if t.classic() {
-        dotted_splitter(ui.painter(), split, false, &t.metal);
-    } else {
-        ui.painter().rect_filled(split, 0.0, t.frame);
-    }
+    dotted_splitter(ui.painter(), split, false, &t.metal);
     let resp = ui.interact(split, ui.id().with(("pane_split", id)), Sense::drag());
     if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
@@ -983,16 +868,12 @@ pub fn pane_split(ui: &mut Ui, area: Rect, width: &mut f32, id: &str) -> (Rect, 
     (left, right)
 }
 
-/// Child ui confined to `rect` with its own scroll area id. Classic 2006: a sunken white list box (the Windows
+/// Child ui confined to `rect` with its own scroll area id: a sunken white list box (the Windows
 /// list / tree view) with the contents inside its 2 px edge.
 pub fn scroll_pane(ui: &mut Ui, rect: Rect, id: &str, add: impl FnOnce(&mut Ui)) {
     let t = theme::get();
-    let rect = if t.classic() {
-        sunken(ui.painter(), rect, t.input_bg, &t.metal);
-        rect.shrink(2.0)
-    } else {
-        rect
-    };
+    sunken(ui.painter(), rect, t.input_bg, &t.metal);
+    let rect = rect.shrink(2.0);
     let mut child = ui.new_child(UiBuilder::new().id_salt(("pane", id)).max_rect(rect).layout(Layout::top_down(Align::Min)));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
     ScrollArea::both().id_salt(id).auto_shrink([false, false]).show(&mut child, |ui| {
@@ -1013,32 +894,20 @@ pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> R
             .font(t.font(t.font.ui))
             .margin(vec2(4.0, 2.0)),
     );
-    if t.classic() {
-        // egui's response rect is the inner one (inside the 4 / 2 px margin).
-        bevel(ui.painter(), resp.rect.expand2(vec2(4.0, 2.0)), false, &t.metal);
-    }
+    // egui's response rect is the inner one (inside the 4 / 2 px margin).
+    bevel(ui.painter(), resp.rect.expand2(vec2(4.0, 2.0)), false, &t.metal);
     resp
 }
 
 /// Thumbnail tile: `thumb_rect` image area (letterboxed texture or a painted stand-in), caption centred below,
-/// up to two lines. VP16 selection: white tile with grey text (§5.6); VP23: accent outline.
+/// up to two lines, on a raised chrome tile (pressed in when selected).
 pub fn tile(ui: &Ui, rect: Rect, thumb: Rect, label: &str, selected: bool, hovered: bool) {
     let t = theme::get();
     let p = ui.painter();
-    if t.classic() {
-        // A raised chrome preset tile, pressed in (blue tint) when selected.
-        let state = if selected { Chrome::Active } else if hovered { Chrome::Hover } else { Chrome::Raised };
-        chrome_button(p, rect, state, &t.metal);
-    } else if selected {
-        if t.look() == UiLook::Vegas16 {
-            p.rect_filled(rect, 0.0, t.preset_tile_selected);
-        } else {
-            p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(2.0_f32, t.accent), StrokeKind::Inside);
-        }
-    } else if hovered {
-        p.rect_filled(rect, 0.0, t.button_hover_bg);
-    }
-    let color = if selected && t.look() == UiLook::Vegas16 { t.text_dim } else { t.text };
+    // A raised chrome preset tile, pressed in (blue tint) when selected.
+    let state = if selected { Chrome::Active } else if hovered { Chrome::Hover } else { Chrome::Raised };
+    chrome_button(p, rect, state, &t.metal);
+    let color = t.text;
     let cap = Rect::from_min_max(pos2(rect.min.x + 2.0, thumb.max.y + 3.0), pos2(rect.max.x - 2.0, rect.max.y));
     let mut job = text::LayoutJob::simple(label.to_owned(), t.font(t.font.ui), color, cap.width());
     job.halign = Align::Center;
@@ -1048,21 +917,16 @@ pub fn tile(ui: &Ui, rect: Rect, thumb: Rect, label: &str, selected: bool, hover
     p.with_clip_rect(cap.intersect(ui.clip_rect())).galley(pos2(cap.center().x, cap.min.y), galley, color);
 }
 
-/// Letterboxed image inside `r` with a 1 px border (VP16 white).
+/// Letterboxed image inside `r` with a 1 px dark frame and a grey mat.
 pub fn paint_thumb(p: &Painter, r: Rect, tex: &TextureHandle) {
-    let t = theme::get();
     let [w, h] = tex.size();
     let aspect = w as f32 / h.max(1) as f32;
     let (iw, ih) = if r.width() / r.height() > aspect { (r.height() * aspect, r.height()) } else { (r.width(), r.width() / aspect) };
     let ir = px(Rect::from_center_size(r.center(), vec2(iw, ih)));
     p.image(tex.id(), ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    if t.look() == UiLook::Vegas16 {
-        p.rect_stroke(ir, 0.0, Stroke::new(1.0_f32, Color32::WHITE), StrokeKind::Outside);
-    } else if t.classic() {
-        // 1 px dark frame and a thin grey mat round it.
-        p.rect_stroke(ir, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0x20, 0x20, 0x20)), StrokeKind::Outside);
-        p.rect_stroke(ir.expand(1.0), 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0xA0, 0xA0, 0xA0)), StrokeKind::Outside);
-    }
+    // 1 px dark frame and a thin grey mat round it.
+    p.rect_stroke(ir, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0x20, 0x20, 0x20)), StrokeKind::Outside);
+    p.rect_stroke(ir.expand(1.0), 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0xA0, 0xA0, 0xA0)), StrokeKind::Outside);
 }
 
 /// Audio file stand-in: a white page with a blue circular ♪ mark (§5.4).

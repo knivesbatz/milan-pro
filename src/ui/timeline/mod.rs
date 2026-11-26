@@ -18,7 +18,7 @@ use crate::decode::Thumbs;
 use crate::edit;
 use crate::history::History;
 use crate::project::*;
-use super::theme::{self, Theme, UiLook};
+use super::theme::{self, Theme};
 use super::{ClipRef, DragMode, DragState, EditOpts, EditTool, EnvDrag, EnvSel, Selection};
 use events::{Ev, paint_event, paint_fade_tag};
 use ruler::LoopDrag;
@@ -190,7 +190,7 @@ struct TlState {
     fade_edit: bool,
 }
 
-/// Track height; 0 in the project means the look's default for new tracks (§5.9.3: 64/68 vs 52 px).
+/// Track height; 0 in the project means the default for new tracks (`Metrics::video_track_h`, `audio_track_h`).
 fn track_h(tr: &Track, t: &Theme) -> f32 {
     if tr.height > 0.0 {
         tr.height
@@ -253,7 +253,6 @@ pub fn draw_timeline(
     crumbs: &[String],
 ) -> Option<Vec<edit::RippleOp>> {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     let rect = ui.max_rect();
     // R18a: the band grows by the CD layout and command bars while they are shown.
     let band_h = ruler::band_h(&t, &project.timeline);
@@ -457,8 +456,8 @@ pub fn draw_timeline(
         }
     }
 
-    // Event drag: move / trim / fade. On an empty lane, VP16 drags out a time selection and VP23 a rubber band (its
-    // right-drag makes the time selection); the Selection tool rubber-bands anywhere.
+    // Event drag: move / trim / fade. On an empty lane a drag rubber-bands (a right-drag makes the time selection);
+    // the Selection tool rubber-bands anywhere.
     let press = ui.input(|i| i.pointer.press_origin()).filter(|p| g.lanes.contains(*p));
     // An envelope point (a selected one takes the selection along) or segment; the Envelope tool's drag on an empty
     // lane selects the points in its time span.
@@ -484,7 +483,7 @@ pub fn draw_timeline(
             let hit = hit_clip(project, p);
             // Slip, Slide and Time Stretch are Normal-tool variants: only their event drags differ.
             let normal = matches!(tool, EditTool::Normal | EditTool::Slip | EditTool::Slide | EditTool::Stretch);
-            if tool == EditTool::Selection || (hit.is_none() && !v16 && normal) {
+            if tool == EditTool::Selection || (hit.is_none() && normal) {
                 st.rubber = Some((p, ui.input(|i| i.modifiers.command || i.modifiers.shift)));
             } else if let Some((cr, mode)) = hit.clone().filter(|(cr, _)| moves_events && !is_locked(project, cr)) {
                 let clip = project.timeline.tracks(cr.is_video)[cr.track_idx].clips[cr.clip_idx].clone();
@@ -565,13 +564,10 @@ pub fn draw_timeline(
                     before: project.clone(),
                     changed: false,
                 });
-            } else if v16 && hit.is_none() {
-                let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), &g, snapping, &mut st);
-                st.loop_drag = Some(LoopDrag::Create(t0));
             }
         }
     }
-    if response.drag_started_by(PointerButton::Secondary) && !v16 {
+    if response.drag_started_by(PointerButton::Secondary) {
         if let Some(p) = press.filter(|p| hit_clip(project, *p).is_none()) {
             let t0 = ruler::snapped(ui, project, g.to_time(p.x).max(0.0), &g, snapping, &mut st);
             st.loop_drag = Some(LoopDrag::Create(t0));
@@ -741,7 +737,7 @@ pub fn draw_timeline(
             ed.changed = edit::with_envelope(project, &ed.track, ed.kind, |e| edit::env_move(e, orig, keys, dt, df));
         }
     }
-    // Empty-lane time selection (VP16), or scrubbing a drag that started on the ruler.
+    // Empty-lane time selection (a right-drag), or scrubbing a drag that started on the ruler.
     if drag_state.is_none() && env_drag.is_none() && response.dragged() {
         let origin = ui.input(|i| i.pointer.press_origin());
         if let (Some(o), Some(p)) = (origin, response.interact_pointer_pos()) {
@@ -995,9 +991,6 @@ pub fn draw_timeline(
                 }
                 if response.clicked() {
                     project.timeline.cursor_position = cursor_at(g.to_time(pos.x));
-                    if v16 && hit.is_none() {
-                        project.timeline.loop_region = None; // a plain click deselects the time
-                    }
                 }
             } else if response.clicked() && g.band.contains(pos) {
                 project.timeline.cursor_position = cursor_at(g.to_time(pos.x));
@@ -1023,12 +1016,10 @@ pub fn draw_timeline(
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, t.frame);
-    if t.classic() {
-        // Dotted splitter between the track list and the lanes (Vegas 6).
-        super::widgets::dotted_splitter(&painter, split, false, &t.metal);
-    }
+    // Dotted splitter between the track list and the lanes (Vegas 6).
+    super::widgets::dotted_splitter(&painter, split, false, &t.metal);
     let pl = painter.with_clip_rect(g.lanes);
-    pl.rect_filled(g.lanes, 0.0, if v16 { t.frame } else { t.empty_lane_bg });
+    pl.rect_filled(g.lanes, 0.0, t.empty_lane_bg);
     for row in &rows {
         let lane = Rect::from_x_y_ranges(g.lanes.x_range(), Rangef::new(row.top, row.top + row.h - 2.0));
         pl.rect_filled(lane, 0.0, t.lane_bg);
@@ -1084,7 +1075,6 @@ pub fn draw_timeline(
                 empty: clip.media_id.is_none() && !clip.adjustment,
                 marks: media.filter(|m| opts.media_markers && !m.markers.is_empty()).map_or(Vec::new(), |m| events::media_marks(clip, m)),
                 labels: opts.marker_labels,
-                length: (opts.event_length && !v16).then(|| project.settings.ruler_len(clip.duration)),
             };
             let mut thumb = |src: f64| pic.and_then(|m| thumbs.get(m, src)).map(|tex| tex.id());
             paint_event(&pe, &t, &ev, t.lane_bg, wave, &mut thumb);
@@ -1180,7 +1170,7 @@ fn generated_media(project: &Project, c: &Clip) -> Option<String> {
     project.media_pool.iter().find(|m| m.id == *id && m.generator.is_some()).map(|m| m.id.clone())
 }
 
-/// The Transition Progress colour (spec §2 envelope colours), the same in both looks.
+/// The Transition Progress colour (spec §2 envelope colours).
 const TRANSITION: Color32 = Color32::from_rgb(0xBF, 0x7F, 0xD3);
 
 /// Each transition on a video row: its overlap (or a lone one's fade-in, or the fade-out of one out to nothing)
@@ -1256,7 +1246,7 @@ fn clips_in_rect(project: &Project, rows: &[Row], g: &Geo, rect: Rect) -> Vec<St
 }
 
 /// Vertical snap indicator in the target type's colour: across the target track for event edges, the full
-/// height for the cursor, markers, loop ends and time 0 (§5.9.7). VP23 adds a soft glow.
+/// height for the cursor, markers, loop ends and time 0 (§5.9.7).
 fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exclude: &[String]) {
     let t = theme::get();
     let tl = &project.timeline;
@@ -1281,9 +1271,7 @@ fn paint_snap(p: &Painter, g: &Geo, rows: &[Row], project: &Project, s: f64, exc
     let x = g.to_x(s).floor();
     let p = p.with_clip_rect(Rect::from_x_y_ranges(g.lanes.x_range(), full).intersect(p.clip_rect()));
     for span in spans {
-        if t.look() != UiLook::Vegas16 {
-            p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x - 1.5, x + 2.5), span), 0.0, color.gamma_multiply(0.35));
-        }
+        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x - 1.5, x + 2.5), span), 0.0, color.gamma_multiply(0.35));
         p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), span), 0.0, color);
     }
 }
@@ -1355,11 +1343,11 @@ fn rename_box(ui: &mut Ui, g: &Geo, rows: &[Row], heads: &[Head], project: &mut 
             Rect::from_min_size(pos2(g.rect.min.x + 20.0, h.top + 1.0), vec2((g.header_w - 80.0).max(60.0), 18.0))
         }),
         &Rename::Marker(i) => project.timeline.markers.get(i).map(|m| {
-            let (_, marker_r, _) = ruler::band_rows(&t, g.band);
+            let (_, marker_r, _) = ruler::band_rows(g.band);
             Rect::from_min_size(pos2(g.to_x(m.position) + 14.0, marker_r.min.y - 2.0), vec2(160.0, 18.0))
         }),
         &Rename::Region(i) => project.timeline.regions.get(i).map(|r| {
-            let (_, marker_r, _) = ruler::band_rows(&t, g.band);
+            let (_, marker_r, _) = ruler::band_rows(g.band);
             Rect::from_min_size(pos2(g.to_x(r.start).floor() + 14.0, marker_r.min.y - 2.0), vec2(160.0, 18.0))
         }),
         Rename::Event(id) => project.find_clip(id).zip(project.clip(id)).and_then(|(r, c)| {
@@ -1483,7 +1471,8 @@ mod tests {
             let (waves, thumbs) = (Waveforms::new(&ctx), Thumbs::new(&ctx));
             let drops = crate::ui::FileDrag { still_len: 5.0, ..Default::default() };
             let opts = EditOpts { auto_crossfade: true, ..Default::default() };
-            Rig { ctx, project, sel: Selection::default(), drag: None, env_drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 251.0, quantize: false, drops, cursor: CursorIcon::Default, opts, released: None }
+            // Track list 249 + 6 px gap: the lanes start at x 255, as the coordinates below have them.
+            Rig { ctx, project, sel: Selection::default(), drag: None, env_drag: None, scroll_y: 0.0, history: History::default(), waves, thumbs, track_w: 249.0, quantize: false, drops, cursor: CursorIcon::Default, opts, released: None }
         }
         fn frame(&mut self, events: Vec<Event>) {
             self.frame_mod(events, Modifiers::NONE);
@@ -1492,9 +1481,19 @@ mod tests {
             let screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0)));
             let raw = RawInput { events, screen_rect, modifiers, ..Default::default() };
             let ctx = self.ctx.clone();
+            // The geometry the tests' coordinates are written for: video tracks 64 px and audio tracks 68 px tall
+            // unless a test sets a height.
+            let tl = &mut self.project.timeline;
+            for t in tl.video_tracks.iter_mut().filter(|t| t.height == 0.0) {
+                t.height = 64.0;
+            }
+            for t in tl.audio_tracks.iter_mut().filter(|t| t.height == 0.0) {
+                t.height = 68.0;
+            }
             let out = ctx.run(raw, |ctx| {
                 CentralPanel::default().frame(Frame::NONE).show(ctx, |ui| {
-                    let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 400.0))));
+                    // 6 px down, so the 42 px band ends at y 48 where the tracks start in the coordinates below.
+                    let mut child = ui.new_child(UiBuilder::new().max_rect(Rect::from_min_size(pos2(0.0, 6.0), vec2(1200.0, 394.0))));
                     let r = &mut *self;
                     let opts = EditOpts { snapping: true, quantize: r.quantize, ..r.opts };
                     r.released = draw_timeline(
@@ -1590,7 +1589,7 @@ mod tests {
         assert!(r.ctx.is_context_menu_open(), "marker bar menu");
     }
 
-    /// Simulated mouse input against the VP16 layout: lanes start at x = 251 + 4, 80 px/s, Video 1 at y 48..112.
+    /// Simulated mouse input against the rig's layout: lanes start at x = 255, 80 px/s, Video 1 at y 48..112.
     #[test]
     fn move_fade_trim_and_loop_drags() {
         let mut r = Rig::new();
@@ -1609,8 +1608,8 @@ mod tests {
         assert!((r.clip().duration - 3.0).abs() < 1e-6, "duration {}", r.clip().duration);
         assert_eq!(r.history.lens().0, 3);
 
-        // Loop bar (VP16 rows 2..6 of the band) drags out a selection.
-        r.drag(pos2(300.0, 4.0), pos2(460.0, 4.0));
+        // Loop bar (rows 2..8 of the band, which starts at y 6) drags out a selection.
+        r.drag(pos2(300.0, 11.0), pos2(460.0, 11.0));
         let (a, b) = r.project.timeline.loop_region.expect("loop region");
         assert!((a - 0.5625).abs() < 1e-6 && (b - 2.5625).abs() < 1e-6, "loop {a}..{b}");
     }
@@ -1663,7 +1662,7 @@ mod tests {
 
         r.drag_mod(pos2(100.0, 111.0), pos2(100.0, 131.0), ctrl);
         let h: Vec<f32> = r.project.timeline.video_tracks.iter().chain(&r.project.timeline.audio_tracks).map(|t| t.height).collect();
-        assert_eq!(h, [84.0, 84.0, 0.0]);
+        assert_eq!(h, [84.0, 84.0, 68.0]);
         assert!(r.project.modified && r.history.lens().0 == 0);
 
         // V1 is now 48..132 and V2 132..216: select V1 alone and drag its strip past V2's middle.

@@ -15,7 +15,7 @@ use super::Selection;
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
 use super::menus::{self, Mark, entry, send};
-use super::theme::{self, Theme, UiLook};
+use super::theme::{self, Theme};
 use super::timeline::{fader_gain, fader_pos};
 use super::toolbar::tool_button;
 use super::widgets::{self, Chrome};
@@ -96,11 +96,6 @@ impl MeterView {
     pub fn readout(&self, c: usize) -> String {
         peak_text(self.max[c])
     }
-
-    /// One readout for both channels (a track header's): the higher peak.
-    pub fn peak_text(&self) -> String {
-        peak_text(self.max[0].max(self.max[1]))
-    }
 }
 
 fn peak_text(d: f32) -> String {
@@ -172,7 +167,7 @@ pub fn reset_level(ctx: &Context, id: &str) {
 
 /// The two channel bars of `lv` in `well` (split in two with a 1 px gap): the level, the peak hold line and the clip
 /// lamps. The caller paints the empty well.
-pub fn paint_levels(p: &Painter, well: Rect, lv: &MeterView, v16: bool) {
+pub fn paint_levels(p: &Painter, well: Rect, lv: &MeterView) {
     let t = theme::get();
     let to_y = |d: f32| well.min.y + well.height() * (-d / RANGE_DB).clamp(0.0, 1.0);
     let half = ((well.width() - 1.0) * 0.5).floor().max(1.0);
@@ -180,7 +175,7 @@ pub fn paint_levels(p: &Painter, well: Rect, lv: &MeterView, v16: bool) {
         let x0 = well.min.x + c as f32 * (well.width() - half);
         let bar = Rect::from_x_y_ranges(Rangef::new(x0, x0 + half), well.y_range());
         if lv.level[c] > -RANGE_DB {
-            super::master_bus::paint_bar(p, bar, to_y(lv.level[c].min(0.0)), &to_y, v16, 1.0);
+            super::master_bus::paint_bar(p, bar, to_y(lv.level[c].min(0.0)), &to_y);
         }
         let h = lv.hold[c].0;
         if h > -RANGE_DB {
@@ -193,15 +188,9 @@ pub fn paint_levels(p: &Painter, well: Rect, lv: &MeterView, v16: bool) {
     }
 }
 
-/// An empty meter well (the VP23 unlit gradient, or `meter_bg`).
+/// An empty, sunken meter well.
 pub fn paint_well(p: &Painter, well: Rect) {
-    let t = theme::get();
-    if t.meter_unlit > 0.0 {
-        let to_y = |d: f32| well.min.y + well.height() * (-d / RANGE_DB).clamp(0.0, 1.0);
-        super::master_bus::paint_bar(p, well, well.min.y, &to_y, false, t.meter_unlit);
-    } else {
-        super::widgets::meter_well(p, well, &t);
-    }
+    super::widgets::meter_well(p, well, &theme::get());
 }
 
 /// The VU pair: green up to 0 VU, red above, on a -20..+3 VU scale.
@@ -317,8 +306,8 @@ fn icon_menu(ui: &mut Ui, icon: Icon, tip: &str, add: impl FnOnce(&mut Ui)) {
     let t = theme::get();
     let r = ui.scope(|ui| menu::menu_custom_button(ui, Button::new("").frame(false).min_size(vec2(t.m.button_pitch + 10.0, t.m.button)), add));
     let rect = r.inner.response.rect;
-    paint_icon(ui.painter(), Rect::from_center_size(rect.center() - vec2(5.0, 0.0), Vec2::splat(t.m.icon)), icon, t.look(), None);
-    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 7.0, rect.center().y), Vec2::splat(t.m.icon)), Icon::DropDown, t.look(), None);
+    paint_icon(ui.painter(), Rect::from_center_size(rect.center() - vec2(5.0, 0.0), Vec2::splat(t.m.icon)), icon, None);
+    paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 7.0, rect.center().y), Vec2::splat(t.m.icon)), Icon::DropDown, None);
     r.inner.response.on_hover_text(tip);
 }
 
@@ -449,13 +438,9 @@ pub(super) fn slider(ui: &Ui, resp: &Response, pos: f32, reset: f32, at: impl Fn
     None
 }
 
-/// A strip's read-out box (I/O): a sunken white field in Classic 2006, the look's rounded input box elsewhere.
+/// A strip's read-out box (I/O): a sunken white field.
 fn field(p: &Painter, r: Rect, t: &theme::Theme) {
-    if t.classic() {
-        super::widgets::sunken(p, r, t.input_bg, &t.metal);
-    } else {
-        p.rect_filled(r, 2.0, t.input_bg);
-    }
+    super::widgets::sunken(p, r, t.input_bg, &t.metal);
 }
 
 pub(super) fn gain_text(g: f32) -> String {
@@ -471,19 +456,13 @@ pub(super) fn pan_text(pan: f32) -> String {
 pub(super) fn toggle(ui: &Ui, p: &Painter, r: Rect, id: Id, icon: Option<Icon>, text: &str, on: bool, tip: &str) -> bool {
     let t = theme::get();
     let resp = ui.interact(r, id, Sense::click()).on_hover_text(tip);
-    if t.classic() {
-        // A chrome button, pressed in while on (the track header's M / S buttons).
-        let state = if on { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
-        super::widgets::chrome_button(p, r, state, &t.metal);
-    } else if on {
-        p.rect_filled(r, CornerRadius::same(2), if t.look() == UiLook::Vegas16 { t.button_active_bg } else { t.accent.gamma_multiply(0.3) });
-    } else if resp.hovered() {
-        p.rect_filled(r, CornerRadius::same(2), t.button_hover_bg);
-    }
+    // A chrome button, pressed in while on (the track header's M / S buttons).
+    let state = if on { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
+    super::widgets::chrome_button(p, r, state, &t.metal);
     // An unarmed Arm button is grey (its icon is red).
-    let tint = if on && !t.classic() && t.look() != UiLook::Vegas16 { Some(t.accent) } else if !on && icon == Some(Icon::Record) { Some(t.text_dim) } else { None };
+    let tint = if !on && icon == Some(Icon::Record) { Some(t.text_dim) } else { None };
     match icon {
-        Some(i) => paint_icon(p, Rect::from_center_size(r.center(), vec2(16.0, 16.0)), i, t.look(), tint),
+        Some(i) => paint_icon(p, Rect::from_center_size(r.center(), vec2(16.0, 16.0)), i, tint),
         None => {
             p.text(r.center(), Align2::CENTER_CENTER, text, t.font(t.font.ui), tint.unwrap_or(t.text));
         }
@@ -557,11 +536,7 @@ pub fn mixing_console(ui: &mut Ui, view: &mut ConsoleView, prefs: &ConsolePrefs,
     if prefs.channel_list && rect.width() > 260.0 {
         let list = rect.with_max_x(rect.min.x + 130.0);
         area = rect.with_min_x(list.max.x + 1.0);
-        if t.classic() {
-            super::widgets::etched_v(ui.painter(), list.max.x, rect.y_range(), &t.metal);
-        } else {
-            ui.painter().rect_filled(Rect::from_x_y_ranges(Rangef::new(list.max.x, list.max.x + 1.0), rect.y_range()), 0.0, t.frame);
-        }
+        super::widgets::etched_v(ui.painter(), list.max.x, rect.y_range(), &t.metal);
         let mut child = ui.new_child(UiBuilder::new().max_rect(list.shrink(4.0)));
         ScrollArea::vertical().id_salt("console_list").auto_shrink(false).show(&mut child, |ui| {
             for (s, name, _) in &all {
@@ -596,18 +571,13 @@ pub fn mixing_console(ui: &mut Ui, view: &mut ConsoleView, prefs: &ConsolePrefs,
 #[allow(clippy::too_many_arguments)]
 fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &mut History, sel: &mut Selection, s: &Strip, name: &str, color: Color32, targets: &[(String, String)], regs: [Option<Rect>; 6], label: Rect, fader_meter: bool) {
     let t = theme::get();
-    let v16 = t.look() == UiLook::Vegas16;
     let Some(c) = ctl(project, s) else { return };
     let id = ui.id().with(("strip", s.key()));
     let p = ui.painter().clone();
     let all = regs.iter().flatten().fold(label, |a, r| a.union(*r));
     let selected = matches!(s, Strip::Track(tid) if sel.tracks.contains(tid));
-    if t.classic() {
-        // Blue-grey metal strips, as the track headers.
-        super::widgets::header_metal(&p, all, &t, selected);
-    } else {
-        p.rect_filled(all, 0.0, if selected { t.track_header_sel_bg } else { t.track_header_bg });
-    }
+    // Blue-grey metal strips, as the track headers.
+    super::widgets::header_metal(&p, all, &t, selected);
     p.rect_filled(Rect::from_x_y_ranges(Rangef::new(all.max.x, all.max.x + 1.0), all.y_range()), 0.0, t.track_separator);
     for r in regs.iter().flatten() {
         p.hline(r.x_range(), r.max.y - 0.5, Stroke::new(1.0_f32, t.track_separator));
@@ -630,7 +600,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             super::open_tool(ui.ctx(), super::ToolWin::Fx(target.clone()));
         }
         let pc = p.with_clip_rect(r.shrink(2.0));
-        paint_icon(&pc, Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(14.0, 14.0)), Icon::TrackFx, t.look(), None);
+        paint_icon(&pc, Rect::from_min_size(r.min + vec2(3.0, 3.0), vec2(14.0, 14.0)), Icon::TrackFx, None);
         for (k, f) in c.fx.iter().take(3).enumerate() {
             let n = crate::engine::plugins::find(&f.plugin).map_or(f.plugin.clone(), |i| i.name.to_string());
             pc.text(pos2(r.min.x + 4.0, r.min.y + 20.0 + 14.0 * k as f32), Align2::LEFT_TOP, n, small.clone(), if f.enabled { t.text } else { t.text_dim });
@@ -655,13 +625,8 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             let cy = row.min.y + 19.0;
             let pos = fader_pos(lvl);
             let tx = groove.min + pos * groove.span();
-            if t.classic() {
-                super::widgets::groove(&p, groove, cy, &t.metal);
-                super::widgets::thumb(&p, Rect::from_center_size(pos2(tx.round(), cy), vec2(9.0, 13.0)), &t.metal, None);
-            } else {
-                p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
-                p.rect_filled(Rect::from_center_size(pos2(tx.round(), cy), vec2(6.0, 10.0)), 1.0, t.fader_thumb);
-            }
+            super::widgets::groove(&p, groove, cy, &t.metal);
+            super::widgets::thumb(&p, Rect::from_center_size(pos2(tx.round(), cy), vec2(9.0, 13.0)), &t.metal, None);
             let tip = format!("{tname}: {} dB ({})", gain_text(lvl), if pre { "Pre Volume" } else { "Post Volume" });
             let resp = ui.interact(row.shrink2(vec2(2.0, 0.0)), id.with(("send", k)), Sense::click_and_drag()).on_hover_text(tip);
             let span = groove.span().max(1.0);
@@ -806,7 +771,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         let well = Rect::from_min_max(pos2(r.center().x - 9.0, read.max.y + 3.0), pos2(r.center().x + 9.0, r.max.y - 4.0));
         if well.height() > 10.0 {
             paint_well(&p, well);
-            paint_levels(&p, well, &lv, v16);
+            paint_levels(&p, well, &lv);
             if r.width() > 70.0 {
                 for d in (6..60).step_by(6) {
                     let y = well.min.y + well.height() * d as f32 / RANGE_DB;
@@ -887,15 +852,9 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             let cy = top + 8.0;
             let pos = (c.pan.clamp(-1.0, 1.0) + 1.0) * 0.5;
             let tx = (groove.min + pos * groove.span()).round();
-            if t.classic() {
-                super::widgets::groove(&p, groove, cy, &t.metal);
-                p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy - 4.0), vec2(1.0, 3.0)), 0.0, t.metal.dark);
-                super::widgets::thumb(&p, Rect::from_center_size(pos2(tx, cy), vec2(9.0, 13.0)), &t.metal, tint(EnvKind::Pan));
-            } else {
-                p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
-                p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy), vec2(1.0, 7.0)), 0.0, t.fader_track);
-                p.add(Shape::convex_polygon(vec![pos2(tx - 5.0, cy - 5.0), pos2(tx + 5.0, cy - 5.0), pos2(tx, cy + 4.0)], tint(EnvKind::Pan).unwrap_or(t.fader_thumb), Stroke::new(1.0_f32, t.fader_thumb_bar)));
-            }
+            super::widgets::groove(&p, groove, cy, &t.metal);
+            p.rect_filled(Rect::from_center_size(pos2(groove.center().round(), cy - 4.0), vec2(1.0, 3.0)), 0.0, t.metal.dark);
+            super::widgets::thumb(&p, Rect::from_center_size(pos2(tx, cy), vec2(9.0, 13.0)), &t.metal, tint(EnvKind::Pan));
             let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 6.0, groove.max + 6.0), Rangef::new(top, top + 16.0));
             let resp = ui.interact(hit, id.with("pan"), Sense::click_and_drag()).on_hover_text(format!("Pan: {}", pan_text(c.pan)));
             let span = groove.span().max(1.0);
@@ -915,20 +874,13 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
             let fx = r.center().x.round() - if fader_meter { 8.0 } else { 0.0 };
             let pos = fader_pos(c.volume);
             let ty = (y1 - (y1 - y0) * pos).round();
-            let thumb = Rect::from_center_size(pos2(fx + 0.5, ty), if v16 { vec2(21.0, 12.0) } else { vec2(25.0, 13.0) });
-            if t.classic() {
-                super::widgets::groove_v(&p, fx, Rangef::new(y0, y1), &t.metal);
-                super::widgets::fader_thumb(&p, thumb, &t.metal, tint(EnvKind::Volume));
-            } else {
-                p.rect_filled(Rect::from_x_y_ranges(Rangef::new(fx, fx + 1.0), Rangef::new(y0, y1)), 0.0, t.fader_track);
-                p.rect_filled(thumb, 1.0, tint(EnvKind::Volume).unwrap_or(t.fader_thumb));
-                p.rect_stroke(thumb, 1.0, Stroke::new(1.0_f32, t.fader_thumb_bar), StrokeKind::Inside);
-                p.rect_filled(Rect::from_center_size(thumb.center(), vec2(thumb.width() - 8.0, 1.0)), 0.0, t.fader_thumb_bar);
-            }
+            let thumb = Rect::from_center_size(pos2(fx + 0.5, ty), vec2(25.0, 13.0));
+            super::widgets::groove_v(&p, fx, Rangef::new(y0, y1), &t.metal);
+            super::widgets::fader_thumb(&p, thumb, &t.metal, tint(EnvKind::Volume));
             if fader_meter {
                 let well = Rect::from_min_max(pos2(fx + 16.0, y0), pos2(fx + 26.0, y1));
                 paint_well(&p, well);
-                paint_levels(&p, well, &lv, v16);
+                paint_levels(&p, well, &lv);
             }
             let hit = Rect::from_x_y_ranges(Rangef::new(fx - 14.0, fx + 15.0), Rangef::new(y0 - 7.0, y1 + 7.0));
             let what = if *s == Strip::Master { "Master" } else { "Volume" };

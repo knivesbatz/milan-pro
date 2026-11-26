@@ -480,7 +480,7 @@ mod tests {
         std::fs::create_dir_all(&review).unwrap();
         let launch = |hold: bool, shot: &Path| {
             let mut c = std::process::Command::new(&exe);
-            c.env("MILAN_APPDATA", &root).env("MILAN_DEMO", "1").env("MILAN_LOOK", "classic2006").env("MILAN_SCREENSHOT", shot).env("MILAN_AUTOSAVE_NOW", "1");
+            c.env("MILAN_APPDATA", &root).env("MILAN_DEMO", "1").env("MILAN_SCREENSHOT", shot).env("MILAN_AUTOSAVE_NOW", "1");
             if hold {
                 c.env("MILAN_HOLD", "1");
             }
