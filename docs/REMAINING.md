@@ -321,10 +321,10 @@ What matters most:
 | 9.2 | Never write fake `.veg` files | DONE | Nothing writes `.veg` |
 | 9.3 | OpenTimelineIO | DONE | R28: `interchange/otio.rs`, File › Import / Export › OpenTimelineIO. Milan's structs under `metadata["milan"]`: `lossless_round_trip` gives the same project JSON back. Hand-written fixtures `tests/fixtures/simple_cut.otio`, `nested_example.otio` (nested stacks flatten). |
 | 9.4 | EDL | DONE | R28: `interchange/edl.rs`: CMX 3600 (`.edl`: V, A-A4, cuts, dissolves, M2 speed, reel names, DF/NDF, `* FROM CLIP NAME` / `* SOURCE FILE`) and VEGAS's own EDL text table (`.txt`), both ways; golden files `tests/fixtures/golden_25.edl`, `golden_2997df.edl`. |
-| 9.5 | XML editing timelines (FCP7 xmeml, FCPXML) | MISSING | Greyed (`menus.rs:407-408, 417-418`) → R29 |
-| 9.6 | AAF where practical | NOT FEASIBLE | No maintained Rust AAF library. The reference AAF SDK is large C++/COM structured storage. Deliverable: documented route through OTIO's AAF adapter (Python, external), plus an AAF row in the interchange report (R29). |
-| 9.7 | Reliable import/export for suitable formats | PARTIAL | R28: OTIO and EDL with round-trip tests; XML in R29 |
-| 9.8 | Compatibility report: accurate / needs conversion / not representable | MISSING | → R29 (`docs/INTERCHANGE.md`) |
+| 9.5 | XML editing timelines (FCP7 xmeml, FCPXML) | DONE | R29: `interchange/xmeml.rs` (xmeml 5: Premiere, Resolve; stereo pairs, Time Remap, Opacity, Audio Levels, links, markers) and `interchange/fcpxml.rs` (1.10: spine, lanes, connected storylines, time maps, adjust-blend/volume, markers), both ways; the Premiere rows point at FCP7 XML. Hand-written fixtures `tests/fixtures/resolve_sample.xml`, `fcpx_sample.fcpxml`. |
+| 9.6 | AAF where practical | NOT FEASIBLE | No maintained Rust AAF library. The reference AAF SDK is large C++/COM structured storage. R29: the route through OTIO's AAF adapter (`otioconvert`, Python, external) is in `docs/INTERCHANGE.md`; the AAF menu row's hover text names it. |
+| 9.7 | Reliable import/export for suitable formats | DONE | R28/R29: OTIO, CMX 3600 and VEGAS EDL, FCP7 XML, FCPXML, each with a round-trip test and a hand-written fixture; none opened in the other applications here (manual: user). |
+| 9.8 | Compatibility report: accurate / needs conversion / not representable | DONE | R29: the summary table and per-format tables in `docs/INTERCHANGE.md`; `docs/COMPATIBILITY.md` lists what each format was tested against. |
 
 ### 2.10 Section 9: VEGAS plug-in compatibility
 
@@ -561,7 +561,7 @@ What matters most:
 | 19.11 | Test plug-in loading | DONE | OFX: the test bundle (`tools/ofx-test-plugin`) and the VEGAS 15 probe (R33c); VST3 and CLAP: Milan's own test modules (`tools/vst3-test-plugin`, `tools/clap-test-plugin`) scanned, processed, crashed, hung, preset-loaded and shown through the host (`aplug::tests`). |
 | 19.12 | Test project saving | DONE | `project.rs` tests (atomic save, failed save) |
 | 19.13 | Test project reopening | DONE | `old_projects_load_*` tests |
-| 19.14 | Test project interchange | PARTIAL | VEGAS JSON, OTIO (lossless round trip, two hand-written fixtures), EDL (round trips, goldens at 25 and 29.97 DF, a Resolve-style EDL) tests; XML → R29 |
+| 19.14 | Test project interchange | DONE | VEGAS JSON, OTIO (lossless round trip, two hand-written fixtures), EDL (round trips, goldens at 25 and 29.97 DF, a Resolve-style EDL), FCP7 XML and FCPXML (round trips, hand-written fixtures) tests |
 | 19.15 | Test rendering | PARTIAL | `engine/render.rs:329` ignored e2e → R51 |
 | 19.16 | Test hardware acceleration | DONE | (R22) `hw_capability_table` (ignored: the probe on this machine) and `render_with_hardware_encoder`; parser and choice unit tests on captured output. |
 | 19.17 | Test recovery after crashes | MISSING | → R43 |
@@ -583,7 +583,7 @@ What matters most:
 | Professional rendering engine | DONE | (R11, R12, R22) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
-| VEGAS project import/interchange | PARTIAL | R25, R26, R27, R28, R30 DONE; R29 |
+| VEGAS project import/interchange | DONE | R25, R26, R27, R28, R29, R30 |
 | Automatic GitHub updater | PARTIAL | R46 |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
@@ -1725,6 +1725,8 @@ No product code unless the research finds a stable, documented structure. If it 
 - EDL golden files at 25 and 29.97 DF.
 
 ### R29: FCP7 XML, FCPXML, AAF route, interchange report (L)
+
+**Status: DONE.** `interchange/xml.rs` (quick-xml 0.41 element tree and an indenting writer), `interchange/xmeml.rs` (xmeml 5 both ways: rate with the NTSC flag, every video track, two linked audio tracks per Milan audio track as Premiere and Resolve write stereo and merged back on import, `<file>` with path URL / duration / timecode, Cross Dissolve for overlaps, fades as dissolves from and to black, Time Remap, Opacity, Audio Levels, `<link>` groups, sequence markers; other filters listed and dropped), `interchange/fcpxml.rs` (1.10 both ways: resources, the bottom video track as the spine, other tracks as connected storylines on lanes, `asset-clip` with `srcEnable`, transitions straddling a frame-aligned cut, linear `timeMap`, `adjust-blend` with fade keyframes, `adjust-volume` with fadeIn/fadeOut, markers on the covering element; `clip`, `sync-clip`, `ref-clip`, auditions, titles read or listed). Menu rows wired; the Premiere/After Effects rows read "via Final Cut Pro 7 XML" and run the xmeml route; the AAF row's hover text names the `otioconvert` route. `docs/INTERCHANGE.md` has the summary table (accurate / converted / not representable) and a table per format plus the AAF and VEGAS routes; `docs/COMPATIBILITY.md` says what each was tested against. Fixtures are hand-written to the DTDs (`tests/fixtures/resolve_sample.xml`, `fcpx_sample.fcpxml`); nothing was opened in Premiere, Resolve or Final Cut Pro here.
 
 **Scope**
 - FCP7 `xmeml` v5 import/export (also what Premiere and Resolve read). FCPXML 1.10 import/export.

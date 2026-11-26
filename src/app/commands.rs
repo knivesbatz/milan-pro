@@ -857,10 +857,12 @@ impl MeridianApp {
             RenderAudioTracks => self.render_tracks = Some(ui::render_queue::RenderTracks::new(&self.project)),
             ImportMedia => ui::import_media(ctx, &self.importer),
             // R28/R29: every interchange import goes through the VEGAS import's thread and report.
-            ImportVegas | ImportOtio | ImportEdl => {
+            ImportVegas | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml => {
                 let fmt = match c {
                     ImportOtio => Format::Otio,
                     ImportEdl => Format::Edl,
+                    ImportXmeml => Format::Xmeml,
+                    ImportFcpxml => Format::Fcpxml,
                     _ => Format::Vegas,
                 };
                 let (name, exts) = fmt.filter();
@@ -869,8 +871,13 @@ impl MeridianApp {
                     self.message = Some(format!("Importing {}...", fmt.label()));
                 }
             }
-            ExportOtio | ExportEdl => {
-                let fmt = if c == ExportOtio { Format::Otio } else { Format::Edl };
+            ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml => {
+                let fmt = match c {
+                    ExportOtio => Format::Otio,
+                    ExportXmeml => Format::Xmeml,
+                    ExportFcpxml => Format::Fcpxml,
+                    _ => Format::Edl,
+                };
                 let (name, exts) = fmt.filter();
                 let file = format!("{}.{}", if self.project.name.is_empty() { "Untitled" } else { &self.project.name }, exts[0]);
                 let mut dlg = rfd::FileDialog::new().add_filter(name, exts).set_file_name(file);

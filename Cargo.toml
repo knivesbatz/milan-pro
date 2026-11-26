@@ -19,6 +19,8 @@ glow = ["eframe/glow"]
 eframe = { version = "0.31", default-features = false, features = ["accesskit", "default_fonts", "wayland", "x11"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# R29: src/interchange/xml.rs reads FCP7 XML and FCPXML. Already in Cargo.lock (via other crates); MIT.
+quick-xml = "0.41"
 rfd = "0.15"
 uuid = { version = "1", features = ["v4", "serde"] }
 anyhow = "1"

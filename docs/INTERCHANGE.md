@@ -1,9 +1,150 @@
 # Interchange
 
-What each route into and out of Milan Pro carries, converts or loses. OTIO, EDL, FCP7 XML, FCPXML and the AAF route
-come with batches R28 and R29 and will be added here.
+What each route into and out of Milan Pro carries, converts or loses. Every import ends in the same report dialog
+(what did not carry over, line by line); every export's report lists what the file has no place for. The format is
+picked by the file's extension (`.milan.json` / `.veg`, `.otio`, `.edl` / `.txt`, `.xml`, `.fcpxml`;
+`src/interchange/mod.rs::Format`).
+
+## Summary: accurate, converted, not representable
+
+| | VEGAS (script) | OTIO | CMX 3600 EDL | VEGAS EDL text | FCP7 XML | FCPXML 1.10 |
+|---|---|---|---|---|---|---|
+| Project size, frame rate, sample rate | accurate | accurate | rate only (DF/NDF) | rate from the open project | accurate | accurate |
+| Tracks (any number), names, mute, lock | accurate | accurate | V + A-A4, no names | accurate, no names | accurate (stereo as two linked tracks) | accurate (spine + lanes) |
+| Event timing, in point, speed, reverse | accurate | accurate | accurate (speed to 0.1 fps) | accurate | accurate | accurate (frame-aligned) |
+| Transitions | mapped by plug-in; others crossfade | dissolve (Milan kind in metadata) | dissolve | converted to an overlap (crossfade) | Cross Dissolve | Cross Dissolve |
+| Fades | accurate (curves too) | Milan metadata only | not representable | accurate | converted: dissolves from/to black | converted: opacity keyframes / fadeIn, fadeOut |
+| Opacity, gain | accurate (envelopes too) | metadata (static and envelopes) | not representable | static | static (Opacity, Audio Levels) | static (adjust-blend, adjust-volume) |
+| Event / track FX, Pan/Crop, Track Motion, envelopes | mapped or placeholders | metadata only (FX named as `Effect.1`) | not representable (listed) | not representable (listed) | not representable (listed; others' filters listed on import) | not representable (listed) |
+| Takes | accurate | accurate (media references) | active take only | active take only | active take only | active take only |
+| Groups | accurate | metadata | not representable | not representable | `<link>` | video+audio of one clip |
+| Markers, regions | accurate | accurate | not representable | not representable | accurate | accurate (on the covering element) |
+| Generated media, adjustment events | accurate | missing reference | left out | left out | offline clip / left out | asset without media / left out |
+
+## OpenTimelineIO (R28): File > Import / Export > OpenTimelineIO...
+
+`src/interchange/otio.rs`, hand-written serde structs for `Timeline.1`, `Stack.1`, `Track.1`, `Clip.2` (`Clip.1`
+read too), `Gap.1`, `Transition.1`, `Marker.2`, `ExternalReference.1`, `MissingReference.1`, `RationalTime.1`,
+`TimeRange.1`, `LinearTimeWarp.1`, `FreezeFrame.1` and `Effect.1`; other schemas are skipped with a warning.
+
+**Milan to Milan is lossless.** Every object goes out twice: as the OTIO object other tools read, and as the Milan
+struct itself under `metadata["milan"]` (the project without its tracks on the Timeline, each Track without its
+events, each event, each transition). Reading a file with that metadata rebuilds the project exactly (test
+`lossless_round_trip`: transitions, takes, markers, regions, envelopes, FX, a speed change, generated media,
+groups come back as the same JSON).
+
+What other tools see in a Milan export:
+
+| In Milan Pro | In the OTIO file |
+|---|---|
+| Project frame rate | Every `RationalTime` rate (29.97 as 30000/1001) |
+| Video tracks (top first), audio tracks | `Track.1` of kind Video (bottom first, as OTIO stacks) and Audio |
+| Events, their media, in point, length, mute | `Clip.2` with an `ExternalReference.1` (`file:///` URL, `available_range` from the file's start timecode) and `source_range`; `enabled` |
+| Takes | Extra `media_references` (`TAKE_1`, ...) on the clip |
+| An overlap (transition or automatic crossfade) | An `SMPTE_Dissolve` `Transition.1` centred on the overlap: `in_offset` and `out_offset` are its halves, the clips' ranges meet at its middle |
+| Playback rate, reversed events | `LinearTimeWarp.1` (`time_scalar` negative for reverse) |
+| A Velocity envelope that is all 0 % | `FreezeFrame.1` |
+| Event FX | `Effect.1` entries named after the plug-in (other tools do not play them) |
+| Markers, regions | `Marker.2` on the stack (regions with a duration) |
+| Generated media, adjustment events | `MissingReference.1` |
+| Fades, Pan/Crop, envelopes, track FX, Track Motion, compositing modes, Velocity ramps | Milan metadata only |
+
+Reading a file from another tool: clips at their running position (gaps advance it), a transition extends the
+outgoing clip by its `out_offset` and starts the incoming one `in_offset` earlier (using media before its in point)
+and becomes a Dissolve on it; a transition against a gap is a fade; time warps become the event's rate, freeze frames a
+0 % Velocity point; extra media references become takes; clip markers become timeline markers; a stack nested in a
+track is flattened (its first track in line, trimmed to the stack's range; the others become tracks of their own).
+Effects other than time warps are listed and dropped. The hand-written fixtures `tests/fixtures/simple_cut.otio` and
+`nested_example.otio` cover this (the OTIO repository's samples were not downloaded).
+
+## EDL (R28): File > Import / Export > EDL Text File...
+
+`src/interchange/edl.rs`, two kinds told apart by the file (`.edl` writes CMX 3600, `.txt` writes VEGAS's table;
+import reads either by content):
+
+**CMX 3600** (what Resolve, Premiere and Avid read): `TITLE:`, `FCM: DROP FRAME` / `NON-DROP FRAME` (drop frame
+at 29.97 / 59.94 unless the project ruler is SMPTE Non-Drop), one video track (`V`) and up to four audio tracks
+(`A`, `A2`, `A3`, `A4`; more are listed and left out), cuts, dissolves as the from-source line then the to-source
+line with `D` and the length in frames (every Milan transition goes out as a dissolve; the EDL's wipes `W001`...
+come in as dissolves), `M2` speed lines (frames per second, negative for reverse, one decimal), reel names from the
+file names (eight capitals and digits, unique), `* FROM CLIP NAME:` / `* TO CLIP NAME:` with the file name and
+`* SOURCE FILE:` with the full path, `* COMMENT:` with the event name. Source timecodes include the file's start
+timecode; the reader takes it off again once the probe knows it (and strips whole hours from files that have none).
+Record timecodes starting on an hour are brought back to zero. `BL` (black) dissolves are fades. Golden files at 25
+and 29.97 DF: `tests/fixtures/golden_25.edl`, `golden_2997df.edl`. Lost: fades (a note per event), markers, levels,
+FX, envelopes, Pan/Crop, takes, generated media.
+
+**VEGAS EDL text** (`"ID";"Track";"StartTime";...`, VEGAS's own File > Import/Export > EDL Text File): every track,
+times in milliseconds, play rate (negative for reverse), fades, levels (opacity / gain), locked; no transitions
+(an overlap is VEGAS's automatic crossfade, as in Milan).
+
+## Final Cut Pro 7 XML (R29): File > Import / Export > Final Cut Pro 7/DaVinci Resolve (*.xml)... and the Premiere rows
+
+`src/interchange/xmeml.rs` (`xmeml` version 5, read with quick-xml 0.41 through `src/interchange/xml.rs`). This is
+the sequence XML Premiere Pro (File > Import, File > Export > Final Cut Pro XML) and DaVinci Resolve (File > Import
+Timeline / Export > Timeline, "FCP 7 XML") read and write; the Premiere/After Effects rows of VEGAS's menu point at
+it because `.prproj` is an undocumented gzip format nothing but Premiere reads.
+
+| In Milan Pro | In the XML |
+|---|---|
+| Frame rate, size, sample rate | `<rate>` (timebase + `ntsc`), video and audio `<format>` |
+| Video tracks | `<track>`s in order |
+| Audio tracks | Two `<track>`s each (channel 1 and 2 of every event, `<sourcetrack>`, linked), as Premiere and Resolve write stereo; a pair like that merges back into one stereo event on import |
+| Events: file, in point, length, mute | `<clipitem>` with `<file>` (`pathurl`, duration, start timecode) once and `<file id/>` after |
+| Overlaps (transitions, automatic crossfades) | `<transitionitem>` Cross Dissolve between the clip items (they overlap it, as FCP7 lays them out); every Milan transition kind goes out as a dissolve |
+| Fades | Converted: dissolves from black (`start-black`) and to black (`end-black`); Cross Fade (+3dB) on audio |
+| Playback rate, reverse | `Time Remap` filter (`speed` in percent, `reverse`); a variable ramp on import uses its average |
+| Opacity, gain | `Opacity` and `Audio Levels` filters (static) |
+| Groups | `<link>` on every member |
+| Markers, regions | Sequence `<marker>`s (`out` -1 for a marker) |
+| Event / track FX, Pan/Crop, Track Motion, envelopes, takes, generated media, compositing modes | Not representable; listed in the export report. Filters in a Premiere / Resolve XML (other than Time Remap, Opacity, Audio Levels) are listed and dropped on import |
+
+Test: `xmeml::tests::round_trip`, and `tests/fixtures/resolve_sample.xml`, hand-written to the DTD in the shape
+Resolve exports (stereo pair, timecode 01:00:00:00, Time Remap, Opacity, a filter Milan lacks, an end-black fade,
+markers).
+
+## Final Cut Pro X XML, FCPXML 1.10 (R29): File > Import / Export > Final Cut Pro X (*.fcpxml)...
+
+`src/interchange/fcpxml.rs`. Out: `<resources>` (one `<format>`, one `<asset>` per file with its `<media-rep>`,
+the Cross Dissolve `<effect>`), a library / event / project / `<sequence>` whose primary storyline is Milan's bottom
+video track; the other video tracks are connected storylines (`<spine lane="1">`, `lane="2"`, ...) and the audio
+tracks lanes -1, -2, ..., all anchored to the first spine element. Times are rationals on the frame ("3003/30000s").
+
+| In Milan Pro | In the FCPXML |
+|---|---|
+| Frame rate, size, sample rate | `<format frameDuration width height>`, `audioRate` |
+| Events | `<asset-clip ref offset start duration>`; `srcEnable="video"` / `"audio"` picks the stream (a Milan video event and its audio event are two clips) |
+| Overlaps | `<transition>` straddling a cut on a frame; the clips abut at it. On import the outgoing clip plays on to the transition's end and the incoming one starts at its start |
+| Playback rate, reverse | Linear `<timeMap>` (two time points); a ramp on import uses its average |
+| Opacity, video fades | `<adjust-blend amount>` with opacity keyframes for the fades |
+| Gain, audio fades | `<adjust-volume amount="-6dB">` with `<fadeIn>` / `<fadeOut>` |
+| Mute | `enabled="0"` |
+| Markers, regions | `<marker start duration value>` on the spine element that covers them (a region has a duration) |
+| Everything else (FX, Pan/Crop, Track Motion, envelopes, takes, groups beyond a clip's own audio, generated media) | Not representable; listed. Titles, generators, compound clips (`ref-clip`, read as offline events), `filter-video` / `filter-audio` effects are listed on import |
+
+Test: `fcpxml::tests::round_trip` (spine, a connected storyline, an audio lane), and `tests/fixtures/fcpx_sample.fcpxml`,
+hand-written to the 1.10 DTD in the shape Final Cut Pro exports (a transition, a time map, a muted connected clip, a
+music lane, markers, a title, an effect).
+
+## AAF (external route)
+
+There is no maintained Rust AAF library, and the reference AAF SDK is a large C++/COM structured-storage codebase
+(`docs/REMAINING.md` 9.6), so Milan Pro neither reads nor writes AAF. The route is OpenTimelineIO's AAF adapter,
+which is Python and runs outside Milan Pro:
+
+```
+pip install opentimelineio otio-aaf-adapter
+otioconvert -i sequence.aaf -o sequence.otio      # AAF from Avid, Premiere, Resolve -> File > Import > OpenTimelineIO
+otioconvert -i sequence.otio -o sequence.aaf      # File > Export > OpenTimelineIO -> AAF for Avid
+```
+
+What the AAF adapter carries is what the OTIO table above says (clips, cuts, dissolves, markers, linear speed), and
+Milan's metadata rides along untouched through `otioconvert` when the file comes straight back. The AAF row in VEGAS
+16's Import menu stays greyed with this note.
 
 ## VEGAS Pro, both ways (through VEGAS's scripting API)
+
+Below: the two C# scripts that move a project through VEGAS's own API (both ways), and the `.veg` media scan.
 
 Milan Pro never reads or writes `.veg` files (`docs/research/VEG_FORMAT.md` says why). Instead two C# scripts in
 `tools/vegas` (installed next to `MilanPro.exe` in `vegas\`; the `(VEGAS 13)` copies for VEGAS Pro 13 and earlier)

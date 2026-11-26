@@ -4,15 +4,19 @@
 //! - `vegas_export`: the same JSON written from a Milan project for `tools/vegas/Import from Milan Pro.cs` (R26);
 //! - `archive`: Export › Archive Project and Import › Media from Project (R30);
 //! - `otio`: OpenTimelineIO, lossless for Milan's own files through `metadata["milan"]` (R28);
-//! - `edl`: CMX 3600 EDLs and VEGAS's EDL text table (R28), through the shared `cutlist`.
+//! - `edl`: CMX 3600 EDLs and VEGAS's EDL text table (R28), through the shared `cutlist`;
+//! - `xmeml`, `fcpxml`: FCP7 XML (Premiere, Resolve) and FCPXML 1.10 (R29), through `cutlist` and the `xml` tree.
 //! `Format` tells the files apart and `import` / `export` route them. `docs/INTERCHANGE.md` says what each route carries.
 pub mod archive;
 pub mod cutlist;
 pub mod edl;
+pub mod fcpxml;
 pub mod otio;
 pub mod vegas;
 pub mod vegas_export;
 pub mod vegas_map;
+pub mod xmeml;
+pub mod xml;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,6 +42,10 @@ pub enum Format {
     Otio,
     /// CMX 3600 (`.edl`) or VEGAS's EDL text table (`.txt`).
     Edl,
+    /// FCP7 `xmeml` (`.xml`): Premiere Pro, DaVinci Resolve.
+    Xmeml,
+    /// FCPXML 1.10 (`.fcpxml`).
+    Fcpxml,
 }
 
 impl Format {
@@ -45,6 +53,8 @@ impl Format {
         match path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).as_deref() {
             Some("otio") => Format::Otio,
             Some("edl") | Some("txt") => Format::Edl,
+            Some("xml") => Format::Xmeml,
+            Some("fcpxml") => Format::Fcpxml,
             _ => Format::Vegas,
         }
     }
@@ -55,6 +65,8 @@ impl Format {
             Format::Vegas => "VEGAS Project",
             Format::Otio => "OpenTimelineIO",
             Format::Edl => "EDL Text File",
+            Format::Xmeml => "Final Cut Pro 7 XML",
+            Format::Fcpxml => "Final Cut Pro X XML",
         }
     }
 
@@ -64,6 +76,8 @@ impl Format {
             Format::Vegas => ("VEGAS Project (Milan Pro export, .veg)", &["json", "veg"]),
             Format::Otio => ("OpenTimelineIO (*.otio)", &["otio"]),
             Format::Edl => ("EDL (CMX 3600 *.edl, VEGAS *.txt)", &["edl", "txt"]),
+            Format::Xmeml => ("Final Cut Pro 7 / Premiere / Resolve XML (*.xml)", &["xml"]),
+            Format::Fcpxml => ("Final Cut Pro X XML (*.fcpxml)", &["fcpxml"]),
         }
     }
 
@@ -81,6 +95,7 @@ impl Format {
             Format::Vegas => "The VEGAS project is open as a new, unsaved project. These parts of it did not carry over:".into(),
             Format::Otio => "The timeline is open as a new, unsaved project. These parts of it did not carry over:".into(),
             Format::Edl => "The EDL is open as a new, unsaved project. These parts of it did not carry over:".into(),
+            Format::Xmeml | Format::Fcpxml => "The sequence is open as a new, unsaved project. These parts of it did not carry over:".into(),
         }
     }
 
@@ -135,6 +150,8 @@ pub fn export(format: Format, p: &Project, path: &Path) -> anyhow::Result<Vec<St
         Format::Vegas => vegas_export::write(p, path),
         Format::Otio => otio::write(p, path),
         Format::Edl => edl::export(p, path),
+        Format::Xmeml => xmeml::export(p, path),
+        Format::Fcpxml => fcpxml::export(p, path),
     }
 }
 
@@ -149,6 +166,16 @@ fn import(path: &Path, fps: f64) -> anyhow::Result<Imported> {
         }
         Format::Edl => {
             let (mut cut, mut warnings) = edl::read(&String::from_utf8_lossy(&bytes), fps, dir)?;
+            if cut.name.is_empty() {
+                cut.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            }
+            let (p, more) = cutlist::to_project(&cut, &probe_all(&cut.media_paths()));
+            warnings.extend(more);
+            return Ok(Imported::Project(p, warnings));
+        }
+        Format::Xmeml | Format::Fcpxml => {
+            let text = String::from_utf8_lossy(&bytes);
+            let (mut cut, mut warnings) = if Format::of(path) == Format::Xmeml { xmeml::read(&text, dir)? } else { fcpxml::read(&text, dir)? };
             if cut.name.is_empty() {
                 cut.name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             }

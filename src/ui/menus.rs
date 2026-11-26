@@ -184,7 +184,7 @@ impl CmdState {
         let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
-            | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ExportOtio | ExportEdl
+            | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml | ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
@@ -637,23 +637,24 @@ const IMPORT: &[M] = &[
     C("&VEGAS Project...", ImportVegas),
     C("Media from &Project...", ImportMediaFromProject),
     V16(&X("&AAF...", AAF)),
-    X("P&remiere/After Effects (*.prproj)...", Later("R29")),
-    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
-    X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
+    // R29: Premiere reads FCP7 XML (never .prproj, an undocumented gzip format), so its row is the same import.
+    C("P&remiere/After Effects (via Final Cut Pro 7 XML)...", ImportXmeml),
+    C("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", ImportXmeml),
+    C("Final Cut Pro &X (*.fcpxml)...", ImportFcpxml),
     C("&EDL Text File (*.txt, *.edl)...", ImportEdl),
     C("&OpenTimelineIO (*.otio)...", ImportOtio),
     X("&Broadcast Wave Format...", NotPlanned("R57")),
     X("&Closed Captioning...", Later("R39")),
 ];
 
-const AAF: Why = Fixed("not feasible: no Rust AAF library (OTIO route in batch R29)");
+const AAF: Why = Fixed("not feasible: no Rust AAF library; export OpenTimelineIO and convert with otioconvert (docs/INTERCHANGE.md)");
 
 const EXPORT: &[M] = &[
     C("&Milan Pro Project Archive...", ArchiveProject),
     C("&VEGAS Project (via script)...", ExportVegas),
-    X("Premiere/&After Effects (*.prproj)...", Later("R29")),
-    X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
-    X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
+    C("Premiere/&After Effects (via Final Cut Pro 7 XML)...", ExportXmeml),
+    C("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", ExportXmeml),
+    C("Final Cut Pro &X (*.fcpxml)...", ExportFcpxml),
     C("&EDL Text File (*.txt, *.edl)...", ExportEdl),
     C("&OpenTimelineIO (*.otio)...", ExportOtio),
 ];

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE fcpxml>
+<!-- Hand-written to the FCPXML 1.10 DTD in the shape Final Cut Pro exports (not a file from Final Cut Pro), for Milan Pro's tests. -->
+<fcpxml version="1.10">
+  <resources>
+    <format id="r1" name="FFVideoFormat1080p2997" frameDuration="1001/30000s" width="1920" height="1080" colorSpace="1-1-1 (Rec. 709)"/>
+    <asset id="r2" name="A001" uid="0A1B2C3D4E5F6071" start="0s" duration="1801800/30000s" hasVideo="1" format="r1" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" sig="0A1B2C3D4E5F6071" src="file:///D:/Footage/A001.mov"/>
+    </asset>
+    <asset id="r3" name="A002" uid="1A1B2C3D4E5F6072" start="0s" duration="1801800/30000s" hasVideo="1" format="r1">
+      <media-rep kind="original-media" sig="1A1B2C3D4E5F6072" src="file:///D:/Footage/A002.mov"/>
+    </asset>
+    <asset id="r4" name="A003" uid="2A1B2C3D4E5F6073" start="0s" duration="1801800/30000s" hasVideo="1" format="r1">
+      <media-rep kind="original-media" sig="2A1B2C3D4E5F6073" src="file:///D:/Footage/A003.mov"/>
+    </asset>
+    <asset id="r5" name="music" uid="3A1B2C3D4E5F6074" start="0s" duration="180s" hasAudio="1" audioSources="1" audioChannels="2" audioRate="48000">
+      <media-rep kind="original-media" sig="3A1B2C3D4E5F6074" src="file:///D:/Footage/music.wav"/>
+    </asset>
+    <effect id="r6" name="Cross Dissolve" uid="FxPlug:4731E73A-8DAC-4113-9A30-AE85B1761265"/>
+    <effect id="r7" name="Gaussian" uid=".../Gaussian.moef"/>
+    <effect id="r8" name="Basic Lower Third" uid=".../Basic Lower Third.moti"/>
+  </resources>
+  <library location="file:///D:/Library.fcpbundle/">
+    <event name="FCPX Sample" uid="4A1B2C3D4E5F6075">
+      <project name="FCPX Sample" uid="5A1B2C3D4E5F6076" modDate="2026-11-26 12:00:00 +0000">
+        <sequence format="r1" duration="300300/30000s" tcStart="0s" tcFormat="NDF" audioLayout="stereo" audioRate="48k">
+          <spine>
+            <asset-clip ref="r2" offset="0s" name="A001" start="30030/30000s" duration="120120/30000s" format="r1" tcFormat="NDF" audioRole="dialogue">
+              <adjust-volume amount="-3dB">
+                <param name="amount">
+                  <fadeIn type="easeIn" duration="15015/30000s"/>
+                </param>
+              </adjust-volume>
+              <asset-clip ref="r4" lane="1" offset="90090/30000s" name="A003" start="0/30000s" duration="60060/30000s" enabled="0" format="r1" tcFormat="NDF"/>
+              <asset-clip ref="r5" lane="-2" offset="60060/30000s" name="music" start="0s" duration="240240/30000s" audioRole="music"/>
+              <marker start="60060/30000s" duration="1001/30000s" value="Beat"/>
+            </asset-clip>
+            <transition name="Cross Dissolve" offset="120120/30000s" duration="30030/30000s">
+              <filter-video ref="r6" name="Cross Dissolve"/>
+            </transition>
+            <asset-clip ref="r3" offset="120120/30000s" name="A002" start="300300/30000s" duration="120120/30000s" format="r1" tcFormat="NDF">
+              <timeMap>
+                <timept time="300300/30000s" value="300300/30000s" interp="linear"/>
+                <timept time="420420/30000s" value="540540/30000s" interp="linear"/>
+              </timeMap>
+              <adjust-blend amount="0.75"/>
+              <marker start="330330/30000s" duration="30030/30000s" value="Grade this"/>
+              <filter-video ref="r7" name="Gaussian">
+                <param name="Amount" key="9999/999166631/999166651/1/100/101" value="10"/>
+              </filter-video>
+            </asset-clip>
+            <title ref="r8" offset="240240/30000s" name="Lower Third" start="3603600/30000s" duration="60060/30000s">
+              <text>
+                <text-style ref="ts1">Hello</text-style>
+              </text>
+              <text-style-def id="ts1">
+                <text-style font="Helvetica" fontSize="63" fontColor="1 1 1 1"/>
+              </text-style-def>
+            </title>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>

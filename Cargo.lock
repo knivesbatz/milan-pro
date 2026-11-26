@@ -2018,6 +2018,7 @@ dependencies = [
  "eframe",
  "libloading",
  "png",
+ "quick-xml 0.41.0",
  "rfd",
  "serde",
  "serde_json",

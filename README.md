@@ -17,7 +17,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
 - Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster
 - Autosave, safe saves, undo/redo, and an auto-updater
-- Project files are `.mnle` (JSON)
+- Project files are `.mnle` (JSON); interchange with other editors: VEGAS Pro (via script), OpenTimelineIO (lossless for Milan's own files), CMX 3600 and VEGAS EDLs, FCP7 XML (Premiere Pro, DaVinci Resolve), FCPXML 1.10; AAF through OpenTimelineIO's adapter (`docs/INTERCHANGE.md`)
 
 ## Looks
 
@@ -88,7 +88,7 @@ Requires Rust 1.85+ (edition 2024). The binaries are written to `target/release/
 
 - CLAP editor windows; OFX GPU render
 - Masks, freely dockable panels, direct `.veg` reading
-- EDL / OTIO interchange
+- AAF natively (today: OpenTimelineIO plus `otioconvert`, external)
 
 ## License
 

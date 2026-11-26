@@ -31,6 +31,21 @@ Projects move between VEGAS Pro and Milan Pro through VEGAS's own scripting API,
 VEGAS Pro 15's `ScriptPortal.Vegas.dll`; the `(VEGAS 13)` copies use the `Sony.Vegas` namespace of VEGAS Pro 13 and
 earlier. They have not been run inside VEGAS by the developers: the user's VEGAS 15 pass is the acceptance test.
 
+## Interchange formats (R28, R29)
+
+What each File > Import / Export format carries is in `docs/INTERCHANGE.md` (the summary table there says, per
+feature, accurate / converted / not representable). In short:
+
+| Format | Read | Write | Tested against |
+|---|---|---|---|
+| OpenTimelineIO (`.otio`) | Yes (`Clip.1` and `Clip.2`, nested stacks flattened, unknown schemas skipped) | Yes, lossless for Milan's own files (`metadata["milan"]`) | Hand-written fixtures to the OTIO JSON schema; the OTIO repository's samples were not downloaded |
+| CMX 3600 EDL (`.edl`) | Yes (V, A-A4, C, D, W as D, M2, BL, FROM/TO CLIP NAME, SOURCE FILE) | Yes (DF/NDF by project rate and ruler) | Golden files at 25 and 29.97 DF, a Resolve-style EDL with an hour start and black |
+| VEGAS EDL text (`.txt`) | Yes | Yes | Round trip; the column names are VEGAS 15's (not run through VEGAS here) |
+| FCP7 XML (`.xml`, Premiere Pro, DaVinci Resolve) | Yes (stereo pairs merged, Time Remap, Opacity, Audio Levels, links) | Yes (xmeml 5) | Round trip, a hand-written Resolve-shaped sequence; not opened in Premiere or Resolve here |
+| FCPXML 1.10 (`.fcpxml`) | Yes (spine, lanes, connected storylines, `clip`, `sync-clip`, time maps) | Yes | Round trip, a hand-written FCP-shaped sequence; not opened in Final Cut Pro here |
+| AAF | No | No | Route: `otioconvert` with `otio-aaf-adapter` (external, Python) |
+| Premiere `.prproj` | No | No | Undocumented gzip format; the Premiere rows use FCP7 XML, which Premiere imports |
+
 ### VEGAS plug-ins that become Milan Pro built-ins (`src/interchange/vegas_map.rs`)
 
 | VEGAS plug-in (`com.sonycreativesoftware:`) | Milan Pro | Settings carried |
