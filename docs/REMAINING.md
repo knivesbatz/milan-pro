@@ -35,9 +35,9 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 242 |
-| PARTIAL | 114 |
-| MISSING | 64 |
+| DONE | 278 |
+| PARTIAL | 84 |
+| MISSING | 58 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
@@ -224,37 +224,37 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 7.1 | Comprehensive media backend | DONE | FFmpeg 9.0.2 full build bundled (`installer/`) |
-| 7.2 | Codec availability, hardware acceleration, licensing and distribution researched | MISSING | Not documented. Section 4.3 is the raw data. → R37, R56 |
-| 7.3 | H.264 / AVC | PARTIAL | Decode and encode (libx264) work. Not covered by a format test. → R37 |
-| 7.4 | H.265 / HEVC | PARTIAL | Decode and encode (libx265) work. Not tested. → R37 |
-| 7.5 | AV1 | PARTIAL | Decodes. R11: renders with libsvtav1 ("AV1 (SVT)" template, MP4 or WebM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not covered by a format test. → R37 |
-| 7.6 | VP8 | PARTIAL | Decodes. R11: "VP8 WebM" template (libvpx), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.7 | VP9 | PARTIAL | Decodes. R11: "VP9 WebM" template (libvpx-vp9), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.8 | MPEG-1 | PARTIAL | Decodes. Not tested. No preset. → R37 |
-| 7.9 | MPEG-2 | PARTIAL | Decodes. R11: "MPEG-2 TS" and "MPEG-2 Program Stream" templates (also interlaced: upper field first, checked with `idet`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.10 | MPEG-4 Part 2 | PARTIAL | Decodes. Not tested. → R37 |
-| 7.11 | ProRes | PARTIAL | Decodes. R11: renders every profile (Proxy, LT, 422, HQ, 4444, 4444 XQ); "ProRes 4444 (alpha)" keeps transparency where nothing covers the frame (`VideoPlan.alpha`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.12 | DNxHD | PARTIAL | Decodes. R11: DNxHD is a Customize profile (constant bit rate; its fixed sizes and rates are FFmpeg's); no built-in template, DNxHR has them. Decode not tested. → R37 |
-| 7.13 | DNxHR | PARTIAL | Decodes. R11: DNxHR LB/SQ/HQ/HQX/444 templates in MOV and DNxHR HQ in MXF, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.14 | CineForm | PARTIAL | Decodes. R11: "CineForm" template (cfhd, quality presets), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.15 | MJPEG | PARTIAL | Decodes. Not tested. → R37 |
-| 7.16 | Theora | PARTIAL | Decodes. Not tested. → R37 |
-| 7.17 | FFV1 | PARTIAL | Decodes. R11: "FFV1 MKV archive" template (lossless RGB, FLAC), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.18 | Animation codecs (QuickTime Animation/qtrle, PNG-in-MOV, UT Video) | PARTIAL | Decode (alpha is handled, `media.rs:131`). Not tested. → R37 |
-| 7.19 | RAW video formats | NOT FEASIBLE | R3D, BRAW and ARRIRAW need proprietary SDKs that an MIT project cannot redistribute; FFmpeg has no decoders for them. Deliverable: documented in FORMAT_SUPPORT.md, plus an optional runtime-loaded BRAW SDK study (R41). CinemaDNG and DNG stills are tested in R37. |
-| 7.20 | WAV | PARTIAL | Works. Not covered by a format test. → R37 |
-| 7.21 | AIFF | PARTIAL | Decodes. Not tested. → R37 |
-| 7.22 | MP3 | PARTIAL | Decode and encode. Not tested. → R37 |
-| 7.23 | AAC | PARTIAL | Decode and encode. Not tested. → R37 |
-| 7.24 | FLAC | PARTIAL | Decodes. R11: "FLAC audio" template (16/24-bit), FLAC in MKV, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.25 | ALAC | PARTIAL | Decodes. R11: "ALAC audio" template (.m4a), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.26 | OGG Vorbis | PARTIAL | Decodes. R11: "Ogg Vorbis audio" and VP8 WebM templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.27 | Opus | PARTIAL | Decodes. R11: "Opus audio" and VP9 WebM templates (48 kHz), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.28 | WMA | PARTIAL | Decodes (wmav2; WMA Pro and Lossless partly). Not tested. → R37 |
+| 7.2 | Codec availability, hardware acceleration, licensing and distribution researched | PARTIAL | R37: `engine/caps.rs` asks the bundled FFmpeg for its demuxers, decoders, encoders, muxers, pixel formats and filters (cached per FFmpeg version) and `docs/FORMAT_SUPPORT.md` has the capability table, the tested decode matrix with a licence column per format and the render table; hardware acceleration is R22. Missing: the distribution and licensing study of the bundled FFmpeg build. → R56 |
+| 7.3 | H.264 / AVC | DONE | Decode and encode (libx264) work. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.4 | H.265 / HEVC | DONE | Decode and encode (libx265) work. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.5 | AV1 | DONE | Decodes. R11: renders with libsvtav1 ("AV1 (SVT)" template, MP4 or WebM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not covered by a format test. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.6 | VP8 | DONE | Decodes. R11: "VP8 WebM" template (libvpx), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.7 | VP9 | DONE | Decodes. R11: "VP9 WebM" template (libvpx-vp9), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.8 | MPEG-1 | DONE | Decodes. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. Decode only: no MPEG-1 render template (VEGAS has none either). |
+| 7.9 | MPEG-2 | DONE | Decodes. R11: "MPEG-2 TS" and "MPEG-2 Program Stream" templates (also interlaced: upper field first, checked with `idet`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.10 | MPEG-4 Part 2 | DONE | Decodes. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.11 | ProRes | DONE | Decodes. R11: renders every profile (Proxy, LT, 422, HQ, 4444, 4444 XQ); "ProRes 4444 (alpha)" keeps transparency where nothing covers the frame (`VideoPlan.alpha`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.12 | DNxHD | DONE | Decodes. R11: DNxHD is a Customize profile (constant bit rate; its fixed sizes and rates are FFmpeg's); no built-in template, DNxHR has them. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. R41: "MXF DNxHD 145 1080" template (1920x1080, 145 Mbps 8-bit, MXF OP1a), ffprobe-checked by `render_templates_e2e`. |
+| 7.13 | DNxHR | DONE | Decodes. R11: DNxHR LB/SQ/HQ/HQX/444 templates in MOV and DNxHR HQ in MXF, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.14 | CineForm | DONE | Decodes. R11: "CineForm" template (cfhd, quality presets), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.15 | MJPEG | DONE | Decodes. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.16 | Theora | DONE | Decodes. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.17 | FFV1 | DONE | Decodes. R11: "FFV1 MKV archive" template (lossless RGB, FLAC), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.18 | Animation codecs (QuickTime Animation/qtrle, PNG-in-MOV, UT Video) | DONE | Decode (alpha is handled, `media.rs:131`). R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.19 | RAW video formats | NOT FEASIBLE | R3D, BRAW, ARRIRAW, Canon Cinema RAW Light and Nikon N-RAW need proprietary SDKs that an MIT project cannot redistribute; FFmpeg has no decoders for them. Deliverable shipped (R41): they import as offline items that give the reason (`camera::RAW`), listed in `docs/FORMAT_SUPPORT.md` and `docs/COMPATIBILITY.md`; CinemaDNG is listed unsupported too (FFmpeg reads some DNG stills without the camera colour pipeline; DNG frames are not offered as a sequence). Not built: the optional runtime-loaded BRAW SDK study. |
+| 7.20 | WAV | DONE | Works. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.21 | AIFF | DONE | Decodes. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.22 | MP3 | DONE | Decode and encode. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.23 | AAC | DONE | Decode and encode. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.24 | FLAC | DONE | Decodes. R11: "FLAC audio" template (16/24-bit), FLAC in MKV, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.25 | ALAC | DONE | Decodes. R11: "ALAC audio" template (.m4a), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.26 | OGG Vorbis | DONE | Decodes. R11: "Ogg Vorbis audio" and VP8 WebM templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.27 | Opus | DONE | Decodes. R11: "Opus audio" and VP9 WebM templates (48 kHz), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.28 | WMA | DONE | Decodes (wmav2; WMA Pro and Lossless partly). R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
 | 7.29 | PCM | DONE | WAV preset, pcm_s16le in the ProRes MOV |
-| 7.30 | AC-3 | PARTIAL | Decodes. R11: "AC-3 audio" template and AC-3 in the MPEG-2 templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.31 | E-AC-3 | PARTIAL | Decodes. R11: "E-AC-3 audio" template, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.32 | DTS where supportable | PARTIAL | Decodes (dca). The encoder is experimental and core-only; licensing is to be documented. → R37, R56 |
+| 7.30 | AC-3 | DONE | Decodes. R11: "AC-3 audio" template and AC-3 in the MPEG-2 templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.31 | E-AC-3 | DONE | Decodes. R11: "E-AC-3 audio" template, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. |
+| 7.32 | DTS where supportable | DONE | Decodes (dca). The encoder is experimental and core-only. R37: decode checked by `format_corpus_e2e` (generated file, frame 0 and the middle frame against the bars, 1 s of sound by RMS), `docs/FORMAT_SUPPORT.md`. Licences per codec are in the corpus table's Licence column; distribution terms stay with R56. |
 | 7.33 | Multichannel audio (formats) | MISSING | The mixer forces stereo (`mix.rs:68`, `-ac 2`); 5.1 sources are downmixed silently. → R10a |
 | 7.34 | MP4 | DONE | Import and render |
 | 7.35 | MOV | DONE | Import and render |
@@ -263,31 +263,31 @@ What matters most:
 | 7.38 | MPEG-TS | DONE | Import (`.ts`, `.m2ts`, `.mts`); R11 render ("MPEG-2 TS", `.m2ts`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
 | 7.39 | MPEG-PS | DONE | Import (`.mpg`, `.vob`); R11 render ("MPEG-2 Program Stream", `.mpg`), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
 | 7.40 | WebM | DONE | Import; R11 render ("VP9 WebM", "VP8 WebM"), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
-| 7.41 | MXF | PARTIAL | Import (XDCAM/XAVC untested; spanned clips not joined). R11: "MXF DNxHR HQ" render (OP1a, 48 kHz PCM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. → R41 |
+| 7.41 | MXF | DONE | Import: MXF OP1a (XDCAM HD422 MPEG-2, DNxHD, AVC-Intra 100) and OP-Atom (DNxHD, PCM) stand-ins decode with their timecode (`format_corpus_e2e`, `camera_formats_e2e`); P2 and XDCAM folders import from File › Import › Camera Card Folder (R41). R11: "MXF DNxHR HQ" render, R41: "MXF DNxHD 145 1080", ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. |
 | 7.42 | WAV container | DONE | |
 | 7.43 | AIFF container | DONE | Import; R11 render ("AIFF audio", 8/16/24/32-bit big-endian PCM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md` |
 | 7.44 | PNG | DONE | `media.rs:108` |
 | 7.45 | JPEG | DONE | |
 | 7.46 | TIFF | PARTIAL | Imported, but 16-bit and float TIFF are squeezed to 8-bit. → R40b |
 | 7.47 | BMP | DONE | |
-| 7.48 | WebP | PARTIAL | Stills only; animated WebP is not handled as video. → R38 |
-| 7.49 | GIF | PARTIAL | Classed as Image (`media.rs:108`), so animated GIFs show one frame. → R38 |
-| 7.50 | EXR | PARTIAL | Single files decode through FFmpeg, but linear float is crushed into 8-bit gamma without a transform. → R38, R40b |
-| 7.51 | OpenEXR sequences | MISSING | → R38 |
-| 7.52 | Image sequences | MISSING | No sequence detection or `image2` demuxer use. → R38 |
-| 7.53 | Other production image formats (DPX, TGA, PSD, HDR, JPEG 2000) | PARTIAL | TGA and PSD are listed. DPX, JP2 and Radiance HDR are not in `IMAGE_EXTS`. → R38 |
+| 7.48 | WebP | DONE | R38: stills, and animated WebP imports as video (`animated_gif_e2e`: 10 distinct frames). |
+| 7.49 | GIF | DONE | R38: a GIF with several frames imports as video, one frame stays a picture (`animated_pictures_are_video`, `animated_gif_e2e`: a 10-frame GIF plays 10 distinct frames). |
+| 7.50 | EXR | PARTIAL | R38: single files and sequences decode; linear float is shown through a simple sRGB transfer (`color::view_transform`, values above 1.0 clip), noted in Media Properties. Missing: a float pipeline. → R40b |
+| 7.51 | OpenEXR sequences | PARTIAL | R38: an EXR sequence opens as one item like any still sequence, shown with the simple sRGB transfer. Missing: float precision. → R40b |
+| 7.52 | Image sequences | DONE | R38: a picked or dropped numbered still asks "Open still image sequence" (`ui/dialogs/sequence.rs`, the answer remembered); checked, the run from its lowest number to the first gap is one video item at the project rate read through image2 (`MediaItem::sequence`, `plan::source_input`). `image_sequence_e2e`: 48 PNGs at 24 fps last 2.0 s, the 10th frame is file 0010, the gap stops the run, and a PNG sequence render gives each file back pixel for pixel. Archive Project copies every frame. |
+| 7.53 | Other production image formats (DPX, TGA, PSD, HDR, JPEG 2000) | DONE | R38: DPX, JPEG 2000, Radiance HDR (tone-mapped), DNG, SVG (offline with the reason when FFmpeg lacks librsvg) and JPEG XL join TGA and PSD in `IMAGE_EXTS`; each FFmpeg can write is decoded in `image_sequence_e2e`. |
 | 7.54 | Subtitles | MISSING | `-sn` everywhere. "Insert Subtitles from Files/Regions" is greyed (`menus.rs:718-719`). → R39 |
 | 7.55 | Closed captions | MISSING | "Import > Closed Captioning..." is greyed (`menus.rs:411`). → R39 |
 | 7.56 | Alpha channels | DONE | `has_alpha` probe and premultiply (`media.rs:131`, `vdecode.rs`) |
 | 7.57 | High bit-depth footage | PARTIAL | Decodes, but the pipeline is 8-bit RGBA (`FEATURE_PLAN.md` 1.10). ProRes renders 10-bit from 8-bit. → R40b |
-| 7.58 | HDR media | MISSING | Transfer (PQ/HLG) and BT.2020 are not probed. HDR sources are converted as if SDR, which washes them out. That breaks the "never incorrectly interpret" rule. → R40a |
+| 7.58 | HDR media | DONE | R40a: transfer, primaries, matrix, bit depth and HDR10 mastering display / content light level are probed (stream or first-frame side data) and shown in Media Properties, Project Properties lists the HDR media and holds Color management (tone-mapped by default, clip, off). PQ and HLG reach the Rec.709 timeline through a zimg view transform in the decode filter shared by preview, thumbnails, proxies and render; BT.2020 SDR is converted; Project Media badges "HDR". `hdr_view_transform_e2e`: PQ and HLG clips within 2 levels of FFmpeg's own tone map and within 5 % of the SDR original on the greys; SDR decodes bit-identically with the transform on or off. HDR output is R40b. |
 | 7.59 | Variable frame rate media | DONE | `avg_frame_rate` rule plus the `fps` filter conform (`media.rs:166-171`, `vdecode.rs:48`) |
 | 7.60 | Interlaced video | DONE | `field_order` probe plus yadif (`media.rs:176`, `vdecode.rs:49`) |
 | 7.61 | Multichannel audio (media) | PARTIAL | R3b: Stream ▸ plays any audio (or video) stream of a multi-stream file (`Clip.stream`, `-map 0:a:N` in `engine/mix.rs`, `0:v:N` in `engine/vdecode.rs`; streams counted at import, `media.rs`); Channels ▸ Both / Left Only / Right Only / Combine / Swap (`mix::map_channels`). Tests `invert_phase_and_channels`, `streams_are_counted_by_kind`, `ffmpeg_second_stream_and_peak` (ignored, ffmpeg). Missing: sources are still downmixed to stereo, and nothing offers the extra streams on import. → R10a, R10b |
-| 7.62 | Professional camera formats | PARTIAL | AVCHD, XAVC and MXF decode through FFmpeg; untested. No spanned-clip joining. (R17a) Media timecode is read: `timecode` tags, QuickTime `tmcd`, MXF, BWF `time_reference`. → R41 |
-| 7.63 | Format compatibility system; every supported format tested | MISSING | No capability probe, no test corpus, no format report. → R37 |
-| 7.64 | Limitations, external dependencies and licensing documented | MISSING | → R37, R56 |
-| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). Extra audio streams can be picked with Stream ▸ (R3b) but are not offered on import, and extra channels are dropped silently. → R37, R40a, R10b |
+| 7.62 | Professional camera formats | DONE | R41: File › Import › Camera Card Folder (or a dropped folder) finds AVCHD, XDCAM EX/HD, XAVC, P2, Canon XF and GoPro clips (`camera.rs`); spanned AVCHD parts and GoPro chapters join into one item through a `.ffconcat` list; transport streams and lists seek exactly (`plan::PREROLL`); camera make/model, reel and timecode (tags, tmcd, MXF, H.264 SEI) in Media Properties, "Use Media Timecode as Ruler Start". Checked on FFmpeg-made stand-ins only (`camera_formats_e2e`): a spanned AVCHD pair imports as one 4 s item that plays its second part, XAVC-style MP4, XDCAM HD422 / DNxHD / AVC-Intra MXF, a P2-style OP-Atom card. `docs/COMPATIBILITY.md` camera section. |
+| 7.63 | Format compatibility system; every supported format tested | DONE | R37: capability table (`engine/caps.rs`), the generated legal corpus (`tools/make-test-media.ps1`, `format_corpus_e2e`: 35 files over the codecs, containers, rates, sizes and channel layouts of the spec), the decode matrix in `docs/FORMAT_SUPPORT.md`, and the verdict (decode, proxy, render as same) in Media Properties. |
+| 7.64 | Limitations, external dependencies and licensing documented | PARTIAL | R37: limitations per format and a licence column in `docs/FORMAT_SUPPORT.md`; RAW and CinemaDNG reasons (R41). Missing: the FFmpeg distribution and licensing study. → R56 |
+| 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | R37: a codec the bundled FFmpeg cannot decode imports as an offline item that says so (`caps::unsupported`, "!" badge, Media Properties), never decoded as something else; R40a: HDR is no longer misinterpreted. Missing: extra audio streams are not offered on import and extra channels are downmixed. → R10a, R10b |
 
 ### 2.8 Section 8: VEGAS project import
 
@@ -1864,6 +1864,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R37: Format capability system, test corpus, format report (L)
 
+**Status: DONE.** `engine/caps.rs`: the bundled FFmpeg's demuxers, decoders, encoders, muxers, pixel formats and filters (`-hwaccels` is R22's), cached per FFmpeg version in `%LOCALAPPDATA%\MilanPro\caps.json` (the harness and tests never write it). A stream whose codec has no decoder imports as an offline item with "unsupported codec <name>: ..." (`MediaItem::unsupported`; a "!" badge in Project Media, the reason in the import message and Media Properties; never decoded, proxied or drawn). Media Properties shows the verdict: decode (software, or the R22 hardware path), proxy, and the render templates that write the same codec. `tools/make-test-media.ps1` runs the ignored `engine::formats_e2e::format_corpus_e2e`, which generates the legal corpus from lavfi (35 files: H.264 8/10-bit 4:2:0/4:2:2, HEVC 8/10 incl. 2160p, AV1, VP8, VP9, MPEG-1/2/4, XDCAM HD422 and DNxHD in MXF OP1a, ProRes 422/4444 alpha, DNxHR, CineForm, MJPEG, Theora, FFV1, qtrle, PNG-in-MOV, Ut Video, VFR; WAV 16/24/32f, AIFF, MP3, AAC, FLAC, ALAC, Vorbis, Opus, WMA, AC-3 5.1, E-AC-3 7.1, DTS 5.1; 23.976 to 59.94 and 29.97i; mono to 7.1) into `MILAN_TESTMEDIA` (default `target/testmedia`), imports each file, checks frame 0 and the middle frame against the SMPTE bars through the engine's decoder, mixes 1 s and checks its RMS, and rewrites the decode, capability and camera tables of `docs/FORMAT_SUPPORT.md` (with a licence column). The spec's `tests/formats.rs` is a module of the binary instead (Milan Pro has no library crate). Tests: `capability_parser` (captured output), `verdict_rows`, `unsupported_codec_is_an_offline_item`, ignored `bundled_ffmpeg_capabilities`, `format_corpus_e2e`.
+
 **Scope**
 - `engine/caps.rs`: parse `ffmpeg -decoders -encoders -demuxers -muxers -hwaccels` of the bundled FFmpeg at first run (cached).
 - On import, a stream whose codec has no decoder becomes an offline item: "unsupported codec <name>". Never substituted.
@@ -1875,6 +1877,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a capability parser unit test on captured output; the unsupported-codec path gives an offline item with the reason; the corpus test passes for every row marked supported.
 
 ### R38: Image sequences and still formats (M)
+
+**Status: DONE.** A picked or dropped numbered still asks "Open still image sequence" (`ui/dialogs/sequence.rs`, VEGAS's check box, remembered in Preferences); checked, the run from its lowest number to the first gap is one video item at the project's frame rate (`MediaItem::sequence`, pattern beside its first file so it moves with the project; image2 in every reader; no proxy; Archive Project copies every frame). DPX, JPEG 2000, Radiance HDR, DNG, SVG and JPEG XL joined `IMAGE_EXTS` (SVG imports offline with the reason: the bundled FFmpeg has no librsvg; DNG frames are not offered as a sequence, CinemaDNG is listed unsupported). Animated GIF, WebP and APNG are video, read from their start (a seek lands between dependent frames). Linear stills (EXR, Radiance HDR) go through a simple sRGB transfer, with Radiance HDR tone-mapped first, in thumbnails, the timeline and renders, noted in Media Properties ("linear EXR shown with a simple sRGB transfer" until R40b). Found on the way: ffmpeg 9 decodes nothing for `-ss 0` on a JPEG or WebP, so a zero seek is left out. Render to PNG, TIFF, OpenEXR and DPX sequences was R11. Tests: `numbered_sequences_are_detected`, `resolve_collapses_sequences`, `animated_pictures_are_video`, ignored `image_sequence_e2e` (48 PNGs at 24 fps last 2.0 s, the 10th frame is file 0010, a gap stops the run, a PNG sequence render gives every file back pixel for pixel, the still formats FFmpeg writes decode, alpha survives) and `animated_gif_e2e` (a 10-frame GIF and WebP play 10 distinct frames).
 
 **Scope**
 - Detect numbered sequences on import and drop (`name_0001.ext` with consecutive numbers). Ask with "Open as image sequence" in a Milan modal (rfd cannot add a checkbox).
@@ -1902,6 +1906,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** an SRT parse/write round-trip with UTF-8, multi-line text and overlapping cues; an MP4 with mov_text subtitles probes with a subtitle stream; a 608 test file (lavfi cannot make one; use a user-provided broadcast sample or a fixture from the FFmpeg FATE suite, LGPL data) imports its captions.
 
 ### R40a: HDR detection and correct SDR display (M)
+
+**Status: DONE.** Probed: `color_transfer`, `color_primaries`, matrix, bit depth (`bits_per_raw_sample`, else the pix_fmt) and HDR10 mastering display / content light level (stream side data, else the first frame's SEI). Media Properties shows them with the colour space as VEGAS names it and how the source reaches the timeline; Project Properties › Video lists the project's HDR and wide-gamut media and has Color management (VEGAS's View transform row): SDR Rec.709 with HDR tone-mapped (default), SDR with HDR clipped, or Off. `engine/color.rs` builds the view transform (zimg) that `plan::media_ref` puts ahead of the scaler, so the preview, Trimmer, thumbnails, proxies (made through it) and render all see the same picture: PQ is taken to linear with reference white 203 cd/m² (BT.2408) as 1.0, HLG decoded for a 1000 cd/m² display and exposed to the same white, both converted to Rec.709 primaries and rolled off with Möbius above 50 % up to the mastering peak (1000 cd/m² without metadata); BT.2020 SDR is converted to Rec.709; SDR sources get nothing. Differences from the spec: Möbius at 203 cd/m² instead of Hable at 100 (Hable at 100 darkens SDR-graded content by about a stop; Möbius keeps everything under the knee exact), and the badge reads "HDR" in Project Media. Tests: `view_transform_per_transfer` (args per transfer), `hdr_tags_are_read`, ignored `hdr_view_transform_e2e` (generated PQ and HLG clips within 2 levels of FFmpeg's own tone map of the same file and within 5 % of the SDR original on the 40 % and 75 % greys; an SDR clip bit-identical with the transform on and off).
 
 **Scope**
 - Probe `color_transfer`, `color_primaries`, bit depth (`bits_per_raw_sample` / pix_fmt) and mastering metadata.
@@ -1950,6 +1956,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a panner puck at front-left gives an FL gain of 1 and others 0; a 3-stream MOV imports as 3 audio events when asked.
 
 ### R41: Professional camera formats (M)
+
+**Status: DONE** (on FFmpeg-made stand-ins; no camera originals). File › Import › Camera Card Folder, or a folder dropped on Project Media or the timeline, scans AVCHD, XDCAM EX/HD, XAVC, P2, Canon XF and GoPro layouts (`camera.rs`); AVCHD parts whose clock runs on and GoPro chapters join into one item through a `<first>-span.ffconcat` list beside the first part (a read-only card imports the parts one by one and says so). Found and fixed: ffmpeg seeks MPEG transport and program streams and concat lists to the next keyframe, so every TS/MTS source showed the wrong frame after a seek; the readers now open those `plan::PREROLL` (3 s) early and trim to the target. Camera make/model (QuickTime tags, a camera MXF's identification; FFmpeg's own is ignored), reel and the start timecode (tags, tmcd, MXF, H.264 SEI) show in Media Properties; "Use Media Timecode as Ruler Start" in the item menu sets the ruler offset from it. RAW formats (BRAW, R3D, ARRIRAW, Canon RAW Light, N-RAW) import as offline items with the reason; CinemaDNG is listed unsupported. New template "MXF DNxHD 145 1080". Not built: XDCAM EX and Canon XF span joining (needs their XML), P2 picture and sound as one item, the optional BRAW SDK study. The timecode SEI path is unit-tested only (FFmpeg cannot write H.264 timecode SEI for a stand-in). Tests: `spans_by_timestamps_and_gopro_chapters`, `card_layouts_are_found`, `camera_tags_and_sei_timecode`, ignored `camera_formats_e2e` (a spanned AVCHD pair is one item of the summed length whose every frame, through fresh seeks, equals FFmpeg reading the list straight through; XAVC-style MP4, XDCAM HD422 / DNxHD / AVC-Intra 100 MXF with timecode; a P2-style OP-Atom card; a .braw offline with the reason).
 
 **Scope**
 - Test and fix XAVC-S/XAVC (MXF), XDCAM HD422, P2 (AVC-Intra MXF), AVCHD, Canon XF, GoPro (multi-stream).

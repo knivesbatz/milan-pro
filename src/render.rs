@@ -693,6 +693,9 @@ pub static BUILTIN: LazyLock<Vec<Template>> = LazyLock::new(|| {
         tpl("DNxHR HQX", "Avid DNxHR High Quality 10-bit 4:2:2 master.", "mov", vid("dnxhd", None, Default, "dnxhr_hqx", "yuv422p10le"), aud("pcm", 0)),
         tpl("DNxHR 444", "Avid DNxHR 10-bit 4:4:4 master.", "mov", vid("dnxhd", None, Default, "dnxhr_444", "yuv444p10le"), aud("pcm", 0)),
         tpl("MXF DNxHR HQ", "Avid DNxHR HQ in MXF (OP1a), 48 kHz PCM.", "mxf", vid("dnxhd", None, Default, "dnxhr_hq", "yuv422p"), aud("pcm", 0)),
+        // R41: DNxHD's rasters and bit rates are fixed; 145 Mbps 8-bit is the common 1080 one (ffmpeg checks the size
+        // and rate pair, not the frame rate).
+        tpl("MXF DNxHD 145 1080", "Avid DNxHD 145 Mbps (8-bit 4:2:2) at 1920x1080 in MXF (OP1a), 48 kHz PCM.", "mxf", vid("dnxhd", hd, Cbr(145_000), "dnxhd", "yuv422p"), aud("pcm", 0)),
         tpl("CineForm", "GoPro CineForm 10-bit 4:2:2 intermediate.", "mov", vid("cfhd", None, Default, "film1", "yuv422p10le"), aud("pcm", 0)),
         tpl("FFV1 MKV archive", "Lossless FFV1 (RGB) with FLAC audio in Matroska, for archiving.", "mkv", vid("ffv1", None, Default, "", "bgr0"), aud("flac", 0)),
         tpl("VP9 WebM", "VP9 with Opus audio in WebM for the web.", "webm", vid("libvpx-vp9", None, Quality(31), "", ""), aud("libopus", 192)),

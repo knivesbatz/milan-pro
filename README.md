@@ -10,6 +10,10 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 - Three interface looks: Classic 2006, and two modelled on VEGAS Pro 16 and VEGAS Pro 23 (dark and white), with VEGAS menus, shortcuts and window layouts
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
+- Format capability check: a codec the bundled FFmpeg cannot decode imports offline with the reason, and Media Properties says what decodes, proxies and renders each file; the tested matrix is `docs/FORMAT_SUPPORT.md`
+- Still image sequences open as one clip at the project rate (VEGAS's "Open still image sequence"); animated GIF/WebP play as video; PNG, JPEG, 16-bit TIFF, BMP, WebP, TGA, DPX, JPEG 2000, PSD, OpenEXR and Radiance HDR stills; PNG, TIFF, OpenEXR and DPX sequence renders
+- HDR sources (PQ, HLG) are detected (transfer, primaries, bit depth, HDR10 metadata) and shown correctly on the SDR timeline through a view transform that the preview, proxies and renders share; BT.2020 SDR is converted to Rec.709
+- Camera cards: AVCHD, XDCAM, XAVC, P2, Canon XF and GoPro folders import as clips (File › Import › Camera Card Folder or drop the folder), spanned recordings joined into one clip; MXF OP1a/OP-Atom, ProRes, DNxHD/DNxHR and CineForm decode and render; camera, reel and timecode in Media Properties
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
 - Real-time multi-layer preview with persistent decoders, frame caches and video proxies; Build Dynamic RAM Preview (Shift+B), Selectively Prerender Video (Shift+M) with Clean Up, and an optional disk cache for decoded HEVC/AV1/4K frames
