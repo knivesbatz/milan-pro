@@ -3,6 +3,7 @@
 mod app;
 mod audio;
 mod autosave;
+mod camera;
 mod decode;
 mod demo;
 mod diagnostics;
@@ -44,6 +45,8 @@ fn main() -> eframe::Result<()> {
     // R44: the log file and crash hooks first, so whatever fails later is on record. The harness writes nothing into
     // the user's AppData: without MILAN_APPDATA it logs to stderr and writes no crash files.
     let harness = launch.demo || launch.screenshot.is_some();
+    // R37: the format capability table is cached per FFmpeg version; the harness never writes into AppData.
+    engine::caps::set_write(!harness);
     let prefs = (!launch.demo).then(settings::Prefs::load);
     let files = !harness || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
     logger::init(if files { logger::logs_dir() } else { None }, logger::level_from_name(prefs.as_ref().map_or("info", |p| p.log_level.as_str())));
