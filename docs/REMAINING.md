@@ -302,16 +302,16 @@ What matters most:
 | 8.7 | Timeline positions | DONE | |
 | 8.8 | Event lengths | DONE | |
 | 8.9 | Playback rates | DONE | |
-| 8.10 | Transitions | MISSING | Listed as unsupported in the README → R25 |
-| 8.11 | Effects | MISSING | Event, track, output and media FX are not exported. → R25 |
-| 8.12 | Track properties | PARTIAL | Mute, solo, volume, pan and compositing mode come across. Track FX, Track Motion, parent/child compositing and colour do not. → R25 |
-| 8.13 | Compositing | PARTIAL | R7: every VEGAS mode name maps (`interchange::composite`) but Custom, whose compositor the export does not carry; the 3D Track Motion values and parent/child nesting are not exported yet. → R25 |
-| 8.14 | Keyframes | PARTIAL | Pan/Crop keys come across. FX and Track Motion keyframes do not. → R25 |
-| 8.15 | Envelopes | PARTIAL | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::envelope`). Event velocity and event envelopes are not exported by the VEGAS script yet. → R25 |
+| 8.10 | Transitions | DONE | R25: `Fade.Transition` on both fades with every OFX parameter; Dissolve, Linear Wipe, Clock Wipe, Iris, Push, Slide, Zoom and Flash map (`interchange/vegas_map.rs`), the rest play as a crossfade and are reported. Test `v2_transitions_generators_and_envelopes`. |
+| 8.11 | Effects | DONE | R25: event, track, media and video output FX with `PlugIn.UniqueID`, bypass and every OFX parameter with keyframes; 17 VEGAS plug-ins map onto built-ins with per-parameter scale/offset/choice tables, the rest are disabled `ofx:<id>@1` placeholders that keep every parameter (the OFX host plays them once installed) and are listed in the report. Audio FX by name (Track EQ, Compressor, Noise Gate, Reverb, delays, Wave Hammer, ExpressFX). Tests `v2_fx_map_or_become_placeholders`, `every_row_lands_on_a_built_in_parameter`. |
+| 8.12 | Track properties | DONE | R25: track FX, Track Motion keyframes (position, size, rotation, Z and X/Y rotation), 2D Shadow / Glow on, parent/child compositing with Parent Composite Mode and Parent Motion. Track colour is not in VEGAS's scripting API. Test `v2_track_motion_compositing_settings_and_audio_fx`. |
+| 8.13 | Compositing | DONE | R7: every VEGAS mode name maps (`interchange::vegas::composite`) but Custom, whose compositor the export does not carry (reported). R25: 3D Track Motion values and parent/child nesting come across. |
+| 8.14 | Keyframes | DONE | R25: Pan/Crop, FX parameter (with VEGAS's interpolation names) and Track Motion keyframes. |
+| 8.15 | Envelopes | DONE | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::vegas::envelope`); R25: event Velocity envelopes (a 0 % hold is a freeze frame); other event envelopes (Transition Progress) are reported. |
 | 8.16 | Markers | DONE | |
 | 8.17 | Regions | DONE | |
-| 8.18 | Project settings | PARTIAL | Width, height, fps and sample rate only. Field order, pixel aspect ratio, pixel format and bus mode are missing. → R25 |
-| 8.19 | Audio configuration | PARTIAL | Sample rate and (R8a) the number of busses. No channel layout (master bus mode stays Stereo). → R10a, R25 |
+| 8.18 | Project settings | DONE | R25: field order, pixel aspect ratio, rendering quality, motion blur type, deinterlace method, bit depth; pixel format and master bus mode are read and reported when Milan Pro cannot follow them (8-bit, stereo). |
+| 8.19 | Audio configuration | PARTIAL | Sample rate, bit depth (R25) and (R8a) the number of busses. No channel layout (a 5.1 master bus mode is reported; stereo is used). → R10a |
 
 ### 2.9 Section 8b: export and interchange
 
@@ -1642,6 +1642,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R25: VEGAS import v2 (FX, transitions, generators, Track Motion, settings) (L)
 
+**Status: DONE.** `interchange.rs` is `interchange/{mod,vegas,vegas_map}.rs`. The scripts (version 2) export every OFX parameter with keyframes (typed: Double, 2D/3D, Integer, Boolean, Choice, RGB/RGBA, String, Custom), transitions, generated media, Track Motion and Parent Motion keyframes, parent/child compositing, event envelopes, audio FX by name and preset, media FX per file, video output and master bus FX, field order, PAR, quality, motion blur, deinterlace, pixel format, bit depth and master bus mode; they compile against VEGAS 15's `ScriptPortal.Vegas.dll` (read-only; VEGAS never launched). `vegas_map.rs` holds 32 rows (section 4.2's list plus the CSV's Vignette, Crop and LUT Filter) with parameter names, choice indexes and ranges read from the plug-ins' own preset and resource XML in the VEGAS install; unmapped plug-ins become disabled `ofx:<id>@1` placeholders holding every parameter, listed in the report. Tests: `v2_fx_map_or_become_placeholders` (save/load keeps the placeholder), `v2_transitions_generators_and_envelopes`, `v2_track_motion_compositing_settings_and_audio_fx`, `rtf_becomes_plain_text`, `every_row_lands_on_a_built_in_parameter`, `scales_and_tables_invert`. Left: the manual VEGAS 15 pass (user); the Track Motion Z sign and rotation sense are taken from the API's y-up frame, not measured (`vegas::motion`).
+
 **Scope:** extend `tools/vegas/Export to Milan Pro.cs` and its VEGAS 13 copy, and `interchange.rs`, to carry:
 - Event, track, output and media video FX (OFX `PlugIn.UniqueID`, e.g. `com.sonycreativesoftware:gaussianblur`, plus every `OFXEffect.Parameters` value and keyframes).
 - Transitions (`Fade.Transition`).
@@ -1792,7 +1794,7 @@ No product code unless the research finds a stable, documented structure. If it 
 - Record per plug-in: loads? host check? licence prompt? renders? parameter count? crashes?
 - Record the licence position (first-party VEGAS plug-ins are licensed for use with VEGAS; HitFilm Basic under FXHOME terms).
 - Produce `docs/compat/ofx-vegas15.csv`, which feeds R55.
-- Seed the `vegas_map` (R25) so a VEGAS import can use the real plug-in when it loads.
+- Seed the `vegas_map` (R25) so a VEGAS import can use the real plug-in when it loads. (Done in R25: `interchange/vegas_map.rs` names the CSV's Vignette, Crop and LUT Filter; the rest become `ofx:` placeholders that load when a plug-in runs.)
 
 **Acceptance:** the CSV has 102 rows, none of them "unknown"; nothing ships that claims support for a plug-in that failed.
 

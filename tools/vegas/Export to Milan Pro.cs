@@ -1,11 +1,15 @@
 // Export to Milan Pro (VEGAS Pro 14 and later; use "Export to Milan Pro (VEGAS 13).cs" in VEGAS Pro 13 and earlier).
 //
-// Writes the open project as <name>.milan.json, which Milan Pro opens with File > Import > VEGAS Project...
-// Run it with Tools > Scripting > Run Script..., or copy it into VEGAS's "Script Menu" folder to get a menu item.
-// Tracks, events (in points, rate, fades and curves, gain/opacity, mute, lock, groups, takes), track volume, pan,
-// Pan/Crop, subclips and reversed events, composite level and mode, track envelopes, markers, regions and the time
-// selection are exported. What Milan Pro cannot import (FX, generated media, transitions, Track Motion, ...) is listed by Milan Pro
-// when it imports the file.
+// Writes the open project as <name>.milan.json (format "milan-vegas", version 2), which Milan Pro opens with
+// File > Import > VEGAS Project... Run it with Tools > Scripting > Run Script..., or copy it into VEGAS's "Script Menu"
+// folder to get a menu item.
+// Exported: tracks, events (in points, rate, fades and curves, gain/opacity, mute, lock, loop, normalize, groups,
+// takes, stream), track volume, pan, Pan/Crop, subclips and reversed events, composite level and mode, parent/child
+// compositing, Track Motion keyframes (and whether 2D Shadow / Glow are on), track and event envelopes (velocity
+// included), event / track / media / video output FX with every OFX parameter and its keyframes, transitions,
+// generated media, audio FX by name and preset, markers, regions, the time selection, and the project's video and
+// audio settings. Milan Pro maps the VEGAS plug-ins onto its own and lists what it cannot use when it imports the
+// file (docs/INTERCHANGE.md).
 //
 // Keep this file and the VEGAS 13 copy the same apart from the "using" line.
 using System;
@@ -21,8 +25,9 @@ public class EntryPoint
     Vegas vegas;
     List<string> unsupported = new List<string>();
     Dictionary<TrackEvent, int> groups = new Dictionary<TrackEvent, int>();
-    // Media FX are reported once per file.
-    Dictionary<string, bool> mediaFxSeen = new Dictionary<string, bool>();
+    // Media FX are exported once per file.
+    Dictionary<string, string> mediaFx = new Dictionary<string, string>();
+    List<string> mediaFxOrder = new List<string>();
 
     public void FromVegas(Vegas v)
     {
@@ -52,12 +57,6 @@ public class EntryPoint
             foreach (Track track in proj.Tracks) {
                 tracks.Add(TrackJson(track, proj));
             }
-            if (proj.VideoBus.Effects.Count > 0) {
-                unsupported.Add("Video output FX (" + FxNames(proj.VideoBus.Effects) + ")");
-            }
-            if (proj.MasterBus.Effects.Count > 0) {
-                unsupported.Add("Master bus FX (" + FxNames(proj.MasterBus.Effects) + ")");
-            }
             List<string> markers = new List<string>();
             foreach (Marker m in proj.Markers) {
                 markers.Add(Obj("t", N(S(m.Position)), "name", Q(m.Label)));
@@ -66,22 +65,37 @@ public class EntryPoint
             foreach (Region r in proj.Regions) {
                 regions.Add(Obj("t", N(S(r.Position)), "length", N(S(r.Length)), "name", Q(r.Label)));
             }
+            List<string> media = new List<string>();
+            foreach (string path in mediaFxOrder) {
+                media.Add(Obj("path", Q(path), "fx", mediaFx[path]));
+            }
             List<string> notes = new List<string>();
             foreach (string s in unsupported) {
                 notes.Add(Q(s));
             }
             string json = Obj(
                 "format", Q("milan-vegas"),
-                "version", "1",
+                "version", "2",
                 "name", Q(name),
                 "project", Obj("w", proj.Video.Width.ToString(CultureInfo.InvariantCulture),
                                "h", proj.Video.Height.ToString(CultureInfo.InvariantCulture),
                                "fps", N(proj.Video.FrameRate),
-                               "sample_rate", proj.Audio.SampleRate.ToString(CultureInfo.InvariantCulture)),
+                               "sample_rate", proj.Audio.SampleRate.ToString(CultureInfo.InvariantCulture),
+                               "field_order", Q(proj.Video.FieldOrder.ToString()),
+                               "pixel_aspect", N(proj.Video.PixelAspectRatio),
+                               "quality", Q(proj.Video.RenderQuality.ToString()),
+                               "motion_blur", Q(proj.Video.MotionBlurType.ToString()),
+                               "deinterlace", Q(proj.Video.DeinterlaceMethod.ToString()),
+                               "pixel_format", Q(proj.Video.PixelFormat.ToString()),
+                               "bit_depth", proj.Audio.BitDepth.ToString(CultureInfo.InvariantCulture),
+                               "bus_mode", Q(proj.Audio.MasterBusMode.ToString())),
                 "tracks", Arr(tracks),
                 "markers", Arr(markers),
                 "regions", Arr(regions),
                 "loop", Obj("t", N(S(vegas.SelectionStart)), "length", N(S(vegas.SelectionLength))),
+                "output_fx", FxList(proj.VideoBus.Effects),
+                "master_fx", FxList(proj.MasterBus.Effects),
+                "media_fx", Arr(media),
                 "unsupported", Arr(notes));
             File.WriteAllText(dlg.FileName, json, new UTF8Encoding(false));
             string done = "Exported to " + dlg.FileName + "\n\nIn Milan Pro, choose File > Import > VEGAS Project... and pick this file.";
@@ -97,17 +111,6 @@ public class EntryPoint
     string TrackJson(Track track, Project proj)
     {
         string where = "Track " + (track.Index + 1);
-        if (track.Effects.Count > 0) {
-            unsupported.Add(where + ": track FX (" + FxNames(track.Effects) + ")");
-        }
-        List<string> envs = new List<string>();
-        foreach (Envelope env in track.Envelopes) {
-            List<string> pts = new List<string>();
-            foreach (EnvelopePoint p in env.Points) {
-                pts.Add(Obj("t", N(S(p.X)), "v", N(p.Y), "curve", Q(p.Curve.ToString())));
-            }
-            envs.Add(Obj("kind", Q(env.Type.ToString()), "neutral", N(env.Neutral), "points", Arr(pts)));
-        }
         List<string> events = new List<string>();
         foreach (TrackEvent ev in track.Events) {
             string e = EventJson(ev, where);
@@ -115,16 +118,20 @@ public class EntryPoint
                 events.Add(e);
             }
         }
-        string common = Obj("name", Q(track.Name), "mute", B(track.Mute), "solo", B(track.Solo), "envelopes", Arr(envs), "events", Arr(events));
+        string common = Obj("name", Q(track.Name), "mute", B(track.Mute), "solo", B(track.Solo), "envelopes", EnvJson(track.Envelopes),
+                            "fx", FxList(track.Effects), "events", Arr(events));
         if (track.IsVideo()) {
             VideoTrack vt = (VideoTrack)track;
-            if (vt.IsCompositingChild) {
-                unsupported.Add(where + ": parent/child compositing (imported as an ordinary track)");
+            TrackMotion tm = vt.TrackMotion;
+            if (vt.CompositeMode == CompositeMode.Custom) {
+                unsupported.Add(where + ": Custom compositing mode (its compositor is not exported)");
             }
-            if (HasTrackMotion(vt, proj)) {
-                unsupported.Add(where + ": Track Motion (including 3D, shadow and glow)");
-            }
-            return Join(Obj("kind", Q("video"), "level", N(vt.CompositeLevel), "mode", Q(vt.CompositeMode.ToString())), common);
+            string parentMotion = vt.IsCompositingParent ? MotionJson(vt.ParentTrackMotion) : "[]";
+            string video = Obj("kind", Q("video"), "level", N(vt.CompositeLevel), "mode", Q(vt.CompositeMode.ToString()),
+                               "child", B(vt.IsCompositingChild), "parent", B(vt.IsCompositingParent),
+                               "parent_mode", Q(vt.ParentCompositeMode.ToString()), "parent_motion", parentMotion,
+                               "motion", MotionJson(tm), "shadow", B(tm.ShadowEnabled), "glow", B(tm.GlowEnabled));
+            return Join(video, common);
         }
         AudioTrack at = (AudioTrack)track;
         return Join(Obj("kind", Q("audio"), "volume", N(at.Volume), "pan", N(at.PanX)), common);
@@ -138,23 +145,29 @@ public class EntryPoint
             unsupported.Add(at + ": an event without media was skipped");
             return null;
         }
+        string generator = "null";
+        string path = "";
+        bool reverse = false;
+        double offset = 0;
         if (take.Media.IsGenerated()) {
-            unsupported.Add(at + ": generated media (" + FxName(take.Media.Generator) + ") was skipped");
-            return null;
+            generator = take.Media.Generator == null ? "null" : FxJson(take.Media.Generator);
+        } else {
+            path = SourcePath(take);
+            offset = SourceOffset(take, out reverse);
+            if (take.Media.Effects.Count > 0 && !mediaFx.ContainsKey(path)) {
+                mediaFx[path] = FxList(take.Media.Effects);
+                mediaFxOrder.Add(path);
+            }
         }
-        bool reverse;
-        double offset = SourceOffset(take, out reverse);
         List<string> panCrop = new List<string>();
         string srcSize = "null";
-        if (take.Media.Effects.Count > 0 && !mediaFxSeen.ContainsKey(take.MediaPath)) {
-            mediaFxSeen[take.MediaPath] = true;
-            unsupported.Add("Media FX on " + Path.GetFileName(take.MediaPath) + " (" + FxNames(take.Media.Effects) + ")");
-        }
+        string fx = "[]";
+        string envelopes = "[]";
+        bool normalize = false;
         if (ev.IsVideo()) {
             VideoEvent ve = (VideoEvent)ev;
-            if (ve.Effects.Count > 0) {
-                unsupported.Add(at + ": event FX (" + FxNames(ve.Effects) + ")");
-            }
+            fx = FxList(ve.Effects);
+            envelopes = EnvJson(ve.Envelopes);
             VideoStream vs = take.MediaStream as VideoStream;
             if (vs != null) {
                 foreach (VideoMotionKeyframe k in ve.VideoMotion.Keyframes) {
@@ -169,23 +182,10 @@ public class EntryPoint
             if (ve.VideoMotion.ScaleToFill) {
                 unsupported.Add(at + ": Pan/Crop Stretch to fill frame (imported letterboxed)");
             }
-            foreach (Envelope env in ve.Envelopes) {
-                unsupported.Add(at + ": " + env.Type.ToString() + " envelope");
-            }
         } else {
             AudioEvent ae = (AudioEvent)ev;
-            if (ae.Effects.Count > 0) {
-                unsupported.Add(at + ": event FX (" + FxNames(ae.Effects) + ")");
-            }
-            if (ae.Normalize) {
-                unsupported.Add(at + ": Normalize");
-            }
-        }
-        foreach (Fade f in new Fade[] { ev.FadeIn, ev.FadeOut }) {
-            Effect tr = f.Transition as Effect;
-            if (tr != null) {
-                unsupported.Add(at + ": transition (" + FxName(tr) + "), imported as a crossfade");
-            }
+            fx = FxList(ae.Effects);
+            normalize = ae.Normalize;
         }
         List<string> takes = new List<string>();
         foreach (Take t in ev.Takes) {
@@ -209,7 +209,7 @@ public class EntryPoint
             "offset", N(offset),
             "reverse", B(reverse),
             "rate", N(ev.PlaybackRate),
-            "path", Q(SourcePath(take)),
+            "path", Q(path),
             "stream", take.StreamIndex.ToString(CultureInfo.InvariantCulture),
             "name", Q(take.Name),
             "fade_in", N(S(ev.FadeIn.Length)),
@@ -219,10 +219,17 @@ public class EntryPoint
             "gain", N(ev.FadeIn.Gain),
             "mute", B(ev.Mute),
             "locked", B(ev.Locked),
+            "loop", B(ev.Loop),
+            "normalize", B(normalize),
             "group", group,
             "takes", Arr(takes),
             "pan_crop", Arr(panCrop),
-            "src_size", srcSize);
+            "src_size", srcSize,
+            "fx", fx,
+            "envelopes", envelopes,
+            "transition_in", TransitionJson(ev.FadeIn),
+            "transition_out", TransitionJson(ev.FadeOut),
+            "generator", generator);
     }
 
     // A subclip's take offset counts from the subclip's start, or from its end when it is reversed; this is the
@@ -243,21 +250,187 @@ public class EntryPoint
         return sub != null && sub.ParentMedia != null ? sub.ParentMedia.FilePath : t.MediaPath;
     }
 
-    // Track Motion other than the default full frame, including 3D motion, shadow and glow.
-    static bool HasTrackMotion(VideoTrack vt, Project proj)
+    // ---- Envelopes, Track Motion ----
+
+    static string EnvJson(Envelopes envelopes)
     {
-        TrackMotion tm = vt.TrackMotion;
-        if (tm.MotionKeyframes.Count > 1 || tm.ShadowEnabled || tm.GlowEnabled || vt.CompositeMode == CompositeMode.SrcAlpha3D) {
-            return true;
+        List<string> envs = new List<string>();
+        foreach (Envelope env in envelopes) {
+            List<string> pts = new List<string>();
+            foreach (EnvelopePoint p in env.Points) {
+                pts.Add(Obj("t", N(S(p.X)), "v", N(p.Y), "curve", Q(p.Curve.ToString())));
+            }
+            envs.Add(Obj("kind", Q(env.Type.ToString()), "neutral", N(env.Neutral), "points", Arr(pts)));
         }
+        return Arr(envs);
+    }
+
+    // Track Motion keyframes in VEGAS's units: pixels from the frame centre (y up), size in pixels, degrees.
+    static string MotionJson(TrackMotion tm)
+    {
+        List<string> keys = new List<string>();
         foreach (TrackMotionKeyframe k in tm.MotionKeyframes) {
-            if (k.PositionX != 0 || k.PositionY != 0 || k.PositionZ != 0 || k.RotationX != 0 || k.RotationY != 0 || k.RotationZ != 0
-                || k.OrientationX != 0 || k.OrientationY != 0 || k.OrientationZ != 0
-                || Math.Abs(k.Width - proj.Video.Width) > 0.5 || Math.Abs(k.Height - proj.Video.Height) > 0.5) {
-                return true;
+            keys.Add(Obj("t", N(S(k.Position)), "x", N(k.PositionX), "y", N(k.PositionY), "z", N(k.PositionZ),
+                         "w", N(k.Width), "h", N(k.Height), "rx", N(k.RotationX), "ry", N(k.RotationY), "rz", N(k.RotationZ),
+                         "ox", N(k.OrientationX), "oy", N(k.OrientationY), "oz", N(k.OrientationZ), "curve", Q(k.Type.ToString())));
+        }
+        return Arr(keys);
+    }
+
+    // ---- FX ----
+
+    static string FxList(Effects list)
+    {
+        List<string> items = new List<string>();
+        foreach (Effect fx in list) {
+            items.Add(FxJson(fx));
+        }
+        return Arr(items);
+    }
+
+    static string TransitionJson(Fade f)
+    {
+        Effect tr = f.Transition as Effect;
+        return tr == null ? "null" : FxJson(tr);
+    }
+
+    // A plug-in instance: id (PlugIn.UniqueID, "{Svfx:com.vendor:name}" for OFX), name, bypass, preset and, for OFX,
+    // every parameter with its keyframes. Audio (DirectX / VST) FX have no readable parameters: name and preset only.
+    static string FxJson(Effect fx)
+    {
+        List<string> ps = new List<string>();
+        OFXEffect ofx = null;
+        try {
+            ofx = fx.OFXEffect;
+        } catch (Exception) {
+            ofx = null;
+        }
+        if (ofx != null) {
+            foreach (OFXParameter prm in ofx.Parameters) {
+                string p = null;
+                try {
+                    p = ParamJson(prm);
+                } catch (Exception) {
+                    p = null; // a parameter the API cannot read is left out; the rest still export
+                }
+                if (p != null) {
+                    ps.Add(p);
+                }
             }
         }
-        return false;
+        string preset = "";
+        try {
+            preset = fx.CurrentPreset != null ? fx.CurrentPreset.Name : "";
+        } catch (Exception) {
+            preset = ""; // an audio FX without a preset list
+        }
+        string id = fx.PlugIn != null ? fx.PlugIn.UniqueID : "";
+        return Obj("id", Q(id), "name", Q(FxName(fx)), "bypass", B(fx.Bypass), "preset", Q(preset), "params", Arr(ps));
+    }
+
+    // One OFX parameter: name, type, value (a number, bool, string or array) and keyframes (event-relative seconds).
+    static string ParamJson(OFXParameter prm)
+    {
+        string type = prm.ParameterType.ToString();
+        string value;
+        List<string> keys = new List<string>();
+        switch (prm.ParameterType) {
+            case OFXParameterType.Double: {
+                OFXDoubleParameter d = (OFXDoubleParameter)prm;
+                value = N(d.Value);
+                if (d.IsAnimated) {
+                    foreach (OFXDoubleKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, N(k.Value), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.Double2D: {
+                OFXDouble2DParameter d = (OFXDouble2DParameter)prm;
+                value = Pair(d.Value.X, d.Value.Y);
+                if (d.IsAnimated) {
+                    foreach (OFXDouble2DKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, Pair(k.Value.X, k.Value.Y), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.Double3D: {
+                OFXDouble3DParameter d = (OFXDouble3DParameter)prm;
+                value = Triple(d.Value.X, d.Value.Y, d.Value.Z);
+                if (d.IsAnimated) {
+                    foreach (OFXDouble3DKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, Triple(k.Value.X, k.Value.Y, k.Value.Z), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.Integer: {
+                OFXIntegerParameter d = (OFXIntegerParameter)prm;
+                value = d.Value.ToString(CultureInfo.InvariantCulture);
+                if (d.IsAnimated) {
+                    foreach (OFXIntegerKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, k.Value.ToString(CultureInfo.InvariantCulture), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.RGB: {
+                OFXRGBParameter d = (OFXRGBParameter)prm;
+                value = Color(d.Value, false);
+                if (d.IsAnimated) {
+                    foreach (OFXRGBKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, Color(k.Value, false), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.RGBA: {
+                OFXRGBAParameter d = (OFXRGBAParameter)prm;
+                value = Color(d.Value, true);
+                if (d.IsAnimated) {
+                    foreach (OFXRGBAKeyframe k in d.Keyframes) {
+                        keys.Add(Key(k.Time, Color(k.Value, true), k.Interpolation));
+                    }
+                }
+                break;
+            }
+            case OFXParameterType.Boolean:
+                value = B(((OFXBooleanParameter)prm).Value);
+                break;
+            case OFXParameterType.Choice:
+                value = ((OFXChoiceParameter)prm).Value.Index.ToString(CultureInfo.InvariantCulture);
+                break;
+            case OFXParameterType.String:
+                value = Q(((OFXStringParameter)prm).Value);
+                break;
+            case OFXParameterType.Custom:
+                value = Q(((OFXCustomParameter)prm).Value);
+                break;
+            default:
+                return null; // groups, pages, push buttons, parametric curves
+        }
+        return Obj("name", Q(prm.Name), "type", Q(type), "v", value, "keys", Arr(keys));
+    }
+
+    static string Key(Timecode t, string value, OFXInterpolationType curve)
+    {
+        return Obj("t", N(S(t)), "v", value, "curve", Q(curve.ToString()));
+    }
+
+    static string Pair(double x, double y)
+    {
+        return "[" + N(x) + "," + N(y) + "]";
+    }
+
+    static string Triple(double x, double y, double z)
+    {
+        return "[" + N(x) + "," + N(y) + "," + N(z) + "]";
+    }
+
+    static string Color(OFXColor c, bool alpha)
+    {
+        return alpha ? "[" + N(c.R) + "," + N(c.G) + "," + N(c.B) + "," + N(c.A) + "]" : "[" + N(c.R) + "," + N(c.G) + "," + N(c.B) + "]";
     }
 
     static string V(VideoMotionVertex v)
@@ -268,15 +441,6 @@ public class EntryPoint
     static string FxName(Effect fx)
     {
         return fx == null ? "unknown" : fx.PlugIn != null ? fx.PlugIn.Name : fx.Description;
-    }
-
-    static string FxNames(Effects list)
-    {
-        List<string> names = new List<string>();
-        foreach (Effect fx in list) {
-            names.Add(FxName(fx));
-        }
-        return String.Join(", ", names.ToArray());
     }
 
     // ---- JSON ----

@@ -39,7 +39,9 @@ A few seconds after startup Milan Pro asks GitHub for the latest release (it sen
 
 ## Import from VEGAS Pro
 
-Milan Pro cannot read `.veg` files directly. In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (including Pan/Crop, subclips and reversed events), fades, takes, groups, track envelopes, markers and regions come across; Milan Pro lists what does not (FX, generated media, transitions and Track Motion). Picking a `.veg` there instead only adds the media it uses to Project Media.
+Milan Pro cannot read `.veg` files directly. In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (Pan/Crop, subclips, reversed events, velocity), fades, takes, groups, envelopes, Track Motion, parent/child compositing, transitions, generated media, event/track/media/output FX with their keyframes, audio FX by name, markers, regions and the project settings come across; VEGAS plug-ins that have a Milan Pro counterpart become it with their settings converted, the rest are kept as disabled OFX placeholders (they play once the plug-in is installed) and Milan Pro lists them. Picking a `.veg` there instead only adds the media it uses to Project Media.
+
+`docs/INTERCHANGE.md` has the details.
 
 ## OFX plug-ins
 

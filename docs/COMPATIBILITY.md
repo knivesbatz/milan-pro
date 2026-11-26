@@ -23,3 +23,38 @@ Other limits:
   the recording and playback devices at the same sample rate; otherwise the status bar says so and nothing is heard.
 - The latency figures on the Audio Device page are what the devices report. Check them with a loopback cable
   (an output wired to an input) and a recording of a click if you need sample accuracy.
+
+## VEGAS projects
+
+Projects come from VEGAS Pro through VEGAS's own scripting API (`tools/vegas/Export to Milan Pro.cs`, which compiles
+against VEGAS Pro 15's `ScriptPortal.Vegas.dll`; the `(VEGAS 13)` copy uses the `Sony.Vegas` namespace of VEGAS Pro
+13 and earlier), never through `.veg` files (`docs/INTERCHANGE.md`). The script has not been run inside VEGAS by the
+developers: the user's VEGAS 15 pass is the acceptance test.
+
+### VEGAS plug-ins that become Milan Pro built-ins (`src/interchange/vegas_map.rs`)
+
+| VEGAS plug-in (`com.sonycreativesoftware:`) | Milan Pro | Settings carried |
+|---|---|---|
+| gaussianblur | Gaussian Blur | ranges (scaled: VEGAS's 0.06 is Milan's 0.012) |
+| brightnessandcontrast | Brightness and Contrast | brightness, contrast, centre |
+| colorcorrector | Color Corrector | saturation, gamma, gain, offset (the Low/Mid/High wheels are dropped) |
+| levels | Levels | input/output start and end, gamma |
+| hsladjust | HSL Adjust | hue (turns to degrees), saturation, luminance |
+| chromakeyer | Chroma Keyer | colour, thresholds, blur, mask only |
+| sharpen, unsharpmask | Sharpen | amount (radius, threshold from Unsharp Mask) |
+| sepia | Sepia | blending strength |
+| invert, blackandwhite | Invert, Black and White | amount |
+| mirror | Mirror | angle to direction, centre to position |
+| border | Border | size, colour |
+| vignette | Vignette | outer radius, feather, colour |
+| crop | Crop | kept rectangle to left/top/right/bottom |
+| cookiecutter | Cookie Cutter | shape, size, centre, feather, border, colour, cut-away method |
+| lutfilter | Color Grading | the LUT file as the Look LUT |
+| solidcolor, colorgradient, checkerboard, noisetexture, testpattern, titlesandtext | the generators of the same names | colours, type, text and font (out of VEGAS's RTF), size, location, outline, shadow |
+| dissolve, linearwipe, clockwipe, iris, push, slide, zoom, flash | Dissolve, Linear Wipe, Clock Wipe, Iris, Push, Slide, Zoom, Fade to Color (Flash preset) | angle, feather, shape, direction, tint |
+
+Audio FX travel by name: Track EQ, Track Compressor, Track Noise Gate, Graphic / Paragraphic / Parametric EQ, Reverb,
+Simple Delay, Multi-Tap Delay, Wave Hammer and the ExpressFX plug-ins map to Milan Pro's EQ, Compressor, Noise Gate,
+Reverb, Delay and Limiter; VEGAS's DirectX plug-ins expose no parameters to scripts, so only the preset name goes
+with them. Every other plug-in is a disabled `ofx:<id>` placeholder in Milan Pro, listed in the import report; VEGAS's
+own OFX bundles stay placeholders because they run only inside VEGAS (`docs/compat/ofx-vegas15.md`).
