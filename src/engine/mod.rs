@@ -6,10 +6,9 @@
 pub mod afx;
 pub mod aplug;
 pub mod cache;
-// shortcut: the cache sizes are read by the R23 worker; drop this allow when it lands.
-#[allow(dead_code)]
 pub mod caches;
 pub mod composite;
+pub mod diskcache;
 // shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the
 // batch-15 plug-in UI; drop these allows when it lands.
 #[allow(dead_code)]
@@ -31,6 +30,7 @@ pub mod picture;
 pub mod plan;
 #[allow(dead_code)]
 pub mod plugins;
+pub mod prerender;
 pub mod raster;
 pub mod render;
 pub mod resample;
@@ -60,6 +60,64 @@ pub enum VCmd {
     /// Stream frames from `from_n`, looping over `lp` (seconds) if set.
     Play { from_n: i64, w: u32, h: u32, q: Quality, lp: Option<(f64, f64)>, tx: SyncSender<Played> },
     Stop,
+    /// R23: Build Dynamic RAM Preview over frames `a..b` at this size and quality (`ram_status` reports it).
+    Build { a: i64, b: i64, w: u32, h: u32, q: Quality },
+    /// R23: stop a build (Esc).
+    Cancel,
+    /// R23: Clear Dynamic RAM Preview.
+    ClearRam,
+}
+
+/// R23: what the ruler draws over the time ruler: the Dynamic RAM Preview's frames and the active prerendered
+/// sections, in seconds, published by the video worker.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct Bars {
+    pub ram: Vec<(f64, f64)>,
+    pub prerendered: Vec<(f64, f64)>,
+}
+
+static BARS: Mutex<Bars> = Mutex::new(Bars { ram: Vec::new(), prerendered: Vec::new() });
+
+pub fn preview_bars() -> Bars {
+    BARS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub(crate) fn set_bars(ram: Option<Vec<(f64, f64)>>, prerendered: Vec<(f64, f64)>) {
+    let mut b = BARS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = ram {
+        b.ram = r;
+    }
+    b.prerendered = prerendered;
+}
+
+/// R23: how the Dynamic RAM Preview stands: a build in progress (frames done, frames asked for), the bytes held, and
+/// whether the last build stopped at Preferences › Video's cap.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct RamStatus {
+    pub building: Option<(i64, i64)>,
+    pub frames: i64,
+    pub bytes: usize,
+    pub full: bool,
+}
+
+static RAM: Mutex<RamStatus> = Mutex::new(RamStatus { building: None, frames: 0, bytes: 0, full: false });
+
+pub fn ram_status() -> RamStatus {
+    *RAM.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn set_ram_status(s: RamStatus) {
+    *RAM.lock().unwrap_or_else(|e| e.into_inner()) = s;
+}
+
+/// The status bar's line while a RAM preview builds, or after one filled the cap.
+pub fn ram_status_text() -> Option<String> {
+    let s = ram_status();
+    match s.building {
+        Some((done, total)) => Some(format!("Building Dynamic RAM Preview: {} % (Esc stops)", done * 100 / total.max(1))),
+        None if s.full => Some(format!("Dynamic RAM Preview holds {} frames ({} MB): the limit in Preferences > Video is reached.", s.frames, s.bytes >> 20)),
+        None => None,
+    }
 }
 
 /// (Show generation, frame, first decode error)
@@ -225,11 +283,11 @@ impl VideoEngine {
         self.play.is_none() && self.shown_seq < self.seq
     }
 
-    /// Once per UI frame: replan after edits, then take the wanted frame (paused) or the due frame (playing).
-    /// Returns a new picture and the first decode error behind it.
-    pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<Picture>, Option<String>)> {
-        // A proxy becoming ready replans, so Draft and Preview switch to it.
-        let hash = content_hash(p) ^ crate::proxy::generation() ^ if self.grid { 0x6d75_6c74_6963_616d } else { 0 };
+    /// The plan, when the project (or a proxy, or the grid) changed since the last one sent.
+    fn send_plan(&mut self, p: &Project) {
+        // A proxy becoming ready replans, so Draft and Preview switch to it; R23: so does a prerendered section
+        // arriving or going (the worker checks the sections against the plan it is sent).
+        let hash = content_hash(p) ^ crate::proxy::generation() ^ prerender::generation().rotate_left(17) ^ if self.grid { 0x6d75_6c74_6963_616d } else { 0 };
         if hash != self.sent_hash {
             let plan = match (self.grid, self.no_fx) {
                 (true, _) => plan::compile(&multicam::grid(p)),
@@ -240,6 +298,34 @@ impl VideoEngine {
             let _ = self.tx.send(VCmd::Plan(Arc::new(plan)));
             (self.sent_hash, self.want) = (hash, None);
         }
+    }
+
+    /// R23: Build Dynamic RAM Preview over `(a, b)` seconds at this size and quality; playback stops first.
+    pub fn build_ram_preview(&mut self, p: &Project, (a, b): (f64, f64), w: u32, h: u32, q: Quality) {
+        self.send_plan(p);
+        self.stop();
+        if self.play_rx.take().is_some() {
+            let _ = self.tx.send(VCmd::Stop);
+            (self.ahead, self.session, self.want) = (None, None, None);
+        }
+        let (a, b) = plan::frame_range((a, b), self.fps);
+        if b > a {
+            let _ = self.tx.send(VCmd::Build { a, b, w, h, q });
+        }
+    }
+
+    pub fn clear_ram_preview(&self) {
+        let _ = self.tx.send(VCmd::ClearRam);
+    }
+
+    pub fn cancel_build(&self) {
+        let _ = self.tx.send(VCmd::Cancel);
+    }
+
+    /// Once per UI frame: replan after edits, then take the wanted frame (paused) or the due frame (playing).
+    /// Returns a new picture and the first decode error behind it.
+    pub fn update(&mut self, p: &Project, w: u32, h: u32, q: Quality, visible: bool) -> Option<(Arc<Picture>, Option<String>)> {
+        self.send_plan(p);
         let clock = plan::frame_at(p.timeline.cursor_position, self.fps);
         let Some(lp) = self.play.filter(|_| visible) else {
             if self.play_rx.take().is_some() {

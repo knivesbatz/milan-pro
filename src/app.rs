@@ -1,6 +1,7 @@
 mod commands;
 mod drop;
 mod audio_editor;
+mod reliability;
 mod multicam;
 mod nested;
 mod sync;
@@ -243,9 +244,15 @@ pub struct MeridianApp {
     /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
     slideshow: Option<crate::ui::dialogs::Slideshow>,
     audio_transition: Option<crate::ui::dialogs::AudioTransition>,
+    /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
+    /// crash-report offer, the diagnostic report and the roll-back offer.
+    rel: reliability::Rel,
     /// R30: Export > Archive Project and Import > Media from Project, open.
     archive: Option<crate::ui::dialogs::ArchiveDlg>,
     media_from: Option<crate::ui::dialogs::MediaFromProject>,
+    /// R23: Selectively Prerender Video and Clean Up Prerendered Video, open.
+    prerender: Option<crate::ui::dialogs::PrerenderDlg>,
+    clean_prerender: Option<crate::ui::dialogs::CleanPrerender>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -365,6 +372,7 @@ impl MeridianApp {
         crate::project::set_default_track_fx(prefs.default_track_fx.clone());
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
+        crate::logger::set_privacy(prefs.crash_privacy);
         // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
         // opens the chosen adapter on a background thread; without one the CPU composes.
         #[cfg(feature = "wgpu")]
@@ -389,7 +397,7 @@ impl MeridianApp {
         let mut updater = crate::updater::Updater::from_env();
         if updater.auto || (prefs.auto_update && !launch.demo && launch.screenshot.is_none()) {
             // Off the startup path: the check waits a few seconds on its own thread.
-            updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }));
+            updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }), prefs.update_channel);
         }
         let (mut project, mut sel, mut message) = (Project::new("Untitled"), Selection::default(), None);
         if launch.demo {
@@ -571,8 +579,21 @@ impl MeridianApp {
             slideshow: None,
             archive: None,
             media_from: None,
+            prerender: None,
+            clean_prerender: None,
             audio_transition: None,
+            rel: Default::default(),
         };
+        // R43: autosave and session markers run outside the harness, or in it when MILAN_APPDATA points them at a test folder.
+        app.rel.autosave = !launch.demo || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
+        app.autosave.force_first = app.rel.autosave && app.shot.is_some() && std::env::var_os("MILAN_AUTOSAVE_NOW").is_some();
+        if app.rel.autosave {
+            app.offer_recovery();
+            app.offer_crash_report();
+            // R46: the kept installer Help › Roll Back would run, and the offer after two failed starts.
+            app.rel.previous = crate::updater::previous_dir().and_then(|d| crate::updater::rollback_target(&d));
+            app.rel.rollback = launch.rollback_offer.then_some(true);
+        }
         if !launch.demo {
             app.prefs.overlays_placed = true;
             if !overlays_into.is_empty() {
@@ -767,7 +788,10 @@ impl eframe::App for MeridianApp {
         let mut menu_action = None;
 
         // Title: "Untitled - Milan Pro" (OS title bar in VP16, drawn in the custom bar in VP23).
-        let title = format!("{}{} - Milan Pro", self.project.name, if self.project.modified { " *" } else { "" });
+        let title = format!("{}{}{} - Milan Pro", self.project.name, if self.project.read_only { " (read-only)" } else { "" }, if self.project.modified { " *" } else { "" });
+        // R44: what a crash report says about the project (paths only when the privacy option is off).
+        let summary = self.project.summary();
+        crate::logger::set_project(format!("{} ({}): {summary}", self.project.name, self.project.path.as_ref().map_or("unsaved".to_string(), |p| p.display().to_string())), summary.clone());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
         let t = theme::get();
         // VP16 and Classic 2006 keep the OS title bar; VP23 draws its own.
@@ -1044,7 +1068,7 @@ impl eframe::App for MeridianApp {
                 },
             );
             // Last, so hovered-command hints from every bar this frame are shown.
-            let msg = self.message.clone().or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
+            let msg = self.message.clone().or_else(crate::engine::ram_status_text).or_else(|| self.audio.status()).or_else(|| self.preview.error.clone()).or_else(|| self.autosave.error());
             // A render's progress first, then the video proxies'.
             let (rendering, proxies) = (self.queue.status(), self.proxies.status());
             let syncing = self.syncing.as_ref().map(|s| format!("Synchronizing audio: {:.0}%", s.job.progress() * 100.0));
@@ -1190,8 +1214,9 @@ impl eframe::App for MeridianApp {
         }
         self.queue_win.show(ctx, &mut self.queue);
         self.settings.show(ctx, &mut self.project, &mut self.history);
-        if !self.demo {
-            self.autosave.tick(ctx, &self.project);
+        if self.rel.autosave {
+            let parents: Vec<&Project> = self.parents.iter().map(|p| &p.project).collect();
+            self.autosave.tick(ctx, &self.project, &parents, self.prefs.autosave_minutes(), self.prefs.autosave_keep.clamp(1, 20));
         }
 
         // A clip selection replaces a media selection in Properties.
@@ -1257,12 +1282,16 @@ impl eframe::App for MeridianApp {
         self.thumbs.set_paused(self.playing);
         self.waves.set_paused(self.playing);
 
+        // R23: the prerendered sections of this project (its folder under Preferences › Video's).
+        crate::engine::prerender::sync(&self.project, self.prefs.prerender_folder.as_deref());
         // After the timeline and the play edges, so this frame's cursor/clip edits are what gets requested.
         self.preview.update(ctx, &self.project);
         // MILAN_UPDATE_AUTO: the app being updated takes no screenshot; the relaunched one shots its final message.
         let updating = self.updater.auto && !matches!(self.updater.state, crate::updater::State::Message(_));
         if let Some(shot) = self.shot.as_mut().filter(|_| !updating) {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
+            // R23: a RAM preview build or a prerender in progress.
+            let busy = busy || crate::engine::ram_status().building.is_some() || self.prerender.as_ref().is_some_and(|d| d.running());
             shot.tick(ctx, busy || self.env_dialog);
         }
     }
@@ -1285,17 +1314,20 @@ impl MeridianApp {
     fn exit(&mut self) {
         // R34b: plug-in editor windows close with Milan (their hosts die with it too, in the Job Object).
         crate::engine::aplug::close_editors();
+        if self.rel.autosave {
+            self.autosave.clean_exit();
+        }
         if self.demo || self.shot.is_some() {
             return;
         }
         let Some(mut p) = Prefs::try_load() else {
-            eprintln!("Could not read the preferences; the window layout is not saved.");
+            log::warn!("could not read the preferences; the window layout is not saved");
             return;
         };
         p.layouts.insert(layout_key(theme::get().look(), "last"), self.dock.layout(""));
         p.overlays_placed = true; // this layout has the Overlays window placed already (or closed on purpose)
         if let Err(e) = p.save() {
-            eprintln!("Could not save the window layout: {e}");
+            log::warn!("could not save the window layout: {e}");
         }
     }
 }

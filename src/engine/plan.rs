@@ -758,6 +758,69 @@ pub fn warm_frames(p: &VideoPlan, n: i64, ahead: i64, lp: Option<(i64, i64)>) ->
     }
 }
 
+// ---- R23: frame identity, prerender sections ----
+
+/// Identity of frame `n`'s picture: its plan's key with its motion blur / supersampling sub-frames' (the worker's
+/// composite cache and the Dynamic RAM Preview are keyed by this; a prerendered section's hash is made of these).
+pub fn frame_key(p: &VideoPlan, n: i64) -> u64 {
+    let fp = frame_plan(p, n);
+    key_with_subs(p, n, &fp)
+}
+
+/// `fp`'s key (frame `n`'s plan) folded with those of its sub-frames.
+pub fn key_with_subs(p: &VideoPlan, n: i64, fp: &FramePlan) -> u64 {
+    let mut fk = fp.key();
+    for s in &fp.samples {
+        let mut hs = DefaultHasher::new();
+        (fk, frame_plan_at(p, n, s.0).key()).hash(&mut hs);
+        fk = hs.finish();
+    }
+    fk
+}
+
+/// What a prerendered file of frames `a..b` must have been made from: the size, rate and every frame's key. An edit
+/// inside the range changes it; one outside does not.
+pub fn range_hash(p: &VideoPlan, a: i64, b: i64) -> u64 {
+    let mut h = DefaultHasher::new();
+    (p.w, p.h, p.fps_str.as_str(), p.alpha, a, b).hash(&mut h);
+    for n in a..b {
+        frame_key(p, n).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Selectively Prerender Video: the frame is more than one plain event (FX, a transition, more than one layer, Track
+/// Motion, compositing, generated or nested media, blur, fades), so it is worth prerendering; a single event shown as
+/// it is plays from its file in real time.
+pub fn needs_work(fp: &FramePlan) -> bool {
+    if !fp.out_fx.is_empty() || fp.fade.is_some() || !fp.samples.is_empty() || fp.layers.len() != 1 {
+        return !fp.layers.is_empty();
+    }
+    let l = &fp.layers[0];
+    let identity = |m: &Affine| (m.a, m.b, m.c, m.d, m.tx, m.ty) == (1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    if l.mode != Composite::SourceAlpha || l.opacity < 1.0 || !identity(&l.motion) || l.persp.is_some() || !l.fx.is_empty() || l.fade.is_some() || l.compositor.is_some() || l.child || l.parent.is_some() || l.shadow.is_some() || l.glow.is_some() || !l.adjust.is_empty() || l.items.len() != 1 {
+        return true;
+    }
+    match &l.items[0] {
+        Item::Mix { .. } => true,
+        Item::Event(e) => e.alpha < 1.0 || !e.fx.is_empty() || e.next.is_some() || e.flicker || !e.masks.is_empty() || e.src.generator.is_some() || e.src.nested.is_some() || e.src.m.flow,
+    }
+}
+
+/// The runs of frames in `a..b` that `needs_work`: what Selectively Prerender Video renders.
+pub fn work_sections(p: &VideoPlan, a: i64, b: i64) -> Vec<(i64, i64)> {
+    let mut v: Vec<(i64, i64)> = Vec::new();
+    for n in a..b {
+        if needs_work(&frame_plan(p, n)) {
+            match v.last_mut() {
+                Some(s) if s.1 == n => s.1 = n + 1,
+                _ => v.push((n, n + 1)),
+            }
+        }
+    }
+    v
+}
+
 // ---- Audio ----
 
 /// What an audio decoder streams: an event's source span and where it sits on the timeline.

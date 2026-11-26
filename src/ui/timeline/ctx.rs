@@ -1071,7 +1071,7 @@ const MARKER_BAR_BOTTOM: &[M] = &[
     Sub("Gr&id Spacing", menus::GRID_SPACING),
     S,
     C("Selectively Pre&render Video...", Prerender),
-    X("&Clean Up Prerendered Video...", Later("R23")),
+    C("&Clean Up Prerendered Video...", CleanPrerender),
 ];
 
 const LOOP_BAR: &[M] = &[

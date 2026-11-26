@@ -30,6 +30,10 @@ png = "0.18"  # screenshot harness (already in the tree via eframe)
 # Updater (src/updater.rs): small blocking HTTPS client (rustls, no OpenSSL) and SHA-256 of the installer.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
+# R46: minisign signature verification of the update checksum (MIT, no dependencies).
+minisign-verify = "0.3"
+# R44: the log facade; src/log.rs is the file logger behind it.
+log = "0.4"
 # src/engine/vdecode.rs: decoder pipes read straight into Color32 frames. Already in Cargo.lock (via egui).
 bytemuck = "1"
 # src/engine/generate.rs: Titles & Text glyph outlines. Already in Cargo.lock (via epaint).
@@ -50,10 +54,12 @@ base64 = "0.23"
 # src/proc.rs: Job Object that kills ffmpeg children with Milan; src/app/drop.rs: cursor during a drag from Windows.
 # Already in Cargo.lock (via other crates). R14: src/ui/monitors.rs lists the displays, their DPI, the cursor and buttons.
 # src/overlays.rs: Remove Pack moves a pack folder to the Recycle Bin (SHFileOperationW, Win32_UI_Shell).
+# R44: src/log.rs writes minidumps (Win32_System_Diagnostics_Debug, Win32_System_Kernel) and the diagnostic report reads
+# memory and CPU (Win32_System_SystemInformation) and the GPU through DXGI (the `windows` crate below).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ErrorReporting", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_LibraryLoader", "Win32_Media_DxMediaObjects", "Win32_System_Com", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_ErrorReporting", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_Media_DxMediaObjects", "Win32_System_Com", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_StationsAndDesktops", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # src/wasapi.rs (R9): the WASAPI exclusive output, which cpal 0.15 lacks. The version and features cpal already uses.
-windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Security", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem"] }
+windows = { version = "0.54", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Security", "Win32_Media_Audio", "Win32_Media_KernelStreaming", "Win32_Media_Multimedia", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_Devices_Properties", "Win32_UI_Shell_PropertiesSystem"] }
 
 # R32: the OFX plug-in host, a second executable installed beside MilanPro.exe (installer/milan-pro.iss).
 [[bin]]

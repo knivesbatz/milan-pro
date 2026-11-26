@@ -7,15 +7,22 @@ use crate::settings::Prefs;
 use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
 use super::super::theme::{self, LookChoice, UiLook, Variant};
 
+// "Update" is Milan Pro's own page (R44/R46): the updater, the log and crash-report options.
 const ROWS16: &[&[&str]] = &[
     &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
-    &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation"],
+    &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation", "Update"],
 ];
 const ROWS23: &[&[&str]] = &[
     &["General", "Video", "Preview Device", "Audio", "Audio Device", "MIDI", "VST Effects"],
     &["Editing", "Display", "CD Settings", "Sync", "External Control & Automation"],
-    &["File I/O", "Deprecated Features"],
+    &["File I/O", "Deprecated Features", "Update"],
 ];
+
+/// The Update page's index in `rows` (it is last in both looks).
+pub fn update_tab(look: UiLook) -> usize {
+    let rows = if look == UiLook::Vegas16 { ROWS16 } else { ROWS23 };
+    rows.iter().flat_map(|r| r.iter()).position(|n| *n == "Update").unwrap_or(0)
+}
 const GENERAL: usize = 0;
 pub const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
@@ -81,6 +88,7 @@ impl PrefsDialog {
                 VST_EFFECTS => vst_effects(ui, d),
                 EDITING => editing(ui, d),
                 DISPLAY => display(ui, d, track, bottom),
+                k if k == update_tab(t.look()) => update(ui, d),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
             ui.add_space(8.0);
@@ -156,6 +164,16 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         widgets::checkbox_enabled(ui, false, &mut on, "Recently used project list").on_disabled_hover_text(ALWAYS_ON.text());
         widgets::spin(ui, &mut d.recent_max, 1.0, |d| d.range(1..=9));
     });
+    // R43: autosave (a backup copy in AppData, never the project file) and how many copies are kept per project.
+    ui.horizontal(|ui| {
+        widgets::checkbox(ui, &mut d.autosave_on, "Save a backup copy of the project every");
+        widgets::spin_enabled(ui, d.autosave_on, &mut d.autosave_minutes, 1.0, |s| s.range(1..=60));
+        ui.label("minutes");
+    });
+    ui.horizontal(|ui| {
+        ui.label("Backup copies kept per project:");
+        widgets::spin_enabled(ui, d.autosave_on, &mut d.autosave_keep, 1.0, |s| s.range(1..=20));
+    });
     ui.add_enabled_ui(false, |ui| {
         let r49 = Later("R49").text();
         ui.label("Temporary files folder:").on_disabled_hover_text(&r49);
@@ -179,7 +197,65 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     });
     if default_all(ui) {
         (d.space_pauses, d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (false, true, true, 4, true, false);
+        (d.autosave_on, d.autosave_minutes, d.autosave_keep) = (true, 2, 5);
         d.overlay_library = None;
+    }
+}
+
+/// R44/R46: Milan Pro's own page: the updater's settings and the log and crash-report options.
+fn update(ui: &mut Ui, d: &mut Prefs) {
+    ui.label("Updates:");
+    super::field_box(ui, 4, |ui| {
+        use crate::updater::Channel;
+        ui.set_width(ui.available_width());
+        widgets::checkbox(ui, &mut d.auto_update, "Check for updates automatically at startup");
+        ui.horizontal(|ui| {
+            ui.label("Update channel:");
+            widgets::radio_value(ui, &mut d.update_channel, Channel::Stable, "Stable");
+            widgets::radio_value(ui, &mut d.update_channel, Channel::Preview, "Preview (pre-releases too)");
+        });
+        ui.horizontal(|ui| {
+            match &d.skipped_update {
+                Some(v) => ui.label(format!("Skipped version: {v}")),
+                None => ui.label("Skipped version: none"),
+            };
+            if widgets::push_button_enabled(ui, d.skipped_update.is_some(), "Clear").clicked() {
+                d.skipped_update = None;
+            }
+        });
+        widgets::checkbox(ui, &mut d.keep_previous, "Keep the previous version's installer (Help › Roll Back to Previous Version)");
+        ui.label(RichText::new(format!("Kept in {}", crate::updater::previous_dir().map(|p| p.display().to_string()).unwrap_or_default())).small());
+    });
+    ui.add_space(8.0);
+    ui.label("Logging and crash reports:");
+    super::field_box(ui, 4, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.label("Log level:");
+            let current = d.log_level.clone();
+            widgets::combo(ui, "log_level", 100.0, current.as_str(), |ui| {
+                for l in crate::logger::LEVEL_NAMES {
+                    if ui.selectable_label(d.log_level == l, l).clicked() {
+                        d.log_level = l.into();
+                    }
+                }
+            });
+        });
+        widgets::checkbox(ui, &mut d.crash_privacy, "Crash reports and diagnostic reports leave out file names and paths");
+        ui.horizontal(|ui| {
+            if widgets::push_button(ui, "Open Log Folder").clicked() {
+                if let Some(dir) = crate::logger::logs_dir() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    super::open_file(&dir);
+                }
+            }
+            ui.label(crate::logger::logs_dir().map(|p| p.display().to_string()).unwrap_or_default());
+        });
+        ui.label("A crash writes crash-<time>.txt (and a minidump) next to the logs; the next start offers to open it or report it on GitHub. Nothing is sent by itself.");
+    });
+    if default_all(ui) {
+        (d.auto_update, d.log_level, d.crash_privacy) = (true, "info".into(), false);
+        (d.update_channel, d.keep_previous) = (Default::default(), false);
     }
 }
 
@@ -291,9 +367,33 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
             ui.label(RichText::new(line).size(11.0));
         }
     });
+    // R23: the caches.
+    ui.add_space(6.0);
+    super::row(ui, "Dynamic RAM Preview max (MB):", 230.0, true, |ui| {
+        widgets::spin(ui, &mut d.ram_preview_mb, 16.0, |s| s.range(16..=65536)).on_hover_text("How much memory Build Dynamic RAM Preview (Shift+B) may fill with frames of the loop region")
+    });
+    super::row(ui, "Disk cache for decoded HEVC, AV1 and 4K frames (MB):", 230.0, true, |ui| {
+        widgets::spin(ui, &mut d.disk_cache_mb, 256.0, |s| s.range(0..=1_048_576)).on_hover_text("Milan Pro's own (not in VEGAS), off at 0: decoded frames of heavy sources are kept on disk, so seeking back to them needs no decode");
+        if widgets::push_button(ui, "Clear").on_hover_text("Delete the cached frames").clicked() {
+            crate::engine::diskcache::clear();
+        }
+    });
+    ui.label("Prerendered files folder:");
+    ui.horizontal(|ui| {
+        let mut path = d.prerender_folder.clone().unwrap_or_else(crate::engine::prerender::default_folder).display().to_string();
+        if widgets::edit(ui, TextEdit::singleline(&mut path).desired_width(300.0)).on_hover_text("Selectively Prerender Video writes each project's files to a folder of its own in here").changed() {
+            d.prerender_folder = (!path.trim().is_empty()).then(|| path.trim().into());
+        }
+        if widgets::push_button(ui, "Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_title("Prerendered files folder").pick_folder() {
+                d.prerender_folder = Some(p);
+            }
+        }
+    });
     if default_all(ui) {
         (d.auto_proxy, d.extra_blend_modes, d.gpu) = (false, false, String::new());
         (d.hw_decode, d.hw_encode) = (String::new(), String::new());
+        (d.ram_preview_mb, d.disk_cache_mb, d.prerender_folder) = (200, 0, None);
     }
 }
 

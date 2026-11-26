@@ -609,6 +609,32 @@ impl Preview {
         }
     }
 
+    /// R23: Build Dynamic RAM Preview over `lp` seconds at the preview's own size and quality (playback stops).
+    pub fn build_ram_preview(&mut self, project: &Project, lp: (f64, f64)) {
+        self.stop();
+        let s = &project.settings;
+        let w = self.width(s.width);
+        let h = ((w as f64 * s.height as f64 / s.width.max(1) as f64 / 2.0).round() as u32 * 2).max(2);
+        let q = self.effective(s.width).0;
+        if let Some(e) = &mut self.engine {
+            e.build_ram_preview(project, lp, w, h, q);
+        }
+    }
+
+    /// R23: Clear Dynamic RAM Preview.
+    pub fn clear_ram_preview(&self) {
+        if let Some(e) = &self.engine {
+            e.clear_ram_preview();
+        }
+    }
+
+    /// R23: Esc while a RAM preview builds.
+    pub fn cancel_build(&self) {
+        if let Some(e) = &self.engine {
+            e.cancel_build();
+        }
+    }
+
     fn engines(&mut self) -> impl Iterator<Item = &mut VideoEngine> {
         self.engine.iter_mut().chain(self.bypass.as_mut().map(|b| &mut b.engine)).chain(self.full.as_mut().map(|b| &mut b.engine))
     }

@@ -12,7 +12,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Media import for any format FFmpeg can read; drag from Project Media, the Explorer tab or Windows File Explorer onto the timeline
 - Multitrack editing: move, trim, split, snapping, multi-select, grouping, automatic crossfades, ripple editing, slip/slide/roll/stretch, playback rate and reverse, takes, Event Properties
 - Volume, pan, composite level and mute envelopes; Event Pan/Crop and Track Motion with keyframes
-- Real-time multi-layer preview with persistent decoders, frame caches and video proxies
+- Real-time multi-layer preview with persistent decoders, frame caches and video proxies; Build Dynamic RAM Preview (Shift+B), Selectively Prerender Video (Shift+M) with Clean Up, and an optional disk cache for decoded HEVC/AV1/4K frames
 - Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
 - Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster
@@ -35,7 +35,11 @@ The installer bundles [FFmpeg](https://ffmpeg.org/) 9.0.2 (GPL v3, build by Gyan
 
 ## Updates
 
-A few seconds after startup Milan Pro asks GitHub for the latest release (it sends only a `MilanPro-Updater/<version>` user agent). When a newer version exists it shows the release notes with **Download and install**, **Remind me later** and **Skip this version**. The installer is downloaded over HTTPS, checked against its SHA-256 (the release's asset digest or `MilanPro-<version>-Setup.exe.sha256`), and run silently; Milan Pro asks to save your project, closes, updates and starts again. Check by hand with **Help > Check for Updates...**, or turn the startup check off in **Options > Preferences > General**.
+A few seconds after startup Milan Pro asks GitHub for the latest release (it sends only a `MilanPro-Updater/<version>` user agent). When a newer version exists it shows the release notes with **Download and install**, **Remind me later** and **Skip this version**. The installer is downloaded over HTTPS, checked against its SHA-256 (`MilanPro-<version>-Setup.exe.sha256`, or the release's asset digest), and run silently; Milan Pro asks to save your project, closes, updates and starts again. Check by hand with **Help > Check for Updates...**, or turn the startup check off in **Options > Preferences > Update**.
+
+The Update page also has the channel (**Stable**, or **Preview** for pre-releases), the skipped version, and **Keep the previous version's installer**: with it on, the current version's own installer is fetched from its release (verified the same way) before an update, and **Help > Roll Back to Previous Version** reinstalls it. A version that fails to start twice after an update offers the roll back by itself. Updates are never installed while a render or a recording is running.
+
+Verification: the download's SHA-256 must match the release. Once the maintainer's minisign key pair exists, the checksum file is signed (`.minisig`) and the public key is compiled into Milan Pro, which then refuses unsigned updates; until then the update dialog says "SHA-256 only". Code signing: not yet (certificate pending). See [SECURITY.md](SECURITY.md).
 
 ## Import from VEGAS Pro
 

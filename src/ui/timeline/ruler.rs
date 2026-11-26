@@ -62,6 +62,9 @@ const BAR_H: f32 = 14.0;
 const CD_TRACK: Color32 = Color32::from_rgb(0xE4, 0x81, 0x81);
 const CD_INDEX: Color32 = Color32::from_rgb(0xCE, 0x81, 0xE4);
 const COMMAND: Color32 = Color32::from_rgb(0x59, 0x89, 0xFF);
+/// R23: the time ruler's bars for prerendered sections and the Dynamic RAM Preview (VEGAS's blue and green).
+const PRERENDERED: Color32 = Color32::from_rgb(0x3C, 0x8C, 0xDC);
+const RAM_PREVIEW: Color32 = Color32::from_rgb(0x4C, 0xC0, 0x4C);
 
 /// The band's height: the look's, plus the CD layout and command bars that are shown.
 pub(super) fn band_h(t: &Theme, tl: &Timeline) -> f32 {
@@ -448,6 +451,19 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         if dragging_loop || r.max.x < band.max.x {
             p_b.rect_filled(r, 0.0, t.length_tag_bg);
             p_b.galley(pos2(r.min.x + 3.0, r.center().y - galley.size().y * 0.5), galley, t.length_tag_text);
+        }
+    }
+
+    // R23: the Dynamic RAM Preview's frames (green) and the active prerendered sections (blue), 2 px bars along the
+    // top of the time ruler, as VEGAS marks them.
+    let bars = crate::engine::preview_bars();
+    for (ranges, color, y) in [(&bars.prerendered, PRERENDERED, ruler.min.y + 1.0), (&bars.ram, RAM_PREVIEW, ruler.min.y + 3.0)] {
+        for &(a, b) in ranges {
+            let (xa, xb) = (g.to_x(a).floor(), g.to_x(b).floor());
+            if xb < band.min.x || xa > band.max.x || xb <= xa {
+                continue;
+            }
+            p_r.rect_filled(Rect::from_min_max(pos2(xa, y), pos2(xb, y + 2.0)), 0.0, color);
         }
     }
 

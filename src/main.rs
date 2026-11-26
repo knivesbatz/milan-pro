@@ -5,10 +5,12 @@ mod audio;
 mod autosave;
 mod decode;
 mod demo;
+mod diagnostics;
 mod edit;
 mod engine;
 mod history;
 mod interchange;
+mod logger;
 mod media;
 mod overlays;
 mod proc;
@@ -39,7 +41,21 @@ fn main() -> eframe::Result<()> {
         windows_sys::Win32::System::Threading::CreateMutexW(&sa, 0, name.as_ptr());
     }
     let mut launch = demo::Launch::from_env();
-    let look = launch.look.unwrap_or_else(|| if launch.demo { Default::default() } else { settings::Prefs::load().look });
+    // R44: the log file and crash hooks first, so whatever fails later is on record. The harness writes nothing into
+    // the user's AppData: without MILAN_APPDATA it logs to stderr and writes no crash files.
+    let harness = launch.demo || launch.screenshot.is_some();
+    let prefs = (!launch.demo).then(settings::Prefs::load);
+    let files = !harness || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
+    logger::init(if files { logger::logs_dir() } else { None }, logger::level_from_name(prefs.as_ref().map_or("info", |p| p.log_level.as_str())));
+    logger::install_crash_hooks(if files { logger::crashes_dir() } else { None });
+    log::info!("Milan Pro {} starting ({})", updater::CURRENT, std::env::args().skip(1).collect::<Vec<_>>().join(" "));
+    // R46: Setup's relaunch passes --after-update; a version that fails to start twice is offered a roll back.
+    if files {
+        if let Some(dir) = updater::updates_dir() {
+            launch.rollback_offer = updater::start_marker(&dir, updater::CURRENT, std::env::args().any(|a| a == "--after-update"));
+        }
+    }
+    let look = launch.look.unwrap_or_else(|| prefs.as_ref().map(|p| p.look).unwrap_or_default());
     launch.look = Some(look);
     // VP23 draws its own 32 px title bar (4.6); VP16 and Classic 2006 use the OS title bar. The app switches
     // decorations live on look changes.

@@ -43,11 +43,11 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 What matters most:
 - **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). A `.mnle` project is media, a nested timeline played and rendered through the engine, with a cycle guard (R6a); Create Nested Timeline, Open Nested / Open Parent Timeline and Edit Source Project work in the window, and nested events have thumbnails, waveforms and a Trimmer view made by the engine (R6b). Events line up by their sound (refusing weak matches), media timecode or date/time stamp, and Project Media lays out tracks by either (R17a). Multicamera editing works: Create Multicamera Track, the take grid in the Video Preview with takes chosen by click or number key (also while playing, each one undoable), Expand to Multiple Tracks, Edit Multicamera Audio with Video and Show Full Frame in External Monitor (R17b). Smart Split, command markers, Audio CD track regions and indexes (on their own bars, and in Edit Details), Open (Copy) in Audio Editor with reload on save, Rebuild Audio Peaks, event media markers, View › Event Length, the Metronome, the Credit Roll and Test Pattern generators and Shift+F10 are in (R18a). Adjustment Tracks and Adjustment Events, Insert Slideshow, Insert Time, Insert Audio Transition, Cut / Copy over a time selection and Paste Insert's split, Resize Generated Media and video track Set Default Track Properties are in (R18b), which finishes tier 2: no control waits on a batch of tiers 0-2 any more (test `no_control_waits_on_tiers_0_to_2`). What is still greyed belongs to later batches or the R57-R60 long tail.
-- **Preview has known gaps.** Scrubbing follows the cursor, seeks are frame-exact and reversed events show every frame (R20). There is no GPU path and no RAM preview or prerender. Adjust Size and Quality for Optimal Playback, the measured frame rate and playback statistics, and the benchmark report `docs/PERFORMANCE.md` (written by `tools/bench.ps1`) are in (R19).
+- **Preview is complete to the plan.** Scrubbing follows the cursor, seeks are frame-exact and reversed events show every frame (R20); the compositor runs on the GPU (R21a-c); hardware decoding and encoding are tested at startup and used where they pass and measure faster (R22); Build Dynamic RAM Preview, Selectively Prerender Video with Clean Up, and a disk cache for decoded frames of heavy sources are in (R23). Adjust Size and Quality for Optimal Playback, the measured frame rate and playback statistics, and the benchmark report `docs/PERFORMANCE.md` (written by `tools/bench.ps1`) are in (R19).
 - **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) are tested at startup and offered when they pass (R22).
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
-- **Reliability gaps:** no schema version, no `.bak` on save, no crash-recovery prompt, fixed 120 s autosave, no logging (the release exe has no console, so `eprintln!` goes nowhere), no diagnostic report.
+- **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
 - **Documentation gaps:** no REFERENCE_ANALYSIS, ARCHITECTURE, CONTRIBUTING, issue templates, compatibility matrix, format report or licence review. `docs/FEATURE_PLAN.md` line 3 still says "plan only. Nothing here is built yet", which is stale.
 - **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
@@ -202,7 +202,7 @@ What matters most:
 | 6.8 | Asynchronous media decoding | DONE | Decoder child processes and reader threads |
 | 6.9 | Background thumbnail generation | DONE | `engine/thumbs.rs`, `decode.rs` Thumbs |
 | 6.10 | Background waveform generation | DONE | `audio.rs` Waveforms worker |
-| 6.11 | Intelligent caching | PARTIAL | In-RAM LRU only. No disk cache, no RAM preview build (`RamPreview` disabled), no prerender (`Prerender` disabled). → R23 |
+| 6.11 | Intelligent caching | DONE | (R23) Build Dynamic RAM Preview (Shift+B, the loop region or from the cursor, capped by Preferences › Video, frames pinned until an edit changes them; the green bar on the ruler), Selectively Prerender Video (Shift+M: the sections with FX, transitions, compositing or motion rendered to the project's prerender folder, played and rendered from the files while their frames' hash matches; the blue bar; Clean Up Prerendered Video) and a disk frame cache for decoded HEVC/AV1/4K frames (LRU under a cap, off by default). |
 | 6.12 | Efficient seeking | DONE | R20: frame-exact (200 random seeks on GOP-250 media and on its proxy, ffmpeg-backed `seeks_are_frame_exact_on_long_gop`); a paused seek of source media decodes with up to 4 threads (`vdecode::seek_threads`) and a step back reads a short chunk instead of respawning. Random seek p95 about 126 ms on a proxy; on GOP-250 1080p originals 300-450 ms with machine load (582 ms before, measured with the same test) (`docs/PERFORMANCE.md`) |
 | 6.13 | Scrubbing | DONE | R20: the jump was the Video Preview showing only the answer to the newest Show, so a drag showed nothing until it slowed, and each step back respawned a decoder. Any newer answer now shows and steps back read chunks decoded forward. Dragging at 2x the picture trails the cursor about 0.05 s forwards and 0.1 s backwards on proxies; scrub p95 98.9 ms on proxies (target under 150 ms), steps back p95 8 ms (ffmpeg-backed `scrub_drag_follows_the_cursor`, `bench_scrub`, `docs/PERFORMANCE.md`) |
 | 6.14 | Frame-by-frame navigation | DONE | `PrevFrame`/`NextFrame` |
@@ -468,21 +468,21 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 15.1 | Automatic project saving | DONE | `autosave.rs` (backup copy in `%APPDATA%\MilanPro\autosave`, atomic) |
-| 15.2 | Configurable autosave interval | MISSING | `const INTERVAL: f64 = 120.0` (`autosave.rs:8`) → R43 |
-| 15.3 | Project backups | PARTIAL | Only the single autosave copy. No `.mnle.bak` on save; no rotation. → R42, R43 |
-| 15.4 | Recovery after crashes | PARTIAL | Backups exist, but nothing offers them after a crash; the user must find them by hand. → R43 |
+| 15.2 | Configurable autosave interval | DONE | R43: Preferences › General "Save a backup copy of the project every N minutes" (off, or 1-60; VEGAS's default of 2) (`Prefs.autosave_on/autosave_minutes`) |
+| 15.3 | Project backups | DONE | R42: Save keeps the file it writes over as `<name>.mnle.bak` (`project::backup_path`, as VEGAS keeps `.veg.bak`). R43: "Backup copies kept per project" 1-20 (default 5): `<name>-autosave.mnle`, `.1.mnle`, `.2.mnle`, ... (`autosave::rotate`); the parents waiting under a nested timeline are autosaved too |
+| 15.4 | Recovery after crashes | DONE | R43: `%APPDATA%\MilanPro\sessions\<pid>.json` lists the open projects and their autosaves, removed on a clean exit; at start, markers of pids no longer running (`OpenProcess`) whose autosaves are newer than their projects open the Recover Projects dialog: Open (as an unsaved copy), Discard, Keep for later (`autosave::{stale_sessions, recoverable}`, `dialogs::Recover`) |
 | 15.5 | Undo/redo history | DONE | `history.rs`, history list on the Undo split button |
 | 15.6 | Non-destructive editing | DONE | |
-| 15.7 | Project versioning | MISSING | "Save Version" (Ctrl+Alt+S) disabled (`menus.rs:430`) → R42 |
+| 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, VEGAS 23 look) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
 | 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
 | 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
-| 15.10 | Corrupt project detection | PARTIAL | A JSON parse error is reported (`project.rs:427`). No structural validation, no fallback to the backup. → R42 |
-| 15.11 | Error logging | MISSING | 7 `eprintln!` calls, and the release exe has `windows_subsystem = "windows"` (`main.rs:1`), so they go nowhere. No log file. → R44 |
-| 15.12 | Diagnostic reports | MISSING | → R44 |
+| 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
+| 15.11 | Error logging | DONE | R44: `src/logger.rs`, Milan Pro's own file logger behind the `log` crate: `%LOCALAPPDATA%\MilanPro\logs\milan-<date>.log`, 2 MB × 5 files, level in Preferences › Update; every former stderr print logs (grep test `logger::tests::no_eprintln_left_in_the_tree`); updater, autosave, render-queue, plug-in and open/save events are logged |
+| 15.12 | Diagnostic reports | DONE | R44: Help › Create Diagnostic Report writes `%LOCALAPPDATA%\MilanPro\diagnostics\report-<time>\` with `system.txt` (Windows build, CPU, memory, GPUs and drivers through DXGI, displays), `ffmpeg.txt` (`-version`, `-hwaccels`), `prefs.json`, the logs and the crash files (`src/diagnostics.rs`, `dialogs/diagnostics.rs`); a panic writes `crashes\crash-<time>.txt` (version, backtrace, project summary, last 500 log lines) and a native crash a minidump beside it (`SetUnhandledExceptionFilter` → `MiniDumpWriteDump`); the next start offers Open crash report / Report on GitHub (the issue page with the version prefilled; nothing uploaded) |
 | 15.13 | Proper project format | DONE | `.mnle` JSON (`project.rs`) |
 | 15.14 | Stores structure, media, tracks, FX, transitions, keyframes, audio settings, workspace | PARTIAL | All editing data is stored, (R8a) busses, assignable FX chains, routing, sends and Pan Type included (`Timeline.audio`, `Track.out/sends/pan_type`). The workspace layout lives in prefs, not the project (acceptable). Channel layout settings do not exist yet. → R10a |
-| 15.15 | Versioned schema with safe migration | MISSING | No `format_version`; only `#[serde(default)]` and `#[serde(other)]` tolerance (`project.rs:206-280`). A newer file can be silently down-saved. → R42 |
-| 15.16 | Never change a project destructively without preserving the original | PARTIAL | Saves are atomic (`project.rs:674`), but the previous file is replaced with no `.bak`. VEGAS import opens as a new unsaved project (good). → R42 |
+| 15.15 | Versioned schema with safe migration | DONE | R42: `Project.format_version` (`FORMAT_VERSION` = 1; absent = 0), `project/migrate.rs` steps run on the JSON before deserializing (0→1 tested); a file from a newer build opens read-only ("(read-only)" in the title, Save becomes Save As), never down-saved in place |
+| 15.16 | Never change a project destructively without preserving the original | DONE | R42: saves are atomic and keep the previous file as `.mnle.bak`; validator repairs stay in memory until a save; backups and autosaves open as unsaved copies. VEGAS import opens as a new unsaved project |
 
 ### 2.16 Section 15: updater
 
@@ -496,16 +496,16 @@ What matters most:
 | 16.6 | Release notes | DONE | |
 | 16.7 | Download progress | DONE | `State::Downloading` |
 | 16.8 | Update verification | DONE | SHA-256 against the API digest or the `.sha256` asset (`updater.rs:72-83, 255-270`); re-hashed before launch (`updater.rs:278`) |
-| 16.9 | Signed release artifacts where practical | MISSING | No Authenticode signature and no detached signature. The SHA-256 comes from the same release, so it proves integrity, not authorship. → R46 |
+| 16.9 | Signed release artifacts where practical | PARTIAL | R46: `release.yml` signs the `.sha256` with minisign when the `MINISIGN_SECRET_KEY` secret exists and uploads the `.minisig`; the app verifies it with `updater::MINISIGN_PUBLIC_KEY` (empty until the maintainer generates the key pair, SECURITY.md; then SHA-256 only, said in the dialog). Authenticode: `signtool` steps gated on the certificate secrets; certificate pending (user action) |
 | 16.10 | Integrity verification | DONE | |
-| 16.11 | Safe installation | PARTIAL | Silent Inno Setup waits on the `MilanProRunning` mutex (`installer/milan-pro.iss:84`). No recovery if Setup fails. → R46 |
-| 16.12 | Rollback / recovery from failed updates | MISSING | → R46 |
-| 16.13 | Update settings | PARTIAL | Auto-check toggle and skip-version only (`prefs.rs`). → R46 |
-| 16.14 | Stable and optional preview channels | MISSING | Pre-releases are always rejected (`updater.rs:112`). → R46 |
+| 16.11 | Safe installation | DONE | Silent Inno Setup waits on the `MilanProRunning` mutex; a failed or aborted Setup brings the old Milan Pro back (`DeinitializeSetup`). R46: the relaunch passes `--after-update` and a version that fails to start twice offers the roll back |
+| 16.12 | Rollback / recovery from failed updates | DONE | R46: with "Keep the previous version's installer" on, the current version's installer is fetched from its own release before an update (verified like an update) into `%LOCALAPPDATA%\MilanPro\updates\previous\` with its `.sha256`; Help › Roll Back to Previous Version runs it silently (`updater::{keep_current, rollback_target}`); `updates\starting.json` counts the starts after an update and the third try offers the roll back (`start_marker`, cleared by the first frame) |
+| 16.13 | Update settings | DONE | R46: Preferences › Update: channel, auto-check, skipped version with Clear, keep previous version; the log and crash-report options (R44) share the page |
+| 16.14 | Stable and optional preview channels | DONE | R46: `updater::Channel`: Stable reads `/releases/latest`; Preview reads `/releases` and takes pre-releases and pre-release tags (`Version` orders them as semver does); `release.yml` publishes a `-` tag as a pre-release |
 | 16.15 | Updates cannot corrupt an open project | DONE | Install goes through the save prompt (`commands.rs:1345-1349`) |
 | 16.16 | Updates cannot interrupt an ongoing export | DONE | R12: Install and restart (and Exit, and closing the window) while a render runs or waits asks first (`ui/render_queue.rs::guard`): an update only waits for the queue to finish or is not installed now; Exit may also cancel the renders or keep them for the next start (`exit_and_update_guards`). R46's recording guard is separate |
 | 16.17 | Separate, maintainable component | PARTIAL | A self-contained module, `src/updater.rs`, not a crate. → R50 |
-| 16.18 | Never install unverified packages | PARTIAL | Hash-verified, but not authenticated (see 16.9). → R46 |
+| 16.18 | Never install unverified packages | PARTIAL | Hash-verified always; authenticated by minisign once the key is compiled in (16.9). A release whose signature is missing or wrong is then refused, and the API digest is no longer trusted alone |
 | 16.19 | Best implementation researched for this framework and deployment | DONE | `README.md` "Updates", `FEATURE_PLAN.md` batch 18 |
 
 ### 2.17 Section 16: performance and hardware
@@ -518,8 +518,8 @@ What matters most:
 | 17.4 | Hardware encoding | DONE | (R22) See 13.8. |
 | 17.5 | GPU compositing | DONE | (R21a-c) See 3.4 and 6.5. |
 | 17.6 | Memory management | DONE | Byte-capped LRU caches (`engine/cache.rs`), decoder cap of 8 |
-| 17.7 | Cache management | PARTIAL | Fixed sizes. No preference, no disk cache, no "clear cache". → R23 |
-| 17.8 | SSD storage (cache/prerender location) | MISSING | The prerender and temp folder fields are greyed (`settings.rs:344`, `prefs.rs:112`). → R23 |
+| 17.7 | Cache management | DONE | (R23) Preferences › Video: Dynamic RAM Preview max (MB), the disk frame cache's size with Clear, the prerendered files folder; Clear Dynamic RAM Preview and Clean Up Prerendered Video (all or inactive files). The source and composite caches keep their fixed sizes (192 and 256 MB). |
+| 17.8 | SSD storage (cache/prerender location) | DONE | (R23) The prerendered files folder is a preference (each project gets a folder of its own inside it; Project Properties shows the project's), the disk frame cache lives under `%LOCALAPPDATA%\MilanPro\framecache`. The temp folder field stays greyed (R49). |
 | 17.9 | High-resolution displays | PARTIAL | Preview Auto size fits the window. Not verified at 4K/200%. → R48 |
 | 17.10 | Multiple monitors | DONE | R14: floating windows and the external preview on any display (see 4.28) |
 | 17.11 | High-refresh-rate displays | PARTIAL | egui repaints on demand and the preview is paced by the audio clock. Not tested at 120/144 Hz. → R48 |
@@ -537,7 +537,7 @@ What matters most:
 | 18.2 | Rust workspace with independently testable modules | PARTIAL | One crate, `milan-pro`; unit tests per module. → R50 |
 | 18.3 | Timeline not coupled to one codec library or rendering API | DONE | `trait Sources`, `compose()` frame-in/frame-out, FFmpeg behind `vdecode`/`mix` |
 | 18.4 | Meaningful error handling | DONE | `anyhow` plus user-facing messages throughout |
-| 18.5 | Logging | MISSING | → R44 |
+| 18.5 | Logging | DONE | R44: see 15.11 |
 | 18.6 | Automated tests | DONE | 319 unit tests |
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
 | 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
@@ -564,7 +564,7 @@ What matters most:
 | 19.14 | Test project interchange | DONE | VEGAS JSON, OTIO (lossless round trip, two hand-written fixtures), EDL (round trips, goldens at 25 and 29.97 DF, a Resolve-style EDL), FCP7 XML and FCPXML (round trips, hand-written fixtures) tests |
 | 19.15 | Test rendering | PARTIAL | `engine/render.rs:329` ignored e2e → R51 |
 | 19.16 | Test hardware acceleration | DONE | (R22) `hw_capability_table` (ignored: the probe on this machine) and `render_with_hardware_encoder`; parser and choice unit tests on captured output. |
-| 19.17 | Test recovery after crashes | MISSING | → R43 |
+| 19.17 | Test recovery after crashes | DONE | R43: `autosave::tests::crash_recovery_e2e` (ignored): the app runs off-screen, autosaves, is killed by pid, and the next start lists the project and screenshots the dialog; unit tests for the stale-marker check, rotation and the unsaved copy |
 | 19.18 | Legally usable test media collection (resolutions, rates, codecs, containers, bit depths, audio configs) | MISSING | → R37 |
 | 19.19 | Automated tests for serialization and timeline accuracy | DONE | `project.rs`, `plan.rs`, `edit.rs` |
 | 19.20 | VEGAS example projects; exact VEGAS versions and capabilities tested | MISSING | → R55 |
@@ -577,14 +577,14 @@ What matters most:
 | Fully functional Rust desktop editor | PARTIAL | R1-R12 |
 | VEGAS-inspired refined interface | DONE (minus greyed items of later batches, all labelled) | (R13, R14, R15, R16a, R16b, R16c, R17a, R17b, R18a, R18b DONE) |
 | Real multitrack timeline engine | DONE | |
-| Responsive preview player | PARTIAL | R19-R23 |
+| Responsive preview player | DONE | (R19-R23) |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
 | Professional audio editing system | PARTIAL | R8-R10 |
 | Professional rendering engine | DONE | (R11, R12, R22) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
 | VEGAS project import/interchange | DONE | R25, R26, R27, R28, R29, R30 |
-| Automatic GitHub updater | PARTIAL | R46 |
+| Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
 | Complete technical documentation | MISSING | R52-R56 |
@@ -616,9 +616,9 @@ The inventory as found before R0:
 
 | Group | Commands | Batch |
 |---|---|---|
-| File | SaveVersion | R42 |
+| File | SaveVersion | R42 (DONE) |
 | Edit | PasteRepeat, SmartSplit, NestedCreate, NestedOpen, NestedParent, RenderToNewTrack, OpenInAudioEditor, Multicam | R2 (DONE), R18a (DONE), R6b (DONE), R12 (DONE), R18a (DONE), R17b (DONE) |
-| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23, R23, R14 (DONE) |
+| Playback | PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor | R2 (DONE), R8b (DONE), R23 (DONE), R23 (DONE), R14 (DONE) |
 | Cursor | GridLeft, GridRight, SelectToNextMarker, GoTo, CursorToPlayhead, JogLeft, JogRight | R1 (GridLeft, GridRight, GoTo: DONE), R2 (DONE) |
 | Selection | SelectLoopRegion, RestoreSelection, SelPrevEvent, SelNextEvent, SelectEventStart, SelectEventEnd, ExpandedEdit | R2 (DONE) |
 | Nudge and pitch | NudgeFrameLeft/Right, NudgePixelLeft/Right, NudgeTrackUp/Down, PitchUp/Down, PitchCentUp/Down, PitchOctUp/Down | R2 (nudges: DONE), R4b (DONE) |
@@ -1045,7 +1045,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Create Nested Timeline (Alt+C, the V23 timeline toolbar button) works as in VEGAS 23: a parent never saved is saved first; the nested timeline is saved where asked, the name proposed being "<parent>_Untitled Timeline.mnle" beside the parent (numbered when taken); the selected events become one grouped video/audio event pair over the span they covered (one undo step); the new nested timeline opens. `edit::create_nested` (with `extract_to_project`) writes the child atomically before the parent changes, so a failed write leaves the parent as it was; a project never nests one it is inside. The child keeps the events' timeline positions (the nested event starts that far in), the project settings, busses and the Video Bus Track's motion blur; the master bus, Fade to Color and markers stay in the parent. The picture and sound stay the same: events of a kind on one track with nothing else over their span put the nested event on that track (its copy in the child is plain); otherwise it goes on a new plain track above them and the copies keep their own settings. A nested event's edge where none of the child's events plays across it gets no second quickfade (`NestedMix::sounds_across`), so the sound is sample-identical.
 - Open Nested Timeline (Alt+N, toolbar, the V23 event menu) and Edit Source Project (event menus, Tools, Tools › Audio, Project Media's item menu) open the nested timeline in this window at the moment under the cursor; Open Parent Timeline (Alt+P, toolbar) goes back, asking to save a modified nested timeline (Yes / No / Cancel). VEGAS 23 switches between nested and parent in one instance like this; its Edit Source Project opens a second VEGAS window instead (not built: Milan Pro opens it in place). The parents wait on a stack with their undo history, selection and scroll; New, Open, Exit (and closing the window) inside a nested timeline go up first, each project asking to save. The title bar names the nested timeline, as VEGAS's does; the breadcrumb (parent › child, a click goes up) is Preferences › General "Show the parent timelines of a nested timeline above the track list", off by default (`Prefs.nested_breadcrumb`).
 - R6a's gaps closed: nested events have thumbnails (composed by the engine, `nested::frame`, through the thumbnail threads) and waveforms (peaks of the child's master bus mix, `nested::peaks`), never ffmpeg on the `.mnle`, both made again once the child is saved; the Trimmer shows a nested item's picture, filmstrip and waveform. Still not built: frame-rate resampling of nested frames, and the parent's Quickfade / Bypass All Audio FX options inside a child.
-- Shortcut: autosave backs up only the project shown, not a parent waiting on the stack.
+- R43 closed the shortcut: the parents waiting on the stack are autosaved with the project shown and listed in the session marker, so each is recovered on its own.
 - Tests: `nested::tests::create_nested_keeps_the_picture_and_undoes` (one-track and two-track nests are pixel-identical, one undo step restores, a failed write or a self-nest changes nothing), `edges_and_pictures_of_a_nested_timeline`, `app::nested::tests::open_parent_asks_to_save_a_modified_child`, `menus::tests::nested_timeline_commands_work`, and `render::tests::create_nested_renders_the_same` (ignored, ffmpeg: ProRes frames and WAV samples equal before and after Create Nested Timeline, also checks the nested waveform and picture).
 
 **Scope:** Create Nested Timeline (Alt+C) saves the selected events into a new `.mnle` and replaces them with one nested event. Open Nested (Alt+N) and Open Parent (Alt+P) use a project stack with a breadcrumb in the timeline header. Transport buttons are enabled.
@@ -1644,6 +1644,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R23: RAM preview, selective prerender, disk cache (L)
 
+**Status: DONE** (peak files not built, see below). Build Dynamic RAM Preview (Tools, Shift+B) composes the loop region (or from the cursor to the end) at the preview's size and quality into frames the worker pins (`Worker::ram`), up to Preferences › Video › "Dynamic RAM Preview max (MB)" (200, VEGAS's default); the status bar shows the build and Esc stops it; playback and paused frames inside come straight from it (`ram_preview_plays_with_no_decoder`: no decoder opens); an edit drops only the frames whose `plan::frame_key` changed (`ram_preview_keeps_the_frames_an_edit_did_not_touch`); Clear Dynamic RAM Preview (Tools, VEGAS 23). Selectively Prerender Video (Tools and the ruler's menus, Shift+M): a dialog with the template (video templates at the project's size and rate; last used kept) and "Render loop region only"; the sections that are more than a plain event (`plan::needs_work`, `work_sections`) render one by one through `engine::render` to `<prerendered files folder>\<project>-<hash>\<frames hash>.<ext>` and into the folder's `index.json` (`engine/prerender.rs`); the worker plays a section's frames from its file while `plan::range_hash` of the plan without proxies still matches (`Entry::valid`), a render too (`Worker::for_render`); an edit inside a section makes it inactive, outside leaves it (`prerendered_sections_serve_playback_and_render_until_edited`, with the source file taken away); Clean Up Prerendered Video deletes the project's files, all or the inactive ones, never anything the index does not list. The ruler draws the RAM preview (green) and the active prerendered sections (blue) along the top of the time ruler (`engine::preview_bars`). The disk frame cache (`engine/diskcache.rs`, Milan Pro's own, off by default: Preferences › Video "Disk cache for decoded HEVC, AV1 and 4K frames (MB)" with Clear) keeps decoded frames of heavy sources that paused seeks asked for as raw RGBA files under `%LOCALAPPDATA%\MilanPro\framecache` with an index, least recently used first under the cap, written on a thread (`lru_on_disk`); `bench_disk_cache` and `bench_ram_preview` are in `tools/bench.ps1` and `docs/PERFORMANCE.md`. Not built: waveform peak files on disk (`FEATURE_PLAN.md` lists them as performance work with no measured need; the waveform worker is unchanged), and a prerender's folder per project file (VEGAS's Project Properties field; Milan Pro keeps one preference with a subfolder per project, so `project.rs` stays untouched).
+
 **Scope**
 - Build Dynamic RAM Preview (Shift+B) over the selection, with progress and a size cap preference; Clear Dynamic RAM Preview.
 - Selectively Prerender Video (Shift+M): encode the selection to intermediate files (FFV1 or ProRes) in a prerender folder (preference, SSD). The plan uses a prerendered segment when its `FramePlan` hash range matches. Clean Up Prerendered Video.
@@ -1965,6 +1967,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R42: Project schema versioning, backups, validation, Save Version (M)
 
+**Status: DONE.** Built as designed below. `format_version` 1 is the first versioned format (0.7.0 and earlier files are 0 and migrate on open: `migrate::v0_to_v1` drops the `null` optionals the old builds wrote); a newer file opens read-only with a note and Save becomes Save As. `project/validate.rs` repairs duplicate ids, unknown take media, NaN/negative/infinite times, duplicate takes and zero settings, and lists unknown event media (left offline); the notes show in an "Open Project" report. Save Version follows VEGAS 23 (the menu item is in that look only; Ctrl+Alt+S works in all) and keeps editing in the new numbered file; a project never saved is saved as first. Tests: `project::migrate::tests`, `project::validate::tests`, `project::tests::{newer_format_opens_read_only_and_v0_migrates, save_keeps_the_previous_file_as_bak, a_truncated_file_offers_the_backup}`, `dialogs::save_version::tests`.
+
 **Scope**
 - `Project.format_version: u32`, where 0 means pre-versioning; current = 1.
 - `migrate(value: serde_json::Value, from) -> Value` steps, each with a test.
@@ -1985,6 +1989,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R43: Configurable autosave and crash recovery (M)
 
+**Status: DONE.** Built as designed below. The interval is a checkbox plus 1-60 minutes (off = unchecked) and the kept count 1-20 (default 5, rotated as `<name>-autosave.mnle`, `.1.mnle`, ...). The session marker is written when the set of open projects changes (shown project first, then the parents of a nested timeline, each with its autosave file) and removed by `on_exit`. A marker with nothing newer than its projects is dropped at start; the rest open the Recover Projects dialog, where Open loads the autosave as an unsaved copy (the original is never written), Discard deletes the autosave copies, and Keep for later leaves everything for the next start. Harness: `MILAN_DIALOG=recover` (made-up sessions), `MILAN_APPDATA`, `MILAN_HOLD`, `MILAN_AUTOSAVE_NOW` (`demo.rs`). Tests: `autosave::tests::{stale_marker_is_detected, rotation_keeps_n_copies, recovered_project_opens_unsaved_with_the_original_untouched, crash_recovery_e2e (ignored; kills its own instance by pid)}`.
+
 **Scope**
 - Preferences > General: autosave interval (Off, 1-60 min, default 2) and backups kept (1-20, rotation).
 - A session marker `%APPDATA%\MilanPro\sessions\<pid>.json` (project path, autosave path, start time), removed on clean exit.
@@ -1996,6 +2002,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a stale marker is detected (fake pid); rotation keeps N; a recovered project opens unsaved with the original untouched; ignored e2e: kill the app (`taskkill /F`), restart, and the dialog lists the project.
 
 ### R44: Logging, crash reports, diagnostic report (M-L)
+
+**Status: DONE.** Built as designed below, with these differences: the module is `src/logger.rs` (a module named `log` would shadow the `log` crate inside the tree); the level and the privacy option live on Preferences › Update (Milan Pro's own page, shared with R46) rather than General; crash files go to `%LOCALAPPDATA%\MilanPro\crashes\`. The exception filter writes the minidump with `MiniDumpWithIndirectlyReferencedMemory | MiniDumpWithThreadInfo`; release builds are stripped, so a panic's backtrace is addresses only (the minidump carries the context a debugger needs). The plug-in host's one stderr print now goes to its `MILAN_HOST_LOG` file (its stderr is a null handle). Harness: `MILAN_DIALOG=crash-offer`, `MILAN_DIALOG=prefs-update`; the harness logs to stderr only and writes no crash files unless `MILAN_APPDATA` is set. Tests: `logger::tests::{log_rotation_keeps_n_files_and_the_ring_the_last_lines, panic_hook_writes_a_crash_file (a child process panics), no_eprintln_left_in_the_tree}`, `diagnostics::tests::{diagnostic_report_has_every_section, gpu_list_names_an_adapter}`, `dialogs::diagnostics::tests::issue_url_carries_the_version_and_nothing_else`.
 
 **Scope**
 - Add `log = "0.4"` (already in the lock; MIT/Apache).
@@ -2038,6 +2046,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** the hash is stable across copies and differs on a 1-byte change at the end; relink-by-folder finds a moved file of the same size; offline events render with the marker; the import counter reaches N of N.
 
 ### R46: Updater hardening (M-L)
+
+**Status: DONE** (two maintainer actions outstanding: generate the minisign key pair and obtain a code-signing certificate, both in SECURITY.md). Built as designed below. `MINISIGN_PUBLIC_KEY` is empty in this tree, so updates are checked by SHA-256 alone and the dialog says so; with a key, the `.sha256` must carry a verifying `.minisig` and the API digest is ignored. The roll-back copy is fetched after the update's own download (a failure only adds a note to the Ready state). The failed-start offer and Help › Roll Back share one dialog; with no kept installer it explains the preference instead. The recording guard is in the update dialog (`install_guard`); a render keeps R12's wait/cancel guard. `release.yml` signs with minisign and signtool only when the secrets exist and publishes `-` tags as pre-releases. Harness: the Update page is `MILAN_DIALOG=prefs-update`. Tests: `updater::tests::{prerelease_versions_order, release_list_per_channel, bad_signature_is_rejected_when_a_key_is_configured (minisign's test vector; a release without a signature is refused before any download), install_guard_blocks_a_running_job, rollback_marker_counts_failed_starts}`.
 
 **Scope**
 - Channels: Preferences > General, "Update channel: Stable / Preview". Preview reads `/releases` (not `/latest`) and accepts `prerelease: true`.
@@ -2223,7 +2233,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 | CEA-608/708 caption embedding (part of 7.55) | The bundled FFmpeg has no 608/708 encoder | Caption import (608 extraction) plus SCC/SRT sidecar export (R39) |
 | ACES/OpenColorIO pipeline (part of 7.57/7.58) | OCIO is C++ with no Rust port | LUT-based transforms plus a 16f pipeline (R40b) |
 | ASIO output (part of 12.19) | The ASIO SDK licence forbids redistribution | WASAPI exclusive low-latency path (R9, DONE: `wasapi.rs`); documented in `docs/COMPATIBILITY.md` |
-| Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | minisign signature verification now, plus the Authenticode step wired and waiting on secrets (R46) |
+| Signed artifacts without a certificate (16.9) | Authenticode needs a CA-issued certificate that only the user can obtain | R46: minisign verification is built and waits on the maintainer's key pair (SECURITY.md); the Authenticode step is wired and waits on the certificate secrets |
 | VEGAS-licensed plug-ins (OFX first-party, DX audio) in Milan | Licence ties them to VEGAS; host checks are likely | Tested and reported per plug-in (R33c, R35), never claimed without a passing test (R55) |
 
 ---

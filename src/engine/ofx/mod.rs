@@ -326,7 +326,7 @@ pub fn bypassed_because(id: &str) -> Option<String> {
 
 fn fail(p: &Plugin, why: String) {
     let msg = format!("The OFX plug-in {} failed and is bypassed: {why}. Its settings are kept; Rescan in the Plug-In Manager tries it again.", p.info.name);
-    eprintln!("ofx: {} ({}): {why}", p.info.id, p.binary.display());
+    log::warn!("ofx: {} ({}): {why}", p.info.id, p.binary.display());
     lock(&FAILED).insert(p.info.id.to_string(), why);
     lock(&EVENTS).push(msg);
     GEN.fetch_add(1, Ordering::Relaxed);

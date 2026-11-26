@@ -11,6 +11,9 @@
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
 //! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
+//! - `MILAN_HOLD=1` (with `MILAN_SCREENSHOT`): the run never takes its screenshot or exits; it stays open off-screen
+//!   until killed (R43's crash-recovery test). `MILAN_APPDATA=<folder>` moves autosave and session files there, and
+//!   `MILAN_AUTOSAVE_NOW=1` autosaves at the first tick (both in `autosave.rs`).
 //! - `MILAN_HW_TABLE=<file.json>` (R22): the hardware acceleration table to show in Preferences › Video, loaded as it
 //!   is (no probe); `hw_capability_table` writes one to %TEMP%\milan-agent\hw-probe\hw.json.
 use eframe::egui::{self, ColorImage};
@@ -26,6 +29,8 @@ pub struct Launch {
     pub screenshot: Option<PathBuf>,
     pub panels: Vec<String>,
     pub drop_at: Option<egui::Pos2>,
+    /// R46: this version failed to start twice since the update (`updater::start_marker`): offer a roll back.
+    pub rollback_offer: bool,
 }
 
 impl Launch {
@@ -40,6 +45,7 @@ impl Launch {
                 let (x, y) = v.split_once(',')?;
                 Some(egui::pos2(x.trim().parse().ok()?, y.trim().parse().ok()?))
             }),
+            rollback_offer: false,
         }
     }
 }
@@ -174,23 +180,24 @@ impl Shot {
         });
         if let Some(image) = image {
             if let Err(e) = save_png(&self.path, &image) {
-                eprintln!("screenshot: {e}");
+                log::error!("screenshot: {e}");
             }
             if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
                 // R21c: what composed the preview, and whether any frame left the GPU (a zero-copy preview reads none back).
-                eprintln!("shot compositor: {} readbacks={:?}", crate::engine::gpu::status(), crate::engine::gpu::readback_count());
+                println!("shot compositor: {} readbacks={:?}", crate::engine::gpu::status(), crate::engine::gpu::readback_count()); // the harness trace (R44: stdout, not the log)
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
         if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
-            eprintln!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
+            log::info!("shot t={:.2} busy={busy} sized={sized} requested={}", now - start, self.requested);
         }
         if busy || !sized {
             self.quiet_since = None;
         }
         let quiet = now - *self.quiet_since.get_or_insert(now);
-        if !self.requested && ((now - start > 1.5 && quiet > 0.5) || now - start > 8.0) {
+        let hold = std::env::var_os("MILAN_HOLD").is_some_and(|v| v == "1");
+        if !hold && !self.requested && ((now - start > 1.5 && quiet > 0.5) || now - start > 8.0) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }

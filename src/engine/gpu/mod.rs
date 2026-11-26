@@ -244,7 +244,7 @@ impl GpuCompositor {
         // The UI's own errors (there are none) would land here too: they are still reported, and the compositor steps
         // aside either way.
         device.on_uncaptured_error(Box::new(move |e| {
-            eprintln!("wgpu: {e}");
+            log::warn!("wgpu: {e}");
             b.store(true, Relaxed);
         }));
         if !shared {

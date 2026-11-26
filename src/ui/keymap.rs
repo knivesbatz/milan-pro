@@ -26,7 +26,7 @@ pub enum Command {
     EventLock,
     // Playback
     PlayStop, PlayPause, PlayFromStart, PlayAnyWindow, Stop, Loop, Record, Arm, ShuttleReverse, ShuttlePause,
-    ShuttleForward, PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor,
+    ShuttleForward, PreviewAtCursor, DimMaster, Prerender, RamPreview, ExternalMonitor, CleanPrerender, ClearRamPreview,
     // Cursor
     GoToStart, GoToEnd, SelOrViewStart, SelOrViewEnd, PrevFrame, NextFrame, PixelLeft, PixelRight, GridLeft,
     GridRight, PrevMarker, NextMarker, SelectToNextMarker, PrevEditPoint, NextEditPoint, SelEventStart, SelEventEnd,
@@ -61,6 +61,10 @@ pub enum Command {
     // Misc
     Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger, Preferences,
     KeyboardShortcuts, UnfinishedFeatures, CheckForUpdates, About,
+    /// R44: Help › Create Diagnostic Report.
+    DiagnosticReport,
+    /// R46: Help › Roll Back to Previous Version.
+    RollBack,
     /// R15: Options › Customize Toolbar, Customize Timeline Toolbar and Customize Keyboard.
     CustomizeToolbar, CustomizeTimelineToolbar, CustomizeKeyboard,
     // Context-menu and preference commands without default keys
@@ -227,6 +231,8 @@ pub const TABLE: &[Row] = &[
     (DimMaster, "Dim master", &["Ctrl+Shift+F12"], None),
     (Prerender, "Selectively Prerender Video", &["Shift+M"], None),
     (RamPreview, "Build Dynamic RAM Preview", &["Shift+B"], None),
+    (CleanPrerender, "Clean Up Prerendered Video", &[], None),
+    (ClearRamPreview, "Clear Dynamic RAM Preview", &[], None),
     (ExternalMonitor, "Preview on External Monitor", &["Alt+Shift+4"], None),
     // Cursor
     (GoToStart, "Go to Project Start", &["Ctrl+Home", "W"], None),

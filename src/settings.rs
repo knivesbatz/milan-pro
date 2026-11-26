@@ -30,6 +30,20 @@ pub struct Prefs {
     pub recent_max: usize,
     /// Preferences › General: "Check for updates automatically" (on startup).
     pub auto_update: bool,
+    /// R43: Preferences › General: autosave on, every `autosave_minutes` (1-60; VEGAS's 2), keeping `autosave_keep`
+    /// copies per project (1-20).
+    pub autosave_on: bool,
+    pub autosave_minutes: u32,
+    pub autosave_keep: u32,
+    /// R44: Preferences › Update: the log level ("error" ... "trace"), "crash reports leave out file names and paths",
+    /// and the crash report last offered at startup (so it is offered once).
+    pub log_level: String,
+    pub crash_privacy: bool,
+    pub crash_seen: Option<String>,
+    /// R46: Preferences › Update: the channel (Stable, or Preview with pre-releases) and whether the current version's
+    /// installer is kept in `%LOCALAPPDATA%\MilanPro\updates\previous\` before an update, for Help › Roll Back.
+    pub update_channel: crate::updater::Channel,
+    pub keep_previous: bool,
     /// Version the user chose "Skip this version" for; the automatic check ignores it.
     pub skipped_update: Option<String>,
     /// Options › Quantize to Frames: moves, trims and pastes land on frame boundaries.
@@ -264,6 +278,14 @@ impl Default for Prefs {
             recent: Vec::new(),
             recent_max: 4,
             auto_update: true,
+            autosave_on: true,
+            autosave_minutes: 2,
+            autosave_keep: 5,
+            log_level: "info".into(),
+            crash_privacy: false,
+            crash_seen: None,
+            update_channel: Default::default(),
+            keep_previous: false,
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
@@ -337,6 +359,11 @@ impl Default for Prefs {
 }
 
 impl Prefs {
+    /// R43: the autosave interval in minutes, 0 when off.
+    pub fn autosave_minutes(&self) -> u32 {
+        if self.autosave_on { self.autosave_minutes.clamp(1, 60) } else { 0 }
+    }
+
     /// R14: a floating window moved over the docking areas docks (Ctrl inverts it).
     pub fn float_dock(&self, look: UiLook) -> bool {
         self.float_dock.unwrap_or(look.v23())
@@ -349,6 +376,11 @@ impl Prefs {
 
     fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("prefs.json"))
+    }
+
+    /// R44: the preferences file (for the diagnostic report).
+    pub fn file() -> Option<PathBuf> {
+        Self::path()
     }
 
     pub fn load() -> Self {
@@ -631,12 +663,15 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, v23: bool)
         });
     });
     widgets::checkbox(ui, &mut d.adjust_media, "Adjust source media to better match project or render settings");
+    // R23: VEGAS keeps the folder per project; Milan Pro gives each project a folder of its own inside Preferences ›
+    // Video's prerendered files folder, so the project file never names a folder of this computer.
+    let why = crate::ui::menus::Fixed("a folder of this project's own inside the prerendered files folder of Preferences > Video");
     ui.add_enabled_ui(false, |ui| {
-        ui.label("Prerendered files folder:").on_disabled_hover_text(Later("R23").text());
+        ui.label("Prerendered files folder:").on_disabled_hover_text(why.text());
         ui.horizontal(|ui| {
-            widgets::edit(ui, egui::TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(310.0))
-                .on_disabled_hover_text(Later("R23").text());
-            widgets::push_button(ui, "Browse...").on_disabled_hover_text(Later("R23").text());
+            let mut folder = crate::engine::prerender::folder().map(|f| f.display().to_string()).unwrap_or_default();
+            widgets::edit(ui, egui::TextEdit::singleline(&mut folder).desired_width(310.0)).on_disabled_hover_text(why.text());
+            widgets::push_button(ui, "Browse...").on_disabled_hover_text(why.text());
         });
         widgets::checkbox(ui, &mut false, "Start all new projects with these settings").on_disabled_hover_text(Later("R49").text());
     });
