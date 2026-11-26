@@ -1812,7 +1812,7 @@ pub fn frame_time(n: i64, fps: f64) -> f64 {
 }
 
 /// 29.97 and 59.94 count in drop-frame timecode.
-fn is_drop(fps: f64) -> bool {
+pub(crate) fn is_drop(fps: f64) -> bool {
     let nominal = fps.round();
     fps.fract() != 0.0 && (nominal == 30.0 || nominal == 60.0)
 }
@@ -1936,7 +1936,7 @@ pub fn parse_time(text: &str, fmt: RulerFormat, s: &ProjectSettings) -> Option<f
 }
 
 /// hh:mm:ss:ff at `rate` frames per second counted as `nominal` (";" and SMPTE 12M numbering when `drop`).
-fn smpte(seconds: f64, rate: f64, nominal: u64, drop: bool) -> String {
+pub(crate) fn smpte(seconds: f64, rate: f64, nominal: u64, drop: bool) -> String {
     if nominal == 0 {
         return "00:00:00:00".to_string();
     }

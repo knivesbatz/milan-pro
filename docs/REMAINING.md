@@ -319,11 +319,11 @@ What matters most:
 |---|---|---|---|
 | 9.1 | Investigate reliable VEGAS-compatible project export | DONE | R26: File › Export › VEGAS Project (via script)... writes `<name>.milan.json` (`interchange/vegas_export.rs`, `vegas_map` in reverse); `tools/vegas/Import from Milan Pro.cs` (and the VEGAS 13 copy) rebuilds it through the scripting API (new or open project, settings, media, tracks, events, reversed subclips, takes, fades, Pan/Crop, Track Motion, envelopes, groups, FX with parameters and keyframes, transitions, generated media, audio FX by name, markers, regions, selection). Both scripts compile against VEGAS 15's `ScriptPortal.Vegas.dll`; the script's JSON reader was run on Milan Pro's output. Round trip `round_trip_through_the_vegas_json`. Not run inside VEGAS here (manual: user). |
 | 9.2 | Never write fake `.veg` files | DONE | Nothing writes `.veg` |
-| 9.3 | OpenTimelineIO | MISSING | → R28 |
-| 9.4 | EDL | MISSING | Import/Export rows greyed (`menus.rs:409, 419`) → R28 |
+| 9.3 | OpenTimelineIO | DONE | R28: `interchange/otio.rs`, File › Import / Export › OpenTimelineIO. Milan's structs under `metadata["milan"]`: `lossless_round_trip` gives the same project JSON back. Hand-written fixtures `tests/fixtures/simple_cut.otio`, `nested_example.otio` (nested stacks flatten). |
+| 9.4 | EDL | DONE | R28: `interchange/edl.rs`: CMX 3600 (`.edl`: V, A-A4, cuts, dissolves, M2 speed, reel names, DF/NDF, `* FROM CLIP NAME` / `* SOURCE FILE`) and VEGAS's own EDL text table (`.txt`), both ways; golden files `tests/fixtures/golden_25.edl`, `golden_2997df.edl`. |
 | 9.5 | XML editing timelines (FCP7 xmeml, FCPXML) | MISSING | Greyed (`menus.rs:407-408, 417-418`) → R29 |
 | 9.6 | AAF where practical | NOT FEASIBLE | No maintained Rust AAF library. The reference AAF SDK is large C++/COM structured storage. Deliverable: documented route through OTIO's AAF adapter (Python, external), plus an AAF row in the interchange report (R29). |
-| 9.7 | Reliable import/export for suitable formats | MISSING | → R28, R29 |
+| 9.7 | Reliable import/export for suitable formats | PARTIAL | R28: OTIO and EDL with round-trip tests; XML in R29 |
 | 9.8 | Compatibility report: accurate / needs conversion / not representable | MISSING | → R29 (`docs/INTERCHANGE.md`) |
 
 ### 2.10 Section 9: VEGAS plug-in compatibility
@@ -561,7 +561,7 @@ What matters most:
 | 19.11 | Test plug-in loading | DONE | OFX: the test bundle (`tools/ofx-test-plugin`) and the VEGAS 15 probe (R33c); VST3 and CLAP: Milan's own test modules (`tools/vst3-test-plugin`, `tools/clap-test-plugin`) scanned, processed, crashed, hung, preset-loaded and shown through the host (`aplug::tests`). |
 | 19.12 | Test project saving | DONE | `project.rs` tests (atomic save, failed save) |
 | 19.13 | Test project reopening | DONE | `old_projects_load_*` tests |
-| 19.14 | Test project interchange | PARTIAL | VEGAS JSON import tests (`interchange.rs`); no OTIO/EDL/XML → R28, R29 |
+| 19.14 | Test project interchange | PARTIAL | VEGAS JSON, OTIO (lossless round trip, two hand-written fixtures), EDL (round trips, goldens at 25 and 29.97 DF, a Resolve-style EDL) tests; XML → R29 |
 | 19.15 | Test rendering | PARTIAL | `engine/render.rs:329` ignored e2e → R51 |
 | 19.16 | Test hardware acceleration | DONE | (R22) `hw_capability_table` (ignored: the probe on this machine) and `render_with_hardware_encoder`; parser and choice unit tests on captured output. |
 | 19.17 | Test recovery after crashes | MISSING | → R43 |
@@ -583,7 +583,7 @@ What matters most:
 | Professional rendering engine | DONE | (R11, R12, R22) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
-| VEGAS project import/interchange | PARTIAL | R25, R26, R27, R30 DONE; R28, R29 |
+| VEGAS project import/interchange | PARTIAL | R25, R26, R27, R28, R30 DONE; R29 |
 | Automatic GitHub updater | PARTIAL | R46 |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |

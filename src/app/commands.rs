@@ -3,7 +3,7 @@
 use eframe::egui;
 use crate::ui::widgets;
 use crate::edit;
-use crate::interchange::Imported;
+use crate::interchange::{Format, Imported};
 use crate::project::{Project, TrackKind};
 use crate::render::content_end;
 use crate::settings::layout_key;
@@ -856,11 +856,32 @@ impl MeridianApp {
             BatchRender => self.batch = Some(ui::render_queue::BatchRender::new(&self.project)),
             RenderAudioTracks => self.render_tracks = Some(ui::render_queue::RenderTracks::new(&self.project)),
             ImportMedia => ui::import_media(ctx, &self.importer),
-            ImportVegas => {
-                let picked = rfd::FileDialog::new().add_filter("VEGAS Project (Milan Pro export, .veg)", &["json", "veg"]).pick_file();
-                if let Some(path) = picked {
-                    self.vegas.start(ctx, path);
-                    self.message = Some("Importing VEGAS project...".into());
+            // R28/R29: every interchange import goes through the VEGAS import's thread and report.
+            ImportVegas | ImportOtio | ImportEdl => {
+                let fmt = match c {
+                    ImportOtio => Format::Otio,
+                    ImportEdl => Format::Edl,
+                    _ => Format::Vegas,
+                };
+                let (name, exts) = fmt.filter();
+                if let Some(path) = rfd::FileDialog::new().add_filter(name, exts).pick_file() {
+                    self.vegas.start(ctx, path, self.project.settings.frame_rate);
+                    self.message = Some(format!("Importing {}...", fmt.label()));
+                }
+            }
+            ExportOtio | ExportEdl => {
+                let fmt = if c == ExportOtio { Format::Otio } else { Format::Edl };
+                let (name, exts) = fmt.filter();
+                let file = format!("{}.{}", if self.project.name.is_empty() { "Untitled" } else { &self.project.name }, exts[0]);
+                let mut dlg = rfd::FileDialog::new().add_filter(name, exts).set_file_name(file);
+                if let Some(d) = self.project.path.as_ref().and_then(|p| p.parent()) {
+                    dlg = dlg.set_directory(d);
+                }
+                if let Some(path) = dlg.save_file() {
+                    match crate::interchange::export(fmt, &self.project, &path) {
+                        Ok(notes) => self.vegas_report = Some((fmt.export_title(), fmt.export_intro(&path, !notes.is_empty()), notes)),
+                        Err(e) => self.message = Some(format!("Export failed: {e}")),
+                    }
                 }
             }
             // R26: the JSON the VEGAS-side "Import from Milan Pro.cs" rebuilds (Milan Pro never writes a .veg).
@@ -2028,7 +2049,8 @@ impl MeridianApp {
             MenuAction::ImportVegas => {
                 let Some((p, warnings)) = self.pending_import.take() else { return };
                 if !warnings.is_empty() {
-                    self.vegas_report = Some((IMPORT_TITLE.into(), IMPORTED_VEGAS.into(), warnings));
+                    let fmt = self.vegas.format();
+                    self.vegas_report = Some((fmt.import_title(), fmt.import_intro(), warnings));
                 }
                 p
             }
@@ -2126,7 +2148,7 @@ impl MeridianApp {
                 );
                 self.vegas_report = Some((IMPORT_TITLE.into(), intro, missing));
             }
-            Err(e) => self.message = Some(format!("VEGAS import failed: {e}")),
+            Err(e) => self.message = Some(format!("{} failed: {e}", self.vegas.format().import_title())),
         }
     }
 
@@ -3011,6 +3033,16 @@ impl MeridianApp {
                     r"Media offline: D:\Footage\interview.mxf (file not found)",
                 ];
                 self.vegas_report = Some((IMPORT_TITLE.into(), IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
+            }
+            // R28: an EDL import's report.
+            "edl-report" => {
+                let lines = [
+                    "Record timecodes start at 01:00:00:00; the timeline starts at 00:00:00:00",
+                    "Event 7: wipe W001 plays as a dissolve",
+                    r"Media offline: D:\Footage\A003_C012.mov (file not found)",
+                    "V: the event at 42.360 s: no file is named for reel A004C001; the event is offline",
+                ];
+                self.vegas_report = Some((Format::Edl.import_title(), Format::Edl.import_intro(), lines.map(String::from).to_vec()));
             }
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO),
             m => {

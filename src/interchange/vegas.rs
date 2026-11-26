@@ -622,7 +622,7 @@ fn motion_keys(keys: &[VMotionKey], size: (f64, f64), snap: &dyn Fn(f64) -> f64)
 
 /// The pool item for `path`, added on first use: the probed item, or an offline one (plus a warning) when the
 /// probe failed.
-fn media_id(pool: &mut Vec<MediaItem>, probed: &HashMap<String, Result<MediaItem, String>>, path: &str, video: bool, warnings: &mut Vec<String>) -> String {
+pub(crate) fn media_id(pool: &mut Vec<MediaItem>, probed: &HashMap<String, Result<MediaItem, String>>, path: &str, video: bool, warnings: &mut Vec<String>) -> String {
     if let Some(m) = pool.iter().find(|m| m.path.as_os_str() == path && m.generator.is_none()) {
         return m.id.clone();
     }

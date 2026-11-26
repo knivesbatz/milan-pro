@@ -1,0 +1,21 @@
+TITLE: Golden 25
+FCM: NON-DROP FRAME
+001  A        V     C        00:00:02:00 00:00:07:00 00:00:00:00 00:00:04:00
+* FROM CLIP NAME: a.mp4
+* SOURCE FILE: C:\m\a.mp4
+002  T        A     C        10:00:00:00 10:00:08:00 00:00:00:00 00:00:08:00
+* FROM CLIP NAME: t.wav
+* SOURCE FILE: C:\m\t.wav
+003  T        A2    C        10:00:01:00 10:00:04:00 00:00:02:00 00:00:05:00
+* FROM CLIP NAME: t.wav
+* SOURCE FILE: C:\m\t.wav
+004  A        V     C        00:00:06:00 00:00:06:00 00:00:04:00 00:00:04:00
+004  B        V     D     25 00:00:10:00 00:00:18:00 00:00:04:00 00:00:08:00
+M2   B         050.0                00:00:10:00
+* FROM CLIP NAME: a.mp4
+* TO CLIP NAME: b.mp4
+* SOURCE FILE: C:\m\b.mp4
+005  A        V     C        00:00:20:00 00:00:22:00 00:00:10:00 00:00:12:00
+M2   A        -025.0                00:00:20:00
+* FROM CLIP NAME: a.mp4
+* SOURCE FILE: C:\m\a.mp4

@@ -184,7 +184,7 @@ impl CmdState {
         let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
-            | ExportVegas | ArchiveProject | ImportMediaFromProject
+            | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ExportOtio | ExportEdl
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
@@ -640,7 +640,8 @@ const IMPORT: &[M] = &[
     X("P&remiere/After Effects (*.prproj)...", Later("R29")),
     X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
     X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
-    X("&EDL Text File (*.txt)...", Later("R28")),
+    C("&EDL Text File (*.txt, *.edl)...", ImportEdl),
+    C("&OpenTimelineIO (*.otio)...", ImportOtio),
     X("&Broadcast Wave Format...", NotPlanned("R57")),
     X("&Closed Captioning...", Later("R39")),
 ];
@@ -653,7 +654,8 @@ const EXPORT: &[M] = &[
     X("Premiere/&After Effects (*.prproj)...", Later("R29")),
     X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
     X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
-    X("&EDL Text File (*.txt)...", Later("R28")),
+    C("&EDL Text File (*.txt, *.edl)...", ExportEdl),
+    C("&OpenTimelineIO (*.otio)...", ExportOtio),
 ];
 
 pub const FILE: &[M] = &[

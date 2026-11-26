@@ -1,0 +1,294 @@
+{
+    "OTIO_SCHEMA": "Timeline.1",
+    "metadata": {
+        "note": "Hand-written to the OpenTimelineIO JSON schema for Milan Pro's tests (not a file from the OTIO repository)."
+    },
+    "name": "Nested",
+    "global_start_time": {
+        "OTIO_SCHEMA": "RationalTime.1",
+        "rate": 30,
+        "value": 0
+    },
+    "tracks": {
+        "OTIO_SCHEMA": "Stack.1",
+        "metadata": {},
+        "name": "tracks",
+        "source_range": null,
+        "effects": [],
+        "markers": [
+            {
+                "OTIO_SCHEMA": "Marker.2",
+                "metadata": {},
+                "name": "Act 1",
+                "color": "BLUE",
+                "marked_range": {
+                    "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 30,
+                        "value": 0
+                    },
+                    "duration": {
+                        "OTIO_SCHEMA": "RationalTime.1",
+                        "rate": 30,
+                        "value": 150
+                    }
+                },
+                "comment": ""
+            }
+        ],
+        "enabled": true,
+        "children": [
+            {
+                "OTIO_SCHEMA": "Track.1",
+                "metadata": {},
+                "name": "V1",
+                "source_range": null,
+                "effects": [],
+                "markers": [],
+                "enabled": true,
+                "children": [
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {},
+                        "name": "X",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 0
+                            },
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 90
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "ExternalReference.1",
+                                "metadata": {},
+                                "name": "x.mov",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30,
+                                        "value": 0
+                                    },
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30,
+                                        "value": 1800
+                                    }
+                                },
+                                "available_image_bounds": null,
+                                "target_url": "file:///C:/footage/x.mov"
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    },
+                    {
+                        "OTIO_SCHEMA": "Stack.1",
+                        "metadata": {},
+                        "name": "Nested",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 30
+                            },
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 60
+                            }
+                        },
+                        "effects": [],
+                        "markers": [],
+                        "enabled": true,
+                        "children": [
+                            {
+                                "OTIO_SCHEMA": "Track.1",
+                                "metadata": {},
+                                "name": "Nested V1",
+                                "source_range": null,
+                                "effects": [],
+                                "markers": [],
+                                "enabled": true,
+                                "children": [
+                                    {
+                                        "OTIO_SCHEMA": "Clip.2",
+                                        "metadata": {},
+                                        "name": "Y",
+                                        "source_range": {
+                                            "OTIO_SCHEMA": "TimeRange.1",
+                                            "start_time": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30,
+                                                "value": 0
+                                            },
+                                            "duration": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30,
+                                                "value": 120
+                                            }
+                                        },
+                                        "effects": [
+                                            {
+                                                "OTIO_SCHEMA": "LinearTimeWarp.1",
+                                                "metadata": {},
+                                                "name": "Speed",
+                                                "effect_name": "LinearTimeWarp",
+                                                "time_scalar": 2.0
+                                            }
+                                        ],
+                                        "markers": [],
+                                        "enabled": true,
+                                        "media_references": {
+                                            "DEFAULT_MEDIA": {
+                                                "OTIO_SCHEMA": "ExternalReference.1",
+                                                "metadata": {},
+                                                "name": "x.mov",
+                                                "available_range": {
+                                                    "OTIO_SCHEMA": "TimeRange.1",
+                                                    "start_time": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30,
+                                                        "value": 0
+                                                    },
+                                                    "duration": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30,
+                                                        "value": 1800
+                                                    }
+                                                },
+                                                "available_image_bounds": null,
+                                                "target_url": "file:///C:/footage/x.mov"
+                                            }
+                                        },
+                                        "active_media_reference_key": "DEFAULT_MEDIA"
+                                    }
+                                ],
+                                "kind": "Video"
+                            },
+                            {
+                                "OTIO_SCHEMA": "Track.1",
+                                "metadata": {},
+                                "name": "Nested V2",
+                                "source_range": null,
+                                "effects": [],
+                                "markers": [],
+                                "enabled": true,
+                                "children": [
+                                    {
+                                        "OTIO_SCHEMA": "Clip.2",
+                                        "metadata": {},
+                                        "name": "Z",
+                                        "source_range": {
+                                            "OTIO_SCHEMA": "TimeRange.1",
+                                            "start_time": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30,
+                                                "value": 0
+                                            },
+                                            "duration": {
+                                                "OTIO_SCHEMA": "RationalTime.1",
+                                                "rate": 30,
+                                                "value": 45
+                                            }
+                                        },
+                                        "effects": [],
+                                        "markers": [],
+                                        "enabled": true,
+                                        "media_references": {
+                                            "DEFAULT_MEDIA": {
+                                                "OTIO_SCHEMA": "ExternalReference.1",
+                                                "metadata": {},
+                                                "name": "x.mov",
+                                                "available_range": {
+                                                    "OTIO_SCHEMA": "TimeRange.1",
+                                                    "start_time": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30,
+                                                        "value": 0
+                                                    },
+                                                    "duration": {
+                                                        "OTIO_SCHEMA": "RationalTime.1",
+                                                        "rate": 30,
+                                                        "value": 1800
+                                                    }
+                                                },
+                                                "available_image_bounds": null,
+                                                "target_url": "file:///C:/footage/x.mov"
+                                            }
+                                        },
+                                        "active_media_reference_key": "DEFAULT_MEDIA"
+                                    }
+                                ],
+                                "kind": "Video"
+                            }
+                        ]
+                    },
+                    {
+                        "OTIO_SCHEMA": "Clip.2",
+                        "metadata": {},
+                        "name": "W",
+                        "source_range": {
+                            "OTIO_SCHEMA": "TimeRange.1",
+                            "start_time": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 0
+                            },
+                            "duration": {
+                                "OTIO_SCHEMA": "RationalTime.1",
+                                "rate": 30,
+                                "value": 60
+                            }
+                        },
+                        "effects": [
+                            {
+                                "OTIO_SCHEMA": "FreezeFrame.1",
+                                "metadata": {},
+                                "name": "Freeze",
+                                "effect_name": "FreezeFrame",
+                                "time_scalar": 0.0
+                            }
+                        ],
+                        "markers": [],
+                        "enabled": true,
+                        "media_references": {
+                            "DEFAULT_MEDIA": {
+                                "OTIO_SCHEMA": "MissingReference.1",
+                                "metadata": {},
+                                "name": "offline.mov",
+                                "available_range": {
+                                    "OTIO_SCHEMA": "TimeRange.1",
+                                    "start_time": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30,
+                                        "value": 0
+                                    },
+                                    "duration": {
+                                        "OTIO_SCHEMA": "RationalTime.1",
+                                        "rate": 30,
+                                        "value": 300
+                                    }
+                                },
+                                "available_image_bounds": null
+                            }
+                        },
+                        "active_media_reference_key": "DEFAULT_MEDIA"
+                    }
+                ],
+                "kind": "Video"
+            }
+        ]
+    }
+}

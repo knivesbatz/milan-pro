@@ -434,7 +434,7 @@ fn audio_fx_to_vegas(fx: &Fx, at: &str, notes: &mut Vec<String>) -> Option<VFx> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
     use crate::engine::plugins::{find, new_fx};
@@ -448,7 +448,7 @@ mod tests {
     }
 
     /// A project with one of everything the export carries.
-    fn sample() -> Project {
+    pub(crate) fn sample() -> Project {
         let mut p = Project::new("Round Trip");
         p.settings = ProjectSettings { width: 1920, height: 1080, frame_rate: 25.0, sample_rate: 48000, field_order: FieldOrder::Upper, par: 1.2121, bit_depth: 24, ..Default::default() };
         let item = |name: &str, t, w| MediaItem { id: name.into(), path: format!(r"C:\m\{name}").into(), name: name.into(), media_type: t, duration: 60.0, width: w, height: w.map(|_| 1080), sample_rate: Some(48000), audio_streams: 2, ..Default::default() };

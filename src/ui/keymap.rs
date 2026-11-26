@@ -15,6 +15,8 @@ pub enum Command {
     // File
     New, NewEmpty, Open, Close, Save, SaveAs, SaveVersion, RenderAs, ImportMedia, ImportVegas, Properties, Welcome, Exit,
     ExportVegas, ArchiveProject, ImportMediaFromProject,
+    // R28/R29: interchange formats (`interchange::Format`).
+    ImportOtio, ImportEdl, ExportOtio, ExportEdl,
     OpenRecent(usize),
     // Edit
     Undo, Redo, Cut, Copy, Paste, PasteRepeat, PasteInsert, Delete, Trim, TrimStart, TrimEnd, Split, SmartSplit,
