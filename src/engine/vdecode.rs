@@ -62,6 +62,10 @@ pub struct DecSpec<'a> {
     pub threads: u32,
     /// Stop after this many frames (`lead` included); None streams to the end.
     pub frames: Option<i64>,
+    /// R40a: the view transform ahead of the scaler (`MediaRef::pre`, "" for none).
+    pub pre: &'a str,
+    /// R38: input options before `-i` (`MediaRef::input`).
+    pub input: &'a [String],
 }
 
 /// ffmpeg arguments (after `-nostdin`) streaming frames `sf - lead`, ... on the project-fps grid.
@@ -75,13 +79,33 @@ pub fn args(s: &DecSpec) -> Vec<String> {
     if !s.hwaccel.is_empty() {
         a.extend(["-hwaccel", s.hwaccel].map(String::from));
     }
-    a.extend(["-ss".into(), format!("{:.6}", (s.sf - s.lead) as f64 / s.fps), "-i".into(), s.path.to_string_lossy().into_owned()]);
+    // R41: a transport stream or concat list is opened `plan::preroll` early and the frames before the target dropped;
+    // R38: an animation is read from its start (frames before 0 repeat its first one, as a negative seek gives).
+    let f0 = s.sf - s.lead;
+    // An image sequence (input options: image2) seeks by frame number.
+    let pre = if s.input.is_empty() { crate::engine::plan::preroll(s.path) } else { 0.0 };
+    let early = if pre > 0.0 { f0.min((pre.min(1e6) * s.fps).round() as i64).max(0) } else { 0 };
+    let trim = match (pre > 0.0, early) {
+        (false, _) => String::new(),
+        (true, 0) if f0 < 0 => format!("tpad=start={}:start_mode=clone,", -f0),
+        (true, 0) => String::new(),
+        // The frames left keep their times: restart them at 0, or the output fills the gap with copies.
+        (_, k) => format!("trim=start_frame={k},setpts=PTS-STARTPTS,"),
+    };
+    let ss = if pre > 0.0 { ((f0 - early) as f64 / s.fps).max(0.0) } else { (f0 - early) as f64 / s.fps };
+    // No seek to 0: ffmpeg 9 gives nothing for `-ss 0` on a JPEG or WebP, and a start needs none.
+    if ss != 0.0 {
+        a.extend(["-ss".into(), format!("{ss:.6}")]);
+    }
+    a.extend(crate::engine::plan::input_args(s.input, s.path));
     a.extend(["-map".into(), format!("0:v:{}", s.stream)]);
     a.extend(["-an", "-sn", "-dn", "-vf"].map(String::from));
     let rate = if s.flow { format!("minterpolate=fps={}:mi_mode=mci", s.fps_str) } else { format!("fps={}:round=up:start_time=0", s.fps_str) };
+    // The transform runs after the rate filter, so only frames on the grid are converted.
     a.push(format!(
-        "{}{rate},scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
+        "{}{rate},{trim}{}scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
         s.deint,
+        s.pre,
         s.w,
         s.h,
         s.scaler,
@@ -269,11 +293,11 @@ impl DecoderPool {
         let proxy = m.proxy_for(q);
         let path = proxy.unwrap_or(&m.path);
         let hwaccel = if play && proxy.is_none() { self.wants_hw(m).unwrap_or_default() } else { String::new() };
-        // The proxy was deinterlaced when it was made.
-        let deint = if proxy.is_none() { m.deint } else { "" };
+        // The proxy was deinterlaced (and, R40a, tone-mapped) when it was made.
+        let (deint, pre, input) = if proxy.is_none() { (m.deint, m.pre.as_str(), m.input.as_slice()) } else { ("", "", &[][..]) };
         let threads = if proxy.is_none() && (frames.is_some() || (self.seeking && !play)) { seek_threads() } else { 2 };
         let frames = frames.map(|n| n + lead);
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hwaccel: &hwaccel, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames };
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hwaccel: &hwaccel, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames, pre, input };
         spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))
     }
 
@@ -519,7 +543,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hwaccel: "", matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hwaccel: "", matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None, pre: "", input: &[] }
     }
 
     #[test]
@@ -538,6 +562,25 @@ mod tests {
         // R20: a chunk read backwards: more decoder threads, and it stops after its frames (lead included).
         let a = args(&DecSpec { threads: 8, frames: Some(31), ..spec(p) }).join(" ");
         assert!(a.starts_with("-v error -threads 8 -ss ") && a.ends_with(",format=rgba -frames:v 31 -f rawvideo -"), "{a}");
+        // R40a: the view transform sits between the rate filter and the scaler (the scaler's matrix is then auto).
+        let pre = "zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=mobius:param=0.5:desat=0:peak=4.926,zscale=t=bt709:r=pc,format=gbrp,";
+        let a = args(&DecSpec { pre, matrix: None, ..spec(p) }).join(" ");
+        assert!(a.contains("-vf fps=30000/1001:round=up:start_time=0,zscale=t=linear:npl=203,") && a.contains("format=gbrp,scale=960:540:flags=fast_bilinear:in_color_matrix=auto:out_range=full,format=rgba"), "{a}");
+        // R41: a transport stream is opened 3 s early (90 frames at 29.97) and the frames before the target dropped.
+        let a = args(&spec(Path::new(r"C:\card\001.MTS"))).join(" ");
+        assert!(a.starts_with("-v error -threads 2 -i C:") && a.contains("fps=30000/1001:round=up:start_time=0,trim=start_frame=89,setpts=PTS-STARTPTS,scale="), "{a}");
+        let a = args(&DecSpec { lead: 0, sf: 0, ..spec(Path::new("ten.gif")) }).join(" ");
+        assert!(a.contains("-threads 2 -i ten.gif") && a.contains("start_time=0,scale="), "{a}");
+        let a = args(&DecSpec { lead: 2, sf: 1, ..spec(Path::new("ten.gif")) }).join(" ");
+        assert!(a.contains("-threads 2 -i ten.gif") && a.contains("start_time=0,tpad=start=1:start_mode=clone,scale="), "{a}");
+        let a = args(&DecSpec { sf: 300, ..spec(Path::new("ten.gif")) }).join(" ");
+        assert!(a.contains("-threads 2 -i ten.gif") && a.contains("trim=start_frame=299,setpts=PTS-STARTPTS,"), "{a}");
+        let a = args(&DecSpec { sf: 300, ..spec(Path::new(r"C:\card\001-span.ffconcat")) }).join(" ");
+        assert!(a.contains("-ss 6.973633 -i") && a.contains("trim=start_frame=90,setpts=PTS-STARTPTS,"), "{a}");
+        // R38: an image sequence is opened through image2 at its own rate, after the seek.
+        let input = ["-f", "image2", "-pattern_type", "sequence", "-start_number", "1", "-framerate", "24"].map(String::from);
+        let a = args(&DecSpec { input: &input, path: Path::new(r"C:\shots\shot_%04d.png"), ..spec(p) }).join(" ");
+        assert!(a.contains(r"-ss 2.969633 -f image2 -pattern_type sequence -start_number 1 -framerate 24 -i C:\shots\shot_%04d.png -map 0:v:0 "), "{a}");
     }
 
     /// R20: a chunk is 1 s of frames, or fewer when the chunk and those decoding ahead would pass `BACK_BYTES`.
@@ -582,6 +625,8 @@ mod tests {
             offset: 0.0,
             stream: 0,
             flow: false,
+            pre: String::new(),
+            input: Vec::new(),
         };
         assert!(pool.wants_hw(&m("h264", 1920)).is_none());
         let auto = Some("auto".to_string());
@@ -624,7 +669,7 @@ mod tests {
                 .unwrap()
                 .success();
             assert!(ok);
-            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false };
+            let m = MediaRef { id: name.into(), path: path.clone(), w: 64, h: 64, duration: 12.0, fps: if name == "pal.mp4" { 25.0 } else { 30000.0 / 1001.0 }, ..ramp_ref() };
             let mut pool = DecoderPool::default();
             let fps = 30000.0 / 1001.0;
             pool.set_rate(fps, "30000/1001");
@@ -665,7 +710,7 @@ mod tests {
 
     /// A 64x64 30 fps video, for the ramp clips.
     fn ramp_ref() -> MediaRef {
-        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false }
+        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false, pre: String::new(), input: Vec::new() }
     }
 
     fn gray(p: Pull) -> Option<u8> {

@@ -140,7 +140,7 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
             };
             pv.display_w = monitor.width().max(2.0) as u32;
             let video = m.media_type != MediaType::Audio;
-            pv.show(ui.ctx(), video.then_some((m, if m.media_type == MediaType::Image { 0.0 } else { *src })), fps, m.width.unwrap_or(1920));
+            pv.show(ui.ctx(), video.then_some((m, if m.media_type == MediaType::Image { 0.0 } else { *src })), fps, m.width.unwrap_or(1920), project.settings.color_management);
             let aspect = m.width.zip(m.height).map_or(16.0 / 9.0, |(w, h)| w as f32 / h.max(1) as f32);
             let (w, h) = if monitor.width() / monitor.height().max(1.0) > aspect { (monitor.height() * aspect, monitor.height()) } else { (monitor.width(), monitor.width() / aspect) };
             let frame = super::widgets::px(Rect::from_center_size(monitor.center(), vec2(w, h).max(Vec2::ZERO)));
@@ -196,7 +196,7 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     let pw = m.width.unwrap_or(1920);
     tr.preview.display_w = monitor.width().max(2.0) as u32;
     let src = (m.media_type != MediaType::Audio).then_some((&m, if m.media_type == MediaType::Image { 0.0 } else { tr.cursor.min(dur - 0.001) }));
-    tr.preview.show(ui.ctx(), src, fps, pw);
+    tr.preview.show(ui.ctx(), src, fps, pw, project.settings.color_management);
     let aspect = m.width.zip(m.height).map_or(16.0 / 9.0, |(w, h)| w as f32 / h.max(1) as f32);
     let (w, h) = if monitor.width() / monitor.height().max(1.0) > aspect { (monitor.height() * aspect, monitor.height()) } else { (monitor.width(), monitor.width() / aspect) };
     let frame = super::widgets::px(Rect::from_center_size(monitor.center(), vec2(w, h).max(Vec2::ZERO)));
