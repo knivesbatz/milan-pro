@@ -1,5 +1,6 @@
 //! Recorded Files: shown when a recording stops, with the files it made. Delete (asks first), Rename, Done.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::Project;
 
 pub struct RecordedFiles {
@@ -63,7 +64,7 @@ impl RecordedFiles {
                 };
             }
             if let Some(n) = name {
-                super::row(ui, "New name:", 70.0, true, |ui| ui.add(TextEdit::singleline(n).desired_width(330.0)));
+                super::row(ui, "New name:", 70.0, true, |ui| widgets::edit(ui, TextEdit::singleline(n).desired_width(330.0)));
                 let ok = !n.trim().is_empty();
                 return match super::button_row(ui, &[("OK", ok), ("Cancel", true)]) {
                     Some(0) => Some(Recorded::Rename(id, name.take().unwrap_or_default())),

@@ -1,6 +1,7 @@
 //! Command execution for the app: keys (through the keymap), menu bar, context menus and toolbars all end up in
 //! `MeridianApp::exec`. Also the modal dialogs and the save prompt.
 use eframe::egui;
+use crate::ui::widgets;
 use crate::edit;
 use crate::interchange::Imported;
 use crate::project::{Project, TrackKind};
@@ -2368,9 +2369,9 @@ impl MeridianApp {
             .collect();
         let Some((name, slot)) = &mut self.layout_as else { return };
         let (hit, close) = dialogs::modal(ctx, "save_layout_as", "Save Layout As", egui::vec2(340.0, 140.0), |ui| {
-            dialogs::row(ui, "Name:", 60.0, true, |ui| ui.add(egui::TextEdit::singleline(name).desired_width(250.0)));
+            dialogs::row(ui, "Name:", 60.0, true, |ui| widgets::edit(ui, egui::TextEdit::singleline(name).desired_width(250.0)));
             dialogs::row(ui, "Shortcut:", 60.0, true, |ui| {
-                egui::ComboBox::from_id_salt("layout_as_slot").width(250.0).selected_text(slots[*slot].as_str()).show_ui(ui, |ui| {
+                widgets::combo(ui, "layout_as_slot", 250.0, slots[*slot].as_str(), |ui| {
                     for (n, label) in slots.iter().enumerate() {
                         ui.selectable_value(slot, n, label.as_str());
                     }
@@ -2556,7 +2557,15 @@ impl MeridianApp {
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
             // Classic 2006 stage 2: the dialogs and windows the look screenshots needed that had no value yet.
-            "paste-attrs" => self.exec(ctx, PasteAttributesSelect),
+            // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
+            // copy): the dialog needs an event in the clipboard.
+            "paste-attrs" => {
+                let loop_region = self.project.timeline.loop_region.take();
+                self.exec(ctx, Copy);
+                self.project.timeline.loop_region = loop_region;
+                self.message = None;
+                self.exec(ctx, PasteAttributesSelect);
+            }
             "default-track" => {
                 self.sel.tracks = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()).into_iter().collect();
                 self.exec(ctx, DefaultTrackFx);

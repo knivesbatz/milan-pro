@@ -5,6 +5,7 @@
 //! paths. Keys are event-relative; each drag or typed value is one undo step, and the preview follows through the
 //! engine's content hash.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::decode::Thumbs;
 use crate::history::History;
 use crate::project::{Keyframe, Keyframes, Mask, MaskMode, MediaType, PanCrop, Project};
@@ -182,7 +183,7 @@ impl PanCropWin {
                 g.add_enabled_ui(editable, |ui| {
                     ui.horizontal(|ui| {
                         ui.add_space(14.0);
-                        ComboBox::from_id_salt("pc_mask_mode").width(150.0).selected_text(format!("Mode: {:?}", m.mode)).show_ui(ui, |ui| {
+                        widgets::combo(ui, "pc_mask_mode", 150.0, format!("Mode: {:?}", m.mode), |ui| {
                             for mode in [MaskMode::Positive, MaskMode::Negative, MaskMode::Disabled] {
                                 ui.selectable_value(&mut m.mode, mode, format!("{mode:?}"));
                             }
@@ -198,10 +199,10 @@ impl PanCropWin {
                 }
                 g.horizontal(|ui| {
                     ui.add_space(14.0);
-                    if ui.add_enabled(self.path > 0, Button::new("◀")).on_hover_text("Previous path").clicked() {
+                    if widgets::push_button_enabled(ui, self.path > 0, "◀").on_hover_text("Previous path").clicked() {
                         self.path -= 1;
                     }
-                    if ui.add_enabled(self.path + 1 < n, Button::new("▶")).on_hover_text("Next path").clicked() {
+                    if widgets::push_button_enabled(ui, self.path + 1 < n, "▶").on_hover_text("Next path").clicked() {
                         self.path += 1;
                     }
                 });

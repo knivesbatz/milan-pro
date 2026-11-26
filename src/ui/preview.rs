@@ -115,10 +115,10 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         view.split = !view.split;
     }
     arrow_menu(ui, &arrow, |ui| {
-        if ui.radio(!view.split_clipboard, "FX Bypassed").clicked() {
+        if widgets::radio(ui, !view.split_clipboard, "FX Bypassed").clicked() {
             view.split_clipboard = false;
         }
-        if ui.radio(view.split_clipboard, "Clipboard").clicked() {
+        if widgets::radio(ui, view.split_clipboard, "Clipboard").clicked() {
             view.split_clipboard = true;
         }
         ui.separator();
@@ -138,12 +138,12 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         // VEGAS labels the fit-to-window zoom "100 %" (light2026: 748x421 display at "100 %").
         let z = view.zoom.map_or("100 %".to_owned(), |z| format!("{:.0} %", z * 100.0));
         text_menu(ui, &z, 24.0, "Zoom", |ui| {
-            if ui.radio(view.zoom.is_none(), "Fit").clicked() {
+            if widgets::radio(ui, view.zoom.is_none(), "Fit").clicked() {
                 view.zoom = None;
                 ui.close_menu();
             }
             for z in [0.25, 0.5, 1.0, 2.0, 4.0] {
-                if ui.radio(view.zoom == Some(z), format!("{:.0} %", z * 100.0)).clicked() {
+                if widgets::radio(ui, view.zoom == Some(z), format!("{:.0} %", z * 100.0)).clicked() {
                     view.zoom = Some(z);
                     ui.close_menu();
                 }
@@ -155,12 +155,12 @@ pub fn draw_preview_toolbar(ui: &mut Ui, preview: &mut Preview, view: &mut Previ
         view.grid = !view.grid;
     }
     arrow_menu(ui, &arrow, |ui| {
-        ui.checkbox(&mut view.grid, "Grid");
-        ui.checkbox(&mut view.safe_areas, "Safe Areas");
+        widgets::checkbox(ui, &mut view.grid, "Grid");
+        widgets::checkbox(ui, &mut view.safe_areas, "Safe Areas");
         ui.separator();
         // R16b: one channel at a time; choosing the one shown turns it off.
         for (i, label) in Isolate::ALL {
-            if ui.radio(preview.isolate == i, label).clicked() {
+            if widgets::radio(ui, preview.isolate == i, label).clicked() {
                 preview.isolate = if preview.isolate == i { Isolate::None } else { i };
             }
         }
@@ -191,7 +191,7 @@ fn quality_menu(ui: &mut Ui, preview: &mut Preview) {
         let mark = if q == preview.quality { "• " } else { "   " };
         ui.menu_button(format!("{mark}{q:?}"), |ui| {
             for s in Size::ALL {
-                if ui.radio(q == preview.quality && s == preview.size, format!("{s:?}")).clicked() {
+                if widgets::radio(ui, q == preview.quality && s == preview.size, format!("{s:?}")).clicked() {
                     (preview.quality, preview.size) = (q, s);
                     ui.close_menu();
                 }
@@ -308,15 +308,15 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     }
     let v16_menu = theme::get().look() == UiLook::Vegas16;
     super::menus::context(&resp, |ui| {
-        if ui.checkbox(&mut view.simulate_par, "Simulate Device Aspect Ratio").clicked() {
+        if widgets::checkbox(ui, &mut view.simulate_par, "Simulate Device Aspect Ratio").clicked() {
             ui.close_menu();
         }
-        if ui.radio(view.zoom.is_none(), "Scale Video to Fit Preview Window").clicked() {
+        if widgets::radio(ui, view.zoom.is_none(), "Scale Video to Fit Preview Window").clicked() {
             view.zoom = None;
             ui.close_menu();
         }
         // R19: while playing, the preview steps down its size, then to Draft, when frames drop, and back up when they stop.
-        if ui.checkbox(&mut preview.adjust, "Adjust Size and Quality for Optimal Playback").clicked() {
+        if widgets::checkbox(ui, &mut preview.adjust, "Adjust Size and Quality for Optimal Playback").clicked() {
             ui.close_menu();
         }
         if ui.button("Display at Project Size").clicked() {
@@ -324,9 +324,9 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
             ui.close_menu();
         }
         ui.separator();
-        ui.checkbox(&mut view.show_status, "Show Status Bar");
-        ui.checkbox(&mut view.show_transport, "Show Transport Bar");
-        ui.checkbox(&mut view.show_stats, "Show Playback Statistics");
+        widgets::checkbox(ui, &mut view.show_status, "Show Status Bar");
+        widgets::checkbox(ui, &mut view.show_transport, "Show Transport Bar");
+        widgets::checkbox(ui, &mut view.show_stats, "Show Playback Statistics");
         if v16_menu {
             super::menus::cmd(ui, "Make spacebar and F12 Play/Pause instead of Play/Stop", super::keymap::Command::SpacePlayPause);
         }
@@ -494,7 +494,7 @@ fn paint_takes(p: &Painter, frame: Rect, g: &crate::engine::multicam::At) {
 /// `rotate`. The decode width follows the larger of this and the Video Preview window.
 pub fn draw_external(ui: &mut Ui, project: &Project, preview: &mut Preview, fit: bool, rotate: bool, mute: bool) {
     let rect = ui.max_rect();
-    let p = ui.painter();
+    let p = &ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     p.rect_filled(rect, 0.0, Color32::BLACK);
     let s = &project.settings;
     let rot = if rotate { s.rotation } else { 0 };
@@ -503,6 +503,11 @@ pub fn draw_external(ui: &mut Ui, project: &Project, preview: &mut Preview, fit:
     preview.display_w = preview.display_w.max(w as u32);
     if let Some(tex) = preview.external_texture().filter(|_| !mute) {
         p.add(rotated_image(tex.id(), frame, rot, [0.0, 0.0, 1.0, 1.0]));
+    }
+    // Classic 2006: a 1 px sunken edge round a picture that does not fill the display (the Vegas 6 preview frame).
+    let t = theme::get();
+    if t.classic() && frame.min.x - rect.min.x >= 2.0 && frame.min.y - rect.min.y >= 2.0 {
+        widgets::edge(p, frame.expand(1.0), false, &t.metal);
     }
 }
 

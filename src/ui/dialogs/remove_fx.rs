@@ -1,5 +1,6 @@
 //! Tools › Audio › Remove Assignable FX...: tick the assignable FX chains to remove.
 use eframe::egui::*;
+use crate::ui::widgets;
 
 pub struct RemoveAssignableFx {
     /// (id, name, ticked) per chain.
@@ -24,7 +25,7 @@ impl RemoveAssignableFx {
             ui.add_space(4.0);
             ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                 for (_, name, on) in chains.iter_mut() {
-                    ui.checkbox(on, name.as_str());
+                    widgets::checkbox(ui, on, name.as_str());
                 }
             });
             ui.add_space(8.0);

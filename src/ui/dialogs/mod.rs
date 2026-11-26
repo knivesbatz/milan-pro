@@ -413,36 +413,21 @@ pub fn button(ui: &mut Ui, label: &str, enabled: bool, default: bool) -> Respons
     ui.add_enabled(enabled, b)
 }
 
-/// Windows 2000 push button: #D4D0C8 face with the 2 px 3D edge (sunken while pressed), the default button's black
-/// ring outside it, the label in Tahoma (greyed with a white emboss when disabled).
+/// Windows 2000 push button (`widgets::classic_push` in the property-sheet palette): #D4D0C8 face with the 2 px 3D
+/// edge (sunken while pressed), the default button's black ring outside it, the label in Tahoma (greyed with a white
+/// emboss when disabled).
 pub fn classic_button(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default: bool) -> Response {
     let t = theme::get();
     let d = t.dialog();
-    let dm = t.dialog_metal();
-    let (r, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
-    let r = widgets::px(r);
-    let p = ui.painter();
-    p.rect_filled(r, 0.0, dm.face);
-    let face = if default && enabled {
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::BLACK), StrokeKind::Inside);
-        r.shrink(1.0)
-    } else {
-        r
-    };
-    let pressed = enabled && resp.is_pointer_button_down_on();
-    if pressed {
-        p.rect_stroke(face, 0.0, Stroke::new(1.0_f32, dm.shadow), StrokeKind::Inside);
-    } else {
-        widgets::bevel(p, face, true, &dm);
+    widgets::classic_push(ui, label, size, enabled, default, d.text, d.text_disabled, &t.dialog_metal())
+}
+
+/// A push button of `size` (the Render dialog's wide ones): egui's in the VEGAS looks, `classic_button` here.
+pub fn sized_button(ui: &mut Ui, label: &str, size: Vec2, enabled: bool) -> Response {
+    if theme::get().classic() {
+        return classic_button(ui, label, size, enabled, false);
     }
-    let c = face.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
-    if enabled {
-        p.text(c, Align2::CENTER_CENTER, label, t.font(11.0), d.text);
-    } else {
-        p.text(c + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, t.font(11.0), dm.light);
-        p.text(c, Align2::CENTER_CENTER, label, t.font(11.0), d.text_disabled);
-    }
-    resp
+    ui.add_enabled(enabled, Button::new(label).min_size(size))
 }
 
 /// Right-aligned button row (OK, Cancel, Apply…) with 6 px gaps; the index of the clicked one.
@@ -491,7 +476,7 @@ pub fn row<R>(ui: &mut Ui, label: &str, label_w: f32, enabled: bool, add: impl F
 /// Greyed combo box showing a fixed value (settings Milan Pro does not have), saying `why` on hover.
 pub fn fixed_combo(ui: &mut Ui, id: &str, value: &str, width: f32, why: Why) {
     ui.add_enabled_ui(false, |ui| {
-        ComboBox::from_id_salt(id).width(width).selected_text(value).show_ui(ui, |_| {}).response.on_disabled_hover_text(why.text());
+        widgets::combo(ui, id, width, value, |_| {}).response.on_disabled_hover_text(why.text());
     });
 }
 
@@ -502,7 +487,7 @@ pub fn time_edit(ui: &mut Ui, id: &str, v: &mut f64, show: impl Fn(f64) -> Strin
     let buf_id = id.with("buf");
     let shown = show(*v);
     let mut buf = ui.data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| shown.clone());
-    let r = ui.add(TextEdit::singleline(&mut buf).id(id).desired_width(110.0));
+    let r = widgets::edit(ui, TextEdit::singleline(&mut buf).id(id).desired_width(110.0));
     if r.lost_focus() {
         if let Some(t) = parse(&buf).filter(|_| buf.trim() != shown) {
             *v = t;

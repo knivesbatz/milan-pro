@@ -36,7 +36,7 @@ mod toolbar;
 mod trackmotion;
 mod transport;
 mod trimmer;
-mod widgets;
+pub mod widgets;
 mod workspace;
 
 use std::path::PathBuf;

@@ -1,5 +1,6 @@
 //! Go to Time (Ctrl+G), Set Time at Cursor and (R18b) Insert › Time: one time field in the ruler's format.
 use eframe::egui::*;
+use crate::ui::widgets;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum TimeMode {
@@ -32,7 +33,7 @@ impl TimeEntry {
         let (hit, close) = super::modal(ctx, "time_entry", title, vec2(300.0, 128.0), |ui| {
             let ok = valid(text);
             let enter = super::row(ui, label, 50.0, true, |ui| {
-                let r = ui.add(TextEdit::singleline(text).desired_width(210.0));
+                let r = widgets::edit(ui, TextEdit::singleline(text).desired_width(210.0));
                 if !std::mem::replace(focused, true) {
                     // Opens with the time selected, so typing replaces it.
                     r.request_focus();

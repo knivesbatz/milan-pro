@@ -4,6 +4,7 @@
 //! Glow (each with its check box). Opened on a compositing parent's Parent Motion, it moves the whole group. Keys are
 //! on absolute timeline time.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::history::History;
 use crate::project::{Composite, Halo, Halo2D, Motion, Project};
 use super::dialogs;
@@ -148,7 +149,7 @@ impl TrackMotionWin {
             }
             let mut row = ui.new_child(UiBuilder::new().max_rect(bar.shrink2(vec2(4.0, 0.0))).layout(Layout::left_to_right(Align::Center)));
             row.add_enabled_ui(editable, |ui| {
-                ComboBox::from_id_salt("tm_composite").width(130.0).selected_text(composite_name(comp)).show_ui(ui, |ui| {
+                widgets::combo(ui, "tm_composite", 130.0, composite_name(comp), |ui| {
                     if let Some(m) = composite_menu(ui, comp, true) {
                         comp = m;
                     }

@@ -193,13 +193,13 @@ pub fn draw_overlays_toolbar(ui: &mut Ui, v: &mut OverlaysView) {
     let (m, a) = split_button(ui, Icon::Views, "Views", true, false);
     let mut views = |ui: &mut Ui| {
         for (details, label) in [(false, "Thumbnails"), (true, "Details")] {
-            if ui.radio(v.details == details, label).clicked() {
+            if widgets::radio(ui, v.details == details, label).clicked() {
                 v.details = details;
             }
         }
         ui.separator();
         for (sort, label) in [(Sort::Name, "Sort by Name"), (Sort::Modified, "Sort by Date Modified"), (Sort::Length, "Sort by Length")] {
-            if ui.radio(v.sort == sort, label).clicked() {
+            if widgets::radio(ui, v.sort == sort, label).clicked() {
                 v.sort = sort;
             }
         }
@@ -268,7 +268,7 @@ pub fn draw_overlays(ui: &mut Ui, v: &mut OverlaysView, project: &mut Project, h
             ui.add_space(30.0);
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new(format!("The folder of this pack is missing:\n{}", p.display())).color(t.text_dim));
-                if ui.button("Locate...").clicked() {
+                if widgets::push_button(ui, "Locate...").clicked() {
                     cmds.push(Cmd::Locate(p.clone()));
                 }
             });
@@ -634,11 +634,11 @@ pub fn overlay_dialogs(ctx: &Context, v: &mut OverlaysView, dir: PathBuf) {
                 return;
             };
             let (hit, close) = dialogs::modal(ctx, "overlay_pack_props", "Pack Properties", vec2(440.0, 290.0), |ui| {
-                dialogs::row(ui, "Name:", 100.0, true, |ui| ui.add(TextEdit::singleline(name).desired_width(290.0)));
+                dialogs::row(ui, "Name:", 100.0, true, |ui| widgets::edit(ui, TextEdit::singleline(name).desired_width(290.0)));
                 let suggested = Blend::suggest(&pk.name, false);
                 let shown = blend.map_or_else(|| format!("Suggested ({})", suggested.label()), |b| b.label().into());
                 dialogs::row(ui, "Default blend:", 100.0, true, |ui| {
-                    ComboBox::from_id_salt("overlay_pack_blend").width(200.0).selected_text(shown).show_ui(ui, |ui| {
+                    widgets::combo(ui, "overlay_pack_blend", 200.0, shown, |ui| {
                         ui.selectable_value(blend, None, format!("Suggested ({})", suggested.label()));
                         for b in Blend::ALL {
                             ui.selectable_value(blend, Some(b), b.label());
@@ -705,7 +705,7 @@ fn text_dialog(ctx: &Context, v: &mut OverlaysView) -> bool {
     let (title, label) = if rename { ("Rename Pack", "New name for the pack:") } else { ("Overlay Tags", "Tags (separated by commas):") };
     let (hit, close) = dialogs::modal(ctx, "overlay_text", title, vec2(380.0, 140.0), |ui| {
         ui.label(label);
-        let r = ui.add(TextEdit::singleline(&mut text).desired_width(350.0));
+        let r = widgets::edit(ui, TextEdit::singleline(&mut text).desired_width(350.0));
         if !r.has_focus() && ui.memory(|m| m.focused().is_none()) {
             r.request_focus();
         }

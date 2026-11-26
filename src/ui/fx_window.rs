@@ -3,6 +3,7 @@
 //! presets, save and delete), the parameter grid from the plug-in's `ParamSpec`s and, while Animate is on, the keyframe
 //! controller with one lane for the selected plug-in. Each gesture is one undo step.
 use eframe::egui::*;
+use crate::ui::widgets;
 use std::collections::HashSet;
 use crate::edit::{self, FxTarget};
 use crate::engine::ofx;
@@ -302,7 +303,7 @@ impl FxWindow {
                 }
                 if chain {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add_enabled(editable && !list.is_empty(), Button::new("fx×")).on_hover_text("Remove Selected Plug-in").clicked() {
+                        if widgets::push_button_enabled(ui, editable && !list.is_empty(), "fx×").on_hover_text("Remove Selected Plug-in").clicked() {
                             op = Some(ChainOp::Remove(self.sel));
                             self.sel = self.sel.saturating_sub(1);
                         }
@@ -358,7 +359,7 @@ impl FxWindow {
                 ui.label("Preset:");
                 let mut pick: Option<Fx> = None;
                 let shown = shown_preset(info, users, fx, self.preset.as_ref());
-                ComboBox::from_id_salt("fx_preset").width(220.0).selected_text(shown.as_ref().map_or("", |p| p.1.as_str())).show_ui(ui, |ui| {
+                widgets::combo(ui, "fx_preset", 220.0, shown.as_ref().map_or("", |p| p.1.as_str()), |ui| {
                     for p in info.presets {
                         if ui.selectable_label(shown.as_ref().is_some_and(|s| !s.0 && s.1 == p.name), p.name).clicked() {
                             (pick, self.preset) = (Some(plugins::new_fx(info, Some(p))), Some((false, p.name.to_string())));
@@ -380,8 +381,8 @@ impl FxWindow {
                 }
                 match &mut self.save_as {
                     Some(name) => {
-                        ui.add(TextEdit::singleline(name).desired_width(120.0).hint_text("Preset name"));
-                        if ui.add_enabled(!name.trim().is_empty(), Button::new("Save")).clicked() {
+                        widgets::edit(ui, TextEdit::singleline(name).desired_width(120.0).hint_text("Preset name"));
+                        if widgets::push_button_enabled(ui, !name.trim().is_empty(), "Save").clicked() {
                             let name = name.trim().to_string();
                             match plugins::save_user_preset(plugins::user_preset_of(fx, &name, at)) {
                                 Ok(()) => {
@@ -391,7 +392,7 @@ impl FxWindow {
                                 Err(e) => msg = Some(format!("Could not save the preset: {e}")),
                             }
                             self.save_as = None;
-                        } else if ui.button("Cancel").clicked() {
+                        } else if widgets::push_button(ui, "Cancel").clicked() {
                             self.save_as = None;
                         }
                     }
@@ -411,13 +412,13 @@ impl FxWindow {
                     }
                 }
                 if let Some(id) = parent.as_deref() {
-                    if ui.add_enabled(editable, Button::new("Automation...")).on_hover_text("FX Automation Envelopes...").clicked() {
+                    if widgets::push_button_enabled(ui, editable, "Automation...").on_hover_text("FX Automation Envelopes...").clicked() {
                         super::automation::open_chooser(ui.ctx(), id);
                     }
                 }
                 if keyed.is_some() && chain {
                     let mut on = self.animate.contains(&fx.id);
-                    if ui.add_enabled(editable, Checkbox::new(&mut on, "Animate")).changed() {
+                    if widgets::checkbox_enabled(ui, editable, &mut on, "Animate").changed() {
                         if on {
                             self.animate.insert(fx.id.clone());
                         } else {
@@ -518,7 +519,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
         (ParamKind::Float { min, max, .. }, Val::F(v)) => {
             let mut x = *v;
             // Wide positive ranges (frequencies, times) are swept on a log scale.
-            let r = ui.add(Slider::new(&mut x, min..=max).clamping(SliderClamping::Always).logarithmic(plugins::log_scale(min, max)));
+            let r = widgets::slider(ui, &mut x, min..=max, widgets::Slide { clamp: true, log: plugins::log_scale(min, max), ..Default::default() });
             if r.changed() {
                 set_num(fx, key, x, *v, key_at, fps);
             }
@@ -526,13 +527,13 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
         }
         (ParamKind::Bool { .. }, Val::F(v)) => {
             let mut on = *v >= 0.5;
-            if ui.checkbox(&mut on, "").changed() {
+            if widgets::checkbox(ui, &mut on, "").changed() {
                 set_num(fx, key, on as u8 as f32, *v, key_at, fps);
             }
         }
         (ParamKind::Choice { options, .. }, Val::F(v)) => {
             let k = (v.round().max(0.0) as usize).min(options.len().saturating_sub(1));
-            ComboBox::from_id_salt(("fx_choice", key)).width(180.0).selected_text(options.get(k).copied().unwrap_or_default()).show_ui(ui, |ui| {
+            widgets::combo(ui, ("fx_choice", key), 180.0, options.get(k).copied().unwrap_or_default(), |ui| {
                 for (j, o) in options.iter().enumerate() {
                     if ui.selectable_label(j == k, *o).clicked() {
                         set_num(fx, key, j as f32, *v, key_at, fps);
@@ -553,7 +554,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
             let edit = if multiline { TextEdit::multiline(&mut text).desired_rows(3) } else { TextEdit::singleline(&mut text) };
             let mut changed = ui.add(edit.desired_width(if key.ends_with("lut") { 230.0 } else { 300.0 })).changed();
             // LUT files are picked rather than typed.
-            if key.ends_with("lut") && ui.button("Browse...").clicked() {
+            if key.ends_with("lut") && widgets::push_button(ui, "Browse...").clicked() {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Cube LUT", &["cube"]).pick_file() {
                     (text, changed) = (p.display().to_string(), true);
                 }
@@ -563,7 +564,7 @@ fn param(ui: &mut Ui, fx: &mut Fx, key: &str, kind: ParamKind, cur: &Val, key_at
             }
         }
         (ParamKind::Font { .. }, Val::T(s)) => {
-            ComboBox::from_id_salt(("fx_font", key)).width(200.0).selected_text(s.as_str()).show_ui(ui, |ui| {
+            widgets::combo(ui, ("fx_font", key), 200.0, s.as_str(), |ui| {
                 for f in fonts.get_or_insert_with(crate::engine::fonts::list).iter() {
                     if ui.selectable_label(f == s, f).clicked() {
                         fx.text.insert(key.to_string(), f.clone());

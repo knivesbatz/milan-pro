@@ -1,5 +1,6 @@
 //! Help › Check for Updates and the startup check: a non-modal window showing the updater's state.
 use eframe::egui::*;
+use crate::ui::widgets;
 use std::path::PathBuf;
 use crate::updater::{CURRENT, State, Updater};
 
@@ -51,7 +52,7 @@ fn body(ui: &mut Ui, state: &State, auto_check: &mut bool) -> Option<usize> {
                     ui.label(if r.notes.trim().is_empty() { "(No release notes.)" } else { r.notes.as_str() });
                 });
             });
-            ui.checkbox(auto_check, "Check for updates automatically");
+            widgets::checkbox(ui, auto_check, "Check for updates automatically");
             ui.add_space(6.0);
             super::button_row(ui, &[("Download and install", true), ("Remind me later", true), ("Skip this version", true)])
         }
@@ -59,7 +60,7 @@ fn body(ui: &mut Ui, state: &State, auto_check: &mut bool) -> Option<usize> {
             ui.label(format!("Downloading {}...", r.name));
             let mb = |b: u64| b as f64 / 1_048_576.0;
             let frac = if r.size > 0 { (*done as f32 / r.size as f32).min(1.0) } else { 0.0 };
-            ui.add(ProgressBar::new(frac).text(format!("{:.1} of {:.1} MB", mb(*done), mb(r.size))));
+            widgets::progress(ui, frac, Some(format!("{:.1} of {:.1} MB", mb(*done), mb(r.size))), None);
             ui.add_space(18.0);
             super::button_row(ui, &[("Cancel", true)])
         }

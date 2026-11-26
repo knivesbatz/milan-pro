@@ -2,6 +2,7 @@
 //! the crossfade's Fade Type list pairs them) and the length a cut is overlapped by, for the selected audio at the
 //! cursor.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::Curve;
 
 pub const CURVES: [(&str, Curve); 5] = [("Linear", Curve::Linear), ("Fast", Curve::Fast), ("Slow", Curve::Slow), ("Smooth", Curve::Smooth), ("Sharp", Curve::Sharp)];
@@ -24,14 +25,14 @@ impl AudioTransition {
             for (label, id, curve) in [("Fade out:", "at_out", &mut self.out), ("Fade in:", "at_in", &mut self.inc)] {
                 super::row(ui, label, 90.0, true, |ui| {
                     let name = CURVES.iter().find(|c| c.1 == *curve).map_or("", |c| c.0);
-                    ComboBox::from_id_salt(id).width(180.0).selected_text(name).show_ui(ui, |ui| {
+                    widgets::combo(ui, id, 180.0, name, |ui| {
                         for (n, c) in CURVES {
                             ui.selectable_value(curve, c, n);
                         }
                     });
                 });
             }
-            super::row(ui, "Length:", 90.0, true, |ui| ui.add(TextEdit::singleline(&mut self.len).desired_width(120.0)));
+            super::row(ui, "Length:", 90.0, true, |ui| widgets::edit(ui, TextEdit::singleline(&mut self.len).desired_width(120.0)));
             ui.add_space(8.0);
             super::button_row(ui, &[("OK", valid(&self.len)), ("Cancel", true)])
         });

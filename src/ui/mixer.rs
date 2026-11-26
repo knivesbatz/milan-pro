@@ -18,7 +18,7 @@ use super::menus::{self, Mark, entry, send};
 use super::theme::{self, Theme, UiLook};
 use super::timeline::{fader_gain, fader_pos};
 use super::toolbar::tool_button;
-use super::widgets::Chrome;
+use super::widgets::{self, Chrome};
 
 /// Meter range: 0 dB at the top of a well, -60 dB at the bottom.
 pub const RANGE_DB: f32 = 60.0;
@@ -566,7 +566,7 @@ pub fn mixing_console(ui: &mut Ui, view: &mut ConsoleView, prefs: &ConsolePrefs,
         ScrollArea::vertical().id_salt("console_list").auto_shrink(false).show(&mut child, |ui| {
             for (s, name, _) in &all {
                 let mut on = !view.hidden.contains(s.key());
-                if ui.checkbox(&mut on, RichText::new(name).color(t.text)).changed() {
+                if widgets::checkbox(ui, &mut on, RichText::new(name).color(t.text)).changed() {
                     if on { view.hidden.remove(s.key()) } else { view.hidden.insert(s.key().to_string()) };
                 }
             }

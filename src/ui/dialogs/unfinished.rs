@@ -43,7 +43,7 @@ pub fn unfinished_window(ctx: &Context, open: &mut bool) {
         ScrollArea::vertical().max_height(480.0).auto_shrink(false).show(ui, |ui| {
             for (k, (name, rows)) in groups().into_iter().enumerate() {
                 super::group(ui, &name);
-                Grid::new(("unfinished_grid", k)).num_columns(2).striped(true).spacing(vec2(16.0, 2.0)).min_col_width(210.0).show(ui, |ui| {
+                Grid::new(("unfinished_grid", k)).num_columns(2).striped(!crate::ui::theme::get().classic()).spacing(vec2(16.0, 2.0)).min_col_width(210.0).show(ui, |ui| {
                     for (label, why) in rows {
                         ui.label(label);
                         ui.label(why.text());

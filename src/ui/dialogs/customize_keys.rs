@@ -5,6 +5,7 @@
 //! the next time the dialog opens. VEGAS's per-window contexts are not here: Milan Pro's keys work everywhere.
 use std::path::{Path, PathBuf};
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::ui::keymap::{self, Bindings, Command, Overrides};
 use crate::ui::menus;
 use crate::ui::theme::{self, UiLook};
@@ -220,7 +221,7 @@ impl CustomizeKeys {
                 ui.label("Keyboard map:");
                 let shown = self.map.clone().unwrap_or_else(|| "[Default]".into());
                 let mut pick = None;
-                ComboBox::from_id_salt("key_map").width(260.0).selected_text(shown).show_ui(ui, |ui| {
+                widgets::combo(ui, "key_map", 260.0, shown, |ui| {
                     if ui.selectable_label(self.map.is_none(), "[Default]").clicked() {
                         pick = Some(None);
                     }
@@ -247,7 +248,7 @@ impl CustomizeKeys {
                 let mut keep = true;
                 ui.horizontal(|ui| {
                     ui.label("Save the keyboard map as:");
-                    ui.add(TextEdit::singleline(&mut name).desired_width(240.0));
+                    widgets::edit(ui, TextEdit::singleline(&mut name).desired_width(240.0));
                     if super::button(ui, "Save", !name.trim().is_empty(), true).clicked() {
                         keep = false;
                         if let Err(e) = self.save_as(&name) {
@@ -264,7 +265,7 @@ impl CustomizeKeys {
             }
             ui.horizontal(|ui| {
                 ui.label("Show commands containing:");
-                ui.add(TextEdit::singleline(&mut self.filter).desired_width(300.0));
+                widgets::edit(ui, TextEdit::singleline(&mut self.filter).desired_width(300.0));
             });
             ui.add_space(2.0);
             ui.horizontal_top(|ui| {

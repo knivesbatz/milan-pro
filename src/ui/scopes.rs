@@ -3,6 +3,7 @@
 //! Update Scopes while Playing, and each scope's own settings above it. It measures the Video Preview's composited
 //! frame (never decoding again) on its own thread, at most 10 times a second; closed, it costs nothing.
 use eframe::egui::*;
+use crate::ui::widgets;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -196,7 +197,7 @@ pub fn scopes_toolbar(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs) -> bool {
     ui.add_space(4.0);
     text_menu(ui, p.view.label(), 7.0, "Scope", |ui| {
         for v in ScopeView::ALL {
-            if ui.radio(p.view == v, v.label()).clicked() {
+            if widgets::radio(ui, p.view == v, v.label()).clicked() {
                 p.view = v;
                 ui.close_menu();
             }
@@ -256,7 +257,7 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
             Pane::Hist => {
                 text_menu(&mut row, p.hist.label(), 7.0, "Histogram Settings", |ui| {
                     for m in HistMode::ALL {
-                        if ui.radio(p.hist == m, m.label()).clicked() {
+                        if widgets::radio(ui, p.hist == m, m.label()).clicked() {
                             p.hist = m;
                             ui.close_menu();
                         }
@@ -270,8 +271,8 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 
     if let Some(mut lv) = s.settings {
         let (hit, close) = super::dialogs::modal(&ctx, "video_scopes_settings", "Video Scopes Settings", vec2(300.0, 150.0), |ui| {
-            ui.checkbox(&mut lv.setup, "7.5 IRE Setup");
-            ui.checkbox(&mut lv.studio, "Studio RGB (16 to 235)");
+            widgets::checkbox(ui, &mut lv.setup, "7.5 IRE Setup");
+            widgets::checkbox(ui, &mut lv.studio, "Studio RGB (16 to 235)");
             ui.add_space(12.0);
             super::dialogs::button_row(ui, &[("OK", true), ("Cancel", true)])
         });
@@ -290,7 +291,7 @@ pub fn draw_scopes(ui: &mut Ui, s: &mut Scopes, p: &mut ScopePrefs, frame: Optio
 fn setting(ui: &mut Ui, tip: &str, on: &mut bool, labels: [&str; 2]) {
     text_menu(ui, labels[*on as usize], 7.0, tip, |ui| {
         for (k, l) in labels.into_iter().enumerate() {
-            if ui.radio(*on == (k == 1), l).clicked() {
+            if widgets::radio(ui, *on == (k == 1), l).clicked() {
                 *on = k == 1;
                 ui.close_menu();
             }

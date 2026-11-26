@@ -248,14 +248,16 @@ pub fn fader_thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
 pub fn dotted(p: &Painter, a: Pos2, b: Pos2, c: Color32) {
     let (a, b) = (a.floor(), b.floor());
     let mut mesh = Mesh::default();
+    // Dots on even pixels, so segments that meet keep one phase.
+    let even = |v: f32| if v.rem_euclid(2.0) == 0.0 { v } else { v + 1.0 };
     if (a.y - b.y).abs() < 0.5 {
-        let mut x = a.x.min(b.x);
+        let mut x = even(a.x.min(b.x));
         while x <= a.x.max(b.x) {
             mesh.add_colored_rect(Rect::from_min_size(pos2(x, a.y), vec2(1.0, 1.0)), c);
             x += 2.0;
         }
     } else {
-        let mut y = a.y.min(b.y);
+        let mut y = even(a.y.min(b.y));
         while y <= a.y.max(b.y) {
             mesh.add_colored_rect(Rect::from_min_size(pos2(a.x, y), vec2(1.0, 1.0)), c);
             y += 2.0;
@@ -332,6 +334,418 @@ pub fn header_metal(p: &Painter, r: Rect, t: &Theme, selected: bool) {
     metal_tinted(p, r, &t.metal, tint);
 }
 
+// ---- Classic 2006 skins over egui's controls (CLASSIC_2006_SPEC.md §8.6) ----
+//
+// egui draws its check boxes, radio buttons, combo boxes, drag values, sliders, progress bars, text fields and push
+// buttons flat. In Classic 2006 the wrappers below let egui lay out and run the control (clicks, drags, keyboard,
+// the combo list) and paint the Windows 2000 control over it through one set of painters: `check_box`,
+// `radio_mark`, `combo_frame`, `spin_buttons`, `progress_blocks`, `classic_push` and the sunken `bevel` of a field.
+// The VEGAS looks get egui's control exactly as before.
+
+/// The 3D palette the controls on this `ui` are drawn with: the `#D4D0C8` property-sheet one inside a dialog
+/// (`dialogs::style` fills the panel with the dialog page colour), the metal one in the dock windows.
+pub fn skin(ui: &Ui, t: &Theme) -> Metal {
+    if ui.visuals().panel_fill == t.dialog().page { t.dialog_metal() } else { t.metal }
+}
+
+/// Filled triangle pointing `dir` ((dx, dy)) in `r`: `half` px each side of the centre line, `h` px tall.
+fn tri(p: &Painter, r: Rect, dir: (f32, f32), half: f32, h: f32, ink: Color32) {
+    let c = r.center().floor() + vec2(0.5, 0.5);
+    let (dx, dy) = dir;
+    let (nx, ny) = (-dy, dx);
+    let tip = c + vec2(dx, dy) * (h * 0.5 + 0.5);
+    let base = c - vec2(dx, dy) * (h * 0.5 - 0.5);
+    p.add(Shape::convex_polygon(vec![tip, base + vec2(nx, ny) * half, base - vec2(nx, ny) * half], ink, Stroke::NONE));
+}
+
+/// Windows-classic check box in `r` (14×14): a sunken 2 px edge round a white box (face-grey when disabled) and a
+/// 7×7 pixel check mark in `ink`.
+pub fn check_box(p: &Painter, r: Rect, checked: bool, enabled: bool, ink: Color32, m: &Metal) {
+    let r = px(r);
+    p.rect_filled(r, 0.0, if enabled { Color32::WHITE } else { m.face });
+    bevel(p, r, false, m);
+    if checked {
+        // Rows of the check from the top: (first x, one past the last x), two runs on the rows the strokes cross.
+        const ROWS: [&[(f32, f32)]; 7] = [&[(6.0, 7.0)], &[(5.0, 7.0)], &[(0.0, 1.0), (4.0, 7.0)], &[(0.0, 2.0), (3.0, 6.0)], &[(0.0, 5.0)], &[(1.0, 4.0)], &[(2.0, 3.0)]];
+        let o = (r.min + vec2((r.width() - 7.0) * 0.5, (r.height() - 7.0) * 0.5)).floor();
+        let mut mesh = Mesh::default();
+        for (y, runs) in ROWS.iter().enumerate() {
+            for (x0, x1) in runs.iter() {
+                mesh.add_colored_rect(Rect::from_min_max(pos2(o.x + x0, o.y + y as f32), pos2(o.x + x1, o.y + y as f32 + 1.0)), ink);
+            }
+        }
+        p.add(mesh);
+    }
+}
+
+/// Windows-classic radio button in `r`: a white disc (face-grey when disabled) with a 3D ring (shadow / dark on the
+/// upper left, light / face on the lower right) and a 4 px dot in `ink` when on.
+pub fn radio_mark(p: &Painter, r: Rect, on: bool, enabled: bool, ink: Color32, m: &Metal) {
+    use std::f32::consts::PI;
+    let c = r.center().floor() + vec2(0.5, 0.5);
+    let rad = (r.width().min(r.height()) * 0.5 - 1.0).floor();
+    p.circle_filled(c, rad, if enabled { Color32::WHITE } else { m.face });
+    let arc = |radius: f32, a0: f32, a1: f32, col: Color32| {
+        let n = 14;
+        let pts: Vec<Pos2> = (0..=n).map(|i| c + Vec2::angled(a0 + (a1 - a0) * i as f32 / n as f32) * radius).collect();
+        p.add(Shape::line(pts, Stroke::new(1.0_f32, col)));
+    };
+    arc(rad, 0.75 * PI, 1.75 * PI, m.shadow);
+    arc(rad - 1.0, 0.75 * PI, 1.75 * PI, m.dark);
+    arc(rad, -0.25 * PI, 0.75 * PI, m.light);
+    arc(rad - 1.0, -0.25 * PI, 0.75 * PI, m.face);
+    if on {
+        p.circle_filled(c, 2.0, ink);
+    }
+}
+
+/// Width of a combo box's arrow button.
+const COMBO_ARROW_W: f32 = 20.0;
+
+/// Windows-classic combo box over `r`: a sunken 2 px edge round the field and a raised arrow button at its right end
+/// holding a black ▾, pressed in while the list is open. The field itself is egui's (white; face-grey disabled).
+pub fn combo_frame(p: &Painter, r: Rect, open: bool, ink: Color32, m: &Metal) {
+    let r = px(r);
+    bevel(p, r, false, m);
+    let b = Rect::from_min_max(pos2(r.max.x - 2.0 - COMBO_ARROW_W, r.min.y + 2.0), r.max - vec2(2.0, 2.0));
+    p.rect_filled(b, 0.0, m.face);
+    if open {
+        p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
+    } else {
+        bevel(p, b, true, m);
+    }
+    let shift = if open { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    tri(p, b.translate(shift), (0.0, 1.0), 3.5, 4.0, ink);
+}
+
+/// Width of a spinner's up / down buttons.
+const SPIN_W: f32 = 13.0;
+
+/// The up / down buttons of a Windows-classic spinner in `r` (at the right end of its field): two raised faces with
+/// small black triangles; `pressed` = 0 (up) / 1 (down) sinks that one.
+pub fn spin_buttons(p: &Painter, r: Rect, pressed: Option<usize>, ink: Color32, m: &Metal) {
+    let r = px(r);
+    let mid = (r.min.y + r.height() * 0.5).floor();
+    let halves = [Rect::from_min_max(r.min, pos2(r.max.x, mid)), Rect::from_min_max(pos2(r.min.x, mid), r.max)];
+    for (k, b) in halves.into_iter().enumerate() {
+        p.rect_filled(b, 0.0, m.face);
+        let down = pressed == Some(k);
+        if down {
+            p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
+        } else {
+            bevel(p, b, true, m);
+        }
+        let shift = if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
+        tri(p, b.translate(shift), (0.0, if k == 0 { -1.0 } else { 1.0 }), 2.5, 3.0, ink);
+    }
+}
+
+/// Windows 2000 progress bar in `r`: a sunken face-grey well with `accent` blocks (two thirds as wide as they are
+/// tall, 2 px apart) for `frac` of its length.
+pub fn progress_blocks(p: &Painter, r: Rect, frac: f32, accent: Color32, m: &Metal) {
+    let r = px(r);
+    p.rect_filled(r, 0.0, m.face);
+    edge(p, r, false, m);
+    let inner = r.shrink(3.0);
+    let bw = (inner.height() * 2.0 / 3.0).round().max(2.0);
+    let n = ((inner.width() + 2.0) / (bw + 2.0)).floor();
+    let lit = (n * frac.clamp(0.0, 1.0)).round() as usize;
+    let mut mesh = Mesh::default();
+    for k in 0..lit {
+        let x = inner.min.x + k as f32 * (bw + 2.0);
+        mesh.add_colored_rect(Rect::from_min_max(pos2(x, inner.min.y), pos2((x + bw).min(inner.max.x), inner.max.y)), accent);
+    }
+    p.add(mesh);
+}
+
+/// Windows 2000 push button of `size`: `m.face` with the 2 px 3D edge (sunken while pressed, the label shifted),
+/// the default button's black ring outside it, the label in Tahoma (`ink`; `disabled_ink` with a white emboss).
+#[allow(clippy::too_many_arguments)]
+pub fn classic_push(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default: bool, ink: Color32, disabled_ink: Color32, m: &Metal) -> Response {
+    let t = theme::get();
+    // Never narrower than its label (egui's `min_size` buttons grow the same way).
+    let size = vec2(size.x.max(ui.painter().layout_no_wrap(label.to_owned(), t.font(11.0), ink).size().x + 16.0), size.y);
+    let (r, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
+    let r = px(r);
+    let p = ui.painter();
+    p.rect_filled(r, 0.0, m.face);
+    let face = if default && enabled {
+        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::BLACK), StrokeKind::Inside);
+        r.shrink(1.0)
+    } else {
+        r
+    };
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    if pressed {
+        p.rect_stroke(face, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
+    } else {
+        bevel(p, face, true, m);
+    }
+    let c = face.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    let font = t.font(11.0);
+    if enabled {
+        p.text(c, Align2::CENTER_CENTER, label, font, ink);
+    } else {
+        p.text(c + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), m.light);
+        p.text(c, Align2::CENTER_CENTER, label, font, disabled_ink);
+    }
+    resp
+}
+
+/// egui's check box; Classic 2006 paints `check_box` over its box.
+pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
+    checkbox_enabled(ui, true, checked, text)
+}
+
+pub fn checkbox_enabled(ui: &mut Ui, enabled: bool, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
+    let resp = ui.add_enabled(enabled, Checkbox::new(checked, text));
+    let t = theme::get();
+    if t.classic() {
+        let (_, big) = ui.spacing().icon_rectangles(resp.rect);
+        check_box(ui.painter(), big, *checked, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
+    }
+    resp
+}
+
+/// egui's radio button; Classic 2006 paints `radio_mark` over its circle.
+pub fn radio(ui: &mut Ui, on: bool, text: impl Into<WidgetText>) -> Response {
+    radio_enabled(ui, true, on, text)
+}
+
+pub fn radio_enabled(ui: &mut Ui, enabled: bool, on: bool, text: impl Into<WidgetText>) -> Response {
+    let resp = ui.add_enabled(enabled, RadioButton::new(on, text));
+    let t = theme::get();
+    if t.classic() {
+        let (_, big) = ui.spacing().icon_rectangles(resp.rect);
+        radio_mark(ui.painter(), big, on, enabled && ui.is_enabled(), t.text, &skin(ui, &t));
+    }
+    resp
+}
+
+/// `Ui::radio_value` through `radio`.
+pub fn radio_value<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, text: impl Into<WidgetText>) -> Response {
+    let mut resp = radio(ui, *current == value, text);
+    if resp.clicked() && *current != value {
+        *current = value;
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// egui's combo box (`ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add)`); Classic 2006
+/// paints `combo_frame` over its button (the field white, face-grey when disabled).
+pub fn combo<R>(ui: &mut Ui, id: impl std::hash::Hash, width: f32, text: impl Into<WidgetText>, add: impl FnOnce(&mut Ui) -> R) -> InnerResponse<Option<R>> {
+    let t = theme::get();
+    if !t.classic() {
+        return ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add);
+    }
+    let m = skin(ui, &t);
+    let fill = if ui.is_enabled() { t.input_bg } else { m.face };
+    let out = ui
+        .scope(|ui| {
+            flat_field_visuals(ui, fill);
+            ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add)
+        })
+        .inner;
+    combo_frame(ui.painter(), out.response.rect, out.inner.is_some(), t.text, &m);
+    out
+}
+
+/// egui's widget visuals with a flat `fill` and no edge, under the classic painters.
+fn flat_field_visuals(ui: &mut Ui, fill: Color32) {
+    let w = &mut ui.visuals_mut().widgets;
+    for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        s.bg_fill = fill;
+        s.weak_bg_fill = fill;
+        s.bg_stroke = Stroke::NONE;
+        s.expansion = 0.0;
+    }
+}
+
+/// egui's drag value (`ui.add(build(DragValue::new(v)))`); Classic 2006 draws it as a spinner: a sunken white field
+/// with `spin_buttons` at its right end that step the value by `step`.
+pub fn spin<N: emath::Numeric>(ui: &mut Ui, v: &mut N, step: f64, build: impl for<'a> FnOnce(DragValue<'a>) -> DragValue<'a>) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        return ui.add(build(DragValue::new(v)));
+    }
+    let m = skin(ui, &t);
+    let enabled = ui.is_enabled();
+    let fill = if enabled { t.input_bg } else { m.face };
+    let mut resp = ui
+        .scope(|ui| {
+            flat_field_visuals(ui, fill);
+            // Room for the buttons at the right: the text is centred, so it needs the same on the left.
+            ui.spacing_mut().button_padding.x = SPIN_W + 2.0;
+            ui.add(build(DragValue::new(v)))
+        })
+        .inner;
+    let r = px(resp.rect);
+    let p = ui.painter().clone();
+    bevel(&p, r, false, &m);
+    let br = Rect::from_min_max(pos2(r.max.x - 2.0 - SPIN_W, r.min.y + 2.0), r.max - vec2(2.0, 2.0));
+    let mid = (br.min.y + br.height() * 0.5).floor();
+    let up = ui.interact(Rect::from_min_max(br.min, pos2(br.max.x, mid)), resp.id.with("spin_up"), Sense::click());
+    let down = ui.interact(Rect::from_min_max(pos2(br.min.x, mid), br.max), resp.id.with("spin_down"), Sense::click());
+    let pressed = if up.is_pointer_button_down_on() { Some(0) } else if down.is_pointer_button_down_on() { Some(1) } else { None };
+    spin_buttons(&p, br, pressed, t.text, &m);
+    let delta = if up.clicked() { step } else if down.clicked() { -step } else { 0.0 };
+    if delta != 0.0 && enabled {
+        *v = N::from_f64(v.to_f64() + delta);
+        resp.mark_changed();
+    }
+    resp
+}
+
+/// `spin` through `Ui::add_enabled`.
+pub fn spin_enabled<N: emath::Numeric>(ui: &mut Ui, enabled: bool, v: &mut N, step: f64, build: impl for<'a> FnOnce(DragValue<'a>) -> DragValue<'a>) -> Response {
+    if !theme::get().classic() {
+        return ui.add_enabled(enabled, build(DragValue::new(v)));
+    }
+    ui.add_enabled_ui(enabled, |ui| spin(ui, v, step, build)).inner
+}
+
+/// How a `slider` is built (egui's `Slider` defaults).
+#[derive(Clone, Copy, Default)]
+pub struct Slide<'a> {
+    /// Label after the value.
+    pub text: &'a str,
+    /// Hide the value field.
+    pub no_value: bool,
+    pub log: bool,
+    /// `SliderClamping::Always`.
+    pub clamp: bool,
+}
+
+/// egui's horizontal slider; Classic 2006 draws the Vegas fader: a sunken `groove` with the chrome `thumb`, then
+/// the value as a spinner and the label.
+pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s: Slide) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        let mut sl = Slider::new(v, range).show_value(!s.no_value);
+        if !s.text.is_empty() {
+            sl = sl.text(s.text);
+        }
+        if s.log {
+            sl = sl.logarithmic(true);
+        }
+        if s.clamp {
+            sl = sl.clamping(SliderClamping::Always);
+        }
+        return ui.add(sl);
+    }
+    let m = skin(ui, &t);
+    let (lo, hi) = (*range.start(), *range.end());
+    if s.clamp {
+        *v = v.clamp(lo, hi);
+    }
+    let log = s.log && lo > 0.0 && hi > lo;
+    let out = ui.horizontal(|ui| {
+        let thickness = ui.text_style_height(&TextStyle::Body).max(ui.spacing().interact_size.y);
+        let (rect, mut resp) = ui.allocate_exact_size(vec2(ui.spacing().slider_width, thickness), Sense::click_and_drag());
+        let track = Rangef::new(rect.min.x + 6.0, rect.max.x - 6.0);
+        let norm = |x: f32| if log { (x / lo).ln() / (hi / lo).ln() } else { (x - lo) / (hi - lo).max(1e-9) };
+        let denorm = |n: f32| if log { lo * (hi / lo).powf(n) } else { lo + n * (hi - lo) };
+        if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
+            let nv = denorm(((pos.x - track.min) / track.span().max(1.0)).clamp(0.0, 1.0));
+            if nv != *v {
+                *v = nv;
+                resp.mark_changed();
+            }
+        }
+        let p = ui.painter();
+        groove(p, track, rect.center().y, &m);
+        let x = track.min + norm(v.clamp(lo, hi)).clamp(0.0, 1.0) * track.span();
+        thumb(p, Rect::from_center_size(pos2(x.round(), rect.center().y), vec2(11.0, 15.0)), &m, None);
+        if !s.no_value {
+            let span = (hi - lo) as f64;
+            let step = if span >= 100.0 { 1.0 } else { span / 100.0 };
+            if spin(ui, v, step, |d| d.range(lo..=hi).speed(span / 200.0).max_decimals(3)).changed() {
+                resp.mark_changed();
+            }
+        }
+        if !s.text.is_empty() {
+            ui.label(s.text);
+        }
+        resp
+    });
+    out.inner | out.response
+}
+
+/// egui's progress bar (`text` shown, else the percentage; `width` or the available width); Classic 2006 draws
+/// `progress_blocks` with the text in black over them.
+pub fn progress(ui: &mut Ui, frac: f32, text: Option<String>, width: Option<f32>) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        let mut pb = ProgressBar::new(frac);
+        if let Some(w) = width {
+            pb = pb.desired_width(w);
+        }
+        pb = match text {
+            Some(s) => pb.text(s),
+            None => pb.show_percentage(),
+        };
+        return ui.add(pb);
+    }
+    let w = width.unwrap_or_else(|| ui.available_size_before_wrap().x.max(96.0));
+    let (r, resp) = ui.allocate_exact_size(vec2(w, ui.spacing().interact_size.y), Sense::hover());
+    let p = ui.painter();
+    progress_blocks(p, r, frac, t.dialog().accent, &skin(ui, &t));
+    p.text(r.center(), Align2::CENTER_CENTER, text.unwrap_or_else(|| format!("{:.0} %", frac * 100.0)), t.font(t.font.ui), t.text);
+    resp
+}
+
+/// egui's text field (`ui.add(te)`); Classic 2006 paints the sunken 2 px edge round it.
+pub fn edit(ui: &mut Ui, te: TextEdit<'_>) -> Response {
+    edit_enabled(ui, true, te)
+}
+
+pub fn edit_enabled(ui: &mut Ui, enabled: bool, te: TextEdit<'_>) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        return ui.add_enabled(enabled, te);
+    }
+    // Room for the 2 px edge round the text; egui's response rect is the inner one (inside the margin).
+    let resp = ui.add_enabled(enabled, te.margin(Margin::symmetric(5, 3)));
+    bevel(ui.painter(), resp.rect.expand2(vec2(5.0, 3.0)), false, &skin(ui, &t));
+    resp
+}
+
+/// egui's push button (`ui.button(text)`); Classic 2006 draws `classic_push` sized to the label.
+pub fn push_button(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
+    push_button_enabled(ui, true, text)
+}
+
+pub fn push_button_enabled(ui: &mut Ui, enabled: bool, text: impl Into<WidgetText>) -> Response {
+    let t = theme::get();
+    let text = text.into();
+    if !t.classic() {
+        return ui.add_enabled(enabled, Button::new(text));
+    }
+    let label = text.text().to_owned();
+    let w = ui.painter().layout_no_wrap(label.clone(), t.font(11.0), t.text).size().x + 16.0;
+    let h = ui.spacing().interact_size.y.max(21.0);
+    classic_push(ui, &label, vec2(w, h), enabled && ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
+}
+
+/// egui's small button (`ui.small_button(text)`, the × of a row); Classic 2006 a 16×16 `classic_push`.
+pub fn small_push(ui: &mut Ui, text: &str) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        return ui.small_button(text);
+    }
+    classic_push(ui, text, vec2(16.0, 16.0), ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
+}
+
+/// `small_push` through `Ui::add_enabled` (`Button::new(text).small()`).
+pub fn small_push_enabled(ui: &mut Ui, enabled: bool, text: &str) -> Response {
+    let t = theme::get();
+    if !t.classic() {
+        return ui.add_enabled(enabled, Button::new(text).small());
+    }
+    classic_push(ui, text, vec2(16.0, 16.0), enabled && ui.is_enabled(), false, t.text, t.text_disabled, &skin(ui, &t))
+}
+
 pub const ROW_H: f32 = 20.0;
 
 /// `r` with its corners on whole pixels.
@@ -357,12 +771,30 @@ pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<
     }
     let exp_rect = Rect::from_center_size(pos2(x0 + 5.0, cy), vec2(9.0, 9.0));
     if c06 {
-        // Classic TreeView: dotted lines from the node to its icon and down the parent's column.
+        // Classic TreeView lines: from the node to its icon, from the parent's column to the node, and down that
+        // column from the last connector at this depth (the parent's box, or the previous sibling's row) to this
+        // row's, so the line ends at the last child. Rows come in order, each drawing the column above itself; the
+        // connectors are kept per list (`ui.id()`) for this pass.
         let (ex, ey) = (exp_rect.center().x.floor(), cy.floor());
-        dotted(p, pos2(if expanded.is_some() { exp_rect.max.x.floor() } else { ex }, ey), pos2(x0 + 13.0, ey), t.metal.shadow);
+        let ink = t.metal.shadow;
+        dotted(p, pos2(if expanded.is_some() { exp_rect.max.x.floor() } else { ex }, ey), pos2(x0 + 13.0, ey), ink);
+        let key = ui.id().with("tree_lines");
+        let pass = ui.ctx().cumulative_pass_nr();
+        let mut st: (u64, Vec<f32>) = ui.data(|d| d.get_temp(key)).filter(|s: &(u64, Vec<f32>)| s.0 == pass).unwrap_or((pass, Vec::new()));
         if depth > 0 {
-            dotted(p, pos2(ex - 16.0, rect.min.y), pos2(ex - 16.0, rect.max.y - 1.0), t.metal.shadow);
+            let col = ex - 16.0;
+            dotted(p, pos2(col, ey), pos2(if expanded.is_some() { exp_rect.min.x.floor() } else { ex }, ey), ink);
+            if let Some(&from) = st.1.get(depth).filter(|y| y.is_finite()) {
+                dotted(p, pos2(col, from), pos2(col, ey), ink);
+            }
         }
+        st.1.truncate(depth + 1);
+        st.1.resize(depth + 1, f32::NAN);
+        st.1[depth] = ey;
+        if expanded == Some(true) {
+            st.1.push(exp_rect.max.y.floor());
+        }
+        ui.data_mut(|d| d.insert_temp(key, st));
     }
     let mut toggled = false;
     if let Some(open) = expanded {
@@ -573,14 +1005,19 @@ pub fn scroll_pane(ui: &mut Ui, rect: Rect, id: &str, add: impl FnOnce(&mut Ui))
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
     let t = theme::get();
     let h = (t.m.button - 2.0).max(18.0);
-    ui.add_sized(
+    let resp = ui.add_sized(
         vec2(width, h),
         TextEdit::singleline(text)
             .hint_text(RichText::new(hint).color(t.input_placeholder))
             .background_color(t.input_bg)
             .font(t.font(t.font.ui))
             .margin(vec2(4.0, 2.0)),
-    )
+    );
+    if t.classic() {
+        // egui's response rect is the inner one (inside the 4 / 2 px margin).
+        bevel(ui.painter(), resp.rect.expand2(vec2(4.0, 2.0)), false, &t.metal);
+    }
+    resp
 }
 
 /// Thumbnail tile: `thumb_rect` image area (letterboxed texture or a painted stand-in), caption centred below,

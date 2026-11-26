@@ -1,6 +1,7 @@
 //! VP23 Welcome screen (§5.14): 900×600 modal with a left tab rail (New Project / Open Project / Getting
 //! Started), aspect tiles, resolution and frame-rate pickers, and "Show Welcome Screen on Startup".
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::project::ProjectSettings;
 use super::super::theme;
 
@@ -96,7 +97,7 @@ impl Welcome {
                     // Footer.
                     let foot = Rect::from_min_max(pos2(rail.max.x + 32.0, rect.max.y - 40.0), pos2(rect.max.x - 32.0, rect.max.y - 8.0));
                     let mut ui_foot = ui.new_child(UiBuilder::new().max_rect(foot).layout(Layout::left_to_right(Align::Center)));
-                    ui_foot.checkbox(show_on_start, "Show Welcome Screen on Startup");
+                    widgets::checkbox(&mut ui_foot, show_on_start, "Show Welcome Screen on Startup");
                 })
         });
         if resp.should_close() && out.is_none() {
@@ -150,7 +151,7 @@ impl Welcome {
                 }
             });
             ui.horizontal(|ui| {
-                ui.checkbox(show_on_start, "Show this dialog at startup");
+                widgets::checkbox(ui, show_on_start, "Show this dialog at startup");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if super::button(ui, "Close", true, false).clicked() {
                         out = Some(WelcomeResult::Close);
@@ -189,7 +190,7 @@ impl Welcome {
         ui.add_space(20.0);
         let res = ASPECTS[self.aspect].2;
         super::row(ui, "Resolution", 110.0, true, |ui| {
-            ComboBox::from_id_salt("welcome_res").width(260.0).selected_text(res[self.res].0).show_ui(ui, |ui| {
+            widgets::combo(ui, "welcome_res", 260.0, res[self.res].0, |ui| {
                 for (k, r) in res.iter().enumerate() {
                     ui.selectable_value(&mut self.res, k, r.0);
                 }
@@ -197,15 +198,12 @@ impl Welcome {
         });
         let fps = self.fps();
         super::row(ui, "Framerate", 110.0, true, |ui| {
-            ComboBox::from_id_salt("welcome_fps").width(160.0).selected_text(format!("{} ({:.3})", RATES[self.rate].0, fps)).show_ui(ui, |ui| {
+            widgets::combo(ui, "welcome_fps", 160.0, format!("{} ({:.3})", RATES[self.rate].0, fps), |ui| {
                 for (k, r) in RATES.iter().enumerate() {
                     ui.selectable_value(&mut self.rate, k, r.0);
                 }
             });
-            ComboBox::from_id_salt("welcome_drop")
-                .width(170.0)
-                .selected_text(if self.drop { "Drop Frame (1/1.001)" } else { "Integer" })
-                .show_ui(ui, |ui| {
+            widgets::combo(ui, "welcome_drop", 170.0, if self.drop { "Drop Frame (1/1.001)" } else { "Integer" }, |ui| {
                     ui.selectable_value(&mut self.drop, true, "Drop Frame (1/1.001)");
                     ui.selectable_value(&mut self.drop, false, "Integer");
                 });

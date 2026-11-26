@@ -2,6 +2,7 @@
 //! move up or down, delete and activate. VEGAS keeps layouts as files and assigns them to the ten menu slots; Milan
 //! Pro keeps them in the slots themselves, so Delete is VEGAS's Clear and Delete Layout in one.
 use eframe::egui::*;
+use crate::ui::widgets;
 use crate::ui::dock::Layout;
 use crate::ui::keymap::{Command, shortcut_text};
 use crate::ui::theme::UiLook;
@@ -104,7 +105,7 @@ impl OrganizeLayouts {
             ui.add_space(6.0);
             let full = self.slots[self.sel].is_some();
             super::row(ui, "Name:", 50.0, full, |ui| {
-                ui.add(TextEdit::singleline(&mut self.name).desired_width(226.0));
+                widgets::edit(ui, TextEdit::singleline(&mut self.name).desired_width(226.0));
                 if super::button(ui, "Rename", full && !self.name.trim().is_empty(), false).clicked() {
                     self.rename();
                 }

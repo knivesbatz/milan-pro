@@ -165,14 +165,14 @@ pub fn plugin_manager_toolbar(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut O
             let mine = prefs.folders.contains(&f);
             ui.horizontal(|ui| {
                 ui.label(f.display().to_string());
-                if mine && ui.small_button("×").on_hover_text("Stop searching this folder").clicked() {
+                if mine && widgets::small_push(ui, "×").on_hover_text("Stop searching this folder").clicked() {
                     prefs.folders.retain(|x| *x != f);
                     out.prefs_changed = true;
                 }
             });
         }
         ui.separator();
-        if ui.add_enabled(pm.only.is_none(), Button::new("Add Folder...")).clicked() {
+        if widgets::push_button_enabled(ui, pm.only.is_none(), "Add Folder...").clicked() {
             if let Some(d) = rfd::FileDialog::new().set_title("Add an OFX plug-in folder").pick_folder() {
                 if !prefs.folders.contains(&d) {
                     prefs.folders.push(d);

@@ -188,7 +188,7 @@ pub fn edit_details_toolbar(ui: &mut Ui, v: &mut EditDetails) {
     ui.add_space(6.0);
     ui.label("Show:");
     let before = v.show;
-    ComboBox::from_id_salt("ed_show").width(170.0).selected_text(v.show.name()).show_ui(ui, |ui| {
+    widgets::combo(ui, "ed_show", 170.0, v.show.name(), |ui| {
         for s in Show::ALL {
             ui.selectable_value(&mut v.show, s, s.name());
         }
