@@ -644,6 +644,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   version and date).
 - **Acceptance:** no row says "unknown"; nothing in the docs or UI claims support for a plug-in without a passing
   row; trademark notice present in the three places of 2.5.
+- **Status: DONE for what could be run (2026-11-26).** `docs/compat/aex.csv` has one row per effect of Milan's own test plug-in, the only AE-format binary run (no open-source or commercial plug-in was available, nothing was downloaded); every third-party plug-in shows Untested. README and `docs/COMPATIBILITY.md` carry the 6.1 paragraph; the trademark notice is in README, About and the Plug-In Manager (Folders popup, row tooltips). The optional `PF_Cmd_DO_DIALOG` button was not built (it would let a plug-in open a window, against the host's no-window rule).
 
 Order and dependencies: A0 → A1 → A2 → A3 → A4 → A5; A6, A7 after A4; A8 after A5 and the decision; A9 last.
 All need R31/R32 (done for OFX). Suggested tier: after R33c, alongside tier 5 "Plug-in compatibility".
