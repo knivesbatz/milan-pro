@@ -44,7 +44,7 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 What matters most:
 - **Editing core works.** Snap to grid, the 15 ruler formats and an exact 30000/1001 timebase are in (R1); the navigation, selection, nudge, edge-trimming and zoom commands are in (R2). Event looping, empty events, subclips, attribute paste and the group commands are in (R3a). The event switches (Invert Phase, Normalize, Maintain Aspect Ratio, Reduce Interlace Flicker, resampling with frame blend and Optical Flow, Undersample rate), Channels, Stream and Quickfade Audio Edits are in (R3b). Video event velocity, freeze frame, Transition Progress, transitions on a lone fade-out, and video track Mute and Fade to Color envelopes are in (R4a). The audio of an A/V pair can follow its velocity (an option, off as in VEGAS), J / L shuttle and the Rate slider are heard, and audio events take a pitch change (R4b). Track groups (collapsible, with group Mute / Solo) and Hide are in (R5). Masks, all of VEGAS's compositing modes, parent/child compositing, the Compositors window, Exposure, spill suppression, 2D Shadow / Glow, 3D Track Motion and the Video Bus Track with motion blur are in (R7). Audio busses (0-26), assignable FX chains, track Output, pre/post sends with the multipurpose slider, the six Pan Types and per-track/bus meter data are in (R8a). The Mixing Console, live track/bus/master meters (peak, and VU as an option), Audio Bus Tracks with their envelope lanes, Dim and Downmix are in (R8b). Automation Settings (Off / Read / Write (Touch) / Write (Latch), Show Automation Controls), FX automation envelopes on audio tracks and busses (and video track FX keys as envelopes, VP23), audio event Volume / Pan / Mute envelopes and audio FX presets are in (R8c). Playback runs on cpal (or WASAPI exclusive) with a choice of device and buffer size, the playhead follows what is heard, and armed tracks and input busses monitor their input live (R9). A `.mnle` project is media, a nested timeline played and rendered through the engine, with a cycle guard (R6a); Create Nested Timeline, Open Nested / Open Parent Timeline and Edit Source Project work in the window, and nested events have thumbnails, waveforms and a Trimmer view made by the engine (R6b). Events line up by their sound (refusing weak matches), media timecode or date/time stamp, and Project Media lays out tracks by either (R17a). Multicamera editing works: Create Multicamera Track, the take grid in the Video Preview with takes chosen by click or number key (also while playing, each one undoable), Expand to Multiple Tracks, Edit Multicamera Audio with Video and Show Full Frame in External Monitor (R17b). Smart Split, command markers, Audio CD track regions and indexes (on their own bars, and in Edit Details), Open (Copy) in Audio Editor with reload on save, Rebuild Audio Peaks, event media markers, View › Event Length, the Metronome, the Credit Roll and Test Pattern generators and Shift+F10 are in (R18a). Adjustment Tracks and Adjustment Events, Insert Slideshow, Insert Time, Insert Audio Transition, Cut / Copy over a time selection and Paste Insert's split, Resize Generated Media and video track Set Default Track Properties are in (R18b), which finishes tier 2: no control waits on a batch of tiers 0-2 any more (test `no_control_waits_on_tiers_0_to_2`). What is still greyed belongs to later batches or the R57-R60 long tail.
 - **Preview has known gaps.** Scrubbing follows the cursor, seeks are frame-exact and reversed events show every frame (R20). There is no GPU path and no RAM preview or prerender. Adjust Size and Quality for Optimal Playback, the measured frame rate and playback statistics, and the benchmark report `docs/PERFORMANCE.md` (written by `tools/bench.ps1`) are in (R19).
-- **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Missing: hardware encoders (R22).
+- **Render has templates (R11).** 38 built-in delivery templates plus user templates, Customize Template (size, rate, field order, pixel aspect ratio, codec, rate control, pixel format, audio), letterbox or stretch, output rotation, chapters from markers, and a log per render; every built-in is rendered and checked with ffprobe. A render queue renders a snapshot of the project taken when each render is queued, so editing goes on (Render in the background, off as in VEGAS); Batch Render, Render Audio Tracks and Render to New Track are in, and Exit or an update asks before stopping a render (R12). Hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) are tested at startup and offered when they pass (R22).
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
@@ -100,9 +100,9 @@ What matters most:
 | 3.1 | Rust for core functionality | DONE | 36k lines of Rust; FFmpeg only as child processes |
 | 3.2 | FFmpeg for decode, encode, filters | DONE | `src/engine/vdecode.rs`, `src/engine/mix.rs`, `src/engine/render.rs`, `src/proc.rs` |
 | 3.3 | GStreamer evaluated | MISSING | No written evaluation → R53 (decision record) |
-| 3.4 | GPU-accelerated rendering and compositing | MISSING | The compositor is CPU only (`engine/composite.rs`). → R21a-c |
-| 3.5 | Vulkan / Direct3D or another graphics API evaluated | PARTIAL | The UI renders through glow (OpenGL). wgpu 24.0.5 and egui-wgpu 0.31.1 are in `Cargo.lock` but inactive (eframe feature `wgpu` is off). → R21a, R53 |
-| 3.6 | Hardware video decoding and encoding | PARTIAL | Decode: `-hwaccel auto` only for HEVC/AV1 or width ≥ 2560 (`vdecode.rs:40-44`). Encode: none. → R22 |
+| 3.4 | GPU-accelerated rendering and compositing | DONE | (R21a-c) `engine/gpu`: the compositor runs on the GPU through wgpu on Vulkan (`GpuCompositor`, a `composite::Compositor` beside `CpuCompositor`), for the preview and renders alike; draws, every blend mode, Track Motion, the video FX, transitions and generators in WGSL, bit-exact against the CPU on 3000 random plans and at three parameter sets per plug-in (the clock wipe within 1). A preview frame stays on the GPU (`Picture`, shown as an egui native texture); a render reads back. Preferences › Video › GPU acceleration of video processing: Automatic, Off or an adapter. |
+| 3.5 | Vulkan / Direct3D or another graphics API evaluated | DONE | (R21a) The UI paints through wgpu on Vulkan (eframe feature `wgpu`, the default; OpenGL where there is no Vulkan), and the compositor shares its device. Direct3D 12 was not taken: wgpu's dx12 backend would add gpu-allocator and its MIT/Apache tree, and VEGAS's own compositor runs on OpenCL/Vulkan-class hardware either way. Cargo feature `glow` keeps the OpenGL painter (the compositor then opens its own device). → R53 for the docs |
+| 3.6 | Hardware video decoding and encoding | DONE | (R22) `engine/hw.rs` capability table (timed d3d11va/cuda/qsv decodes, nvenc/qsv/amf/mf encodes, cached per FFmpeg and driver); Preferences › Video decode acceleration and encode device; hardware Render As templates that fall back to software with a note. |
 | 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
 | 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
 | 3.9 | OpenFX and VST hosting where compatible | DONE | OFX video (R31-R33c), VST3 and CLAP audio effects (R34a-b, R35) in the out-of-process host; VST2 not feasible (10.11), DX/DMO investigated and not pursued (`docs/compat/dx-audio.md`). |
@@ -196,8 +196,8 @@ What matters most:
 | 6.2 | Low-latency playback | DONE | Play start ≤ 250 ms target (`FEATURE_PLAN.md` 1.9) |
 | 6.3 | Accurate frame timing | DONE | Frames are popped against the audio clock (`FEATURE_PLAN.md` 1.5.4) |
 | 6.4 | Audio/video synchronization | DONE | Locked to the audio clock; (R9) the playhead is what is heard: the clock less the output latency the device reports, carried on between callbacks (`audio::Stamp`, test `the_playhead_follows_what_is_heard`). The manual click-track check (under 5 ms) is the user's. |
-| 6.5 | GPU-accelerated compositing | MISSING | → R21a-c |
-| 6.6 | Hardware decoding when available | PARTIAL | Heavy sources only; no capability probe or preference. → R22 |
+| 6.5 | GPU-accelerated compositing | DONE | (R21a-c) See 3.4. `docs/PERFORMANCE.md`: four full 1080p layers compose in 4.7 ms on the GPU (22 ms on the CPU), four picture-in-pictures in 1.2 ms (13 ms), four 4K layers in 30 ms (103 ms), uploads of the decoded pictures included. |
+| 6.6 | Hardware decoding when available | DONE | (R22) The probe measures each hwaccel against the software decoder; Automatic uses the faster one for heavy sources, a chosen one for every codec it passed. |
 | 6.7 | Efficient frame caching | DONE | `engine/cache.rs` (SourceCache 192 MB, CompositeCache 256 MB) |
 | 6.8 | Asynchronous media decoding | DONE | Decoder child processes and reader threads |
 | 6.9 | Background thumbnail generation | DONE | `engine/thumbs.rs`, `decode.rs` Thumbs |
@@ -293,7 +293,7 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 8.1 | Native `.veg` projects | NOT FEASIBLE | Undocumented, version-specific binary chunk format with no public parser (`FEATURE_PLAN.md:1811`). Deliverables: the script route (`tools/vegas/Export to Milan Pro.cs`, done), a `.veg` media scan (`interchange.rs`, done), and a research note `docs/research/VEG_FORMAT.md` (R27). |
+| 8.1 | Native `.veg` projects | NOT FEASIBLE | Undocumented, version-specific binary chunk format with no public parser (`FEATURE_PLAN.md:1811`). Deliverables, all done: the script route both ways (`tools/vegas/Export to Milan Pro.cs` R25, `Import from Milan Pro.cs` R26), the `.veg` media scan (`interchange/vegas.rs::scan_veg`) and the research note `docs/research/VEG_FORMAT.md` (R27: no sample `.veg` exists on this machine; the recommendation is the script route). |
 | 8.2 | Project metadata | DONE | `VegasExport.name`, `project` (`interchange.rs:13-37`) |
 | 8.3 | Media references | DONE | Including offline items with warnings (`interchange.rs:226-236`) |
 | 8.4 | Track organization | DONE | |
@@ -302,22 +302,22 @@ What matters most:
 | 8.7 | Timeline positions | DONE | |
 | 8.8 | Event lengths | DONE | |
 | 8.9 | Playback rates | DONE | |
-| 8.10 | Transitions | MISSING | Listed as unsupported in the README → R25 |
-| 8.11 | Effects | MISSING | Event, track, output and media FX are not exported. → R25 |
-| 8.12 | Track properties | PARTIAL | Mute, solo, volume, pan and compositing mode come across. Track FX, Track Motion, parent/child compositing and colour do not. → R25 |
-| 8.13 | Compositing | PARTIAL | R7: every VEGAS mode name maps (`interchange::composite`) but Custom, whose compositor the export does not carry; the 3D Track Motion values and parent/child nesting are not exported yet. → R25 |
-| 8.14 | Keyframes | PARTIAL | Pan/Crop keys come across. FX and Track Motion keyframes do not. → R25 |
-| 8.15 | Envelopes | PARTIAL | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::envelope`). Event velocity and event envelopes are not exported by the VEGAS script yet. → R25 |
+| 8.10 | Transitions | DONE | R25: `Fade.Transition` on both fades with every OFX parameter; Dissolve, Linear Wipe, Clock Wipe, Iris, Push, Slide, Zoom and Flash map (`interchange/vegas_map.rs`), the rest play as a crossfade and are reported. Test `v2_transitions_generators_and_envelopes`. |
+| 8.11 | Effects | DONE | R25: event, track, media and video output FX with `PlugIn.UniqueID`, bypass and every OFX parameter with keyframes; 17 VEGAS plug-ins map onto built-ins with per-parameter scale/offset/choice tables, the rest are disabled `ofx:<id>@1` placeholders that keep every parameter (the OFX host plays them once installed) and are listed in the report. Audio FX by name (Track EQ, Compressor, Noise Gate, Reverb, delays, Wave Hammer, ExpressFX). Tests `v2_fx_map_or_become_placeholders`, `every_row_lands_on_a_built_in_parameter`. |
+| 8.12 | Track properties | DONE | R25: track FX, Track Motion keyframes (position, size, rotation, Z and X/Y rotation), 2D Shadow / Glow on, parent/child compositing with Parent Composite Mode and Parent Motion. Track colour is not in VEGAS's scripting API. Test `v2_track_motion_compositing_settings_and_audio_fx`. |
+| 8.13 | Compositing | DONE | R7: every VEGAS mode name maps (`interchange::vegas::composite`) but Custom, whose compositor the export does not carry (reported). R25: 3D Track Motion values and parent/child nesting come across. |
+| 8.14 | Keyframes | DONE | R25: Pan/Crop, FX parameter (with VEGAS's interpolation names) and Track Motion keyframes. |
+| 8.15 | Envelopes | DONE | Track envelopes come across, including (R4a) video track Mute and Fade to Color (`interchange::vegas::envelope`); R25: event Velocity envelopes (a 0 % hold is a freeze frame); other event envelopes (Transition Progress) are reported. |
 | 8.16 | Markers | DONE | |
 | 8.17 | Regions | DONE | |
-| 8.18 | Project settings | PARTIAL | Width, height, fps and sample rate only. Field order, pixel aspect ratio, pixel format and bus mode are missing. → R25 |
-| 8.19 | Audio configuration | PARTIAL | Sample rate and (R8a) the number of busses. No channel layout (master bus mode stays Stereo). → R10a, R25 |
+| 8.18 | Project settings | DONE | R25: field order, pixel aspect ratio, rendering quality, motion blur type, deinterlace method, bit depth; pixel format and master bus mode are read and reported when Milan Pro cannot follow them (8-bit, stereo). |
+| 8.19 | Audio configuration | PARTIAL | Sample rate, bit depth (R25) and (R8a) the number of busses. No channel layout (a 5.1 master bus mode is reported; stereo is used). → R10a |
 
 ### 2.9 Section 8b: export and interchange
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 9.1 | Investigate reliable VEGAS-compatible project export | MISSING | Not investigated. The feasible route is a VEGAS-side import script that rebuilds the project through the scripting API. → R26 |
+| 9.1 | Investigate reliable VEGAS-compatible project export | DONE | R26: File › Export › VEGAS Project (via script)... writes `<name>.milan.json` (`interchange/vegas_export.rs`, `vegas_map` in reverse); `tools/vegas/Import from Milan Pro.cs` (and the VEGAS 13 copy) rebuilds it through the scripting API (new or open project, settings, media, tracks, events, reversed subclips, takes, fades, Pan/Crop, Track Motion, envelopes, groups, FX with parameters and keyframes, transitions, generated media, audio FX by name, markers, regions, selection). Both scripts compile against VEGAS 15's `ScriptPortal.Vegas.dll`; the script's JSON reader was run on Milan Pro's output. Round trip `round_trip_through_the_vegas_json`. Not run inside VEGAS here (manual: user). |
 | 9.2 | Never write fake `.veg` files | DONE | Nothing writes `.veg` |
 | 9.3 | OpenTimelineIO | MISSING | → R28 |
 | 9.4 | EDL | MISSING | Import/Export rows greyed (`menus.rs:409, 419`) → R28 |
@@ -427,7 +427,7 @@ What matters most:
 | 13.5 | Custom bitrates | DONE | R11: constant quality / VBR (average, maximum) / CBR per codec (`Template::video_args`); audio bit rates per codec |
 | 13.6 | Audio export configuration | DONE | R11: audio codec, bit rate, sample rate (the project's or fixed, raised or capped to what the codec takes: `pick_rate`), mono or stereo, bit depth (`Template::audio_args`). Multichannel → 13.11 |
 | 13.7 | Codec selection | DONE | R11: Customize Template › Format and Codec (`render::CONTAINERS`, `VCODECS`, `ACODECS`); combinations a format cannot hold are refused (`Template::check`: VP9 in MOV) |
-| 13.8 | Hardware encoding | MISSING | The bundled FFmpeg has h264/hevc/av1 NVENC, QSV, AMF and MF encoders (section 4.3). None is used: R11 offers tested software encoders only, since a hardware encoder needs the runtime test R22 builds before it can be offered. → R22 |
+| 13.8 | Hardware encoding | DONE | (R22) `VCODECS` holds the 12 device encoders and three `<codec>_hw` placeholders; the built-in "MP4 H.264/HEVC/AV1 (hardware)" templates render on the encode device that passed, else in software with a note (`Template::resolved`); ignored `render_with_hardware_encoder` renders through h264_amf here. |
 | 13.9 | Software encoding | DONE | libx264, libx265, prores_ks, pcm, libmp3lame |
 | 13.10 | Quality settings | DONE | R11: Project Properties › Full-resolution rendering quality (Good for a new project, as VEGAS) and the template's Video rendering quality; encoder speed presets; renders never decode proxies (`VideoPlan::without_proxies`) |
 | 13.11 | Multi-channel audio export | MISSING | "Enable multichannel mapping" greyed (`dialogs/render.rs:269`) → R10a |
@@ -513,10 +513,10 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 17.1 | CPU thread scheduling | DONE | Row stripes at clamp(cores/2, 1, 6) (`FEATURE_PLAN.md` 1.3), `-threads 2` per decoder. R12: a render's encoder runs at BELOW_NORMAL priority (`proc::below_normal`, checked in `render_queue_e2e`). R19: the render thread and its compose stripes run below normal too (`proc::below_normal_thread`, `composite::par_rows`; test `render_threads_run_below_normal`), so the preview and UI come first |
-| 17.2 | GPU acceleration | MISSING | → R21a |
-| 17.3 | Hardware video decoding | PARTIAL | → R22 |
-| 17.4 | Hardware encoding | MISSING | → R22 |
-| 17.5 | GPU compositing | MISSING | → R21a-c |
+| 17.2 | GPU acceleration | DONE | (R21a) Preferences › Video › "GPU acceleration of video processing" as VEGAS has it (Off or an adapter), plus Automatic (the best Vulkan adapter, the default). The page says what composites now. |
+| 17.3 | Hardware video decoding | DONE | (R22) See 3.6. |
+| 17.4 | Hardware encoding | DONE | (R22) See 13.8. |
+| 17.5 | GPU compositing | DONE | (R21a-c) See 3.4 and 6.5. |
 | 17.6 | Memory management | DONE | Byte-capped LRU caches (`engine/cache.rs`), decoder cap of 8 |
 | 17.7 | Cache management | PARTIAL | Fixed sizes. No preference, no disk cache, no "clear cache". → R23 |
 | 17.8 | SSD storage (cache/prerender location) | MISSING | The prerender and temp folder fields are greyed (`settings.rs:344`, `prefs.rs:112`). → R23 |
@@ -524,7 +524,7 @@ What matters most:
 | 17.10 | Multiple monitors | DONE | R14: floating windows and the external preview on any display (see 4.28) |
 | 17.11 | High-refresh-rate displays | PARTIAL | egui repaints on demand and the preview is paced by the audio clock. Not tested at 120/144 Hz. → R48 |
 | 17.12 | High-DPI scaling | PARTIAL | → R48 |
-| 17.13 | Direct3D / Vulkan / vendor acceleration paths | PARTIAL | `-hwaccel auto` only. No explicit d3d11va/cuda/qsv choice. → R22 |
+| 17.13 | Direct3D / Vulkan / vendor acceleration paths | DONE | (R22) d3d11va, cuda and qsv are tested and chosen explicitly (Preferences › Video); `auto` only until the table is built. |
 | 17.14 | No assumption that every machine has the same acceleration | DONE | `hw_failed` fallback (`FEATURE_PLAN.md` 1.3 vdecode) |
 | 17.15 | Fallback paths for unsupported hardware | DONE | CPU compositor; software decode fallback |
 | 17.16 | Usable without a powerful GPU | DONE | Everything is CPU today |
@@ -563,7 +563,7 @@ What matters most:
 | 19.13 | Test project reopening | DONE | `old_projects_load_*` tests |
 | 19.14 | Test project interchange | PARTIAL | VEGAS JSON import tests (`interchange.rs`); no OTIO/EDL/XML → R28, R29 |
 | 19.15 | Test rendering | PARTIAL | `engine/render.rs:329` ignored e2e → R51 |
-| 19.16 | Test hardware acceleration | PARTIAL | `vdecode.rs` ignored hwaccel test → R22 |
+| 19.16 | Test hardware acceleration | DONE | (R22) `hw_capability_table` (ignored: the probe on this machine) and `render_with_hardware_encoder`; parser and choice unit tests on captured output. |
 | 19.17 | Test recovery after crashes | DONE | R43: `autosave::tests::crash_recovery_e2e` (ignored): the app runs off-screen, autosaves, is killed by pid, and the next start lists the project and screenshots the dialog; unit tests for the stale-marker check, rotation and the unsaved copy |
 | 19.18 | Legally usable test media collection (resolutions, rates, codecs, containers, bit depths, audio configs) | MISSING | → R37 |
 | 19.19 | Automated tests for serialization and timeline accuracy | DONE | `project.rs`, `plan.rs`, `edit.rs` |
@@ -580,10 +580,10 @@ What matters most:
 | Responsive preview player | PARTIAL | R19-R23 |
 | Comprehensive media format support | PARTIAL | R37-R41, R10 |
 | Professional audio editing system | PARTIAL | R8-R10 |
-| Professional rendering engine | PARTIAL | R22 (R11, R12 DONE) |
+| Professional rendering engine | DONE | (R11, R12, R22) |
 | Modular effects and transitions system | DONE | Masks in R7 |
 | Plug-in compatibility architecture | MISSING | R31-R35 |
-| VEGAS project import/interchange | PARTIAL | R25-R30 |
+| VEGAS project import/interchange | PARTIAL | R25, R26, R27, R30 DONE; R28, R29 |
 | Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
@@ -769,7 +769,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R18b (DONE): video track Set Default Track Properties.
 - R10a (re-assigned from R4b by R18b): Project Properties › Audio › Resample and stretch quality.
 - R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
-- R30: Tools > Advanced Save (VP23).
+- R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
 - R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
 - R53: Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
@@ -1570,6 +1570,13 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R21a: GPU compositor core on wgpu (L)
 
+**Status: DONE.** Built as designed below, except:
+- Textures are `Rgba8Uint`, not `Rgba8Unorm`: the passes replay the CPU compositor's integer maths on the bytes as they are, and the float blend modes replay its f32 operations in order through `engine/gpu/math.wgsl` (every operation pinned against fusing, division and square root corrected to the rounded result), so the parity is bit-exact rather than within 2: 3000 random plans of 1-4 layers in every blend mode (`gpu_matches_cpu_on_random_plans`, `gpu_parity_histogram`), Hard Mix included. The output for the preview is an `Rgba8Unorm` texture with an sRGB view (R21c).
+- The UI paints through wgpu (eframe feature `wgpu`, default) on Vulkan, and the compositor shares its device (`gpu::attach`); the `glow` feature keeps the OpenGL painter, and a preference naming another adapter opens it on a device of its own. The screenshot harness runs on both painters; against the glow screenshots the VEGAS 23 look differs by 1-2 in 255 at antialiased edges and through textures (egui-wgpu's sRGB conversion in the shader against egui_glow's; 6.6 % of the pixels) and nowhere else but the Record Time readout, which counts free disk space.
+- Found while reviewing the paused WIP: `floor(x + 0.5)` rounded up just under a half, and ClipColor divided 0 by 0 on a uniform out-of-range grey (a NaN the CPU cast to black); both fixed on both sides (`composite::set_lum`).
+- Two threads recording on one device at once (a render beside the preview) lost draws on wgpu 24's Vulkan backend (the parity tests run in parallel reproduced it); each recording step takes the compositor's `record` lock, which the parity tests now pass in parallel 10 times over.
+- Bench (`bench_compose`, in `tools/bench.ps1` and `docs/PERFORMANCE.md`): four full 1080p layers 4.7 ms on the GPU against 22 ms on the CPU (about three quarters of it uploading the four decoded 8 MB pictures), four picture-in-pictures 1.2 ms against 13 ms. The 4 ms gate holds for the picture-in-pictures and not for four full frames on this integrated Radeon (a Z1 Extreme), where the upload of 32 MB a frame is the cost.
+
 **Scope**
 - Switch eframe to the `wgpu` renderer: feature `wgpu`, which uses wgpu 24.0.5 and egui-wgpu 0.31.1 already in `Cargo.lock`. Keep glow as a fallback feature.
 - `trait Compositor` with `CpuCompositor` (today's code) and `GpuCompositor`: per-layer textures, affine draw, opacity, the 9 (plus R7) blend modes and track motion in WGSL.
@@ -1589,6 +1596,11 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R21b: GPU effects, transitions and generators (L)
 
+**Status: DONE.** Built as designed below, except:
+- `PluginInfo::gpu: Option<GpuPort>` names the port; the 15 video FX plus Color Grading, the 8 transitions and the solid, gradient, checkerboard and noise generators have one (`engine/gpu/fx.rs`, `fx.wgsl`). Cookie Cutter, Bezier Masking (rasterised masks), the text generators and OFX plug-ins have none: a picture, track, transition, adjustment or output chain with one is made by the CPU code and uploaded, so mixed plans compose on the GPU with those pieces exact.
+- Levels and curves are the CPU's own 256-entry LUTs (`vfx::color_op_for`, `Grade::steps`), uploaded as a storage buffer; a .cube is a storage buffer with the CPU's trilinear maths rather than a sampled 3D texture, so it is bit-exact. The blur is a compute shader running the CPU's sliding window, one invocation per line, exact at any radius. Resampling, Reduce Interlace Flicker, Adjustment mixes and the opaque output step are passes too.
+- Parity (`gpu_video_fx_match_cpu`, `gpu_transitions_match_cpu`, `gpu_generators_match_cpu`, three parameter sets each): every plug-in bit-exact, the clock wipe within 1 (the GPU's `atan2`); a clock wipe with no feather can differ on the pixels exactly at its edge.
+
 **Scope:** WGSL ports of the 15 video FX (separable blur, colour ops, levels/curves via 1D LUT texture, .cube via 3D texture, chroma key, sharpen, vignette, mirror, border, crop), the 8 transitions and the noise/gradient/checker generators. Text stays CPU-rendered and uploaded.
 
 **Files:** `engine/gpu/fx/*.wgsl`, `engine/gpu/mod.rs`, `engine/plugins.rs` (a `gpu: Option<…>` per plug-in).
@@ -1596,6 +1608,11 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 **Acceptance tests:** a parity test per plug-in at three parameter sets (≤ 2 LSB; blur ≤ 3).
 
 ### R21c: Zero-copy preview and float pipeline hook (M)
+
+**Status: DONE.** Built as designed below, except:
+- `engine::picture::Picture` carries a frame: pixels (the CPU), or the GPU's output texture with the pixels read back once if asked (`image`; a render, the scopes, a snapshot, the Overlays channel view). `decode::PreviewTex::Native` shows it through `egui_wgpu::Renderer::register_native_texture` (an `Rgba8Unorm` texture through its sRGB view, as egui's own textures), freed when the next frame replaces it. `preview_frames_stay_on_the_gpu_and_renders_read_back`: the compositor's readback counter stays at 0 through a preview frame and moves once when its pixels are asked for as a render asks; the harness prints the count with `MILAN_SHOT_TRACE`.
+- `GpuCompositor::set_intermediate(Intermediate::Rgba16Float)` keeps the output in linear-light 16-bit float (the preview samples it, a readback converts back within 1 in 255: `float_intermediate_reads_back_within_one`); the passes still compose in 8-bit until R40b.
+- 4K Best bench: four full 3840x2160 layers 30 ms on the GPU against 103 ms on the CPU (uploads of 133 MB a frame included); with the readback 49 ms.
 
 **Scope**
 - Register the GPU output as an egui native texture (`egui_wgpu::RenderState::renderer.register_native_texture`), so preview playback needs no readback.
@@ -1609,6 +1626,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - A 4K Best 4-layer bench is recorded in PERFORMANCE.md.
 
 ### R22: Hardware acceleration detection and preferences (M)
+
+**Status: DONE.** `engine/hw.rs`: at startup a background thread lists `ffmpeg -hwaccels` and the hardware encoders of `-encoders`, then times each decoder path (d3d11va, cuda, qsv) on a 5 s 1080p H.264, HEVC and AV1 clip against the software decoder, and runs each hardware encoder (h264/hevc/av1 × nvenc/qsv/amf/mf) on the same picture; the table is kept in `%LOCALAPPDATA%\MilanPro\hw.json` per FFmpeg version and Vulkan driver string. Preferences › Video: "Video decode acceleration" (Automatic, Off, or a hwaccel that passed), "Encode device" (Automatic, Off, or a device that passed), Test Again, and the measured table. The decoder (`vdecode::wants_hw` → `hw::decode_hwaccel`) uses the chosen hwaccel for every codec it passed, or with Automatic the one that measured faster than software for heavy sources (HEVC, AV1, 2560 px and up); until the table is built, heavy sources get `-hwaccel auto` as before. Render As: three "(hardware)" templates (`h264_hw`, `hevc_hw`, `av1_hw` in `VCODECS`) resolve to the device's encoder (`Template::resolved`, with each device's own rate control in `video_args`) or to the software encoder with a note in the details and the render log; Customize Template lists a device's encoder once it passed. Tests: `parses_hwaccels`, `parses_hardware_encoders` (captured output), `decode_choice_follows_the_table_and_the_preference`, `encoder_choice_follows_the_table_and_the_device`, `hardware_templates_fall_back_to_software_with_a_note` (forced unavailable), ignored `hw_capability_table` (the probe, printed for `tools/bench.ps1`) and `render_with_hardware_encoder` (this machine: h264_amf). Measured here (Ryzen Z1 Extreme iGPU): d3d11va decodes all three codecs but, with the frames downloaded to system memory, only HEVC comes out faster than the 2-thread software decoder (385 vs 412 ms for 150 frames), so Automatic uses it for HEVC alone; AMF encodes H.264, HEVC and AV1, Media Foundation H.264. Not built: a hardware decode that keeps frames on the GPU (`-hwaccel_output_format`), which would need the decoder's output to go to the compositor without the RGBA pipe.
 
 **Scope**
 - At startup, on a background thread, build a capability table: hwaccels from `ffmpeg -hwaccels`, and a 1-frame test decode and encode per device and codec (d3d11va, cuda, qsv; h264/hevc/av1 × nvenc/qsv/amf/mf). Cache it per FFmpeg version and GPU driver.
@@ -1642,6 +1661,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R25: VEGAS import v2 (FX, transitions, generators, Track Motion, settings) (L)
 
+**Status: DONE.** `interchange.rs` is `interchange/{mod,vegas,vegas_map}.rs`. The scripts (version 2) export every OFX parameter with keyframes (typed: Double, 2D/3D, Integer, Boolean, Choice, RGB/RGBA, String, Custom), transitions, generated media, Track Motion and Parent Motion keyframes, parent/child compositing, event envelopes, audio FX by name and preset, media FX per file, video output and master bus FX, field order, PAR, quality, motion blur, deinterlace, pixel format, bit depth and master bus mode; they compile against VEGAS 15's `ScriptPortal.Vegas.dll` (read-only; VEGAS never launched). `vegas_map.rs` holds 32 rows (section 4.2's list plus the CSV's Vignette, Crop and LUT Filter) with parameter names, choice indexes and ranges read from the plug-ins' own preset and resource XML in the VEGAS install; unmapped plug-ins become disabled `ofx:<id>@1` placeholders holding every parameter, listed in the report. Tests: `v2_fx_map_or_become_placeholders` (save/load keeps the placeholder), `v2_transitions_generators_and_envelopes`, `v2_track_motion_compositing_settings_and_audio_fx`, `rtf_becomes_plain_text`, `every_row_lands_on_a_built_in_parameter`, `scales_and_tables_invert`. Left: the manual VEGAS 15 pass (user); the Track Motion Z sign and rotation sense are taken from the API's y-up frame, not measured (`vegas::motion`).
+
 **Scope:** extend `tools/vegas/Export to Milan Pro.cs` and its VEGAS 13 copy, and `interchange.rs`, to carry:
 - Event, track, output and media video FX (OFX `PlugIn.UniqueID`, e.g. `com.sonycreativesoftware:gaussianblur`, plus every `OFXEffect.Parameters` value and keyframes).
 - Transitions (`Fade.Transition`).
@@ -1665,6 +1686,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 
 ### R26: Send a project back to VEGAS (M)
 
+**Status: DONE (compile-checked, not run in VEGAS).** `interchange/vegas_export.rs` writes the version 2 JSON from a Milan project (`vegas_map` in reverse, placeholders back to their plug-in, colours completed from the built-in's defaults, Titles & Text back to RTF, Pan/Crop back to corners, Track Motion back to pixels); File › Export › VEGAS Project (via script)... writes it and reports what has no VEGAS counterpart. `tools/vegas/Import from Milan Pro.cs` (+ VEGAS 13 copy, with its own JSON reader) rebuilds the project through the API. Both scripts were compiled with the .NET Framework `csc` against the installed `ScriptPortal.Vegas.dll` (clean) and the reader was run on a Milan export; running the script inside VEGAS is the user's manual test. Tests `round_trip_through_the_vegas_json`, `the_file_names_vegas_plugins`.
+
 **Scope:** `tools/vegas/Import from Milan Pro.cs` (VEGAS 14+ and 13 copies) reads a `.milan.json` written by File > Export > "VEGAS Project (via script)...". It rebuilds tracks, events, takes, fades, Pan/Crop, envelopes, markers, regions, and mapped FX and transitions through the scripting API. Milan never writes `.veg`.
 
 **Files:** `tools/vegas/Import from Milan Pro*.cs` (new), `interchange/vegas_export.rs` (new; reuses `vegas_map` in reverse), `ui/menus.rs`, `app/commands.rs`.
@@ -1674,6 +1697,8 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Manual (user): open in VEGAS 15 and compare.
 
 ### R27: `.veg` format research (M, RESEARCH-ONLY)
+
+**Status: DONE.** `docs/research/VEG_FORMAT.md`: no `.veg` exists on this machine (every fixed drive searched read-only), so the container could not be observed and nothing is guessed; the note records what the media scan reads, what the scripting assembly reveals about saving (`SaveProject`, `BeginWrite(ProjectSaveType)`, `ArchiveProject`), the estimate for a reverse-engineered reader and the recommendation (the script route, now both ways). Linked from `docs/INTERCHANGE.md`; the `.veg`-picked explanation in Import › VEGAS Project is verified (`poll_vegas`).
 
 **Deliverable:** `docs/research/VEG_FORMAT.md`. It documents:
 - the chunk/GUID container structure observed in sample `.veg` files the user provides (VEGAS 15);
@@ -1712,6 +1737,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** round-trip tests; Resolve-exported sample XMLs import (fixtures made by the user, or hand-written to the DTD).
 
 ### R30: Project archive and import media from project (M)
+
+**Status: DONE.** `interchange/archive.rs` (`plan`, `trim_range`, `estimate`, `run`, `media_of`), `ui/dialogs/archive.rs` (Archive Project: folder, trim with handles, the media list with sizes and used ranges, progress on a worker thread with Cancel, the result with Open Folder; also Tools › Advanced Save in VP23), `ui/dialogs/media_from_project.rs` (check boxes, items already in the project greyed, one undo step). Trimming: PCM re-written sample-accurately, compressed audio stream-copied, video re-encoded (H.264 CRF 16 + AAC) so the cut is frame-accurate; in points move with the cut; subclip parents and nested projects are copied whole. Tests `plan_finds_used_ranges_and_dedupes_files`, `names_stay_unique`, `sizes_read_well`, ignored `archive_copies_trims_and_reopens_from_another_drive` (two files, trimmed with handles, the saved project rewritten to a dead drive letter and reopened through its relative paths). Screenshot `%TEMP%\milan-review\r25\archive-classic.png`.
 
 **Scope**
 - File > Export > Milan Pro Project Archive: copy the project and all media (option: trim media to used ranges plus handles, re-encoding with stream copy where possible) into a folder, with relative paths.
@@ -1792,7 +1819,7 @@ No product code unless the research finds a stable, documented structure. If it 
 - Record per plug-in: loads? host check? licence prompt? renders? parameter count? crashes?
 - Record the licence position (first-party VEGAS plug-ins are licensed for use with VEGAS; HitFilm Basic under FXHOME terms).
 - Produce `docs/compat/ofx-vegas15.csv`, which feeds R55.
-- Seed the `vegas_map` (R25) so a VEGAS import can use the real plug-in when it loads.
+- Seed the `vegas_map` (R25) so a VEGAS import can use the real plug-in when it loads. (Done in R25: `interchange/vegas_map.rs` names the CSV's Vignette, Crop and LUT Filter; the rest become `ofx:` placeholders that load when a plug-in runs.)
 
 **Acceptance:** the CSV has 102 rows, none of them "unknown"; nothing ships that claims support for a plug-in that failed.
 
@@ -2195,7 +2222,7 @@ These are VEGAS menu items, not requirements of the brief. The brief only requir
 
 | Item | Reason | Deliverable (batch) |
 |---|---|---|
-| Native `.veg` read/write (8.1) | Undocumented, versioned binary format with no public spec or parser; writing would produce files VEGAS might reject (the brief forbids fake `.veg`) | Script import (done), script export back into VEGAS (R26), research note (R27), media scan (done) |
+| Native `.veg` read/write (8.1) | Undocumented, versioned binary format with no public spec or parser; writing would produce files VEGAS might reject (the brief forbids fake `.veg`) | Script import (R25, done), script export back into VEGAS (R26, done), research note (R27, done: `docs/research/VEG_FORMAT.md`), media scan (done) |
 | AAF (9.6) | No Rust AAF library; the AAF SDK is a large C++/COM structured-storage codebase | OTIO plus the external `otio-aaf-adapter` route documented in INTERCHANGE.md (R29) |
 | VST2 (10.11) | Steinberg no longer licenses the VST2 SDK | VST3 (R34) and CLAP (R35) hosting; stated in COMPATIBILITY.md (R55) |
 | RAW video (7.19) | R3D, BRAW and ARRIRAW decoders are proprietary SDKs, not redistributable with an MIT project; FFmpeg has none | Documented in FORMAT_SUPPORT.md; optional user-installed BRAW SDK study (R41) |

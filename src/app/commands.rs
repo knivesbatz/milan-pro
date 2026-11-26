@@ -16,6 +16,7 @@ use crate::ui::{self, MenuAction, Playback};
 use super::MeridianApp;
 
 /// Heads the report of what an imported VEGAS project lost.
+const IMPORT_TITLE: &str = "Import VEGAS Project";
 const IMPORTED_VEGAS: &str = "The VEGAS project is open as a new, unsaved project. These parts of it did not carry over:";
 
 /// Copied events live in the app, but egui hears Ctrl+V only while the Windows clipboard holds text: put some there.
@@ -58,6 +59,8 @@ impl MeridianApp {
             || self.slideshow.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
+            || self.archive.is_some()
+            || self.media_from.is_some()
             || self.overlays.modal()
     }
 
@@ -868,6 +871,38 @@ impl MeridianApp {
                 if let Some(path) = picked {
                     self.vegas.start(ctx, path);
                     self.message = Some("Importing VEGAS project...".into());
+                }
+            }
+            // R26: the JSON the VEGAS-side "Import from Milan Pro.cs" rebuilds (Milan Pro never writes a .veg).
+            ExportVegas => {
+                let name = format!("{}.milan.json", if self.project.name.is_empty() { "Untitled" } else { &self.project.name });
+                let dir = self.project.path.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+                let mut dlg = rfd::FileDialog::new().add_filter("Milan Pro export for VEGAS (*.milan.json)", &["json"]).set_file_name(name);
+                if let Some(d) = dir {
+                    dlg = dlg.set_directory(d);
+                }
+                if let Some(path) = dlg.save_file() {
+                    match crate::interchange::vegas_export::write(&self.project, &path) {
+                        Ok(notes) => {
+                            let scripts = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("vegas"))).filter(|d| d.is_dir());
+                            let from = scripts.map_or("the vegas folder next to MilanPro.exe".into(), |d| d.display().to_string());
+                            let intro = format!(
+                                "Written {}. In VEGAS, choose Tools > Scripting > Run Script..., pick \"Import from Milan Pro.cs\" from {from} (the \
+                                 \"(VEGAS 13)\" copy in VEGAS Pro 13 and earlier) and open this file.{}",
+                                path.display(),
+                                if notes.is_empty() { "" } else { " These parts have no VEGAS counterpart:" }
+                            );
+                            self.vegas_report = Some(("Export VEGAS Project".into(), intro, notes));
+                        }
+                        Err(e) => self.message = Some(format!("Export failed: {e}")),
+                    }
+                }
+            }
+            // R30
+            ArchiveProject => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
+            ImportMediaFromProject => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).pick_file() {
+                    self.media_from = Some(dialogs::MediaFromProject::new(path));
                 }
             }
             Properties => self.settings.open(&self.project),
@@ -2020,7 +2055,7 @@ impl MeridianApp {
             MenuAction::ImportVegas => {
                 let Some((p, warnings)) = self.pending_import.take() else { return };
                 if !warnings.is_empty() {
-                    self.vegas_report = Some((IMPORTED_VEGAS.into(), warnings));
+                    self.vegas_report = Some((IMPORT_TITLE.into(), IMPORTED_VEGAS.into(), warnings));
                 }
                 p
             }
@@ -2116,7 +2151,7 @@ impl MeridianApp {
                     "{n} media file(s) named in the .veg are added to Project Media. Tracks and events need VEGAS: choose Tools › \
                      Scripting › Run Script... there, pick \"Export to Milan Pro.cs\" from {from}, then import the .milan.json it writes."
                 );
-                self.vegas_report = Some((intro, missing));
+                self.vegas_report = Some((IMPORT_TITLE.into(), intro, missing));
             }
             Err(e) => self.message = Some(format!("VEGAS import failed: {e}")),
         }
@@ -2185,6 +2220,9 @@ impl MeridianApp {
             if rescan {
                 self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
             }
+            crate::engine::gpu::choose(&self.prefs.gpu);
+            crate::engine::hw::set_prefs(&self.prefs.hw_decode, &self.prefs.hw_encode);
+            crate::engine::caches::configure(&self.prefs);
         }
         self.show_organize(ctx);
         if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {
@@ -2198,8 +2236,30 @@ impl MeridianApp {
                 }
             }
         }
-        if self.vegas_report.as_ref().is_some_and(|(intro, lines)| dialogs::report(ctx, "Import VEGAS Project", intro, lines)) {
+        if self.vegas_report.as_ref().is_some_and(|(title, intro, lines)| dialogs::report(ctx, title, intro, lines)) {
             self.vegas_report = None;
+        }
+        // R30: Archive Project, and Media from Project (the checked items join Project Media as one undo step).
+        if self.archive.as_mut().is_some_and(|d| d.show(ctx, &self.project)) {
+            self.archive = None;
+        }
+        if let Some(items) = self.media_from.as_mut().and_then(|d| d.show(ctx, &self.project.media_pool)) {
+            self.media_from = None;
+            if !items.is_empty() {
+                let before = self.project.clone();
+                let (generated, files): (Vec<_>, Vec<_>) = items.into_iter().partition(|m| m.generator.is_some());
+                let mut added = crate::media::merge_new(&mut self.project.media_pool, files);
+                for g in generated {
+                    if !self.project.media_pool.iter().any(|m| m.id == g.id) {
+                        self.project.media_pool.push(g);
+                        added = true;
+                    }
+                }
+                if added {
+                    self.history.push(before);
+                    self.project.mark_modified();
+                }
+            }
         }
         self.show_time_entry(ctx);
         // R18a: Command Properties (Insert › Command, or Edit on a command marker's tag).
@@ -2675,6 +2735,8 @@ impl MeridianApp {
                 }
             }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),
+            // R21a: GPU acceleration of video processing.
+            "prefs-video" => self.open_prefs(Some(dialogs::prefs::VIDEO)),
             "prefs-audio" => self.open_prefs(Some(dialogs::prefs::AUDIO_DEVICE)),
             // R14: the Preview Device page; a floating Trimmer and the external preview (off-screen in the harness).
             "prefs-preview" => self.open_prefs(Some(dialogs::prefs::PREVIEW_DEVICE)),
@@ -2989,9 +3051,15 @@ impl MeridianApp {
                 self.prefs.layouts.insert(layout_key(look, 4), self.dock.layout("Editing"));
                 self.exec(ctx, OrganizeLayouts);
             }
+            "archive" => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
             "vegas-report" => {
-                let lines = ["Track 1, event at 00:00:01;00: event FX (VEGAS Gaussian Blur)", r"Media offline: D:\Footage\interview.mxf (file not found)"];
-                self.vegas_report = Some((IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
+                let lines = [
+                    "Video 1: the event at 1.000 s: event FX: VEGAS Film Grain (com.sonycreativesoftware:filmgrain) is not available in Milan Pro; kept disabled as an OFX placeholder",
+                    "Video 1: the event at 1.000 s: transition: VEGAS Page Loop (com.sonycreativesoftware:pageloop) is not available in Milan Pro; a crossfade plays until the plug-in is installed",
+                    "Music: track FX: audio FX Vinyl Restoration is not available in Milan Pro and was left out",
+                    r"Media offline: D:\Footage\interview.mxf (file not found)",
+                ];
+                self.vegas_report = Some((IMPORT_TITLE.into(), IMPORTED_VEGAS.into(), lines.map(String::from).to_vec()));
             }
             "update" => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),
             m => {

@@ -347,6 +347,7 @@ fn leak_info(d: &PluginDesc) -> &'static PluginInfo {
     *lock(&LEAKED).entry(key).or_insert_with(|| {
         Box::leak(Box::new(PluginInfo {
             id: leak(&id_of(d)),
+            gpu: None,
             name: leak(if d.label.is_empty() { &d.id } else { &d.label }),
             kind: kind_of(d),
             group: leak(if d.group.is_empty() { "OFX" } else { &d.group }),

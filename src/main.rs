@@ -69,7 +69,19 @@ fn main() -> eframe::Result<()> {
         // The app resizes to 1920x1080 px on its first frame.
         viewport = offscreen(viewport).with_min_inner_size([100.0, 100.0]);
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    // R21a: the UI paints through wgpu (Vulkan), on the adapter Preferences › Video chose, and the compositor shares
+    // that device (`engine::gpu::attach`). Built with `--features glow` only, eframe's OpenGL painter stays.
+    #[cfg(feature = "wgpu")]
+    {
+        let gpu = if launch.demo { String::new() } else { settings::Prefs::load().gpu };
+        options.renderer = eframe::Renderer::Wgpu;
+        options.wgpu_options = engine::gpu::wgpu_options(&gpu);
+    }
+    #[cfg(not(feature = "wgpu"))]
+    {
+        options.renderer = eframe::Renderer::Glow;
+    }
     eframe::run_native(
         "Milan Pro",
         options,

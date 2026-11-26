@@ -106,14 +106,20 @@ pub struct Container {
     pub chapters: bool,
 }
 
-const ALL_V: &[&str] = &["libx264", "libx265", "libsvtav1", "libvpx-vp9", "libvpx", "mpeg2video", "prores_ks", "dnxhd", "cfhd", "ffv1", "mjpeg"];
+const ALL_V: &[&str] = &["libx264", "libx265", "libsvtav1", "libvpx-vp9", "libvpx", "mpeg2video", "prores_ks", "dnxhd", "cfhd", "ffv1", "mjpeg", "h264_hw", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "hevc_hw", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "av1_hw", "av1_nvenc", "av1_qsv", "av1_amf", "av1_mf"];
+// R22: the hardware encoders a format can hold beside the software ones (`VCODECS`).
+const MP4_V: &[&str] = &["libx264", "libx265", "libsvtav1", "libvpx-vp9", "h264_hw", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "hevc_hw", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf", "av1_hw", "av1_nvenc", "av1_qsv", "av1_amf", "av1_mf"];
+const MOV_V: &[&str] = &["libx264", "libx265", "prores_ks", "dnxhd", "cfhd", "mjpeg", "h264_hw", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "hevc_hw", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf"];
+const TS_V: &[&str] = &["mpeg2video", "libx264", "libx265", "h264_hw", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf", "hevc_hw", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_mf"];
+const AVI_V: &[&str] = &["mjpeg", "libx264", "ffv1", "mpeg2video", "h264_hw", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"];
+const WEBM_V: &[&str] = &["libvpx-vp9", "libvpx", "libsvtav1", "av1_hw", "av1_nvenc", "av1_qsv", "av1_amf", "av1_mf"];
 pub static CONTAINERS: [Container; 18] = [
-    Container { id: "mp4", label: "MP4", ext: "mp4", muxer: "mp4", video: &["libx264", "libx265", "libsvtav1", "libvpx-vp9"], audio: &["aac", "libmp3lame", "ac3", "eac3", "alac", "libopus"], chapters: true },
-    Container { id: "mov", label: "QuickTime", ext: "mov", muxer: "mov", video: &["libx264", "libx265", "prores_ks", "dnxhd", "cfhd", "mjpeg"], audio: &["pcm", "aac", "alac"], chapters: true },
+    Container { id: "mp4", label: "MP4", ext: "mp4", muxer: "mp4", video: MP4_V, audio: &["aac", "libmp3lame", "ac3", "eac3", "alac", "libopus"], chapters: true },
+    Container { id: "mov", label: "QuickTime", ext: "mov", muxer: "mov", video: MOV_V, audio: &["pcm", "aac", "alac"], chapters: true },
     Container { id: "mkv", label: "Matroska", ext: "mkv", muxer: "matroska", video: ALL_V, audio: &["pcm", "flac", "aac", "libopus", "libvorbis", "ac3", "eac3", "libmp3lame", "alac"], chapters: true },
-    Container { id: "webm", label: "WebM", ext: "webm", muxer: "webm", video: &["libvpx-vp9", "libvpx", "libsvtav1"], audio: &["libopus", "libvorbis"], chapters: true },
-    Container { id: "avi", label: "AVI", ext: "avi", muxer: "avi", video: &["mjpeg", "libx264", "ffv1", "mpeg2video"], audio: &["pcm", "libmp3lame", "ac3"], chapters: false },
-    Container { id: "ts", label: "MPEG-2 Transport Stream", ext: "m2ts", muxer: "mpegts", video: &["mpeg2video", "libx264", "libx265"], audio: &["ac3", "eac3", "aac", "mp2"], chapters: false },
+    Container { id: "webm", label: "WebM", ext: "webm", muxer: "webm", video: WEBM_V, audio: &["libopus", "libvorbis"], chapters: true },
+    Container { id: "avi", label: "AVI", ext: "avi", muxer: "avi", video: AVI_V, audio: &["pcm", "libmp3lame", "ac3"], chapters: false },
+    Container { id: "ts", label: "MPEG-2 Transport Stream", ext: "m2ts", muxer: "mpegts", video: TS_V, audio: &["ac3", "eac3", "aac", "mp2"], chapters: false },
     Container { id: "mpg", label: "MPEG-2 Program Stream", ext: "mpg", muxer: "vob", video: &["mpeg2video"], audio: &["ac3", "mp2"], chapters: false },
     Container { id: "mxf", label: "MXF", ext: "mxf", muxer: "mxf", video: &["dnxhd", "mpeg2video"], audio: &["pcm"], chapters: false },
     Container { id: "image", label: "Image Sequence", ext: "", muxer: "image2", video: &["png", "tiff", "exr", "dpx"], audio: &[], chapters: false },
@@ -150,17 +156,29 @@ pub struct VCodec {
     pub ext: &'static str,
     /// Further arguments it always takes.
     pub extra: &'static [&'static str],
+    /// R22: "" for a software encoder; a `hw::DEVICES` suffix ("nvenc", "qsv", "amf", "mf") for a hardware encoder,
+    /// offered only when it passed the capability test; "auto" for the `<codec>_hw` placeholders Render As templates
+    /// use, which `Template::resolved` turns into the chosen device's encoder, or the software one with a note.
+    pub hw: &'static str,
 }
 
 const X26X_PRESETS: &[&str] = &["medium", "ultrafast", "superfast", "veryfast", "faster", "fast", "slow", "slower", "veryslow"];
 const NONE_P: (&str, &[Profile]) = ("", &[]);
-pub static VCODECS: [VCodec; 15] = [
-    VCodec { enc: "libx264", label: "H.264", pix_fmts: &["yuv420p", "yuv422p", "yuv444p", "yuv420p10le"], rates: "QVC", q: (0, 51), preset: ("-preset", X26X_PRESETS), profile: NONE_P, interlace: true, ext: "", extra: &[] },
-    VCodec { enc: "libx265", label: "HEVC", pix_fmts: &["yuv420p", "yuv420p10le", "yuv422p10le"], rates: "QVC", q: (0, 51), preset: ("-preset", X26X_PRESETS), profile: NONE_P, interlace: false, ext: "", extra: &[] },
-    VCodec { enc: "libsvtav1", label: "AV1", pix_fmts: &["yuv420p", "yuv420p10le"], rates: "QV", q: (1, 63), preset: ("-preset", &["8", "4", "5", "6", "7", "9", "10", "11", "12"]), profile: NONE_P, interlace: false, ext: "", extra: &[] },
-    VCodec { enc: "libvpx-vp9", label: "VP9", pix_fmts: &["yuv420p", "yuv444p"], rates: "QVC", q: (0, 63), preset: ("-deadline", &["good", "best", "realtime"]), profile: NONE_P, interlace: false, ext: "", extra: &["-row-mt", "1"] },
-    VCodec { enc: "libvpx", label: "VP8", pix_fmts: &["yuv420p"], rates: "QVC", q: (4, 63), preset: ("-deadline", &["good", "best", "realtime"]), profile: NONE_P, interlace: false, ext: "", extra: &[] },
-    VCodec { enc: "mpeg2video", label: "MPEG-2", pix_fmts: &["yuv420p", "yuv422p"], rates: "QVC", q: (2, 31), preset: ("", &[]), profile: NONE_P, interlace: true, ext: "", extra: &[] },
+const NVENC_PRESETS: &[&str] = &["p4", "p1", "p2", "p3", "p5", "p6", "p7"];
+const AMF_QUALITY: &[&str] = &["balanced", "speed", "quality"];
+
+/// R22: a hardware encoder's row: constant-quality, VBR and CBR rate control, progressive 8-bit 4:2:0 frames.
+const fn hwc(enc: &'static str, label: &'static str, hw: &'static str, q: (u32, u32), preset: (&'static str, &'static [&'static str])) -> VCodec {
+    VCodec { enc, label, pix_fmts: &["yuv420p"], rates: "QVC", q, preset, profile: NONE_P, interlace: false, ext: "", extra: &[], hw }
+}
+
+pub static VCODECS: [VCodec; 30] = [
+    VCodec { enc: "libx264", label: "H.264", pix_fmts: &["yuv420p", "yuv422p", "yuv444p", "yuv420p10le"], rates: "QVC", q: (0, 51), preset: ("-preset", X26X_PRESETS), profile: NONE_P, interlace: true, ext: "", hw: "", extra: &[] },
+    VCodec { enc: "libx265", label: "HEVC", pix_fmts: &["yuv420p", "yuv420p10le", "yuv422p10le"], rates: "QVC", q: (0, 51), preset: ("-preset", X26X_PRESETS), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &[] },
+    VCodec { enc: "libsvtav1", label: "AV1", pix_fmts: &["yuv420p", "yuv420p10le"], rates: "QV", q: (1, 63), preset: ("-preset", &["8", "4", "5", "6", "7", "9", "10", "11", "12"]), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &[] },
+    VCodec { enc: "libvpx-vp9", label: "VP9", pix_fmts: &["yuv420p", "yuv444p"], rates: "QVC", q: (0, 63), preset: ("-deadline", &["good", "best", "realtime"]), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &["-row-mt", "1"] },
+    VCodec { enc: "libvpx", label: "VP8", pix_fmts: &["yuv420p"], rates: "QVC", q: (4, 63), preset: ("-deadline", &["good", "best", "realtime"]), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &[] },
+    VCodec { enc: "mpeg2video", label: "MPEG-2", pix_fmts: &["yuv420p", "yuv422p"], rates: "QVC", q: (2, 31), preset: ("", &[]), profile: NONE_P, interlace: true, ext: "", hw: "", extra: &[] },
     VCodec {
         enc: "prores_ks",
         label: "ProRes",
@@ -171,7 +189,7 @@ pub static VCODECS: [VCodec; 15] = [
         profile: ("-profile:v", &[("2", "422", &["yuv422p10le"]), ("0", "422 Proxy", &["yuv422p10le"]), ("1", "422 LT", &["yuv422p10le"]), ("3", "422 HQ", &["yuv422p10le"]), ("4", "4444", &["yuv444p10le", "yuva444p10le"]), ("5", "4444 XQ", &["yuv444p10le", "yuva444p10le"])]),
         interlace: true,
         ext: "",
-        extra: &["-vendor", "apl0"],
+        hw: "", extra: &["-vendor", "apl0"],
     },
     VCodec {
         enc: "dnxhd",
@@ -184,7 +202,7 @@ pub static VCODECS: [VCodec; 15] = [
         // DNxHR cannot be interlaced (ffmpeg 9), and DNxHD's sizes and rates are fixed per raster.
         interlace: false,
         ext: "",
-        extra: &[],
+        hw: "", extra: &[],
     },
     VCodec {
         enc: "cfhd",
@@ -196,14 +214,31 @@ pub static VCODECS: [VCodec; 15] = [
         profile: ("-quality", &[("film1", "Film Scan 1", &[]), ("film3+", "Film Scan 3+", &[]), ("film2", "Film Scan 2", &[]), ("high", "High", &[]), ("medium", "Medium", &[]), ("low", "Low", &[])]),
         interlace: false,
         ext: "",
-        extra: &[],
+        hw: "", extra: &[],
     },
-    VCodec { enc: "ffv1", label: "FFV1", pix_fmts: &["bgr0", "bgra", "yuv422p10le", "yuv444p10le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "", extra: &["-level", "3", "-g", "1", "-slicecrc", "1"] },
-    VCodec { enc: "mjpeg", label: "MJPEG", pix_fmts: &["yuvj422p", "yuvj420p", "yuvj444p"], rates: "Q", q: (2, 31), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "", extra: &[] },
-    VCodec { enc: "png", label: "PNG", pix_fmts: &["rgb24", "rgba"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "png", extra: &[] },
-    VCodec { enc: "tiff", label: "TIFF", pix_fmts: &["rgb24", "rgba", "rgb48le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "tif", extra: &[] },
-    VCodec { enc: "exr", label: "OpenEXR", pix_fmts: &["gbrpf32le", "gbrapf32le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "exr", extra: &[] },
-    VCodec { enc: "dpx", label: "DPX", pix_fmts: &["rgb24", "rgb48le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "dpx", extra: &[] },
+    VCodec { enc: "ffv1", label: "FFV1", pix_fmts: &["bgr0", "bgra", "yuv422p10le", "yuv444p10le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &["-level", "3", "-g", "1", "-slicecrc", "1"] },
+    VCodec { enc: "mjpeg", label: "MJPEG", pix_fmts: &["yuvj422p", "yuvj420p", "yuvj444p"], rates: "Q", q: (2, 31), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "", hw: "", extra: &[] },
+    VCodec { enc: "png", label: "PNG", pix_fmts: &["rgb24", "rgba"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "png", hw: "", extra: &[] },
+    VCodec { enc: "tiff", label: "TIFF", pix_fmts: &["rgb24", "rgba", "rgb48le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "tif", hw: "", extra: &[] },
+    VCodec { enc: "exr", label: "OpenEXR", pix_fmts: &["gbrpf32le", "gbrapf32le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "exr", hw: "", extra: &[] },
+    VCodec { enc: "dpx", label: "DPX", pix_fmts: &["rgb24", "rgb48le"], rates: "D", q: (0, 0), preset: ("", &[]), profile: NONE_P, interlace: false, ext: "dpx", hw: "", extra: &[] },
+    // R22: hardware encoders. The placeholders first (what the built-in templates name), then each device's encoder with
+    // its own rate control (`Template::video_args`); 8-bit 4:2:0 only, the one pixel format every device takes.
+    hwc("h264_hw", "H.264 (hardware)", "auto", (0, 51), ("", &[])),
+    hwc("hevc_hw", "HEVC (hardware)", "auto", (0, 51), ("", &[])),
+    hwc("av1_hw", "AV1 (hardware)", "auto", (0, 63), ("", &[])),
+    hwc("h264_nvenc", "H.264 (NVIDIA NVENC)", "nvenc", (0, 51), ("-preset", NVENC_PRESETS)),
+    hwc("hevc_nvenc", "HEVC (NVIDIA NVENC)", "nvenc", (0, 51), ("-preset", NVENC_PRESETS)),
+    hwc("av1_nvenc", "AV1 (NVIDIA NVENC)", "nvenc", (0, 63), ("-preset", NVENC_PRESETS)),
+    hwc("h264_qsv", "H.264 (Intel Quick Sync)", "qsv", (1, 51), ("-preset", X26X_PRESETS)),
+    hwc("hevc_qsv", "HEVC (Intel Quick Sync)", "qsv", (1, 51), ("-preset", X26X_PRESETS)),
+    hwc("av1_qsv", "AV1 (Intel Quick Sync)", "qsv", (1, 63), ("-preset", X26X_PRESETS)),
+    hwc("h264_amf", "H.264 (AMD AMF)", "amf", (0, 51), ("-quality", AMF_QUALITY)),
+    hwc("hevc_amf", "HEVC (AMD AMF)", "amf", (0, 51), ("-quality", AMF_QUALITY)),
+    hwc("av1_amf", "AV1 (AMD AMF)", "amf", (0, 255), ("-quality", AMF_QUALITY)),
+    hwc("h264_mf", "H.264 (Media Foundation)", "mf", (100, 0), ("", &[])),
+    hwc("hevc_mf", "HEVC (Media Foundation)", "mf", (100, 0), ("", &[])),
+    hwc("av1_mf", "AV1 (Media Foundation)", "mf", (100, 0), ("", &[])),
 ];
 
 pub struct ACodec {
@@ -379,9 +414,11 @@ impl Template {
             if let Some(p) = v.profile().filter(|p| !p.2.is_empty() && !p.2.contains(&pix)) {
                 return Err(format!("{} {} needs the pixel format {}.", k.label, p.1, p.2.join(" or ")));
             }
+            // R22: Media Foundation counts quality upwards (100 best), so the scale may run either way.
+            let (lo, hi) = (k.q.0.min(k.q.1), k.q.0.max(k.q.1));
             let kind = match v.rate {
                 Rate::Default => 'D',
-                Rate::Quality(q) if q < k.q.0 || q > k.q.1 => return Err(format!("{} quality goes from {} to {}.", k.label, k.q.0, k.q.1)),
+                Rate::Quality(q) if q < lo || q > hi => return Err(format!("{} quality goes from {} to {}.", k.label, k.q.0, k.q.1)),
                 Rate::Quality(_) => 'Q',
                 Rate::Vbr { avg, max } if avg == 0 || max < avg => return Err("The maximum bit rate must be at or over the average.".into()),
                 Rate::Vbr { .. } => 'V',
@@ -428,13 +465,70 @@ impl Template {
         Ok(())
     }
 
+    /// R22: this template with its hardware video codec settled: a `<codec>_hw` placeholder becomes the chosen device's
+    /// encoder (`hw::encoder_for`), and a hardware encoder that did not pass the capability test (or hardware encoding
+    /// Off) becomes the software encoder of the codec, with a note saying so. Software templates come back as they are.
+    pub fn resolved(&self) -> (Template, Option<String>) {
+        use crate::engine::hw;
+        let Some(v) = &self.video else { return (self.clone(), None) };
+        let Some(k) = v.codec().filter(|k| !k.hw.is_empty()) else { return (self.clone(), None) };
+        let (codec, _) = hw::family(k.enc).unwrap_or((k.enc.split('_').next().unwrap_or(k.enc), ""));
+        let target = if k.hw == "auto" { hw::encoder_for(codec) } else { hw::encoder_ok(k.enc).then(|| k.enc.to_string()) };
+        let mut t = self.clone();
+        let tv = t.video.as_mut().expect("checked above");
+        match target {
+            Some(enc) if enc == k.enc => (t, None),
+            Some(enc) => {
+                tv.codec = enc;
+                tv.preset = String::new();
+                (t, None)
+            }
+            None => {
+                let sw = hw::software_for(codec);
+                let label = vcodec(sw).map_or(sw, |c| c.label);
+                tv.codec = sw.into();
+                tv.preset = String::new();
+                tv.profile = String::new();
+                // A quality on the software encoder's scale (CRF, best first) is kept; Media Foundation's (100 best) is not.
+                if let (Rate::Quality(q), Some(c)) = (tv.rate, vcodec(sw)) {
+                    if k.q.0 > k.q.1 || q < c.q.0 || q > c.q.1 {
+                        tv.rate = Rate::Default;
+                    }
+                }
+                let why = if hw::table().is_none() {
+                    "hardware acceleration has not been tested yet"
+                } else if k.hw == "auto" {
+                    "no hardware encoder for it passed the test on this computer, or hardware encoding is off"
+                } else {
+                    "it did not pass the test on this computer, or hardware encoding is off"
+                };
+                (t, Some(format!("{} is not available ({why}): rendering with {label} in software.", k.label)))
+            }
+        }
+    }
+
     /// Encoder arguments for the video stream: codec, rate control, preset, profile, pixel format, interlacing.
+    /// R22: a hardware codec is resolved first (`resolved`).
     pub fn video_args(&self, s: &ProjectSettings) -> Vec<String> {
-        let Some(v) = &self.video else { return Vec::new() };
+        let (t, _) = self.resolved();
+        let Some(v) = &t.video else { return Vec::new() };
         let Some(k) = v.codec() else { return Vec::new() };
         let mut a: Vec<String> = vec!["-c:v".into(), k.enc.into()];
         let push = |a: &mut Vec<String>, xs: &[&str]| a.extend(xs.iter().map(|x| x.to_string()));
-        match (v.rate, k.enc) {
+        match (v.rate, k.hw) {
+            // R22: each device's own rate control switches.
+            (Rate::Quality(q), "nvenc") => push(&mut a, &["-rc", "constqp", "-qp", &q.to_string()]),
+            (Rate::Vbr { avg, max }, "nvenc") => push(&mut a, &["-rc", "vbr", "-b:v", &format!("{avg}k"), "-maxrate", &format!("{max}k"), "-bufsize", &format!("{}k", max * 2)]),
+            (Rate::Cbr(r), "nvenc") => push(&mut a, &["-rc", "cbr", "-b:v", &format!("{r}k"), "-maxrate", &format!("{r}k"), "-bufsize", &format!("{r}k")]),
+            (Rate::Quality(q), "qsv") => push(&mut a, &["-global_quality", &q.to_string()]),
+            (Rate::Quality(q), "amf") => push(&mut a, &["-rc", "cqp", "-qp_i", &q.to_string(), "-qp_p", &q.to_string()]),
+            (Rate::Vbr { avg, max }, "amf") => push(&mut a, &["-rc", "vbr_peak", "-b:v", &format!("{avg}k"), "-maxrate", &format!("{max}k")]),
+            (Rate::Cbr(r), "amf") => push(&mut a, &["-rc", "cbr", "-b:v", &format!("{r}k")]),
+            (Rate::Quality(q), "mf") => push(&mut a, &["-rate_control", "quality", "-quality", &q.to_string()]),
+            (Rate::Vbr { avg, max }, "mf") => push(&mut a, &["-rate_control", "pc_vbr", "-b:v", &format!("{avg}k"), "-maxrate", &format!("{max}k")]),
+            (Rate::Cbr(r), "mf") => push(&mut a, &["-rate_control", "cbr", "-b:v", &format!("{r}k")]),
+            (Rate::Default, _) => {}
+            (rate, _) => match (rate, k.enc) {
             (Rate::Quality(q), "mpeg2video" | "mjpeg") => push(&mut a, &["-q:v", &q.to_string()]),
             // libvpx's CRF is capped by -b:v: 0 lifts the cap on VP9; VP8 needs one.
             (Rate::Quality(q), "libvpx-vp9") => push(&mut a, &["-crf", &q.to_string(), "-b:v", "0"]),
@@ -444,6 +538,7 @@ impl Template {
             (Rate::Cbr(r), "dnxhd") => push(&mut a, &["-b:v", &format!("{r}k")]),
             (Rate::Cbr(r), _) => push(&mut a, &["-b:v", &format!("{r}k"), "-minrate", &format!("{r}k"), "-maxrate", &format!("{r}k"), "-bufsize", &format!("{r}k")]),
             (Rate::Default, _) => {}
+            },
         }
         if !k.preset.0.is_empty() {
             let p = if v.preset.is_empty() { k.preset.1[0] } else { v.preset.as_str() };
@@ -454,7 +549,7 @@ impl Template {
         }
         push(&mut a, &["-pix_fmt", v.pix_fmt()]);
         push(&mut a, k.extra);
-        if k.enc == "libx265" && matches!(self.container.as_str(), "mp4" | "mov") {
+        if (k.enc == "libx265" || k.enc.starts_with("hevc_")) && matches!(self.container.as_str(), "mp4" | "mov") {
             push(&mut a, &["-tag:v", "hvc1"]);
         }
         match v.field(s) {
@@ -512,9 +607,10 @@ impl Template {
         a
     }
 
-    /// One line of video settings for the description box.
+    /// One line of video settings for the description box (R22: the encoder that will run, after `resolved`).
     pub fn video_line(&self, s: &ProjectSettings, rotate: bool) -> Option<String> {
-        let v = self.video.as_ref()?;
+        let (t, _) = self.resolved();
+        let v = t.video.as_ref()?;
         let (w, h) = v.size(s, rotate);
         let field = match v.field(s) {
             FieldOrder::Progressive => "Progressive".to_string(),
@@ -617,6 +713,11 @@ pub static BUILTIN: LazyLock<Vec<Template>> = LazyLock::new(|| {
         tpl("AC-3 audio", "Dolby Digital AC-3 448 kbps audio.", "ac3", None, aud("ac3", 448)),
         tpl("E-AC-3 audio", "Dolby Digital Plus E-AC-3 640 kbps audio.", "eac3", None, aud("eac3", 640)),
         tpl("AIFF audio", "Uncompressed big-endian PCM audio (.aif).", "aiff", None, aud("pcm", 0)),
+        // R22: the graphics card's encoder (the device Preferences › Video chose, or the first that passed the test),
+        // and the software encoder with a note when none is available.
+        tpl("MP4 H.264 (hardware)", "H.264 at the project size on the graphics card's encoder (NVENC, Quick Sync, AMF or Media Foundation, as Preferences > Video allows); in software when none passed the test.", "mp4", vid("h264_hw", None, Quality(23), "", ""), aud("aac", 320)),
+        tpl("MP4 HEVC (hardware)", "HEVC at the project size on the graphics card's encoder; in software when none passed the test.", "mp4", vid("hevc_hw", None, Quality(26), "", ""), aud("aac", 320)),
+        tpl("MP4 AV1 (hardware)", "AV1 at the project size on the graphics card's encoder; in software when none passed the test.", "mp4", vid("av1_hw", None, Quality(30), "", ""), aud("aac", 256)),
     ]
 });
 

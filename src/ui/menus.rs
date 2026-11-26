@@ -186,6 +186,7 @@ impl CmdState {
         let v23 = self.look.v23();
         match c {
             New | NewEmpty | Open | Close | Save | SaveAs | SaveVersion | ImportMedia | ImportVegas | Properties | Exit | RenderAs | Preferences
+            | ExportVegas | ArchiveProject | ImportMediaFromProject
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
             | CustomizeKeyboard => true,
@@ -636,7 +637,7 @@ fn show_item(ui: &mut Ui, item: &M, look: UiLook) {
 const IMPORT: &[M] = &[
     C("&Media...", ImportMedia),
     C("&VEGAS Project...", ImportVegas),
-    X("Media from &Project...", Later("R30")),
+    C("Media from &Project...", ImportMediaFromProject),
     V16(&X("&AAF...", AAF)),
     X("P&remiere/After Effects (*.prproj)...", Later("R29")),
     X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
@@ -649,7 +650,8 @@ const IMPORT: &[M] = &[
 const AAF: Why = Fixed("not feasible: no Rust AAF library (OTIO route in batch R29)");
 
 const EXPORT: &[M] = &[
-    X("&Milan Pro Project Archive...", Later("R30")),
+    C("&Milan Pro Project Archive...", ArchiveProject),
+    C("&VEGAS Project (via script)...", ExportVegas),
     X("Premiere/&After Effects (*.prproj)...", Later("R29")),
     X("&Final Cut Pro 7/DaVinci Resolve (*.xml)...", Later("R29")),
     X("Final Cut Pro &X (*.fcpxml)...", Later("R29")),
@@ -1039,7 +1041,7 @@ pub const TOOLS: &[M] = &[
         X("&Blu-ray Disc...", Fixed("not feasible: needs AACS licensing (VEGAS long tail R59)")),
     ]),
     C("Generate Loudness Log", GenerateLoudnessLog),
-    V23(&X("Advanced Save...", Later("R30"))),
+    V23(&C("Advanced Save...", ArchiveProject)),
     V23(&X("Speech to Text...", NotPlanned("R59"))),
     V23(&C("Text to Speech...", TextToSpeech)),
     S,

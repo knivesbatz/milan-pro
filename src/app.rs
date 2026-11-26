@@ -81,7 +81,8 @@ pub struct MeridianApp {
     /// report shown after it (intro, lines).
     vegas: crate::interchange::VegasImport,
     pending_import: Option<(Project, Vec<String>)>,
-    vegas_report: Option<(String, Vec<String>)>,
+    /// A report dialog: title, intro, lines (a VEGAS import's leftovers, an export's notes).
+    vegas_report: Option<(String, String, Vec<String>)>,
     /// Files dragged to the timeline: probed while they hover, placed when dropped (cancelled by New/Open).
     file_drop: drop::FileDrop,
     /// MILAN_DROP (demo): window point where the demo media pretends to be dragged from Windows, for the screenshot.
@@ -246,6 +247,9 @@ pub struct MeridianApp {
     /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
     /// crash-report offer, the diagnostic report and the roll-back offer.
     rel: reliability::Rel,
+    /// R30: Export > Archive Project and Import > Media from Project, open.
+    archive: Option<crate::ui::dialogs::ArchiveDlg>,
+    media_from: Option<crate::ui::dialogs::MediaFromProject>,
 }
 
 /// R6b: a project a nested timeline was opened from, waiting for Open Parent Timeline with its undo history,
@@ -366,6 +370,18 @@ impl MeridianApp {
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
         crate::logger::set_privacy(prefs.crash_privacy);
+        // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
+        // opens the chosen adapter on a background thread; without one the CPU composes.
+        #[cfg(feature = "wgpu")]
+        if let Some(rs) = &cc.wgpu_render_state {
+            crate::engine::gpu::attach(rs);
+        }
+        crate::engine::gpu::choose(&prefs.gpu);
+        // R22: the hardware acceleration table, from its cache or measured on a background thread (the harness reads
+        // the cache but never writes it); R23: the caches' sizes.
+        crate::engine::hw::set_prefs(&prefs.hw_decode, &prefs.hw_encode);
+        crate::engine::hw::start(!launch.demo, false);
+        crate::engine::caches::configure(&prefs);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
         theme::set(&cc.egui_ctx, look);
         // As the theme has it (a VP16 choice has no White), so `update` sees no look change.
@@ -558,6 +574,8 @@ impl MeridianApp {
             audio_edits: Default::default(),
             command_props: None,
             slideshow: None,
+            archive: None,
+            media_from: None,
             audio_transition: None,
             rel: Default::default(),
         };
@@ -921,7 +939,9 @@ impl eframe::App for MeridianApp {
                     self.preview.visible |= !self.playing || self.prefs.scopes.while_playing;
                     scopes_prefs |= ui::scopes_toolbar(bar, &mut self.scopes, &mut self.prefs.scopes);
                     let split = self.preview_view.split_snapshot();
-                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, self.preview.image.as_ref(), split, self.playing);
+                    // R21c: the scopes read the frame's pixels (a frame the GPU composed is read back once).
+                    let frame = self.preview.image.as_ref().map(|p| p.image());
+                    scopes_prefs |= ui::draw_scopes(body, &mut self.scopes, &mut self.prefs.scopes, frame.as_ref(), split, self.playing);
                 }
                 Panel::LoudnessMeters => ui::loudness_meters(body, &mut self.loudness, &self.audio.loud, &self.prefs.loudness),
                 Panel::PluginManager => {
@@ -1269,7 +1289,20 @@ impl eframe::App for MeridianApp {
 
     /// The window layout comes back at the next launch. Only the layout is written, over what is on disk, so
     /// another window's preferences (recent projects) are kept.
+    #[cfg(feature = "glow")]
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.exit();
+    }
+
+    #[cfg(not(feature = "glow"))]
+    fn on_exit(&mut self) {
+        self.exit();
+    }
+}
+
+impl MeridianApp {
+    /// `App::on_exit` (its signature depends on the painter feature).
+    fn exit(&mut self) {
         // R34b: plug-in editor windows close with Milan (their hosts die with it too, in the Job Object).
         crate::engine::aplug::close_editors();
         if self.rel.autosave {

@@ -15,7 +15,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 - Real-time multi-layer preview with persistent decoders, frame caches and video proxies
 - Video FX, transitions, media generators, Titles & Text and Color Grading (lift/gamma/gain, curves, .cube LUTs), with presets and keyframes
 - Streaming audio mixer with waveforms and meters; audio FX (EQ, compressor, gate, reverb, delay) on events, tracks and the master; recording into armed tracks
-- Render As through the same engine as the preview (FFmpeg encoders)
+- Render As through the same engine as the preview (FFmpeg encoders); hardware encoders (NVENC, Quick Sync, AMF, Media Foundation) and hardware decoding (d3d11va, cuda, qsv) are tested at startup and used when they pass and measure faster
 - Autosave, safe saves, undo/redo, and an auto-updater
 - Project files are `.mnle` (JSON)
 
@@ -43,7 +43,9 @@ Verification: the download's SHA-256 must match the release. Once the maintainer
 
 ## Import from VEGAS Pro
 
-Milan Pro cannot read `.veg` files directly. In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (including Pan/Crop, subclips and reversed events), fades, takes, groups, track envelopes, markers and regions come across; Milan Pro lists what does not (FX, generated media, transitions and Track Motion). Picking a `.veg` there instead only adds the media it uses to Project Media.
+Milan Pro cannot read `.veg` files directly (`docs/research/VEG_FORMAT.md`). In VEGAS, choose **Tools > Scripting > Run Script...** and pick `Export to Milan Pro.cs` from the `vegas` folder of the Milan Pro install (`tools/vegas` in the source; use the `(VEGAS 13)` copy in VEGAS Pro 13 and earlier). It writes `<project>.milan.json`; open that in Milan Pro with **File > Import > VEGAS Project...**. Tracks, events (Pan/Crop, subclips, reversed events, velocity), fades, takes, groups, envelopes, Track Motion, parent/child compositing, transitions, generated media, event/track/media/output FX with their keyframes, audio FX by name, markers, regions and the project settings come across; VEGAS plug-ins that have a Milan Pro counterpart become it with their settings converted, the rest are kept as disabled OFX placeholders (they play once the plug-in is installed) and Milan Pro lists them. Picking a `.veg` there instead only adds the media it uses to Project Media.
+
+The other way, **File > Export > VEGAS Project (via script)...** writes the same kind of file, and `Import from Milan Pro.cs` (same folder) rebuilds the project inside VEGAS through its scripting API; Milan Pro never writes `.veg` files. **File > Export > Milan Pro Project Archive...** copies a project with its media into one folder (optionally trimmed to the used ranges), and **File > Import > Media from Project...** pulls another project's media in. `docs/INTERCHANGE.md` has the details.
 
 ## OFX plug-ins
 

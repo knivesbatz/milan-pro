@@ -14,6 +14,8 @@
 //! - `MILAN_HOLD=1` (with `MILAN_SCREENSHOT`): the run never takes its screenshot or exits; it stays open off-screen
 //!   until killed (R43's crash-recovery test). `MILAN_APPDATA=<folder>` moves autosave and session files there, and
 //!   `MILAN_AUTOSAVE_NOW=1` autosaves at the first tick (both in `autosave.rs`).
+//! - `MILAN_HW_TABLE=<file.json>` (R22): the hardware acceleration table to show in Preferences › Video, loaded as it
+//!   is (no probe); `hw_capability_table` writes one to %TEMP%\milan-agent\hw-probe\hw.json.
 use eframe::egui::{self, ColorImage};
 use std::path::{Path, PathBuf};
 use crate::media::probe_media;
@@ -179,6 +181,10 @@ impl Shot {
         if let Some(image) = image {
             if let Err(e) = save_png(&self.path, &image) {
                 log::error!("screenshot: {e}");
+            }
+            if std::env::var_os("MILAN_SHOT_TRACE").is_some() {
+                // R21c: what composed the preview, and whether any frame left the GPU (a zero-copy preview reads none back).
+                println!("shot compositor: {} readbacks={:?}", crate::engine::gpu::status(), crate::engine::gpu::readback_count()); // the harness trace (R44: stdout, not the log)
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;

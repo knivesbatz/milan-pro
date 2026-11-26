@@ -24,7 +24,7 @@ pub fn update_tab(look: UiLook) -> usize {
     rows.iter().flat_map(|r| r.iter()).position(|n| *n == "Update").unwrap_or(0)
 }
 const GENERAL: usize = 0;
-const VIDEO: usize = 1;
+pub const VIDEO: usize = 1;
 pub const PREVIEW_DEVICE: usize = 2;
 pub const AUDIO: usize = 3;
 pub const AUDIO_DEVICE: usize = 4;
@@ -287,8 +287,89 @@ fn video(ui: &mut Ui, d: &mut Prefs) {
     // Milan Pro's own, off by default: compositing modes VEGAS does not have.
     widgets::checkbox(ui, &mut d.extra_blend_modes, "Offer extra blend modes (Soft Light, Exclusion, Hard Mix, Hue, Saturation, Color, Luminosity)")
         .on_hover_text("Not VEGAS modes: a project using them looks different in VEGAS");
+    // R21a: VEGAS's "GPU acceleration of video processing": Off or an adapter (Milan Pro adds Automatic, the default).
+    use crate::engine::gpu;
+    ui.add_space(6.0);
+    let adapters = gpu::adapters();
+    if adapters.is_none() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250)); // the list arrives from a background thread
+    }
+    let auto = "Automatic (the best adapter)";
+    let shown = match d.gpu.as_str() {
+        "" => auto.to_string(),
+        n if n == gpu::OFF || adapters.as_ref().is_none_or(|a| a.iter().any(|x| x == n)) => n.to_string(),
+        n => format!("{n} (not found)"),
+    };
+    super::row(ui, "GPU acceleration of video processing:", 230.0, true, |ui| {
+        ComboBox::from_id_salt("pv_gpu").width(180.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.gpu, gpu::OFF.to_string(), gpu::OFF);
+            ui.selectable_value(&mut d.gpu, String::new(), auto);
+            for n in adapters.iter().flatten() {
+                ui.selectable_value(&mut d.gpu, n.clone(), n.as_str());
+            }
+        })
+        .response
+        .on_hover_text("Compositing on the graphics card (Vulkan). Without one, or Off, the CPU composites; the picture is the same either way.")
+    });
+    ui.label(gpu::status());
+    // R22: hardware decoding and the encode device, from the capability table (`engine::hw`).
+    use crate::engine::hw;
+    ui.add_space(6.0);
+    let table = hw::table();
+    if table.is_none() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500)); // the probe runs on a background thread
+    }
+    let auto_dec = "Automatic (heavy sources, when faster)";
+    let shown = match d.hw_decode.as_str() {
+        "" => auto_dec.to_string(),
+        n => n.to_string(),
+    };
+    super::row(ui, "Video decode acceleration:", 230.0, true, |ui| {
+        ComboBox::from_id_salt("pv_hwdec").width(180.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.hw_decode, hw::OFF.to_string(), hw::OFF);
+            ui.selectable_value(&mut d.hw_decode, String::new(), auto_dec);
+            for h in hw::HWACCELS {
+                let passed = table.as_ref().is_none_or(|t| t.decode.iter().any(|x| x.ok && x.hwaccel == h));
+                ui.add_enabled(passed, SelectableLabel::new(d.hw_decode == h, h)).on_disabled_hover_text("Decoded nothing on this computer").clicked().then(|| d.hw_decode = h.to_string());
+            }
+        })
+        .response
+        .on_hover_text("Which FFmpeg hardware decoder path HEVC, AV1 and 4K sources decode through during playback. Automatic takes the one that measured faster than software, source by source.")
+    });
+    let auto_enc = "Automatic (the first that passed)";
+    let shown = match d.hw_encode.as_str() {
+        "" => auto_enc.to_string(),
+        n => hw::device_label(n).to_string(),
+    };
+    super::row(ui, "Encode device:", 230.0, true, |ui| {
+        ComboBox::from_id_salt("pv_hwenc").width(180.0).selected_text(shown).show_ui(ui, |ui| {
+            ui.selectable_value(&mut d.hw_encode, hw::OFF.to_string(), hw::OFF);
+            ui.selectable_value(&mut d.hw_encode, String::new(), auto_enc);
+            for (dev, label) in hw::DEVICES {
+                let passed = table.as_ref().is_none_or(|t| t.encode.iter().any(|x| x.ok && x.encoder.ends_with(&format!("_{dev}"))));
+                ui.add_enabled(passed, SelectableLabel::new(d.hw_encode == dev, label)).on_disabled_hover_text("No encoder of this device passed on this computer").clicked().then(|| d.hw_encode = dev.to_string());
+            }
+        })
+        .response
+        .on_hover_text("The graphics card encoder the hardware render templates use (Render As > MP4 H.264 (hardware)...). A template whose encoder did not pass renders in software and says so.")
+    });
+    ui.horizontal(|ui| {
+        ui.label("Hardware acceleration test:");
+        if widgets::push_button_enabled(ui, table.is_some(), "Test Again").on_hover_text("Measure every decoder path and encoder again (about 10 s)").clicked() {
+            hw::start(true, true);
+        }
+    });
+    super::field_box(ui, 4, |ui| {
+        ui.set_width(ui.available_width());
+        ui.set_height(7.0 * 16.0);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for line in hw::summary() {
+            ui.label(RichText::new(line).size(11.0));
+        }
+    });
     if default_all(ui) {
-        (d.auto_proxy, d.extra_blend_modes) = (false, false);
+        (d.auto_proxy, d.extra_blend_modes, d.gpu) = (false, false, String::new());
+        (d.hw_decode, d.hw_encode) = (String::new(), String::new());
     }
 }
 

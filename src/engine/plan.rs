@@ -131,7 +131,7 @@ struct VEvent {
 }
 
 /// One frame, resolved: tracks bottom to top.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FramePlan {
     /// R11: composed over transparency (a render with an alpha channel), not black.
     pub alpha: bool,
@@ -144,7 +144,7 @@ pub struct FramePlan {
     pub samples: Vec<(f64, f32)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TrackPlan {
     pub mode: Composite,
     pub opacity: f32,
@@ -173,7 +173,7 @@ pub struct TrackPlan {
     pub adjust: Vec<(Vec<FxEval>, f32)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Item {
     Event(EventPlan),
     /// A transition from `a` into `b` at progress `p` (None = transparent: a lone fade-in, or a fade-out to nothing);
@@ -181,7 +181,7 @@ pub enum Item {
     Mix { a: Option<EventPlan>, b: Option<EventPlan>, p: f32, kind: Option<FxEval> },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EventPlan {
     pub src: SrcAt,
     /// Normalised source (0..1) to normalised frame (0..1): Pan/Crop, then fit to the project frame.
@@ -197,7 +197,7 @@ pub struct EventPlan {
     pub masks: Vec<MaskPlan>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SrcAt {
     pub m: Arc<MediaRef>,
     /// Source frame on the project-fps grid (or `m.grid`); None for a still.
@@ -209,7 +209,7 @@ pub struct SrcAt {
 }
 
 /// R6a: a nested timeline's frame, or why it is offline (the preview says so, as for a missing file).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Nested {
     /// The child's frame plan; several with their weights when its own Video Bus Track blurs motion.
     Frame(Vec<(FramePlan, f32)>),

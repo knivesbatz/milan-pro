@@ -156,7 +156,11 @@ fn video_page(ui: &mut Ui, d: &mut Template, s: &ProjectSettings) {
     let Some(v) = &mut d.video else { return };
     super::row(ui, "Codec:", 120.0, true, |ui| {
         widgets::combo(ui, "tpl_vcodec", 220.0, vcodec(&v.codec).map_or(v.codec.as_str(), |k| k.label).to_owned(), |ui| {
-            for k in VCODECS.iter().filter(|k| c.video.contains(&k.enc)) {
+            // R22: a device's own encoder is listed once it passed the capability test; the "(hardware)" placeholders
+            // always (they fall back to software with a note).
+            let current = v.codec.clone();
+            let offered = move |k: &&crate::render::VCodec| k.hw.is_empty() || k.hw == "auto" || current == k.enc || crate::engine::hw::encoder_ok(k.enc);
+            for k in VCODECS.iter().filter(|k| c.video.contains(&k.enc) && offered(k)) {
                 if ui.selectable_label(v.codec == k.enc, k.label).clicked() && v.codec != k.enc {
                     *v = VideoEnc { codec: k.enc.into(), size: v.size, fps: v.fps, field: v.field, par: v.par, ..VideoEnc::default() }.with_codec_defaults();
                 }

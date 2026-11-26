@@ -49,7 +49,8 @@ pub struct DecSpec<'a> {
     pub w: u32,
     pub h: u32,
     pub scaler: &'static str,
-    pub hw: bool,
+    /// R22: the `-hwaccel` to decode with ("" for software): `hw::decode_hwaccel`.
+    pub hwaccel: &'a str,
     pub matrix: Option<&'static str>,
     /// The deinterlace filter ahead of the rate filter ("" for a progressive source or no deinterlacing).
     pub deint: &'static str,
@@ -71,8 +72,8 @@ pub struct DecSpec<'a> {
 // the GPU path (R21) if real-time Optical Flow previews are wanted.
 pub fn args(s: &DecSpec) -> Vec<String> {
     let mut a: Vec<String> = vec!["-v".into(), "error".into(), "-threads".into(), s.threads.to_string()];
-    if s.hw {
-        a.extend(["-hwaccel", "auto"].map(String::from));
+    if !s.hwaccel.is_empty() {
+        a.extend(["-hwaccel", s.hwaccel].map(String::from));
     }
     a.extend(["-ss".into(), format!("{:.6}", (s.sf - s.lead) as f64 / s.fps), "-i".into(), s.path.to_string_lossy().into_owned()]);
     a.extend(["-map".into(), format!("0:v:{}", s.stream)]);
@@ -158,7 +159,7 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
         }
     });
     let err = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
-    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, grid, hw: spec.hw, next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None })
+    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, grid, hw: !spec.hwaccel.is_empty(), next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None })
 }
 
 pub enum Pull {
@@ -247,9 +248,14 @@ impl DecoderPool {
         (0..s.len()).filter(|&i| Self::same(&s[i], m, w, h, q) && (0..=reach).contains(&(sf - s[i].next_sf))).min_by_key(|&i| sf - s[i].next_sf)
     }
 
-    /// Hardware decoding for heavy sources (HEVC, AV1, 2560 px and up) during playback, until it fails once.
-    fn wants_hw(&self, m: &MediaRef) -> bool {
-        !self.hw_failed.contains(&m.id) && (m.w >= 2560 || matches!(m.codec.as_deref(), Some("hevc" | "av1")))
+    /// R22: the hwaccel a playback stream of `m` decodes with, if any: Preferences › Video's choice and the capability
+    /// table (`hw::decode_hwaccel`: heavy sources, HEVC, AV1 and 2560 px and up, on the path that measured fastest),
+    /// never again for a media it failed on once.
+    fn wants_hw(&self, m: &MediaRef) -> Option<String> {
+        if self.hw_failed.contains(&m.id) {
+            return None;
+        }
+        crate::engine::hw::decode_hwaccel(m.codec.as_deref(), m.w)
     }
 
     /// A stream of `m` from `sf` (`frames` of them, if set: a chunk). `play` streams may decode on the GPU; chunks and
@@ -261,12 +267,13 @@ impl DecoderPool {
         let lead = per.clamp(1, 30).min(sf);
         // A proxy keeps the source's frame times and colour matrix; it is light H.264, so never hardware decoded.
         let proxy = m.proxy_for(q);
-        let (path, hw) = (proxy.unwrap_or(&m.path), play && self.wants_hw(m) && proxy.is_none());
+        let path = proxy.unwrap_or(&m.path);
+        let hwaccel = if play && proxy.is_none() { self.wants_hw(m).unwrap_or_default() } else { String::new() };
         // The proxy was deinterlaced when it was made.
         let deint = if proxy.is_none() { m.deint } else { "" };
         let threads = if proxy.is_none() && (frames.is_some() || (self.seeking && !play)) { seek_threads() } else { 2 };
         let frames = frames.map(|n| n + lead);
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hw, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames };
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hwaccel: &hwaccel, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames };
         spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))
     }
 
@@ -512,7 +519,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hw: false, matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hwaccel: "", matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None }
     }
 
     #[test]
@@ -522,8 +529,8 @@ mod tests {
             args(&spec(p)).join(" "),
             r"-v error -threads 2 -ss 2.969633 -i C:\clips\a b.mp4 -map 0:v:0 -an -sn -dn -vf fps=30000/1001:round=up:start_time=0,scale=960:540:flags=fast_bilinear:in_color_matrix=bt709:out_range=full,format=rgba -f rawvideo -"
         );
-        let a = args(&DecSpec { hw: true, deint: "yadif=deint=interlaced,", matrix: None, ..spec(p) });
-        assert_eq!(a[4..6], ["-hwaccel", "auto"]);
+        let a = args(&DecSpec { hwaccel: "d3d11va", deint: "yadif=deint=interlaced,", matrix: None, ..spec(p) });
+        assert_eq!(a[4..6], ["-hwaccel", "d3d11va"]);
         assert!(a.iter().any(|x| x.starts_with("yadif=deint=interlaced,fps=") && x.contains("in_color_matrix=auto")));
         // R3b: Stream 2 and Optical Flow.
         let a = args(&DecSpec { stream: 1, flow: true, ..spec(p) }).join(" ");
@@ -550,8 +557,13 @@ mod tests {
         assert!(2 <= seek_threads() && seek_threads() <= 4);
     }
 
+    /// R22: without a capability table and with Automatic, heavy sources get `-hwaccel auto` as before; a media that
+    /// failed once on hardware stays in software.
     #[test]
     fn hwaccel_only_for_heavy_sources() {
+        let _g = crate::engine::hw::tests::CHOICE.lock().unwrap_or_else(|e| e.into_inner());
+        crate::engine::hw::set_table(None);
+        crate::engine::hw::set_prefs("", "");
         let pool = DecoderPool::default();
         let m = |codec: &str, w| MediaRef {
             id: "m".into(),
@@ -571,11 +583,17 @@ mod tests {
             stream: 0,
             flow: false,
         };
-        assert!(!pool.wants_hw(&m("h264", 1920)));
-        assert!(pool.wants_hw(&m("hevc", 1920)) && pool.wants_hw(&m("av1", 1920)) && pool.wants_hw(&m("h264", 2560)));
+        assert!(pool.wants_hw(&m("h264", 1920)).is_none());
+        let auto = Some("auto".to_string());
+        assert!(pool.wants_hw(&m("hevc", 1920)) == auto && pool.wants_hw(&m("av1", 1920)) == auto && pool.wants_hw(&m("h264", 2560)) == auto);
+        // With the table: the hwaccel that measured fastest for the codec.
+        crate::engine::hw::set_table(Some(crate::engine::hw::tests::amd_table()));
+        assert_eq!(pool.wants_hw(&m("hevc", 1920)), Some("d3d11va".into()));
+        assert!(pool.wants_hw(&m("av1", 1920)).is_none(), "slower than software on this table");
+        crate::engine::hw::set_table(None);
         let mut pool = pool;
         pool.hw_failed.insert("m".into());
-        assert!(!pool.wants_hw(&m("hevc", 1920)));
+        assert!(pool.wants_hw(&m("hevc", 1920)).is_none());
     }
 
     /// One-frame decode at the same -ss, the reference a stream must match.
