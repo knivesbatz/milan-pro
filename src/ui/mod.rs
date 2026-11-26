@@ -27,6 +27,7 @@ mod preview;
 mod project_notes;
 mod properties;
 mod scopes;
+pub mod splash;
 mod status;
 #[allow(dead_code)] // full token set from the spec; later stages use the rest
 pub mod theme;

@@ -22,6 +22,8 @@ pub struct Prefs {
     pub space_pauses: bool,
     /// VP23 Welcome screen on startup.
     pub show_welcome: bool,
+    /// Preferences › General: "Show splash screen at startup" (`ui::splash`).
+    pub show_splash: bool,
     /// Recently used project list (most recent first) and its length.
     pub recent: Vec<String>,
     pub recent_max: usize,
@@ -242,6 +244,7 @@ impl Default for Prefs {
             track_colors: None,
             space_pauses: false,
             show_welcome: true,
+            show_splash: true,
             recent: Vec::new(),
             recent_max: 4,
             auto_update: true,
@@ -705,6 +708,7 @@ mod tests {
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         // New installs (no look chosen) get Classic 2006; preferences saved by older builds keep their VEGAS look.
         assert_eq!((d.look, d.show_welcome, d.recent_max, d.auto_update, d.quantize, d.still_len), (LookChoice::CLASSIC2006, true, 4, true, true, 5.0));
+        assert!(d.show_splash, "the splash is on by default");
         let old = serde_json::from_str::<Prefs>(r#"{"look":{"look":"Vegas16","variant":"Dark"}}"#).unwrap();
         assert_eq!(old.look, LookChoice::VEGAS16);
         assert_eq!((layout_key(UiLook::Classic2006, "last"), layout_key(UiLook::Vegas16, 1)), ("c2006:last".to_string(), "vp16:1".to_string()));

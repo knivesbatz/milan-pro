@@ -1,6 +1,6 @@
 # Milan Pro: "Classic 2006" look specification
 
-Status: implementation spec, Stage 1 (2026-11-26). Companion to `VEGAS_UI_SPEC.md`, which keeps the two VEGAS looks.
+Status: implementation spec, Stages 1 and 2 (2026-11-26). Companion to `VEGAS_UI_SPEC.md`, which keeps the two VEGAS looks.
 `UiLook::Classic2006` is the default look of a new install (preferences without a look choice, and `MILAN_DEMO`);
 `MILAN_LOOK=classic2006` (also `classic`, `2006`, `c2006`) selects it in the harness.
 
@@ -205,10 +205,86 @@ The coloured VP16 shapes, rendered as 2006 pixel art:
 
 ---
 
-## 8. Stage 2 (not in this stage)
+## 8. Stage 2: dock window contents, dialogs, brand
 
-Dock window contents (Explorer, Project Media, Trimmer, Video Preview, Master Bus, Mixing Console, choosers…): list
-boxes as sunken white fields with column headers as raised buttons, tree expanders as ⊞ / ⊟ boxes, thumbnails with 1 px
-black frames; dialogs (`Theme::dialog` tokens above: `#D4D0C8` property sheets, classic tab control, bevelled OK /
-Cancel); the Preferences look picker's preview; the remaining icons used only inside dock windows; the floating-window
-frames; the Welcome dialog art.
+### 8.1 Dock windows (`widgets.rs` shared painters, one classic branch per window)
+
+* **List boxes** (`scroll_pane`): a sunken white field (`sunken`, 2 px 3D edge) holding the tree / list / tile grid;
+  `pane_split` is a dotted metal splitter. [W]
+* **Tree rows** (`tree_row`): ⊞ / ⊟ 9×9 white boxes with a grey edge, dotted lines (`dotted`, a pixel every 2 px) from
+  the node to its icon and down the parent's column; the selected label alone carries the `#316AC5` bar with a dotted
+  focus rectangle, as the Windows TreeView. No hover fill. [W]
+* **List rows** (`list_row`): `#316AC5` full-row highlight, no hover; Edit Details adds `grid_lines` (`#C0C0C0`
+  rules under each row and between the columns). [W]
+* **Column headers** (`header_row_sorted`): one raised bevelled button per column, a blank one to the row's end, a
+  ▲ / ▼ in `metal.shadow` on the sorted column (Explorer by name, Overlays details by its sort). [W]
+* **Thumbnails** (`paint_thumb`): 1 px `#202020` frame and a 1 px `#A0A0A0` mat; **tiles** (`tile`) are raised chrome
+  buttons (Hover brighter, selected = Active, pressed with the blue tint). [R Vegas 6 presets][I]
+* **Meters**: wells sunken (`meter_well`); levels as **LED segments** (`led_bar`: 2 px lit on a 3 px pitch, green to
+  −12 dB, yellow to −3 dB, red above); peak-hold line and clip lamps as before. Master Bus, Mixing Console (strips on
+  blue-grey `header_metal`, I/O boxes sunken white, the channel list separated by an etched line), Loudness Meters
+  (stat read-outs in sunken `meter_bg` boxes). [I]
+* **Faders** (`groove_v` + `fader_thumb` 25×13 with the dark bar across; sends and pan on `groove` + `thumb` 9×13).
+  [R Vegas 5–7]
+* **Video Preview**: the transport row and status block on a metal bar; the read-outs as cyan LCD digits (reduced
+  quality / dropped frames in orange-red) in a sunken `time_display_bg` well. [R Vegas 6 status strip][I]
+* **Video Scopes**: panel-grey body, each scope a black well in a sunken 3D frame. [I]
+* **Keyframe controller** (Pan/Crop, Track Motion, FX window): metal button row with chrome buttons (Sync Cursor =
+  Active), a sunken well round the lanes, the time in a black LCD box; black lane ink (`lane_ink`). [I]
+* **Plug-In Manager**: sunken check boxes (face-grey when fixed), the details strip a sunken pane; the choosers'
+  category chips are chrome buttons (the current one pressed) and their description strip a sunken pane. [W]
+* **Tool windows** (Pan/Crop, Track Motion, FX) and **floating windows**: the classic caption (§8.2) on the tool
+  windows; floating windows (native OS caption) get a raised 3D frame round their contents.
+* egui scroll bars in this look: grey face handle on the white rail (`scroll.foreground_color` off).
+
+### 8.2 Dialogs (`dialogs/mod.rs`, one shared frame)
+
+* **Frame** (`classic_caption`, used by `framed` for every modal, window and tool window): a raised 2 px 3D edge in
+  the `dialog_metal` palette (white / `#D4D0C8` / `#808080` / `#404040`), an 18 px caption gradient `#0A246A` →
+  `#A6CAF0` with bold white Tahoma 11, 16×14 bevelled ? and × buttons (pressed = sunken, glyph shifted 1 px). The
+  title row is 24 px (`title_h`). [W Windows 2000 active caption]
+* **Tabs** (`tabs`): raised tabs (white left/top, shadow + dark right), the selected one 2 px taller and joined to the
+  page; the **page** (`page`) is a raised panel. [W tab control]
+* **Buttons** (`classic_button`, used by `button` / `button_row`, the Welcome dialog): `#D4D0C8` face, 2 px bevel,
+  sunken while pressed with the label shifted; the default button has a 1 px black ring outside the bevel; disabled
+  labels are grey with a white emboss. The colour **swatch** is bevelled. [W]
+* **Field boxes** (`field_box`): sunken white lists / option boxes (Preferences General, Render, Render Queue,
+  Customize Keyboard / Toolbar, Organize Layouts, Recorded Files, Update, the Welcome recents).
+* **egui controls** (`style`): white fields with a `#808080` edge, `#D4D0C8` button faces with a `#404040` edge, no
+  rounding, no shadows; combo popups white with a dark border; the `#316AC5` selection. (Check boxes and radios stay
+  egui's flat drawing on those colours: a polish item.)
+* **Preferences › Display › Interface Look**: a 40×26 swatch beside each radio painted from that look's own tokens
+  (toolbar band, panel, lane, first track colour; the Classic one a metal bar in a sunken edge).
+* **Preferences › General**: "Show splash screen at startup" (`Prefs::show_splash`, on by default).
+* **Welcome** (`Welcome::show_classic`): a 540×522 "Milan Pro" dialog: the splash art, a *Start* group with New
+  Project (default), Advanced Settings… and Open Project…, the recent projects in a sunken list, "Show this dialog at
+  startup", Close. Same results as the VP23 screen (FullHD 29.970p for New).
+* **About** (`dialogs::about`): `about-banner-480x120.png` over "Milan Pro version x" (Tahoma bold), licence and a
+  *Credits* group, OK.
+
+### 8.3 Brand and splash
+
+* `Icon::Logo` paints `milan-pro-256.png` (the chrome M) in this look (`widgets::brand_tex`, decoded once per
+  context; tinted when the icon is). The VEGAS looks keep their monogram.
+* **Splash** (`ui/splash.rs`): a 520×320 borderless, non-resizable, always-on-top viewport built with
+  `with_active(false)` and no taskbar button, centred on the main window's monitor, showing `splash-520x320.png` with a
+  cyan progress bar along its bottom for 1.2 s, then closed. Never in an off-screen run (`MILAN_SCREENSHOT`,
+  `MILAN_UPDATE_AUTO`: `Splash::wanted`), and off with the preference. Shown in every look.
+
+### 8.4 Harness
+
+`MILAN_DIALOG` gained `paste-attrs`, `default-track`, `scopes`, `loudness`, `edit-details`, `plugin-manager` (the
+other dialogs already had values). Stage 2 screenshots: `%TEMP%\milan-review\c2006s2\`.
+
+### 8.5 Polish pass (left)
+
+* Check boxes, radio buttons, combo arrows and spinners are still egui's flat drawing on classic colours; true 3D
+  check boxes / sunken combos with bevelled arrow buttons need custom widgets.
+* The Trimmer's read-outs and film strip, the Color Grading and Project Notes bodies and the Render dialog's template
+  tiles keep their VP23 drawing on the metal (only their frames changed).
+* Dialogs open at the top-left in the harness (the first frame is laid out before the 1920×1080 resize); in a live
+  session they centre.
+* Floating windows: only the content frame is classic (the caption is the OS's); the external preview stays a plain
+  black full-screen picture.
+* Tree lines are drawn per row (no knowledge of siblings), so the vertical line runs the full height of every nested
+  row rather than stopping at the last child.

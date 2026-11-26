@@ -927,8 +927,14 @@ fn draw(p: &Pen, icon: Icon) {
             p.line(&[(12.0, 4.0), (4.0, 12.0)], ink);
         }
         Logo => {
-            // Original Milan Pro monogram (never the VEGAS "V").
+            // Original Milan Pro monogram (never the VEGAS "V"); Classic 2006 shows the brand's metallic chrome M
+            // (assets/brand/milan-pro-256.png), tinted when the icon is.
             let r = p.r(0.0, 0.0, 16.0, 16.0);
+            if p.c06 {
+                let tex = super::widgets::brand_tex(p.p.ctx(), super::widgets::Brand::Mark);
+                p.p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), p.force.unwrap_or(Color32::WHITE));
+                return;
+            }
             p.p.rect_filled(r, CornerRadius::same((3.0 * p.s) as u8), p.c(t.logo_bg));
             p.p.rect_stroke(r, CornerRadius::same((3.0 * p.s) as u8), Stroke::new(1.0_f32, p.c(t.logo_border)), StrokeKind::Inside);
             p.line_w(&[(4.0, 12.0), (4.0, 4.5), (8.0, 9.5), (12.0, 4.5), (12.0, 12.0)], t.logo_text, 1.1);

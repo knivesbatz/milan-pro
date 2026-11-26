@@ -163,6 +163,8 @@ pub struct MeridianApp {
     user_presets: Vec<crate::engine::plugins::UserPreset>,
     grading: ui::ColorGrading,
     welcome: Option<Welcome>,
+    /// The startup splash while it shows (`ui::splash`; never in an off-screen run).
+    splash: Option<ui::splash::Splash>,
     shortcuts_open: bool,
     /// Help › Unfinished Features.
     unfinished_open: bool,
@@ -424,6 +426,7 @@ impl MeridianApp {
             user_presets: if launch.demo { Vec::new() } else { crate::engine::plugins::load_user_presets() },
             grading: Default::default(),
             welcome,
+            splash: ui::splash::Splash::wanted(prefs.show_splash, offscreen).then(ui::splash::Splash::new),
             shortcuts_open: false,
             unfinished_open: false,
             time_entry: None,
@@ -933,6 +936,9 @@ impl eframe::App for MeridianApp {
             self.up_to(ctx, k);
         }
         self.show_external(ctx);
+        if self.splash.as_mut().is_some_and(|s| !s.show(ctx)) {
+            self.splash = None;
+        }
 
         // A new look (Preferences) applies live; each look keeps its own last layout.
         if self.look != t.choice {
