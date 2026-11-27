@@ -1320,7 +1320,7 @@ pub(crate) mod tests {
     }
 
     /// (plan, frame size, bilinear) number `n` of the random sequence the parity tests walk.
-    fn plan_n(r: &mut Rng) -> (FramePlan, [usize; 2], bool) {
+    pub(crate) fn plan_n(r: &mut Rng) -> (FramePlan, [usize; 2], bool) {
         let fp = random_frame(r);
         let size = r.pick(&[[480, 270], [320, 180], [257, 143]]);
         (fp, size, r.f() < 0.8)

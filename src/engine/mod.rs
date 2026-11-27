@@ -8,6 +8,8 @@ pub mod aplug;
 pub mod cache;
 pub mod caches;
 pub mod caps;
+#[cfg(test)]
+mod bitexact;
 pub mod color;
 #[cfg(test)]
 mod formats_e2e;
