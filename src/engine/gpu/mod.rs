@@ -1126,7 +1126,7 @@ fn detect(choice: &str) -> (Vec<String>, Result<Arc<GpuCompositor>, String>) {
 pub fn current() -> Option<Arc<GpuCompositor>> {
     #[cfg(test)]
     {
-        if let Some(forced) = lock(&FORCED).clone() {
+        if let Some(forced) = FORCED.with(|f| f.borrow().clone()) {
             return forced;
         }
         if std::env::var_os("MILAN_TEST_GPU").is_some() {
@@ -1172,18 +1172,23 @@ pub fn test_gpu() -> Option<Arc<GpuCompositor>> {
     G.get_or_init(|| detect("").1.ok()).clone()
 }
 
-/// Tests: compose on `g` (None: the CPU) whatever the preference or `MILAN_TEST_GPU` says, until `unforce`.
+// Tests: compose on `g` (None: the CPU) whatever the preference or `MILAN_TEST_GPU` says, until `unforce`, on this
+// thread only. `Worker::frame` picks its compositor on the calling thread, so a test that forces one gets it; a
+// process-wide switch sent every test running in parallel through that test's GPU, moving its readback counter and
+// changing their frames' path (flaky failures in parallel runs).
 #[cfg(test)]
-static FORCED: Mutex<Option<Option<Arc<GpuCompositor>>>> = Mutex::new(None);
+thread_local! {
+    static FORCED: std::cell::RefCell<Option<Option<Arc<GpuCompositor>>>> = const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub fn force_for_tests(g: Option<Arc<GpuCompositor>>) {
-    *lock(&FORCED) = Some(g);
+    FORCED.with(|f| *f.borrow_mut() = Some(g));
 }
 
 #[cfg(test)]
 pub fn unforce() {
-    *lock(&FORCED) = None;
+    FORCED.with(|f| *f.borrow_mut() = None);
 }
 
 /// Benches: the CPU, then the GPU when there is one (its name with `_` for spaces, for `tools/bench.ps1`).

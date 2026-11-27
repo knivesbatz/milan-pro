@@ -279,7 +279,8 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
         // Only tiles on screen are rendered.
         if ui.clip_rect().intersects(r) {
             let key = (info.id, tk.clone());
-            let animate = resp.hovered() && info.kind == PluginKind::Transition;
+            // R48: the hover preview is an animation: none when Windows animations are off.
+            let animate = resp.hovered() && info.kind == PluginKind::Transition && super::theme::animations();
             let tex = if animate {
                 Some(hover_frame(ui, c, key, info, preset, now))
             } else if let Some(h) = c.thumbs.get(&key) {

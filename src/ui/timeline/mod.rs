@@ -11,6 +11,7 @@ mod tracks;
 pub(super) use tracks::{fader_gain, fader_pos};
 pub(super) use ctx::MENUS as CONTEXT_MENUS;
 pub use ruler::grid_line;
+pub use tracks::set_header_buttons;
 
 use eframe::egui::*;
 use crate::audio::Waveforms;

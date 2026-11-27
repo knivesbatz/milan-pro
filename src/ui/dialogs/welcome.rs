@@ -24,9 +24,9 @@ impl Welcome {
         let mut out = None;
         let (_, close) = super::modal(ctx, "welcome", "Milan Pro", vec2(540.0, 522.0), |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
-            let (r, _) = ui.allocate_exact_size(vec2(520.0, 320.0), Sense::hover());
-            let tex = widgets::brand_tex(ui.ctx(), Brand::Splash);
-            ui.painter().image(tex.id(), widgets::px(r), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+            let size = widgets::brand_size(vec2(520.0, 320.0));
+            let (r, _) = ui.allocate_exact_size(vec2(520.0, size.y), Sense::hover());
+            widgets::brand_image(ui.painter(), r, Brand::Splash, vec2(520.0, 320.0));
             ui.add_space(2.0);
             super::group(ui, "Start");
             ui.horizontal(|ui| {

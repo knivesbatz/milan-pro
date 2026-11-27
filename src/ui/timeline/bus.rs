@@ -2,7 +2,9 @@
 //! R8b, one row per audio bus and assignable FX chain (View › Audio Bus Tracks, B).
 //! The Video Bus Track's header opens the Video Output FX; its lane holds the Fade to Color, Motion Blur Amount and Video
 //! Supersampling envelopes. An audio bus row's header has its FX button, Mute, Vol and Pan sliders and its meter; its
-//! lane holds its Volume, Pan and Mute envelopes. Right-click › Insert/Remove Envelope; points drag (Ctrl: fine), a
+//! lane holds its Volume, Pan and Mute envelopes. R10c: the Master bus track comes last (with the audio busses), its
+//! header with the Audio Master FX button, Vol (the master fader, or its envelope under automation) and the meter, its
+//! lane with the master's Volume and Mute envelopes. Right-click › Insert/Remove Envelope; points drag (Ctrl: fine), a
 //! double-click on a line adds one, and a point's menu deletes it. Each drag, click or menu edit is one undo step.
 use eframe::egui::*;
 use crate::edit;
@@ -22,11 +24,13 @@ pub const AUDIO_BUS_H: f32 = 64.0;
 /// The envelopes each kind of bus track takes, as its menu lists them.
 const VIDEO_KINDS: [(&str, EnvKind); 3] = [("&Fade to Color", EnvKind::FadeToColor), ("Motion &Blur Amount", EnvKind::MotionBlur), ("Video &Supersampling", EnvKind::Supersampling)];
 const AUDIO_KINDS: [(&str, EnvKind); 3] = [("&Volume", EnvKind::Volume), ("&Pan", EnvKind::Pan), ("&Mute", EnvKind::Mute)];
+/// R10c: the master's (VEGAS's Master bus track: Volume and Mute).
+const MASTER_KINDS: [(&str, EnvKind); 2] = [("&Volume", EnvKind::Volume), ("&Mute", EnvKind::Mute)];
 
 /// The bus rows shown, top down: the Video Bus Track (None), then each audio bus and assignable FX chain (its id).
 pub(super) fn rows(project: &Project, video: bool, audio: bool) -> Vec<Option<String>> {
     let a = &project.timeline.audio;
-    let buses = a.buses.iter().chain(&a.fx).map(|b| Some(b.id.clone())).filter(|_| audio);
+    let buses = a.buses.iter().chain(&a.fx).map(|b| Some(b.id.clone())).chain([Some(edit::MASTER.to_string())]).filter(|_| audio);
     video.then_some(None).into_iter().chain(buses).collect()
 }
 
@@ -71,6 +75,7 @@ fn bus<'a>(project: &'a Project, id: &str) -> Option<&'a Bus> {
 fn envs<'a>(project: &'a Project, owner: Option<&str>) -> &'a [Envelope] {
     match owner {
         None => &project.timeline.master.video_envelopes,
+        Some(edit::MASTER) => &project.timeline.master.audio_envelopes,
         Some(id) => bus(project, id).map_or(&[], |b| &b.envelopes),
     }
 }
@@ -110,6 +115,7 @@ fn edit_env(project: &mut Project, owner: Option<&str>, env_owner: &str, kind: E
     let a = &mut project.timeline.audio;
     let envs = match owner {
         None => Some(&mut project.timeline.master.video_envelopes),
+        Some(edit::MASTER) => Some(&mut project.timeline.master.audio_envelopes),
         Some(id) => a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id).map(|b| &mut b.envelopes),
     };
     let done = envs.and_then(|v| v.iter_mut().find(|e| e.kind == kind)).is_some_and(f);
@@ -121,7 +127,12 @@ fn edit_env(project: &mut Project, owner: Option<&str>, env_owner: &str, kind: E
 
 /// Insert/Remove Envelope ▸ items, each checked while the bus has it.
 fn env_items(ui: &mut Ui, project: &mut Project, history: &mut History, owner: Option<&str>) {
-    for (label, kind) in if owner.is_none() { VIDEO_KINDS } else { AUDIO_KINDS } {
+    let kinds: &[(&str, EnvKind)] = match owner {
+        None => &VIDEO_KINDS,
+        Some(edit::MASTER) => &MASTER_KINDS,
+        Some(_) => &AUDIO_KINDS,
+    };
+    for &(label, kind) in kinds {
         let has = envs(project, owner).iter().any(|e| e.kind == kind);
         if entry(ui, label, "", true, Mark::Check(has)) {
             history.push(project.clone());
@@ -129,7 +140,7 @@ fn env_items(ui: &mut Ui, project: &mut Project, history: &mut History, owner: O
         }
     }
     // R8c: an audio bus's FX automation envelopes, through the chooser.
-    if let Some(id) = owner {
+    if let Some(id) = owner.filter(|o| *o != edit::MASTER) {
         menus::sep(ui);
         if entry(ui, "F&X Automation Envelopes...", "", true, Mark::None) {
             crate::ui::automation::open_chooser(ui.ctx(), id);
@@ -160,6 +171,7 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
     let id = ui.id().with(("bus_track", owner));
     let Some(name) = (match owner {
         None => Some("Video Bus".to_string()),
+        Some(edit::MASTER) => Some("Master".to_string()),
         Some(b) => bus(project, b).map(|b| b.name.clone()),
     }) else {
         return;
@@ -175,9 +187,14 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
     let fx = Rect::from_min_size(pos2(head.max.x - 30.0, head.min.y + 6.0), vec2(24.0, 18.0));
     let (target, has_fx) = match owner {
         None => (edit::FxTarget::VideoOutput, !project.timeline.master.video_fx.is_empty()),
+        Some(edit::MASTER) => (edit::FxTarget::AudioMaster, !project.timeline.master.audio_fx.is_empty()),
         Some(b) => (edit::FxTarget::Bus(b.to_string()), bus(project, b).is_some_and(|b| !b.fx.is_empty())),
     };
-    let fr = ui.interact(fx, id.with("fx"), Sense::click()).on_hover_text(if owner.is_none() { "Video Output FX" } else { "Bus FX" });
+    let fr = ui.interact(fx, id.with("fx"), Sense::click()).on_hover_text(match owner {
+        None => "Video Output FX",
+        Some(edit::MASTER) => "Audio Master FX",
+        Some(_) => "Bus FX",
+    });
     if fr.clicked() {
         crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(target));
     }
@@ -191,8 +208,10 @@ fn show_row(ui: &mut Ui, g: &Geo, project: &mut Project, history: &mut History, 
     p.text(head.left_top() + vec2(8.0, 15.0), Align2::LEFT_CENTER, &name, t.bold(t.font.ui), t.text_bright);
     p.rect_filled(fx, 2.0, if fr.hovered() { t.button_hover_bg } else { t.toolbar_bg });
     p.text(fx.center(), Align2::CENTER_CENTER, "fx", t.font(t.font.ui), if has_fx { t.accent } else { t.text });
-    if let Some(bid) = owner {
-        bus_controls(ui, &p, id, project, history, bid, head, fx);
+    match owner {
+        Some(edit::MASTER) => master_controls(ui, &p, id, project, history, head),
+        Some(bid) => bus_controls(ui, &p, id, project, history, bid, head, fx),
+        None => {}
     }
 
     // Lane: point drags, double-click adds a point, right-click menu.
@@ -360,6 +379,47 @@ fn bus_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history
     }
 }
 
+/// R10c: the Master bus track's Vol (the master fader, both sides linked; with Show Automation Controls and a mode
+/// other than Off, its Volume envelope) and the master meter. One undo step per gesture.
+fn master_controls(ui: &mut Ui, p: &Painter, id: Id, project: &mut Project, history: &mut History, head: Rect) {
+    let t = theme::get();
+    let meter = Rect::from_min_max(pos2(head.max.x - 14.0, head.min.y + 28.0), pos2(head.max.x - 4.0, head.max.y - 4.0));
+    mixer::paint_well(p, meter);
+    mixer::paint_levels(p, meter, &mixer::level(ui.ctx(), mixer::MASTER));
+    let cy = head.min.y + 35.0;
+    let groove = Rangef::new(head.min.x + 100.0, meter.min.x - 10.0);
+    let auto = crate::ui::automation::control_mode(project, edit::MASTER).map(|m| (m, crate::ui::automation::value(ui.ctx(), project, edit::MASTER, EnvKind::Volume)));
+    let gain = project.timeline.master.gain;
+    let volume = auto.map_or((gain[0] + gain[1]) * 0.5, |(_, v)| crate::ui::automation::gain_of(v));
+    let value = format!("{} dB", mixer::gain_text(volume));
+    let font = t.font(t.font.ui);
+    let lr = p.text(pos2(head.min.x + 8.0, cy), Align2::LEFT_CENTER, "Vol:", font.clone(), t.text_label);
+    p.text(pos2(lr.max.x + 4.0, cy), Align2::LEFT_CENTER, &value, font, t.text_value);
+    if groove.span() < 20.0 {
+        return;
+    }
+    p.rect_filled(Rect::from_x_y_ranges(groove, Rangef::new(cy - 1.0, cy + 1.0)), 0.0, t.fader_track);
+    let pos = fader_pos(volume);
+    let thumb = Rect::from_center_size(pos2((groove.min + pos * groove.span()).round(), cy), vec2(16.0, 16.0));
+    super::super::icons::paint_icon(p, thumb, Icon::FaderThumb, auto.map(|_| color(&t, EnvKind::Volume)));
+    let hit = Rect::from_x_y_ranges(Rangef::new(groove.min - 8.0, groove.max + 8.0), Rangef::new(cy - 7.0, cy + 7.0));
+    let resp = ui.interact(hit, id.with("master_vol"), Sense::click_and_drag()).on_hover_text(value);
+    let span = groove.span();
+    if let Some((mode, _)) = auto {
+        let to_v = |np: f32| crate::ui::automation::db_of(fader_gain(np));
+        crate::ui::automation::slider(ui, &resp, project, history, edit::MASTER, EnvKind::Volume, mode, pos, fader_pos(1.0), |q| (q.x - groove.min) / span, |d| d.x / span, to_v);
+        return;
+    }
+    if let Some((undo, np)) = mixer::slider(ui, &resp, pos, fader_pos(1.0), |q| (q.x - groove.min) / span, |d| d.x / span) {
+        if undo {
+            history.push(project.clone());
+        }
+        let g = fader_gain(np.clamp(0.0, 1.0));
+        project.timeline.master.gain = [g, g];
+        project.mark_modified();
+    }
+}
+
 fn bus_mut<'a>(project: &'a mut Project, id: &str) -> Option<&'a mut Bus> {
     let a = &mut project.timeline.audio;
     a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id)
@@ -369,15 +429,44 @@ fn bus_mut<'a>(project: &'a mut Project, id: &str) -> Option<&'a mut Bus> {
 mod tests {
     use super::*;
 
+    /// R10c acceptance: the Master Bus window's badge (`edit::set_automation` on the master) sets Off, Read, Write
+    /// (Touch) and Write (Latch); an automation write adds the master's Volume envelope; the Master bus track offers
+    /// Volume and Mute only.
+    #[test]
+    fn master_automation_modes_and_envelopes() {
+        use crate::project::AutoMode;
+        let mut p = Project::new("t");
+        let ids = [edit::MASTER.to_string()];
+        assert_eq!(edit::automation_of(&p, edit::MASTER), Some((AutoMode::Read, false)));
+        for m in [AutoMode::Off, AutoMode::Touch, AutoMode::Latch, AutoMode::Read] {
+            assert!(edit::set_automation(&mut p, &ids, Some(m), None));
+            assert_eq!(edit::automation_of(&p, edit::MASTER), Some((m, false)));
+        }
+        assert!(edit::set_automation(&mut p, &ids, None, Some(true)));
+        assert_eq!(edit::automation_of(&p, edit::MASTER), Some((AutoMode::Read, true)));
+        assert!(edit::ensure_envelope(&mut p, edit::MASTER, EnvKind::Volume));
+        assert!(edit::with_envelope(&mut p, edit::MASTER, EnvKind::Volume, |e| {
+            edit::env_insert(e, 2.0, -6.0);
+            true
+        }));
+        assert_eq!(edit::envelope_of(&p, edit::MASTER, EnvKind::Volume).map(|e| e.0.at(2.0)), Some(-6.0));
+        assert!(!edit::toggle_bus_envelope(&mut p, Some(edit::MASTER), EnvKind::Pan), "no Pan envelope on the master");
+        assert!(edit::toggle_bus_envelope(&mut p, Some(edit::MASTER), EnvKind::Mute));
+        assert_eq!(envs(&p, Some(edit::MASTER)).iter().map(|e| e.kind).collect::<Vec<_>>(), [EnvKind::Volume, EnvKind::Mute]);
+    }
+
     #[test]
     fn bus_rows_follow_the_view_switches() {
         let mut p = Project::new("t");
-        assert!(rows(&p, false, true).is_empty());
+        assert_eq!(rows(&p, false, true), vec![Some(edit::MASTER.to_string())], "the Master bus track alone");
         edit::set_bus_count(&mut p, 2);
         let fx = edit::insert_assignable_fx(&mut p, Vec::new()).unwrap();
         let a = &p.timeline.audio;
-        assert_eq!(rows(&p, true, true), vec![None, Some(a.buses[0].id.clone()), Some(a.buses[1].id.clone()), Some(fx)]);
+        // R10c: the Master bus track last.
+        let m = Some(edit::MASTER.to_string());
+        assert_eq!(rows(&p, true, true), vec![None, Some(a.buses[0].id.clone()), Some(a.buses[1].id.clone()), Some(fx), m.clone()]);
         assert_eq!(rows(&p, true, false), vec![None]);
-        assert_eq!(rows(&p, true, true).iter().map(row_h).sum::<f32>(), BUS_H + 3.0 * AUDIO_BUS_H);
+        assert_eq!(rows(&p, false, true).last(), Some(&m));
+        assert_eq!(rows(&p, true, true).iter().map(row_h).sum::<f32>(), BUS_H + 4.0 * AUDIO_BUS_H);
     }
 }

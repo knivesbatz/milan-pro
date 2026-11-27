@@ -9,7 +9,7 @@ use crate::history::History;
 use crate::project::*;
 use crate::ui::{EnvSel, Selection};
 use super::super::keymap::Command::*;
-use super::super::menus::{self, Fixed, Later, M, M::*, Mark, NotPlanned, cmd, entry, inert, off, sep, sub};
+use super::super::menus::{self, Fixed, M, M::*, Mark, NotPlanned, cmd, entry, inert, off, sep, sub};
 use super::super::theme;
 use super::ruler::band_rows;
 use super::{FADE_PX, GROUP_H, Geo, Head, Rename, Row, TlState, envelopes};
@@ -597,7 +597,8 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         if entry(ui, "Track &Motion...", "", true, Mark::None) {
             crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::TrackMotion(id.clone()));
         }
-        // The fx and Comp buttons are on the header.
+        // The fx and Comp buttons are on the header (R49: unless the button set hides them, then here).
+        hidden_buttons(ui, project, history, true, i);
         // Make Compositing Child joins the parent above (the top track has none); Make Compositing Parent leaves it.
         let ids = if sel.tracks.contains(&id) { sel.tracks.clone() } else { vec![id.clone()] };
         for (label, to_child, on) in [("Make Compositing &Parent", false, child), ("Make Compositing &Child", true, !child && i > 0)] {
@@ -633,13 +634,48 @@ pub(super) fn more_menu(ui: &mut Ui, project: &mut Project, history: &mut Histor
         }
         sep(ui);
     }
+    if !v {
+        hidden_buttons(ui, project, history, false, i);
+    }
     switches(ui, project, history, v, i);
     if entry(ui, "Default Track &Height", "Ctrl+`", project.timeline.tracks(v)[i].height > 0.0, Mark::None) {
         project.timeline.tracks_mut(v)[i].height = 0.0;
         project.mark_modified(); // a view change: no undo step
     }
     sep(ui);
-    off(ui, "Edit Visible Button Set...", Later("R49"));
+    // R49 (VEGAS 19): which buttons the headers of this kind show.
+    if entry(ui, "Edit Visible Button Set...", "", true, Mark::None) {
+        menus::send(ui.ctx(), super::super::keymap::Command::EditButtonSet(v));
+    }
+}
+
+/// R49: the header buttons Edit Visible Button Set hid, as More menu rows: Compositing Mode ▸, Track FX..., Mute and
+/// Solo (Arm for Record is always in the audio menu).
+fn hidden_buttons(ui: &mut Ui, project: &mut Project, history: &mut History, v: bool, i: usize) {
+    let set = super::tracks::header_buttons(ui.ctx());
+    let tr = &project.timeline.tracks(v)[i];
+    let (id, locked, comp, muted, solo) = (tr.id.clone(), tr.locked, tr.composite, tr.muted, tr.solo);
+    if v && set.hides(true, "comp") {
+        sub(ui, "Compositing &Mode", !locked, |ui| {
+            if let Some(m) = crate::ui::trackmotion::composite_menu(ui, comp, !locked) {
+                let before = project.clone();
+                if edit::set_composite(project, &id, m) {
+                    history.push(before);
+                }
+            }
+        });
+    }
+    if set.hides(v, "fx") && entry(ui, "Track &FX...", "", true, Mark::None) {
+        crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Fx(edit::FxTarget::Track(id.clone())));
+    }
+    for (key, label, on) in [("mute", "M&ute", muted), ("solo", "S&olo", solo)] {
+        if set.hides(v, key) && entry(ui, label, "", true, Mark::Check(on)) {
+            history.push(project.clone());
+            let tr = &mut project.timeline.tracks_mut(v)[i];
+            if key == "mute" { tr.muted = !tr.muted } else { tr.solo = !tr.solo }
+            project.mark_modified();
+        }
+    }
 }
 
 fn duplicate_track(project: &mut Project, history: &mut History, v: bool, i: usize) {

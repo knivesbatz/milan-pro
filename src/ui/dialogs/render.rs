@@ -497,7 +497,10 @@ impl RenderDialog {
                                     }
                                     let ink = t.text;
                                     let w = r.max.x - icon.max.x - 10.0;
-                                    let title = p.layout_no_wrap(tp.name.clone(), t.bold(11.0), d.text);
+                                    // R48: a name longer than the tile ends in "…" (the hover has it whole).
+                                    let mut job = text::LayoutJob::simple_singleline(tp.name.clone(), t.bold(11.0), d.text);
+                                    job.wrap = text::TextWrapping { max_width: w, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+                                    let title = p.layout_job(job);
                                     p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 6.0), title, d.text);
                                     let desc = p.layout(tp.notes.clone(), t.font(11.0), ink, w);
                                     p.with_clip_rect(r).galley(pos2(icon.max.x + 6.0, r.min.y + 22.0), desc, ink);
@@ -507,7 +510,7 @@ impl RenderDialog {
                                     if hit.secondary_clicked() {
                                         star_hit = Some(tp.name.clone());
                                     }
-                                    hit.on_hover_text(format!("{}\nRight-click: add to or remove from Favorites", tp.format()));
+                                    hit.on_hover_text(format!("{}\n{}\nRight-click: add to or remove from Favorites", tp.name, tp.format()));
                                     if n % 4 == 3 {
                                         ui.end_row();
                                     }

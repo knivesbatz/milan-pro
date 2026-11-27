@@ -383,9 +383,22 @@ pub fn add_stream_tracks(project: &mut Project, id: &str) -> Vec<String> {
 /// Preferences › Audio "Normalize peak level" (VEGAS's default).
 pub const NORMALIZE_PEAK_DB: f32 = -0.1;
 
+/// R49: Preferences › Audio › Normalize peak level (dB), as f32 bits; VEGAS's -0.1 until the preferences set it.
+static NORMALIZE_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xBDCC_CCCD);
+
+/// R49: the peak Normalize brings events to (Preferences › Audio).
+pub fn set_normalize_peak(db: f32) {
+    let db = if db.is_finite() { db.clamp(-20.0, 0.0) } else { NORMALIZE_PEAK_DB };
+    NORMALIZE_PEAK.store(db.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn normalize_peak() -> f32 {
+    f32::from_bits(NORMALIZE_PEAK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// The Normalize gain (dB) that takes a measured `peak` (linear) to `NORMALIZE_PEAK_DB`; silence gets none.
 pub fn normalize_db(peak: f32) -> f32 {
-    if peak > 1e-6 { NORMALIZE_PEAK_DB - 20.0 * peak.log10() } else { 0.0 }
+    if peak > 1e-6 { normalize_peak() - 20.0 * peak.log10() } else { 0.0 }
 }
 
 /// The audio event `c` plays, as its Normalize gain is measured on.
@@ -2734,6 +2747,9 @@ pub fn envelope_of(project: &Project, owner: &str, kind: EnvKind) -> Option<(Env
     if kind == EnvKind::FxParam {
         return fx_envelope(project, owner).map(|e| (e, 0.0, 1.0));
     }
+    if owner == MASTER {
+        return project.timeline.master.audio_envelopes.iter().find(|e| e.kind == kind).map(|e| (e.clone(), 0.0, 1.0));
+    }
     if let Some(b) = project.timeline.audio.bus(owner) {
         return b.envelopes.iter().find(|e| e.kind == kind).map(|e| (e.clone(), 0.0, 1.0));
     }
@@ -2774,6 +2790,9 @@ pub fn edit_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl 
 pub fn with_envelope(project: &mut Project, owner: &str, kind: EnvKind, f: impl FnOnce(&mut Envelope) -> bool) -> bool {
     if kind == EnvKind::FxParam {
         return with_fx_envelope(project, owner, f);
+    }
+    if owner == MASTER {
+        return project.timeline.master.audio_envelopes.iter_mut().find(|e| e.kind == kind).is_some_and(f);
     }
     let a = &mut project.timeline.audio;
     if let Some(b) = a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == owner) {
@@ -2862,6 +2881,9 @@ pub fn toggle_bus_envelope(project: &mut Project, bus: Option<&str>, kind: EnvKi
     let a = &mut project.timeline.audio;
     let envs = match bus {
         None => &mut project.timeline.master.video_envelopes,
+        // R10c: the Master bus track (Volume and Mute).
+        Some(MASTER) if matches!(kind, EnvKind::Volume | EnvKind::Mute) => &mut project.timeline.master.audio_envelopes,
+        Some(MASTER) => return false,
         Some(id) => match a.buses.iter_mut().chain(&mut a.fx).find(|b| b.id == id) {
             Some(b) => &mut b.envelopes,
             None => return false,
@@ -2881,6 +2903,9 @@ pub fn toggle_bus_envelope(project: &mut Project, bus: Option<&str>, kind: EnvKi
 /// track and bus plug-ins keep their envelopes in `Fx::auto`; a video track plug-in's are its keys (View › Show OFX
 /// Effect Envelopes). They are lent out as `EnvKind::FxParam`, 0..=1 of the parameter's range (`plugins::to_unit`).
 pub const FX_ENV: &str = "/fx/";
+
+/// R10c: the master bus as an envelope and automation owner (its meter's id too, `ui::mixer::MASTER`).
+pub const MASTER: &str = "master";
 
 pub fn fx_owner(parent: &str, fx: &str, param: &str) -> String {
     format!("{parent}{FX_ENV}{fx}/{param}")
@@ -3050,6 +3075,8 @@ pub fn automation_of(project: &Project, id: &str) -> Option<(AutoMode, bool)> {
             Some((t.automation, t.auto_controls))
         }
         Some(_) => None,
+        // R10c: the master bus.
+        None if id == MASTER => Some((project.timeline.master.automation, project.timeline.master.auto_controls)),
         None => project.timeline.audio.bus(id).map(|b| (b.automation, b.auto_controls)),
     }
 }
@@ -3073,6 +3100,9 @@ pub fn set_automation(project: &mut Project, ids: &[String], mode: Option<AutoMo
     for b in tl.audio.buses.iter_mut().chain(&mut tl.audio.fx).filter(|b| ids.contains(&b.id)) {
         set(&mut b.automation, &mut b.auto_controls);
     }
+    if ids.iter().any(|id| id == MASTER) {
+        set(&mut tl.master.automation, &mut tl.master.auto_controls);
+    }
     changed(project, done)
 }
 
@@ -3091,7 +3121,7 @@ pub fn ensure_envelope(project: &mut Project, owner: &str, kind: EnvKind) -> boo
     match project.find_track(owner) {
         Some((false, i)) if !project.timeline.audio_tracks[i].locked && env_fits(kind, false) => project.timeline.audio_tracks[i].envelopes.push(new_envelope(kind)),
         Some(_) => return false,
-        None if project.timeline.audio.bus(owner).is_some() => return toggle_bus_envelope(project, Some(owner), kind),
+        None if project.timeline.audio.bus(owner).is_some() || owner == MASTER => return toggle_bus_envelope(project, Some(owner), kind),
         None => return false,
     }
     changed(project, true)

@@ -2,6 +2,7 @@
 //! external preview goes on them, and the global cursor and buttons (to dock a floating window the OS moved). Every
 //! rectangle here is in physical screen pixels; egui sizes a window in points of the monitor it is on.
 use eframe::egui::{Context, Pos2, Rect, ViewportCommand, pos2, vec2};
+use eframe::egui;
 
 /// A display, as Windows numbers it.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,6 +31,61 @@ impl Monitor {
         let model = if self.model.is_empty() { self.name.as_str() } else { self.model.as_str() };
         let primary = if self.primary { ", primary" } else { "" };
         format!("{} - {model} ({}x{}{primary})", self.number(), self.rect.width() as i32, self.rect.height() as i32)
+    }
+}
+
+/// R49: how long Identify Displays shows the numbers.
+const IDENTIFY_SECS: f64 = 3.0;
+
+fn identify_id() -> egui::Id {
+    egui::Id::new("milan_identify_displays")
+}
+
+/// R49: Preferences › Preview Device › Identify Displays: each display shows its number (as Windows numbers it, the
+/// Display adapter list's) for a few seconds; `show_identify` draws them.
+pub fn identify(ctx: &Context, monitors: &[Monitor]) {
+    let until = ctx.input(|i| i.time) + IDENTIFY_SECS;
+    ctx.data_mut(|d| d.insert_temp(identify_id(), (until, monitors.to_vec())));
+}
+
+/// Once a frame: the Identify Displays numbers, each a borderless window centred on its display that never takes the
+/// focus or a taskbar button; off every monitor in an off-screen run.
+pub fn show_identify(ctx: &Context, offscreen: bool) {
+    let Some((until, list)) = ctx.data(|d| d.get_temp::<(f64, Vec<Monitor>)>(identify_id())) else { return };
+    let now = ctx.input(|i| i.time);
+    if now >= until {
+        ctx.data_mut(|d| d.remove::<(f64, Vec<Monitor>)>(identify_id()));
+        return;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_secs_f64(until - now));
+    for m in &list {
+        let size = vec2(180.0, 180.0);
+        let b = egui::ViewportBuilder::default()
+            .with_title("Identify Displays")
+            .with_decorations(false)
+            .with_active(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_resizable(false)
+            .with_inner_size(size)
+            .with_icon(crate::icon());
+        let b = if offscreen {
+            crate::offscreen(b)
+        } else {
+            let pts = to_points(m.rect, ctx.zoom_factor() * m.scale);
+            b.with_position(pts.center() - size * 0.5)
+        };
+        let n = m.number().to_string();
+        ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("milan_identify", &m.name)), b, |vctx, class| {
+            if class == egui::ViewportClass::Embedded {
+                return; // no native windows (tests)
+            }
+            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(0x0A, 0x24, 0x6A))).show(vctx, |ui| {
+                let r = ui.max_rect();
+                ui.painter().rect_stroke(r.shrink(2.0), 0.0, egui::Stroke::new(4.0_f32, egui::Color32::WHITE), egui::StrokeKind::Inside);
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, &n, egui::FontId::proportional(120.0), egui::Color32::WHITE);
+            });
+        });
     }
 }
 

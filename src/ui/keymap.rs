@@ -149,6 +149,11 @@ pub enum Command {
     InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated,
     /// R39: Insert › Subtitles from File... / from Regions; File › Export › Subtitles....
     InsertSubtitles, InsertSubtitlesRegions, ExportSubtitles,
+    /// R48: View › Interface Scale (Milan Pro's own): a scale in percent, 0 = Auto (the display's own).
+    InterfaceScale(u16),
+    /// R49: Options › Export Preferences... / Import Preferences... (VEGAS 23), and the track header's Edit Visible
+    /// Button Set... (VEGAS 19) of a video (true) or audio track.
+    ExportPrefs, ImportPrefs, EditButtonSet(bool),
 }
 
 use Command::*;
