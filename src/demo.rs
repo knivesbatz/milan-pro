@@ -18,6 +18,12 @@
 //! - `MILAN_HOLD=1` (with `MILAN_SCREENSHOT`): the run never takes its screenshot or exits; it stays open off-screen
 //!   until killed (R43's crash-recovery test). `MILAN_APPDATA=<folder>` moves autosave and session files there, and
 //!   `MILAN_AUTOSAVE_NOW=1` autosaves at the first tick (both in `autosave.rs`).
+//! - `MILAN_SCALE=1.5` (R48, with `MILAN_SCREENSHOT`): the interface scale (1 to 3) the shot renders at, whatever the
+//!   display's own: the window is still 1920×1080 physical pixels, so 1.5 lays the UI out in 1280×720 points.
+//!   `MILAN_SHOT_SIZE=3840x2160` sets the window's physical size (a 4K display at 200 % is 1920×1080 points).
+//! - R48: each screenshot run prints `overflow: ...` (stdout) for every text that does not fit (`overflow`), and
+//!   `MILAN_IDLE_CHECK=1` waits 2 s with nothing requested after the picture settles and prints `idle frames: n`, the
+//!   frames painted meanwhile (a paused preview must cost none at any refresh rate).
 //! - `MILAN_HW_TABLE=<file.json>` (R22): the hardware acceleration table to show in Preferences › Video, loaded as it
 //!   is (no probe); `hw_capability_table` writes one to %TEMP%\milan-agent\hw-probe\hw.json.
 use eframe::egui::{self, ColorImage};
@@ -148,30 +154,84 @@ pub fn project(theme: &Theme) -> anyhow::Result<(Project, ClipRef)> {
     Ok((p, ClipRef { is_video: true, track_idx: 1, clip_idx: 0 }))
 }
 
+/// R48: the harness's interface scale (`MILAN_SCALE`, 1 to 3; 1 without it).
+pub fn harness_scale() -> f32 {
+    std::env::var("MILAN_SCALE").ok().and_then(|v| v.trim().trim_end_matches('%').parse::<f32>().ok()).map_or(1.0, |s| if s > 10.0 { s / 100.0 } else { s }).clamp(1.0, 3.0)
+}
+
+/// The harness window in physical pixels: 1920×1080, or `MILAN_SHOT_SIZE=3840x2160` (R48: a 4K display at 200 %).
+pub fn harness_pixels() -> egui::Vec2 {
+    let size = std::env::var("MILAN_SHOT_SIZE").ok().and_then(|v| {
+        let (w, h) = v.trim().split_once(['x', 'X'])?;
+        Some(egui::vec2(w.trim().parse().ok()?, h.trim().parse().ok()?))
+    });
+    size.filter(|s| s.x >= 640.0 && s.y >= 360.0 && s.x <= 7680.0 && s.y <= 4320.0).unwrap_or(egui::vec2(1920.0, 1080.0))
+}
+
+/// The harness window in points: `harness_pixels` at the harness scale.
+pub fn harness_points() -> egui::Vec2 {
+    harness_pixels() / harness_scale()
+}
+
+/// The harness window has its size (and scale) this frame.
+pub fn harness_sized(ctx: &egui::Context) -> bool {
+    let want = harness_points();
+    let have = ctx.screen_rect().size();
+    (have.x - want.x).abs() < 1.0 && (have.y - want.y).abs() < 1.0 && (ctx.pixels_per_point() - harness_scale()).abs() < 1e-3
+}
+
 /// Screenshot run state: waits until background work is quiet, captures, saves, closes.
 pub struct Shot {
     path: PathBuf,
     start: Option<f64>,
     quiet_since: Option<f64>,
     requested: bool,
+    /// R48 `MILAN_IDLE_CHECK`: when the idle wait began, and the frames painted since.
+    idle: Option<(f64, u32)>,
+    idle_check: bool,
 }
+
+/// R48: how long the idle check waits with nothing requested.
+const IDLE_SECS: f64 = 2.0;
 
 impl Shot {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, start: None, quiet_since: None, requested: false }
+        Self { path, start: None, quiet_since: None, requested: false, idle: None, idle_check: std::env::var_os("MILAN_IDLE_CHECK").is_some_and(|v| v == "1") }
     }
 
     /// Call once per frame. `busy`: preview frames or waveforms still loading (or the harness dialog not open yet).
     pub fn tick(&mut self, ctx: &egui::Context, busy: bool) {
-        ctx.request_repaint();
         let now = ctx.input(|i| i.time);
-        // Render at 1 physical px per point (the spec measures at 100 % scaling), 1920×1080 px.
-        // Points == px once the zoom is in, so the size is sent then (egui-winit scales by the zoomed ppp).
+        // R48: after the shot, the idle check paints only what the app itself asks for.
+        if let Some((since, frames)) = self.idle.as_mut() {
+            if since.is_infinite() {
+                return; // reported; the window is closing
+            }
+            *frames += 1;
+            if *frames > 1 && *frames < 6 {
+                // What asked for the frame (egui records the caller), for the report.
+                for c in ctx.repaint_causes() {
+                    println!("idle repaint: {c}");
+                }
+            }
+            if now - *since >= IDLE_SECS {
+                println!("idle frames: {}", *frames - 1); // the harness report (stdout, as MILAN_SHOT_TRACE)
+                self.idle = Some((f64::INFINITY, 0));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(IDLE_SECS - (now - *since) + 0.05));
+            }
+            return;
+        }
+        ctx.request_repaint();
+        // Render at 1 physical px per point (the spec measures at 100 % scaling), or R48's `MILAN_SCALE`, 1920×1080 px.
+        // The size is sent once the zoom is in (egui-winit scales it by the zoomed ppp).
         let native = ctx.native_pixels_per_point().unwrap_or(1.0);
-        ctx.set_zoom_factor(1.0 / native);
-        let sized = ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0);
-        if !sized && (ctx.pixels_per_point() - 1.0).abs() < 1e-3 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1920.0, 1080.0)));
+        let scale = harness_scale();
+        ctx.set_zoom_factor(scale / native);
+        let sized = harness_sized(ctx);
+        if !sized && (ctx.pixels_per_point() - scale).abs() < 1e-3 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(harness_points()));
         }
         let start = *self.start.get_or_insert(now);
         let image = ctx.input(|i| {
@@ -188,6 +248,11 @@ impl Shot {
                 // R21c: what composed the preview, and whether any frame left the GPU (a zero-copy preview reads none back).
                 println!("shot compositor: {} readbacks={:?}", crate::engine::gpu::status(), crate::engine::gpu::readback_count()); // the harness trace (R44: stdout, not the log)
             }
+            if self.idle_check {
+                self.idle = Some((now, 0));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(IDLE_SECS + 0.05));
+                return;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -200,10 +265,63 @@ impl Shot {
         let quiet = now - *self.quiet_since.get_or_insert(now);
         let hold = std::env::var_os("MILAN_HOLD").is_some_and(|v| v == "1");
         if !hold && !self.requested && ((now - start > 1.5 && quiet > 0.5) || now - start > 8.0) {
+            // R48: the layout check, on the frame that is shot.
+            for line in overflow(ctx) {
+                println!("overflow: {line}"); // the harness report (stdout)
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             self.requested = true;
         }
     }
+}
+
+/// R48: the layout check of this frame (not pixels): every window, dialog and menu fits on the screen, every text of
+/// one fits across its clip (a label cut off at the right is a layout that does not fit at this scale), and no
+/// text of the main window runs off the window. Text scrolled partly out of a list is not counted.
+pub fn overflow(ctx: &egui::Context) -> Vec<String> {
+    use egui::{Order, Shape};
+    let screen = ctx.screen_rect().expand(0.5);
+    let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+    let mut out = Vec::new();
+    for l in &layers {
+        if l.order == Order::Background || l.order == Order::Debug {
+            continue;
+        }
+        if let Some(r) = ctx.memory(|m| m.area_rect(l.id)).filter(|r| r.is_positive() && !screen.contains_rect(*r)) {
+            out.push(format!("window {:?} at {r:?} is off the {screen:?} screen", l.id));
+        }
+    }
+    fn texts<'a>(shape: &'a Shape, out: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            Shape::Text(t) => out.push(t),
+            Shape::Vec(v) => v.iter().for_each(|s| texts(s, out)),
+            _ => {}
+        }
+    }
+    ctx.graphics(|g| {
+        for l in &layers {
+            let Some(list) = g.get(*l) else { continue };
+            for cs in list.all_entries() {
+                let mut found = Vec::new();
+                texts(&cs.shape, &mut found);
+                for t in found {
+                    let r = t.visual_bounding_rect().shrink(1.0);
+                    let text = t.galley.text();
+                    if !r.is_positive() || text.trim().is_empty() || !cs.clip_rect.intersects(r) {
+                        continue;
+                    }
+                    let clip = cs.clip_rect.intersect(screen);
+                    let across = r.min.x < clip.min.x - 0.5 || r.max.x > clip.max.x + 0.5;
+                    // Cut by the window's own edge (what shows of it runs past the screen).
+                    let off_screen = !screen.contains_rect(cs.clip_rect.intersect(r));
+                    if off_screen || (l.order != Order::Background && across) {
+                        out.push(format!("\"{}\" at {r:?} outside {clip:?} ({:?})", text.chars().take(60).collect::<String>(), l.order));
+                    }
+                }
+            }
+        }
+    });
+    out
 }
 
 pub fn save_png(path: &Path, image: &ColorImage) -> anyhow::Result<()> {
@@ -216,4 +334,65 @@ pub fn save_png(path: &Path, image: &ColorImage) -> anyhow::Result<()> {
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(image.as_raw())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run the built app in the screenshot harness with `env`; its stdout (the harness reports).
+    fn harness(env: &[(&str, &str)]) -> String {
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("milan-pro.exe");
+        assert!(exe.is_file(), "{} is not built", exe.display());
+        let appdata = std::env::temp_dir().join("milan-agent").join("r48-tests");
+        let mut c = std::process::Command::new(&exe);
+        c.env("MILAN_DEMO", "1").env("MILAN_APPDATA", &appdata);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let out = crate::proc::output(&mut c).expect("milan-pro.exe runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// R48 acceptance: the main window, the FX window, Render As, Preferences and Pan/Crop at 100, 125, 150 and
+    /// 200 % (a 1080-line display at 100-150 %, a 4K one at 200 %): no window off the screen and no text cut off
+    /// (`overflow`). The shots go to %TEMP%\milan-review\r48. Needs target\release\milan-pro.exe:
+    /// cargo build --release && cargo test --release harness_fits_at_every_scale -- --ignored
+    #[test]
+    #[ignore]
+    fn harness_fits_at_every_scale() {
+        let review = std::env::temp_dir().join("milan-review").join("r48");
+        std::fs::create_dir_all(&review).unwrap();
+        let mut bad = Vec::new();
+        for (scale, size) in [("1", "1920x1080"), ("1.25", "1920x1080"), ("1.5", "1920x1080"), ("2", "3840x2160")] {
+            for dialog in ["", "fx-event", "render", "prefs", "pan-crop"] {
+                let shot = review.join(format!("fit-{}-{scale}.png", if dialog.is_empty() { "main" } else { dialog }));
+                let _ = std::fs::remove_file(&shot);
+                let out = harness(&[("MILAN_SCREENSHOT", &shot.display().to_string()), ("MILAN_SCALE", scale), ("MILAN_SHOT_SIZE", size), ("MILAN_DIALOG", dialog)]);
+                assert!(shot.is_file(), "no shot at {scale} of {dialog:?}");
+                bad.extend(out.lines().filter(|l| l.starts_with("overflow:")).map(|l| format!("{scale} {dialog}: {l}")));
+            }
+        }
+        assert!(bad.is_empty(), "{}", bad.join("\n"));
+    }
+
+    /// R48: paused, the app paints nothing it was not asked to (a 144 Hz display costs no more than a 60 Hz one): the
+    /// idle check counts the frames of 2 s after the picture settled.
+    #[test]
+    #[ignore]
+    fn paused_preview_paints_no_extra_frames() {
+        let shot = std::env::temp_dir().join("milan-agent").join("r48-tests").join("idle.png");
+        let out = harness(&[("MILAN_SCREENSHOT", &shot.display().to_string()), ("MILAN_IDLE_CHECK", "1")]);
+        let frames: u32 = out.lines().find_map(|l| l.strip_prefix("idle frames: ")).and_then(|n| n.trim().parse().ok()).unwrap_or_else(|| panic!("no idle report in {out:?}"));
+        assert!(frames <= 5, "{frames} frames painted while paused and idle");
+    }
+
+    #[test]
+    fn harness_scale_and_size_parse() {
+        // Without the variables (the test process has none of them set).
+        if std::env::var_os("MILAN_SCALE").is_none() && std::env::var_os("MILAN_SHOT_SIZE").is_none() {
+            assert_eq!((harness_scale(), harness_pixels()), (1.0, egui::vec2(1920.0, 1080.0)));
+        }
+    }
 }

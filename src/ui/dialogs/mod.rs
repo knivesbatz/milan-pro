@@ -1,6 +1,7 @@
 //! Modal dialogs (UI_SPEC.md §5 Dialogs, §8.3): the shared frame (slate caption with ? and ×, chrome tabs, section
 //! title tabs, 75×23 push buttons) and the dialogs themselves.
 mod about;
+pub mod button_set;
 mod archive;
 mod audio_transition;
 pub mod command_props;
@@ -9,8 +10,10 @@ mod customize_toolbar;
 mod default_track;
 pub mod diagnostics;
 mod event_props;
+pub mod file_props;
 mod goto;
 mod media_from_project;
+pub mod missing_media;
 mod organize_layouts;
 mod paste_attrs;
 mod paste_repeat;
@@ -32,6 +35,7 @@ mod update;
 mod welcome;
 
 pub use about::about;
+pub use button_set::ButtonSet;
 pub use archive::ArchiveDlg;
 pub use audio_transition::AudioTransition;
 pub use command_props::CommandProps;
@@ -42,6 +46,8 @@ pub use diagnostics::{CrashChoice, DOCS_URL, DiagAction, Diagnostics, MANUAL_URL
 pub use event_props::EventProps;
 pub use goto::{TimeEntry, TimeMode};
 pub use media_from_project::MediaFromProject;
+pub use file_props::FileProps;
+pub use missing_media::{DupChoice, DuplicateAsk, MissingMedia, MissingResult};
 pub use slideshow::Slideshow;
 pub use subtitles::{SubtitleExport, SubtitleImport};
 pub use organize_layouts::{Organize, OrganizeLayouts};
@@ -150,6 +156,7 @@ pub fn with_style<R>(ctx: &Context, f: impl FnOnce() -> R) -> R {
 /// A modal, movable dialog of `size` (title row included) with a native-style title row: title text, a greyed
 /// "?" and ×. Returns the body's result and whether × or Esc asked to close.
 pub fn modal<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let size = fit(ctx, size);
     with_style(ctx, || {
         let (area, frame) = (area(ctx, id, size, UiKind::Modal), dialog_frame());
         let resp = Modal::new(Id::new(id)).area(area).frame(frame).backdrop_color(Color32::TRANSPARENT).show(ctx, |ui| framed(ui, id, title, size, body));
@@ -161,6 +168,7 @@ pub fn modal<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnO
 
 /// `modal` without the modality: the app stays usable behind it, and Esc does not close it.
 pub fn window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let size = fit(ctx, size);
     with_style(ctx, || area(ctx, id, size, UiKind::Window).show(ctx, |ui| dialog_frame().show(ui, |ui| framed(ui, id, title, size, body)).inner).inner)
 }
 
@@ -174,6 +182,12 @@ pub fn tool_window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: im
 
 pub fn tool_layer(id: &str) -> LayerId {
     LayerId::new(Order::Foreground, Id::new(id))
+}
+
+/// R48: a dialog never larger than the window (a small display at 150-200 %); its page scrolls instead (`page`).
+fn fit(ctx: &Context, size: Vec2) -> Vec2 {
+    let room = ctx.screen_rect().size() - vec2(8.0, 8.0);
+    vec2(size.x.min(room.x), size.y.min(room.y)).max(vec2(200.0, 150.0))
 }
 
 fn area(ctx: &Context, id: &str, size: Vec2, kind: UiKind) -> Area {
@@ -266,7 +280,7 @@ pub fn classic_caption(ui: &mut Ui, win: Rect, title: &str, id: &str, help: bool
     }
     // A lip under the caption on the body, then the outline over the caption's corners.
     p.rect_filled(Rect::from_min_max(pos2(win.min.x + 1.0, cap.max.y + 1.0), pos2(win.max.x - 1.0, cap.max.y + 2.0)), 0.0, t.silver.s0);
-    p.rect_stroke(win, rad, Stroke::new(1.0_f32, t.slate.frame), StrokeKind::Inside);
+    p.rect_stroke(win, rad, Stroke::new(theme::one(), t.slate.frame), StrokeKind::Inside);
     close
 }
 
@@ -342,11 +356,23 @@ pub fn page<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let t = theme::get();
     let d = t.dialog();
     let frame = Frame::NONE.fill(d.page);
+    // R48: what is left for the page above the dialog's button row; a dialog squeezed by a small window scrolls its
+    // page (at 100 % on a 1080-line display nothing changes).
+    let room = (ui.ctx().screen_rect().max.y - ui.cursor().min.y - 16.0 - 56.0).floor().max(120.0);
     let out = frame.inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.set_min_height(height);
-        ui.set_max_height(height);
-        add(ui)
+        if room >= height {
+            ui.set_min_height(height);
+            ui.set_max_height(height);
+            return add(ui);
+        }
+        ui.set_min_height(room);
+        ui.set_max_height(room);
+        ScrollArea::vertical().id_salt("dialog_page").max_height(room).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_height(height);
+            add(ui)
+        })
+        .inner
     });
     // The page is a panel (an `s6` outline, the `s0` lip inside its top and left) that the selected tab joins: the
     // outline is opened under that tab.
@@ -355,7 +381,7 @@ pub fn page<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let rad = t.m.r_ctl as f32;
     p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.max.x - rad, r.min.y + 2.0)), 0.0, t.silver.s0);
     p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.min.x + 2.0, r.max.y - rad)), 0.0, t.silver.s0);
-    p.rect_stroke(r, CornerRadius { nw: 0, ne: t.m.r_ctl, sw: t.m.r_ctl, se: t.m.r_ctl }, Stroke::new(1.0_f32, t.silver.s6), StrokeKind::Inside);
+    p.rect_stroke(r, CornerRadius { nw: 0, ne: t.m.r_ctl, sw: t.m.r_ctl, se: t.m.r_ctl }, Stroke::new(theme::one(), t.silver.s6), StrokeKind::Inside);
     if let Some(tab) = ui.data(|dd| dd.get_temp::<Rect>(Id::new("milan_dialog_tab_sel"))).filter(|tab| (tab.max.y - r.min.y).abs() <= 3.0 && tab.min.x >= r.min.x - 1.0) {
         p.rect_filled(Rect::from_min_max(pos2(tab.min.x + 1.0, r.min.y), pos2(tab.max.x - 1.0, r.min.y + 2.0)), 0.0, t.silver.s2);
     }
@@ -409,20 +435,6 @@ pub fn button_row(ui: &mut Ui, buttons: &[(&str, bool)]) -> Option<usize> {
         }
     });
     hit
-}
-
-/// 60×23 colour swatch button (the colour shows even when the button is greyed).
-pub fn swatch(ui: &mut Ui, color: Color32, enabled: bool) -> Response {
-    let t = theme::get();
-    let d = t.dialog();
-    let (r, resp) = ui.allocate_exact_size(vec2(60.0, 23.0), if enabled { Sense::click() } else { Sense::hover() });
-    let rp = widgets::px(r);
-    let state = if resp.is_pointer_button_down_on() { widgets::Chrome::Pressed } else if enabled && resp.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
-    widgets::chrome(ui.painter(), rp, t.m.r_ctl as f32, state);
-    let well = widgets::px(r.shrink2(vec2(7.0, 6.0)));
-    ui.painter().rect_filled(well, 1.0, color);
-    ui.painter().rect_stroke(well, 1.0, Stroke::new(1.0_f32, d.border), StrokeKind::Outside);
-    resp
 }
 
 /// Label | control grid row helper: fixed-width label then the control.

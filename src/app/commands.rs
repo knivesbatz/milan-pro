@@ -63,6 +63,7 @@ impl MeridianApp {
             || self.subs_export.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
+            || self.lib.modal()
             || self.archive.is_some()
             || self.media_from.is_some()
             || self.prerender.is_some()
@@ -175,6 +176,7 @@ impl MeridianApp {
             marker_labels: self.prefs.marker_labels,
             event_length: self.prefs.event_length,
             metronome: self.prefs.metronome,
+            ui_scale: self.prefs.ui_scale.unwrap_or(0),
         }
     }
 
@@ -1633,6 +1635,14 @@ impl MeridianApp {
                 self.prefs.ofx_envelopes = !self.prefs.ofx_envelopes;
                 self.save_prefs();
             }
+            ExportPrefs => self.export_prefs(),
+            ImportPrefs => self.import_prefs(ctx),
+            EditButtonSet(video) => self.button_set = Some(crate::ui::dialogs::ButtonSet::new(video, &self.prefs.header_buttons)),
+            InterfaceScale(s) => {
+                // R48: applied from the next frame (`theme::zoom_for`).
+                self.prefs.ui_scale = (s != 0).then_some(s.clamp(100, 200));
+                self.save_prefs();
+            }
             NextFxEnvelope | PrevFxEnvelope => {
                 // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
                 let ofx = self.prefs.ofx_envelopes;
@@ -2152,7 +2162,8 @@ impl MeridianApp {
         let project = match action {
             MenuAction::New => {
                 let mut p = Project::new("Untitled");
-                if let Some(s) = self.new_settings.take() {
+                // R49: the Welcome screen's choice, else Project Properties' "Start all new projects with these settings".
+                if let Some(s) = self.new_settings.take().or_else(|| self.prefs.new_project.clone()) {
                     p.settings = s;
                 }
                 p
@@ -2219,6 +2230,8 @@ impl MeridianApp {
             let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
             if !missing.is_empty() {
                 self.message = Some(format!("Media offline: {}", missing.join("; ")));
+                // R45b: VEGAS's "Media offline" dialog: search a folder, browse, or leave offline.
+                self.open_missing_media(true);
             }
         }
         if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
@@ -2251,6 +2264,7 @@ impl MeridianApp {
         (self.subs_import, self.subs_export) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
+        self.lib = Default::default();
         (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
@@ -2339,30 +2353,20 @@ impl MeridianApp {
         }
         self.show_update(ctx);
         self.show_reliability(ctx);
+        self.show_library(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
             self.about = !dialogs::about(ctx);
         }
         if let Some(new) = self.prefs_dlg.show(ctx, &self.prefs, self.audio.latency_ms()) {
-            if new.track_colors != self.prefs.track_colors {
-                theme::set_palette(ctx, new.palette());
+            self.apply_prefs(ctx, new);
+        }
+        // R49: Edit Visible Button Set.
+        if let Some(ok) = self.button_set.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.button_set.take().filter(|_| ok) {
+                self.prefs.header_buttons = d.apply(&self.prefs.header_buttons);
+                self.save_prefs();
             }
-            if new.record_input != self.prefs.record_input && self.rec_start.is_none() {
-                (self.input, self.input_failed) = (None, false); // the meter reopens on the new input
-            }
-            // R34a: new VST folders are searched.
-            let rescan = new.ofx.vst_folders != self.prefs.ofx.vst_folders;
-            self.prefs = new;
-            self.save_prefs();
-            // R44: the logger follows the preferences at once.
-            crate::logger::set_level(crate::logger::level_from_name(&self.prefs.log_level));
-            crate::logger::set_privacy(self.prefs.crash_privacy);
-            if rescan {
-                self.plugin_mgr.rescan(Some(ctx), &self.prefs.ofx, false);
-            }
-            crate::engine::gpu::choose(&self.prefs.gpu);
-            crate::engine::hw::set_prefs(&self.prefs.hw_decode, &self.prefs.hw_encode);
-            crate::engine::caches::configure(&self.prefs);
         }
         self.show_organize(ctx);
         if let Some(r) = self.recorded.as_mut().and_then(|d| d.show(ctx, &self.project)) {
@@ -2829,6 +2833,21 @@ impl MeridianApp {
             // The Edit menu dropped open.
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // R48/R49 review: Preferences on page n (0 = General, in tab order).
+            p if p.starts_with("prefs-page-") => self.open_prefs(p["prefs-page-".len()..].parse().ok()),
+            // R49 review: the video track header's Edit Visible Button Set.
+            "button-set" => self.exec(ctx, EditButtonSet(true)),
+            // R10c review: the Master bus track with a Volume envelope (a dip and a fade) and Mute, automation Read
+            // with its controls shown, the Master Bus window in front.
+            "master-env" => {
+                use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes};
+                let key = |t: f64, v: f32| Keyframe { t, v, curve: Curve::Linear };
+                let m = &mut self.project.timeline.master;
+                m.audio_envelopes = vec![Envelope { kind: EnvKind::Volume, points: Keyframes { keys: vec![key(0.0, 0.0), key(4.0, 0.0), key(6.0, -12.0), key(9.0, -12.0), key(12.0, 0.0), key(15.0, -60.0)] } }];
+                m.auto_controls = true;
+                self.prefs.bus_tracks = true;
+                self.dock.open(crate::ui::dock::Panel::MasterBus);
+            }
             // R44/R46 review: Preferences on Milan Pro's own Update page.
             "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab())),
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection
@@ -2995,6 +3014,58 @@ impl MeridianApp {
             "props-audio" => self.settings.open_tab(&self.project, 1),
             "props-summary" => self.settings.open_tab(&self.project, 3),
             // R16a: two notes (left unmodified: the harness never marks the project changed) in Project Notes.
+            // R45a review: Project Media with tags, custom bins (one nested) and smart bins, on a custom bin ("media-bins"),
+            // a tag ("media-tags"), a smart bin ("media-smart") or with Search Media Bins open ("media-search").
+            "media-bins" | "media-tags" | "media-smart" | "media-search" => {
+                let ids: Vec<String> = self.project.media_pool.iter().map(|m| m.id.clone()).collect();
+                let id = |k: usize| ids.get(k).cloned().into_iter().collect::<Vec<_>>();
+                crate::library::set_tags(&mut self.project, &[id(0), id(1)].concat(), &["interview".into(), "day 1".into()]);
+                crate::library::set_tags(&mut self.project, &id(2), &["b roll".into()]);
+                crate::library::set_tags(&mut self.project, &id(3), &["music".into()]);
+                let selects = crate::library::new_bin(&mut self.project, "Selects", None);
+                crate::library::add_to_bin(&mut self.project, &selects, &[id(0), id(2), id(4)].concat());
+                let day = crate::library::new_bin(&mut self.project, "Day 1", Some(&selects));
+                crate::library::add_to_bin(&mut self.project, &day, &[id(0), id(1)].concat());
+                let b = crate::library::new_bin(&mut self.project, "B Roll", None);
+                crate::library::add_to_bin(&mut self.project, &b, &id(2));
+                crate::library::new_smart_bin(&mut self.project, "Unused video", "type:video is:unused");
+                crate::library::new_smart_bin(&mut self.project, "HD and up", "res>=1920x1080");
+                let pick = match what.as_str() {
+                    "media-tags" => "Tagged: interview",
+                    "media-smart" => "Smart: HD and up",
+                    _ => "Selects",
+                };
+                self.media_view.harness_select(&self.project, pick);
+                if what == "media-search" {
+                    self.media_view.harness_search("tag:interview res>=1920x1080 -is:offline");
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                self.project.modified = false;
+            }
+            // R45b review: File Format Properties of the demo's first video (probed at once for the screenshot).
+            "file-props" => {
+                if let Some(m) = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Video) {
+                    self.lib.file_props = Some(dialogs::FileProps::new_now(&m.name, &m.path));
+                }
+            }
+            // R45b review: two demo files "moved" (their paths point into a folder that does not exist, nothing is moved
+            // on disk): offline on the timeline and in Project Media, and the Media Offline dialog after a folder search of
+            // the demo media ("missing-media"), or the timeline alone ("offline-events").
+            "missing-media" | "offline-events" => {
+                let dir = crate::demo::media_dir();
+                for m in self.project.media_pool.iter_mut().filter(|m| m.media_type != crate::project::MediaType::Audio).take(2) {
+                    m.path = dir.join("moved-away").join(m.path.file_name().unwrap_or_default());
+                    m.missing = true;
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                if what == "missing-media" {
+                    self.lib.missing = dialogs::MissingMedia::new(&self.project);
+                    if let Some(d) = &mut self.lib.missing {
+                        d.search_now(&dir);
+                    }
+                }
+                self.project.modified = false;
+            }
             "notes" => {
                 use crate::project::Note;
                 self.project.notes = vec![Note { at: 1.0, text: "Tighten the cut into the title".into(), resolved: false }, Note { at: 4.5, text: "Music level checked".into(), resolved: true }];

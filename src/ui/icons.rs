@@ -134,9 +134,12 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, tint: Option<Color3
     let t = theme::get();
     let side = rect.width().min(rect.height());
     let s = side / 16.0;
-    let o = (rect.center() - vec2(side, side) * 0.5).round();
+    // R48: the grid sits on physical pixels at any interface scale (`k` pixels per point), so strokes stay 1 px
+    // wide and crisp at 125-200 % instead of smearing over two pixels.
+    let k = painter.pixels_per_point();
+    let o = ((rect.center() - vec2(side, side) * 0.5) * k).round() / k;
     let mirror = matches!(icon, Icon::Redo | Icon::GoToEnd | Icon::NextFrame | Icon::TrimEnd | Icon::Forward);
-    let pen = Pen { p: painter, o, s, w: s, force: tint, mirror, t: &t };
+    let pen = Pen { p: painter, o, s, w: s, k, force: tint, mirror, t: &t };
     draw(&pen, icon);
 }
 
@@ -168,6 +171,8 @@ struct Pen<'a> {
     o: Pos2,
     s: f32,
     w: f32,
+    /// Physical pixels per point.
+    k: f32,
     force: Option<Color32>,
     mirror: bool,
     t: &'a Theme,
@@ -185,15 +190,16 @@ impl Pen<'_> {
     }
     /// A stroke vertex: on pixel centres, so 1 px lines stay crisp.
     fn at_s(&self, p: P) -> Pos2 {
-        self.at(p).floor() + vec2(0.5, 0.5)
+        ((self.at(p) * self.k).floor() + vec2(0.5, 0.5)) / self.k
     }
     /// A fill vertex: on pixel edges.
     fn at_f(&self, p: P) -> Pos2 {
-        self.at(p).round()
+        (self.at(p) * self.k).round() / self.k
     }
     /// The forced tint, else the colour snapped to the palette.
     fn c(&self, c: Color32) -> Color32 {
-        self.force.unwrap_or_else(|| quantize_2006(c))
+        // R49: Preferences › Display › Icon color strength, then the period palette.
+        self.force.unwrap_or_else(|| quantize_2006(theme::icon_strength(c, self.t.icon_strength)))
     }
     fn ink(&self) -> Color32 {
         self.c(self.t.icon)
@@ -206,13 +212,17 @@ impl Pen<'_> {
     fn bg(&self) -> Color32 {
         self.force.unwrap_or(self.t.metal.face)
     }
-    /// Stroke width: whole pixels.
+    /// Stroke width: whole physical pixels.
     fn sw(&self, k: f32) -> f32 {
-        (self.w * k).round().max(1.0)
+        (self.w * k * self.k).round().max(1.0) / self.k
+    }
+    /// One physical pixel per point, rounded: the 1 px outline at this scale.
+    fn px1(&self) -> f32 {
+        self.k.round().max(1.0) / self.k
     }
     /// The outline stroke of a fill (none when tinted: a disabled icon is one flat colour).
     fn outline(&self) -> Option<Stroke> {
-        self.force.is_none().then(|| Stroke::new(1.0_f32, OUTLINE_2006))
+        self.force.is_none().then(|| Stroke::new(self.px1(), OUTLINE_2006))
     }
     fn line(&self, pts: &[P], c: Color32) {
         self.line_w(pts, c, 1.0);
@@ -228,7 +238,8 @@ impl Pen<'_> {
     fn poly(&self, pts: &[P], c: Color32) {
         let pts: Vec<Pos2> = pts.iter().map(|p| self.at_f(*p)).collect();
         if let Some(o) = self.outline() {
-            let edge: Vec<Pos2> = pts.iter().map(|q| *q + vec2(0.5, 0.5) - (*q - self.at_f((8.0, 8.0))).normalized() * 0.5).collect();
+            let h = self.px1() * 0.5;
+            let edge: Vec<Pos2> = pts.iter().map(|q| *q + vec2(h, h) - (*q - self.at_f((8.0, 8.0))).normalized() * h).collect();
             self.p.add(Shape::convex_polygon(pts, self.c(c), Stroke::NONE));
             self.p.add(Shape::closed_line(edge, o));
             return;
@@ -242,7 +253,7 @@ impl Pen<'_> {
         let r = self.r(x, y, w, h);
         self.p.rect_filled(r, 0.0, self.c(c));
         if let Some(o) = self.outline() {
-            if r.width() >= 3.0 && r.height() >= 3.0 {
+            if r.width() >= 3.0 * o.width && r.height() >= 3.0 * o.width {
                 self.p.rect_stroke(r, 0.0, o, StrokeKind::Inside);
             }
         }
@@ -256,7 +267,7 @@ impl Pen<'_> {
     }
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color32) {
         let r = Rect::from_two_pos(self.at_s((x, y)), self.at_s((x + w, y + h)));
-        self.p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, self.c(c)), StrokeKind::Middle);
+        self.p.rect_stroke(r, 0.0, Stroke::new(self.px1(), self.c(c)), StrokeKind::Middle);
     }
     /// An outlined box (the rounded VEGAS shapes, square here).
     fn rect_round(&self, x: f32, y: f32, w: f32, h: f32, _rad: f32, c: Color32) {
@@ -269,7 +280,7 @@ impl Pen<'_> {
         self.p.circle_filled(self.at_s(c), r * self.s, self.c(col));
         if let Some(o) = self.outline() {
             if r >= 2.0 {
-                self.p.circle_stroke(self.at_s(c), r * self.s - 0.5, o);
+                self.p.circle_stroke(self.at_s(c), r * self.s - self.px1() * 0.5, o);
             }
         }
     }

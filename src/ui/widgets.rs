@@ -7,10 +7,10 @@ use super::theme::{self, Metal, Theme};
 
 // ---- Primitives ----
 
-/// One line of chrome (an outline, a lip, a shade) in points. The single place a display scale applies to the look:
-/// R48's whole-physical-pixel width (`theme::one()`) goes here.
+/// One line of chrome (an outline, a lip, a shade) in points: R48's whole physical pixel (`theme::one()`), so every
+/// painter's edges stay crisp at 125, 150 and 200 %.
 pub fn hair() -> f32 {
-    1.0
+    theme::one()
 }
 
 /// `a` → `b` by `f` in gamma space (as the period skins blended).
@@ -307,13 +307,13 @@ pub fn lcd_well(p: &Painter, r: Rect, deep: bool, dots: bool) {
 
 /// Groove: an `s5` line with an `s0` line beside it (vertical over `y` at `x`): separators.
 pub fn etched_v(p: &Painter, x: f32, y: Rangef, m: &Metal) {
-    let x = x.floor();
+    let x = theme::snap(x.floor());
     vl(p, x, y.min, y.max, m.shadow);
     vl(p, x + hair(), y.min, y.max, m.light);
 }
 
 pub fn etched_h(p: &Painter, x: Rangef, y: f32, m: &Metal) {
-    let y = y.floor();
+    let y = theme::snap(y.floor());
     hl(p, x.min, x.max, y, m.shadow);
     hl(p, x.min, x.max, y + hair(), m.light);
 }
@@ -732,9 +732,26 @@ pub fn brand_tex(ctx: &Context, which: Brand) -> TextureHandle {
     };
     let data = eframe::icon_data::from_png_bytes(png).expect("assets/brand PNGs are valid");
     let image = ColorImage::from_rgba_unmultiplied([data.width as usize, data.height as usize], &data.rgba);
-    let handle = ctx.load_texture(format!("milan_brand_{which:?}"), image, TextureOptions::LINEAR);
+    // Nearest when enlarged: the bitmaps are only ever drawn at whole multiples of their pixels (`brand_size`).
+    let opts = TextureOptions { magnification: TextureFilter::Nearest, ..TextureOptions::LINEAR };
+    let handle = ctx.load_texture(format!("milan_brand_{which:?}"), image, opts);
     ctx.data_mut(|d| d.insert_temp(id, handle.clone()));
     handle
+}
+
+/// R48: the size in points a brand bitmap of `px` pixels is drawn at: a whole number of physical pixels per bitmap
+/// pixel (1 at 100-175 %, 2 at 200 %), never a blurred 1.5; at 125-175 % it is that much smaller in points.
+pub fn brand_size(px: Vec2) -> Vec2 {
+    let k = theme::ppp();
+    px * k.floor().max(1.0) / k
+}
+
+/// The brand bitmap `which` of `px` pixels, centred in `slot`, at `brand_size`, on physical pixel edges.
+pub fn brand_image(p: &Painter, slot: Rect, which: Brand, px_size: Vec2) {
+    let tex = brand_tex(p.ctx(), which);
+    let r = px(Rect::from_center_size(slot.center(), brand_size(px_size)));
+    let r = Rect::from_min_size(r.min, brand_size(px_size));
+    p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
 }
 
 /// Filled triangle of a scrollbar / spinner arrow in `r`; `dir` = (dx, dy) it points to.
@@ -1112,7 +1129,9 @@ pub const ROW_H: f32 = 20.0;
 
 /// `r` with its corners on whole pixels.
 pub fn px(r: Rect) -> Rect {
-    Rect::from_min_max(r.min.round(), r.max.round())
+    // R48: on physical pixel edges at any interface scale (whole points at 100 %).
+    let s = |p: Pos2| pos2(theme::snap(p.x.round()), theme::snap(p.y.round()));
+    Rect::from_min_max(s(r.min), s(r.max))
 }
 
 /// True inside a navy list well (`scroll_pane` sets its text colour).

@@ -183,6 +183,8 @@ pub struct CmdState {
     pub marker_labels: bool,
     pub event_length: bool,
     pub metronome: bool,
+    /// R48: View › Interface Scale (percent; 0 = Auto).
+    pub ui_scale: u16,
 }
 
 impl CmdState {
@@ -192,7 +194,7 @@ impl CmdState {
             | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml | ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
-            | CustomizeKeyboard | CommandPalette | Help | UserManual => true,
+            | CustomizeKeyboard | CommandPalette | Help | UserManual | InterfaceScale(_) | ExportPrefs | ImportPrefs | EditButtonSet(_) => true,
             // Four docking areas and the Source / Timeline Top layouts.
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => true,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
@@ -319,6 +321,7 @@ impl CmdState {
             AutoCrossfade => self.auto_crossfade,
             Window(p) => self.open_panels.contains(&p),
             PreviewQuality(q) => self.quality == Some(q),
+            InterfaceScale(s) => self.ui_scale == s,
             NormalTool => self.tool == EditTool::Normal,
             Tool(t) => self.tool == t,
             AutoRipple => self.auto_ripple,
@@ -537,7 +540,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let st = state(ui.ctx());
     let radio = matches!(
         c,
-        PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutAudio
+        PreviewQuality(_) | InterfaceScale(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutAudio
             | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_) | SetPair(_)
             | Loudness(super::loudness::LoudCmd::Mode(_) | super::loudness::LoudCmd::Range(_) | super::loudness::LoudCmd::Wide(_))
     );
@@ -973,6 +976,15 @@ pub const VIEW: &[M] = &[
         C("&Good", PreviewQuality(Quality::Good)),
         C("&Best", PreviewQuality(Quality::Best)),
     ]),
+    // R48: Milan Pro's own (VEGAS follows Windows only): Auto keeps the display's scale.
+    Sub("Interface &Scale", &[
+        C("&Auto (Windows setting)", InterfaceScale(0)),
+        C("&100 %", InterfaceScale(100)),
+        C("12&5 %", InterfaceScale(125)),
+        C("15&0 %", InterfaceScale(150)),
+        C("1&75 %", InterfaceScale(175)),
+        C("&200 %", InterfaceScale(200)),
+    ]),
     S,
     C("Minimi&ze All Tracks", MinimizeTracks),
     C("Rebuild Audio Pea&ks", RebuildPeaks),
@@ -1226,8 +1238,8 @@ pub const OPTIONS: &[M] = &[
     C("Customize Timeline Toolbar...", CustomizeTimelineToolbar),
     C("Customize &Keyboard...", CustomizeKeyboard),
     C("&Preferences...", Preferences),
-    X("Export Preferences...", Later("R49")),
-    X("Import Preferences...", Later("R49")),
+    C("Export Preferences...", ExportPrefs),
+    C("Import Preferences...", ImportPrefs),
 ];
 
 pub const HELP: &[M] = &[
@@ -2098,7 +2110,7 @@ mod tests {
                 }
             }
         }
-        assert!(found > 130, "{found}");
+        assert!(found > 120, "{found}"); // R49 settled about ten Later("R49") rows
     }
 
     /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.

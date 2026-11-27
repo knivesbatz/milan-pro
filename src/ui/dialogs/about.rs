@@ -11,9 +11,9 @@ pub fn about(ctx: &Context) -> bool {
     let (ok, close) = super::modal(ctx, "about", "About Milan Pro", vec2(500.0, 330.0), |ui| {
         let d = t.dialog();
         ui.spacing_mut().item_spacing.y = 4.0;
-        let (r, _) = ui.allocate_exact_size(vec2(480.0, 120.0), Sense::hover());
-        let tex = widgets::brand_tex(ui.ctx(), Brand::AboutBanner);
-        ui.painter().image(tex.id(), widgets::px(r), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+        let size = widgets::brand_size(vec2(480.0, 120.0));
+        let (r, _) = ui.allocate_exact_size(vec2(480.0, size.y), Sense::hover());
+        widgets::brand_image(ui.painter(), r, Brand::AboutBanner, vec2(480.0, 120.0));
         ui.add_space(6.0);
         ui.label(RichText::new(format!("Milan Pro version {version}")).font(t.bold(11.0)).color(d.text));
         ui.label("Nonlinear editing system. Open source under the MIT licence.");

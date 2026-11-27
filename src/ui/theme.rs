@@ -323,6 +323,8 @@ pub struct Theme {
     pub envelope_pan: Color32,
     pub envelope_mute: Color32,
     pub envelope_point: Color32,
+    /// R49: Preferences › Display › Icon color strength as a fraction (VEGAS's default 75 % = the icons as drawn).
+    pub icon_strength: f32,
 
     // Pan/Crop and Track Motion (§5.15.2–3): light workspace, keyframe controller
     pub workspace_bg: Color32,
@@ -618,6 +620,7 @@ impl Theme {
             envelope_pan: hex(0xC00000),
             envelope_mute: hex(0x00C8FF),
             envelope_point: white,
+            icon_strength: 0.75,
 
             workspace_bg: hex(0xECECEC),
             workspace_grid: hex(0xC8C8C8),
@@ -734,6 +737,9 @@ impl Theme {
             sp.scroll.floating = false;
             // An `s5` handle on the rail (UI_SPEC.md §5 scrollbar).
             sp.scroll.foreground_color = false;
+            // R48: egui's own transitions (collapsing, scroll-to) follow the animation policy.
+            s.animation_time = anim(83.0);
+            s.scroll_animation.duration = egui::Rangef::new(anim(100.0), anim(300.0));
         });
     }
 }
@@ -800,6 +806,170 @@ impl Theme {
     }
 }
 
+// ---- R48: physical pixels and the animation policy ----
+
+std::thread_local! {
+    /// Physical pixels per point of the window being drawn (`set_ppp`, once per frame); 1 in tests.
+    static PPP: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    /// Tests force the animation setting; None reads Windows.
+    static ANIM_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The window's pixels per point this frame (the app sets it before drawing; floating windows on another display
+/// set their own).
+pub fn set_ppp(ppp: f32) {
+    PPP.with(|c| c.set(if ppp.is_finite() && ppp > 0.0 { ppp } else { 1.0 }));
+}
+
+pub fn ppp() -> f32 {
+    PPP.with(|c| c.get())
+}
+
+/// `v` points on the nearest physical pixel edge, so a 1 px bevel or rule starts on a pixel at 125, 150 and 175 %.
+pub fn snap(v: f32) -> f32 {
+    let k = ppp();
+    (v * k).round() / k
+}
+
+/// One pixel of the look's chrome (a bevel, an etched rule, an outline) in points: a whole number of physical
+/// pixels, the nearest to one point (1 px at 100 and 125 %, 2 px at 150 to 200 %), never a blurred 1.5.
+pub fn one() -> f32 {
+    let k = ppp();
+    k.round().max(1.0) / k
+}
+
+/// True when `ppp` is not a whole number: lines and fills are then drawn without egui's anti-aliasing feather, so
+/// 1-point edges land on whole pixels instead of smearing over two (text keeps its own anti-aliasing).
+pub fn fractional(ppp: f32) -> bool {
+    (ppp - ppp.round()).abs() > 1e-3
+}
+
+/// R48: View › Interface Scale's choices (percent); the preference's None is Auto (the display's own scale, as
+/// VEGAS follows Windows).
+pub const SCALES: [u16; 5] = [100, 125, 150, 175, 200];
+
+/// The zoom factor that gives interface scale `pref` (None: Auto) on a display of `native` pixels per point.
+pub fn zoom_for(pref: Option<u16>, native: f32) -> f32 {
+    match pref {
+        None => 1.0,
+        Some(p) => (p.clamp(100, 200) as f32 / 100.0) / native.max(0.25),
+    }
+}
+
+/// Once per frame, before drawing: the look's painters learn the pixels per point, and egui's anti-aliasing feather
+/// is off at fractional scales (125, 150, 175 %), where it would blur every 1-point edge over two pixels.
+pub fn begin_frame(ctx: &egui::Context) {
+    let ppp = ctx.pixels_per_point();
+    set_ppp(ppp);
+    let feather = !fractional(ppp);
+    if ctx.tessellation_options(|o| o.feathering) != feather {
+        ctx.tessellation_options_mut(|o| o.feathering = feather);
+    }
+}
+
+/// Windows' "Show animations in Windows" (`SPI_GETCLIENTAREAANIMATION`); on where it cannot be read.
+pub fn animations() -> bool {
+    if let Some(on) = ANIM_OVERRIDE.with(|c| c.get()) {
+        return on;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+        let mut on: i32 = 1;
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL into the buffer it is given.
+        let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
+        ok == 0 || on != 0
+    }
+    #[cfg(not(windows))]
+    true
+}
+
+/// Tests: force the animation setting (None: read Windows again).
+#[cfg(test)]
+pub fn set_animations(on: Option<bool>) {
+    ANIM_OVERRIDE.with(|c| c.set(on));
+}
+
+/// The one animation helper: a transition of `ms` milliseconds as seconds, 0 when Windows animations are off (every
+/// transition is then immediate).
+pub fn anim(ms: f32) -> f32 {
+    if animations() { ms.max(0.0) / 1000.0 } else { 0.0 }
+}
+
+/// R49: the envelope types of Preferences › Display › Envelope Colors (the ones the look has a colour token for).
+pub const ENVELOPE_TYPES: [&str; 4] = ["Volume", "Pan", "Mute", "Composite Level"];
+/// R49: the snap types of Preferences › Display › Snap Colors (VEGAS's 12).
+pub const SNAP_TYPES: [&str; 12] =
+    ["Cursor", "Envelope Point", "Loop", "Drag Origin", "Marker", "Region", "CD Index", "CD Track", "Command Marker", "Event", "Event Fade", "Grid"];
+
+impl Theme {
+    /// The colour token of envelope type `name` (`ENVELOPE_TYPES`).
+    pub fn envelope_slot(&mut self, name: &str) -> Option<&mut Color32> {
+        Some(match name {
+            "Volume" => &mut self.envelope_volume,
+            "Pan" => &mut self.envelope_pan,
+            "Mute" => &mut self.envelope_mute,
+            "Composite Level" => &mut self.envelope_composite,
+            _ => return None,
+        })
+    }
+
+    /// The colour token of snap type `name` (`SNAP_TYPES`).
+    pub fn snap_slot(&mut self, name: &str) -> Option<&mut Color32> {
+        let s = &mut self.snap;
+        Some(match name {
+            "Cursor" => &mut s.cursor,
+            "Envelope Point" => &mut s.envelope_point,
+            "Loop" => &mut s.loop_,
+            "Drag Origin" => &mut s.drag_origin,
+            "Marker" => &mut s.marker,
+            "Region" => &mut s.region,
+            "CD Index" => &mut s.cd_index,
+            "CD Track" => &mut s.cd_track,
+            "Command Marker" => &mut s.command_marker,
+            "Event" => &mut s.event,
+            "Event Fade" => &mut s.event_fade,
+            "Grid" => &mut s.grid,
+            _ => return None,
+        })
+    }
+}
+
+/// R49: the colours the user changed in Preferences › Display (envelope and snap colours by type name, sRGB) and the
+/// icon colour strength in percent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserColors {
+    pub envelopes: std::collections::BTreeMap<String, [u8; 3]>,
+    pub snaps: std::collections::BTreeMap<String, [u8; 3]>,
+    pub icon_strength: u8,
+}
+
+impl Default for UserColors {
+    fn default() -> Self {
+        Self { envelopes: Default::default(), snaps: Default::default(), icon_strength: 75 }
+    }
+}
+
+static USER: RwLock<Option<UserColors>> = RwLock::new(None);
+
+/// R49: the Display page's colours take effect.
+pub fn set_user_colors(ctx: &egui::Context, c: UserColors) {
+    *USER.write().unwrap() = Some(c);
+    apply(ctx);
+}
+
+/// `c` at icon colour strength `k` (a fraction; 0.75 leaves it as drawn): its distance from its own grey scaled by
+/// k / 0.75, so 0 % is grey and 100 % a third more saturated.
+pub fn icon_strength(c: Color32, k: f32) -> Color32 {
+    if (k - 0.75).abs() < 1e-3 {
+        return c;
+    }
+    let f = (k / 0.75).max(0.0);
+    let y = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+    let ch = |v: u8| (y + (v as f32 - y) * f).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_premultiplied(ch(c.r()), ch(c.g()), ch(c.b()), c.a())
+}
+
 static CURRENT: LazyLock<RwLock<Theme>> = LazyLock::new(|| RwLock::new(Theme::new()));
 /// Track colours edited in Preferences › Display; replaces the default palette when set.
 static PALETTE: RwLock<Option<[Color32; 8]>> = RwLock::new(None);
@@ -819,6 +989,19 @@ pub fn apply(ctx: &egui::Context) {
     let mut t = Theme::new();
     if let Some(p) = *PALETTE.read().unwrap() {
         t.track_colors = p;
+    }
+    if let Some(u) = USER.read().unwrap().as_ref() {
+        for (name, [r, g, b]) in &u.envelopes {
+            if let Some(slot) = t.envelope_slot(name) {
+                *slot = Color32::from_rgb(*r, *g, *b);
+            }
+        }
+        for (name, [r, g, b]) in &u.snaps {
+            if let Some(slot) = t.snap_slot(name) {
+                *slot = Color32::from_rgb(*r, *g, *b);
+            }
+        }
+        t.icon_strength = f32::from(u.icon_strength.min(100)) / 100.0;
     }
     *CURRENT.write().unwrap() = t;
     t.apply(ctx);
@@ -924,5 +1107,54 @@ mod tests {
         assert!(fails.is_empty(), "below WCAG AA 4.5:1: {fails:?}");
         // The streaks stay faint: ±2 % at most.
         assert!(streak <= 0.02, "{streak}");
+    }
+
+    /// R48: with Windows animations off every transition is immediate (egui's too); on, they take their time.
+    #[test]
+    fn animations_off_gives_zero_duration_transitions() {
+        let ctx = egui::Context::default();
+        set_animations(Some(false));
+        assert_eq!(anim(250.0), 0.0);
+        Theme::new().apply(&ctx);
+        let s = ctx.style();
+        assert_eq!((s.animation_time, s.scroll_animation.duration.max), (0.0, 0.0));
+        // An animated bool reaches its end in the very frame it flips.
+        let id = egui::Id::new("r48_anim");
+        let _ = ctx.run(egui::RawInput::default(), |c| assert_eq!(c.animate_bool(id, false), 0.0));
+        let _ = ctx.run(egui::RawInput::default(), |c| assert_eq!(c.animate_bool(id, true), 1.0));
+        set_animations(Some(true));
+        assert_eq!(anim(250.0), 0.25);
+        Theme::new().apply(&ctx);
+        assert!(ctx.style().animation_time > 0.0);
+        set_animations(None);
+    }
+
+    /// R49: every Display page type has its token; the icon strength leaves the icons alone at VEGAS's 75 %, greys
+    /// them at 0 and saturates them above.
+    #[test]
+    fn display_colours_and_icon_strength() {
+        let mut t = Theme::new();
+        assert!(ENVELOPE_TYPES.iter().all(|n| t.envelope_slot(n).is_some()) && SNAP_TYPES.iter().all(|n| t.snap_slot(n).is_some()));
+        let red = Color32::from_rgb(200, 40, 40);
+        assert_eq!(icon_strength(red, 0.75), red);
+        let grey = icon_strength(red, 0.0);
+        assert!(grey.r() == grey.g() && grey.g() == grey.b());
+        assert!(icon_strength(red, 1.0).r() > red.r());
+    }
+
+    /// R48: chrome pixels are whole physical pixels at every interface scale, on pixel edges.
+    #[test]
+    fn chrome_pixels_are_whole_physical_pixels() {
+        for (k, px) in [(1.0, 1.0), (1.25, 1.0), (1.5, 2.0), (1.75, 2.0), (2.0, 2.0)] {
+            set_ppp(k);
+            assert_eq!(one() * k, px, "at {k}");
+            let v = snap(10.3) * k;
+            assert_eq!(v, v.round(), "at {k}");
+            assert_eq!(fractional(k), k.fract() != 0.0);
+        }
+        set_ppp(1.0);
+        // Interface Scale: Auto keeps the display's scale; 150 % on a 125 % display zooms by 1.2.
+        assert_eq!((zoom_for(None, 1.25), zoom_for(Some(150), 1.25), zoom_for(Some(100), 1.0)), (1.0, 1.2, 1.0));
+        assert_eq!(zoom_for(Some(400), 1.0), 2.0, "at most 200 %");
     }
 }

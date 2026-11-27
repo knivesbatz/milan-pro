@@ -1,10 +1,12 @@
 mod commands;
 mod drop;
+mod library;
 mod audio_editor;
 mod reliability;
 mod multicam;
 mod nested;
 mod sync;
+mod prefs_io;
 
 use eframe::egui;
 use crate::audio::{Player, Waveforms};
@@ -205,6 +207,8 @@ pub struct MeridianApp {
     recorded: Option<crate::ui::dialogs::RecordedFiles>,
     /// Recent project picked from a menu, opened once the save prompt is answered.
     pending_open: Option<std::path::PathBuf>,
+    /// R49: the track header's Edit Visible Button Set dialog while it is open.
+    button_set: Option<crate::ui::dialogs::ButtonSet>,
     /// File › New opens Project Properties for the new project.
     props_after_new: bool,
     /// Settings for the next new project (Welcome › Create Project).
@@ -256,6 +260,8 @@ pub struct MeridianApp {
     /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
     /// crash-report offer, the diagnostic report and the roll-back offer.
     rel: reliability::Rel,
+    /// R45b (app/library.rs): Missing Media, File Format Properties and the duplicate question.
+    lib: library::Lib,
     /// R30: Export > Archive Project and Import > Media from Project, open.
     archive: Option<crate::ui::dialogs::ArchiveDlg>,
     media_from: Option<crate::ui::dialogs::MediaFromProject>,
@@ -381,6 +387,9 @@ impl MeridianApp {
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
         crate::logger::set_privacy(prefs.crash_privacy);
+        // R49: Normalize peak level, and the Display page's envelope, snap and icon colours.
+        crate::edit::set_normalize_peak(prefs.normalize_peak_db);
+        theme::set_user_colors(&cc.egui_ctx, prefs.user_colors());
         // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
         // opens the chosen adapter on a background thread; without one the CPU composes.
         #[cfg(feature = "wgpu")]
@@ -394,7 +403,10 @@ impl MeridianApp {
         crate::engine::hw::start(!launch.demo, false);
         crate::engine::caches::configure(&prefs);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
-        let welcome = (prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        // R49: "Automatically open last project on startup" (the demo harness reads no preferences); the Start dialog
+        // is not shown then.
+        let startup = (!launch.demo).then(|| prefs.startup_project(std::path::Path::is_file)).flatten();
+        let welcome = (prefs.show_welcome && launch.screenshot.is_none() && startup.is_none()).then(Welcome::default);
         std::thread::spawn(|| {
             crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT);
             crate::engine::render::clean_temp(&std::env::temp_dir());
@@ -405,6 +417,10 @@ impl MeridianApp {
             updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }), prefs.update_channel);
         }
         let (mut project, mut sel, mut message) = (Project::new("Untitled"), Selection::default(), None);
+        // R49: Project Properties › "Start all new projects with these settings".
+        if let Some(s) = prefs.new_project.clone().filter(|_| !launch.demo) {
+            project.settings = s;
+        }
         if launch.demo {
             match crate::demo::project(&theme::get()) {
                 Ok((p, cr)) => {
@@ -563,6 +579,7 @@ impl MeridianApp {
             input_level: 0.0,
             recorded: None,
             pending_open: None,
+            button_set: None,
             props_after_new: false,
             new_settings: None,
             clipboard: Vec::new(),
@@ -595,6 +612,7 @@ impl MeridianApp {
             clean_prerender: None,
             audio_transition: None,
             rel: Default::default(),
+            lib: Default::default(),
         };
         // R43: autosave and session markers run outside the harness, or in it when MILAN_APPDATA points them at a test folder.
         app.rel.autosave = !launch.demo || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
@@ -614,6 +632,11 @@ impl MeridianApp {
             }
         }
         app.sync_sel();
+        if let Some(p) = startup {
+            log::info!("opening the last project {}", p.display());
+            app.pending_open = Some(p);
+            app.request(&cc.egui_ctx, crate::ui::MenuAction::Open);
+        }
         if !app.env_dialog {
             app.open_from_env(&cc.egui_ctx);
         }
@@ -759,7 +782,9 @@ impl MeridianApp {
             None => {
                 let new: Vec<_> = items.into_iter().filter(|(p, o)| o.sequence.is_some() || !crate::media::in_pool(&self.project.media_pool, p)).collect();
                 if !new.is_empty() {
-                    self.importer.import_with(ctx, new);
+                    // R45b: compared with the pool by content on the worker (duplicates under another name or folder).
+                    let known = self.project.media_pool.iter().filter(|m| m.generator.is_none() && m.subclip.is_none() && !m.missing).map(|m| crate::library::Known { id: m.id.clone(), name: m.name.clone(), path: m.path.clone() }).collect();
+                    self.importer.import_checked(ctx, new, known);
                 }
             }
         }
@@ -777,11 +802,19 @@ impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // The preview textures replaced during the last frame, painted by now (the GPU preview flicker fix).
         crate::engine::gpu::free_retired();
-        if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
+        // R48: the painters' pixel grid, and View › Interface Scale (the harness sets its own scale).
+        if self.shot.is_none() {
+            ctx.set_zoom_factor(theme::zoom_for(self.prefs.ui_scale, ctx.native_pixels_per_point().unwrap_or(1.0)));
+        }
+        theme::begin_frame(ctx);
+        // R49: the track headers' button set; Identify Displays' numbers while they show.
+        ui::set_header_buttons(ctx, &self.prefs.header_buttons);
+        ui::monitors::show_identify(ctx, self.offscreen);
+        if self.env_dialog && crate::demo::harness_sized(ctx) {
             self.env_dialog = false;
             self.open_from_env(ctx);
         }
-        if self.scrub > 0 && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) && !self.preview.busy() {
+        if self.scrub > 0 && crate::demo::harness_sized(ctx) && !self.preview.busy() {
             self.scrub -= 1;
             let fps = self.project.settings.frame_rate.max(1.0);
             self.project.timeline.cursor_position += 1.0 / fps;
@@ -838,7 +871,12 @@ impl eframe::App for MeridianApp {
         // R44: what a crash report says about the project (paths only when the privacy option is off).
         let summary = self.project.summary();
         crate::logger::set_project(format!("{} ({}): {summary}", self.project.name, self.project.path.as_ref().map_or("unsaved".to_string(), |p| p.display().to_string())), summary.clone());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        // R48: only when it changes; a viewport command asks for another frame, so sending it every frame repainted
+        // the idle window at the display's refresh rate (144 frames a second on a 144 Hz display).
+        if ctx.data(|d| d.get_temp::<String>(egui::Id::new("milan_title"))).as_deref() != Some(title.as_str()) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("milan_title"), title.clone()));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
         let t = theme::get();
 
         let mut drag = self.file_drag(ctx);
@@ -960,9 +998,12 @@ impl eframe::App for MeridianApp {
                     ui::master_bus_toolbar(bar, &self.audio.master, console_open);
                     // The faders edit the project's master gain (saved with it, used by the render).
                     self.master_view.gain = self.project.timeline.master.gain;
-                    ui::master_bus(body, &mut self.master_view, !self.project.timeline.master.audio_fx.is_empty());
-                    let down = body.input(|i| i.pointer.any_down());
-                    set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
+                    let fx = !self.project.timeline.master.audio_fx.is_empty();
+                    // R10c: an automation fader writes the master's Volume envelope, never the gain.
+                    if !ui::master_bus(body, &mut self.master_view, fx, &mut self.project, &mut self.history) {
+                        let down = body.input(|i| i.pointer.any_down());
+                        set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
+                    }
                 }
                 Panel::MixingConsole => {
                     console_prefs |= ui::mixer_toolbar(bar, &mut self.prefs.console, &self.audio.master);
@@ -1030,6 +1071,8 @@ impl eframe::App for MeridianApp {
                     WinAction::Import(paths) => self.import_new(ctx, paths),
                     WinAction::CreateProxy(items) => self.proxies.add(&items),
                     WinAction::OpenNested(path) => self.open_nested(&path, 0.0),
+                    WinAction::FileProps(id) => self.open_file_props(ctx, &id),
+                    WinAction::MissingMedia => self.open_missing_media(false),
                 }
             }
             menu_action = menu_action.or(dock_action);
@@ -1110,8 +1153,13 @@ impl eframe::App for MeridianApp {
             let syncing = self.syncing.as_ref().map(|s| format!("Synchronizing audio: {:.0}%", s.job.progress() * 100.0));
             let progress = rendering.as_deref().map(|s| (s, "Stop the render")).or(proxies.as_deref().map(|s| (s, "Stop creating video proxies")));
             let progress = progress.or(syncing.as_deref().map(|s| (s, "Stop synchronizing (nothing moves)")));
+            // R45b: "Importing 3 of 40"; Cancel adds the files already read.
+            let importing = self.import_progress();
+            let progress = progress.or(importing.as_deref().map(|s| (s, "Stop importing (the files already read are added)")));
             if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), progress) {
-                if rendering.is_some() {
+                if rendering.is_none() && proxies.is_none() && self.syncing.is_none() && importing.is_some() {
+                    self.cancel_import();
+                } else if rendering.is_some() {
                     self.queue.cancel_running();
                 } else if proxies.is_some() {
                     self.proxies.cancel();
@@ -1214,6 +1262,8 @@ impl eframe::App for MeridianApp {
             let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().map(|(_, r)| r).partition(Result::is_ok);
             let mut errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
             let ok: Vec<crate::project::MediaItem> = ok.into_iter().filter_map(Result::ok).collect();
+            // R45b: a file already in the project under another path waits for "Add Anyway / Use Existing".
+            let ok = self.hold_duplicates(ok);
             // R37: an unsupported codec imports offline and says so, rather than failing at preview time.
             errors.extend(ok.iter().filter_map(|m| Some(format!("{} imported offline: {}", m.name, m.unsupported.as_deref()?))));
             // Files imported twice (two drops or picks before the first probe finished) are added once.
@@ -1244,7 +1294,11 @@ impl eframe::App for MeridianApp {
             self.new_tracks.push((id, at, self.project_serial));
         }
         self.queue_win.show(ctx, &mut self.queue);
-        self.settings.show(ctx, &mut self.project, &mut self.history);
+        // R49: "Start all new projects with these settings" changes the preferences.
+        if let Some(default) = self.settings.show(ctx, &mut self.project, &mut self.history, &self.prefs.new_project) {
+            self.prefs.new_project = default;
+            self.save_prefs();
+        }
         if self.rel.autosave {
             let parents: Vec<&Project> = self.parents.iter().map(|p| &p.project).collect();
             self.autosave.tick(ctx, &self.project, &parents, self.prefs.autosave_minutes(), self.prefs.autosave_keep.clamp(1, 20));

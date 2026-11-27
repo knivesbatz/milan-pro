@@ -10,6 +10,29 @@ the minor number for feature releases, the patch number for fixes.
 ## 0.10.0
 
 ### Added
+- **Bins, tags and smart bins:** Project Media's Custom Bins (nested; drag media or bins onto a bin; an item can
+  be in several), Smart Bins (saved searches), Media Tags with the Tagged Media node listing each tag, and Search
+  Media Bins with criteria rows. The search field takes words or fields (`type:video`, `tag:interview`,
+  `res>=1920x1080`, `fps:25`, `length<1:30`, `is:unused`, `-` to exclude). Project Media draws only what is on
+  screen, so 10,000 items scroll like ten (R45a).
+- **Missing media and relinking:** a file missing on Open marks its media offline (hatched "Media Offline" events
+  and tiles) and opens the Media Offline dialog: Search Folder looks through a folder tree by name and size, Browse
+  picks one file, Relink fixes every item found in one undo step (also Project Media > Find Missing Media) (R45b).
+- **File Format Properties** lists every format, stream, chapter and program field and tag ffprobe reports, with
+  Copy as Text (R45b).
+- **Duplicates and import progress:** importing a file already in the project under another name or folder (same
+  size and SHA-256 of its first and last 4 MB) asks "Use Existing / Add Anyway"; the status bar counts "Importing
+  3 of 40" with Cancel (R45b).
+- **High-DPI:** View > Interface Scale (Auto or 100-200 %, also in Preferences > Display); bevels, rules and icons
+  stay sharp at 125, 150, 175 and 200 % (whole physical pixels, no blurred half pixels), dialogs fit small windows
+  and scroll their pages; Windows' "Show animations" setting turns every transition off (R48).
+- **Preferences:** Options > Export / Import Preferences (`.milanprefs`); "Automatically open last project on
+  startup", the temporary files folder, Normalize peak level, envelope and snap colours, icon colour strength, Identify
+  Displays and "Start all new projects with these settings" work; the track header's Edit Visible Button Set chooses
+  which buttons headers show; every other Preferences control says why it is greyed (R49).
+- **Master bus envelopes:** a Master bus track (View > Audio Bus Tracks) with Volume and Mute envelopes, played and
+  rendered alike, and the Master Bus window's Automation Settings badge (Off, Read, Write (Touch), Write (Latch)); with
+  automation controls shown, the master faders write the Volume envelope (R10c).
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
   with screenshots, a feature table, system requirements and the roadmap (R53).
@@ -62,6 +85,10 @@ the minor number for feature releases, the patch number for fixes.
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro
   answers them with hover text and the documentation instead (R53).
+
+### Fixed
+- A paused, idle window no longer repaints at the display's refresh rate (up to 144 times a second): the title was
+  sent to Windows every frame (R48).
 
 ## 0.9.0
 

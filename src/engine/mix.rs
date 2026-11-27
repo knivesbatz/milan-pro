@@ -1513,6 +1513,20 @@ impl Mixer {
                 }
             }
         }
+        // R10c: the master's Volume and Mute envelopes, ramped across the block as a track's are, after the master FX
+        // and the plug-in delays, so at the timeline time the block is heard at (the master fader follows, in the
+        // device or the render).
+        if plan.master_vol_env.is_some() || plan.master_mute_env.is_some() {
+            let shift = lat.total as i64;
+            let (t0, t1) = ((f0 - shift) as f64 / r, (f1 - shift) as f64 / r);
+            let (v0, v1) = env_gain(&plan.master_vol_env, t0, t1);
+            let (m0, m1) = plan.master_mute_env.as_ref().map_or((1.0, 1.0), |e| ramp(e, t0, t1));
+            for (i, f) in out.chunks_exact_mut(ch).enumerate() {
+                let s = i as f32 / n as f32;
+                let g = (v0 + (v1 - v0) * s) * (m0 + (m1 - m0) * s).clamp(0.0, 1.0);
+                f.iter_mut().for_each(|x| *x *= g);
+            }
+        }
         // (`round` was shadowed above: the lines used in this block carry the incremented round.)
         lines.retain(|_, l| l.used == self.round);
         (self.lines, self.scratch) = (lines, scratch);
@@ -1752,6 +1766,51 @@ pub(crate) mod tests {
 
     fn ones() -> Mixer {
         fake(|_| 1.0)
+    }
+
+    /// R10c acceptance: a Volume envelope on the master changes the mix exactly as the same envelope on every track
+    /// would (ramped the same way across each block); a Mute envelope silences it; automation Off ignores both; and
+    /// playback's plan (Quickfade as the player sets it) and the render's (`render::mix_range`: the same flag, no
+    /// stems) mix the master envelope the same, since both are `compile_audio`'s.
+    #[test]
+    fn master_volume_envelope_matches_a_track_envelope() {
+        let key = |t: f64, v: f32| Keyframe { t, v, curve: Curve::Linear };
+        let env = |kind, keys| Envelope { kind, points: Keyframes { keys } };
+        let vol = env(EnvKind::Volume, vec![key(0.0, 0.0), key(0.02, -12.0), key(0.05, -6.0), key(0.08, 3.0)]);
+        let p = project();
+        let mut on_tracks = p.clone();
+        for t in &mut on_tracks.timeline.audio_tracks {
+            t.envelopes.push(vol.clone());
+        }
+        let mut on_master = p.clone();
+        on_master.timeline.master.audio_envelopes.push(vol.clone());
+        let run = |q: &Project| {
+            let mut m = ones();
+            (0..6).flat_map(|b| mix(q, &mut m, b * BLOCK as i64, BLOCK)).collect::<Vec<f32>>()
+        };
+        let (plain, tracks, master) = (run(&p), run(&on_tracks), run(&on_master));
+        assert!(plain.iter().zip(&master).any(|(a, b)| (a - b).abs() > 0.1), "the envelope changes the mix");
+        let worst = tracks.iter().zip(&master).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
+        assert!(worst < 1e-5, "master and track envelopes differ by {worst}");
+        // Mute at 0 from the start: silence; automation Off: as if there were no envelope.
+        let mut muted = p.clone();
+        muted.timeline.master.audio_envelopes.push(env(EnvKind::Mute, vec![key(0.0, 0.0)]));
+        assert!(run(&muted).iter().all(|v| *v == 0.0));
+        let mut off = on_master.clone();
+        off.timeline.master.automation = crate::project::AutoMode::Off;
+        assert_eq!(run(&off), plain);
+        // Preview == render: the two plans' mixes of the master envelope are the same samples.
+        let preview = AudioPlan { quickfade: crate::engine::plan::QUICKFADE, ..compile_audio(&on_master) };
+        let render = AudioPlan { quickfade: crate::engine::plan::QUICKFADE, stems: false, ..compile_audio(&on_master) };
+        assert!(preview.master_vol_env.is_some());
+        let (mut a, mut b) = (ones(), ones());
+        for k in 0..6 {
+            assert_eq!(mix_frames(&preview, &mut a, k * BLOCK as i64, BLOCK), mix_frames(&render, &mut b, k * BLOCK as i64, BLOCK));
+        }
+        // The project file keeps them; one without stays as before.
+        let back: Project = serde_json::from_str(&serde_json::to_string(&on_master).unwrap()).unwrap();
+        assert_eq!(back.timeline.master.audio_envelopes, vec![vol]);
+        assert!(serde_json::to_value(&p).unwrap()["timeline"]["master"].get("audio_envelopes").is_none());
     }
 
     /// R34a (for `aplug::tests`): a mixer whose events play `value(k)`.

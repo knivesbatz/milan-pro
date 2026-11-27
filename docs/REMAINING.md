@@ -120,25 +120,25 @@ What matters most:
 | 4.6 | Audio mixer | DONE | (R8b) Master Bus window (`ui/master_bus.rs`) with working Properties, Downmix, Dim and Mixing Console buttons; the Mixing Console window (`ui/mixer.rs`: strips for audio tracks, (R9) input busses, busses, assignable FX chains and the master, with Insert FX, Sends, I/O (input and output), VU Meters, Peak Meters and Faders regions); live meters in the track headers. |
 | 4.7 | Effects and transitions browser | DONE | `ui/choosers.rs` (search, categories, presets, animated transition thumbnails) |
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
-| 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
+| 4.9 | Media properties | DONE | `ui/properties.rs` shows the basics; R45b: File Format Properties... lists every ffprobe format, stream, chapter and program field and tag in a tree, with Copy as Text (`ui/dialogs/file_props.rs`). |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named as VEGAS 23 names it) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. (R40a) Color management (`ProjectSettings.color_management`) replaces the view transform row. (R10a) Master bus mode (Stereo / 5.1 Surround / 7.1 Surround) and Resample and stretch quality are editable. Still greyed, each naming its batch: pixel format, gamma, ACES, HDR (R40b). → R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), the Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. (R10a) Enable multichannel mapping and the 5.1 / 7.1 templates. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
-| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). The track header's Edit Visible Button Set is still greyed (re-assigned from R15 by R18b). → R49 |
+| 4.14 | Workspace resizable and customizable | DONE | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`); (R49) the track header's Edit Visible Button Set (`dialogs/button_set.rs`, `Prefs.header_buttons`): hidden buttons move to the header's More menu. |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
 | 4.16 | Consistent icons | DONE | `ui/icons.rs` (967 lines of vector icons) |
 | 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics (`docs/UI_SPEC.md` §4) |
 | 4.18 | Modern dark theme | DONE | VP16 and VP23 dark (`theme.rs`) |
 | 4.19 | Optional light theme | DONE | VP23 `Variant::White` (`theme.rs:17-21`) |
-| 4.20 | Smooth but restrained animations | PARTIAL | Only egui defaults plus transition-thumbnail animation (`choosers.rs:16`). There is no central animation policy, and the Windows "show animations" setting is not honoured. → R48 |
+| 4.20 | Smooth but restrained animations | DONE | (R48) One policy: `theme::anim(ms)` gives every transition its length, 0 when Windows' "Show animations in Windows" (`SPI_GETCLIENTAREAANIMATION`) is off; egui's own transitions and scrolling and the chooser's hovered-transition preview follow it (test `animations_off_gives_zero_duration_transitions`). |
 | 4.21 | Resizable and dockable panels | DONE | `ui/dock.rs`: dock columns and tab moves; (R13) docking areas on four sides in VP23 (one, above or below the timeline, in VP16: `dock::Area`, `chrome::areas`), each minimised on its own (F11, Alt+F11, Ctrl+Alt+F11, Ctrl+Shift+F11), Maximize Timeline, Collapse Track Headers, Next/Previous Window, Focus to Timeline, the ◂ ▸ tab overflow scroller, and the Display page's auto-hide, timeline-at-bottom (VP16) and tabs-at-top options; (R14) floating windows (`Dock::show_floating`, one egui viewport each; Undock, or drag a tab off the docking areas), dragging a tab to the main window's edge docks it in that area, a floating window moved over the dock docks under "Allow floating windows to dock" (Ctrl inverts it). Tests: `drop_targets`, `drag_tab_out_floats_it`, `floating_windows_open_close_dock_and_cycle`. |
 | 4.22 | Adjustable workspace layouts | DONE | User slots 0-9 (`settings.rs`, batch 11; 0.8.0's per-look slots carry over, `settings::migrate_look_keys`); (R13) the built-in VEGAS layouts Audio Mixing, Color Correction, Source Window and Timeline Top (`Dock::builtin`, decoded from VEGAS 15's `Standard Layouts`), Organize Layouts (`ui/dialogs/organize_layouts.rs`) and Reload Selected Layout. Tests: `builtin_layouts_open_the_vegas_panels`, `dock_commands_toggle_back`, `overflowing_tabs_scroll`. (R16b) Color Correction has VEGAS's Video Scopes column (539 px) between the group and Video Preview. |
 | 4.23 | Useful contextual menus | DONE | `ui/timeline/ctx.rs`, `ui/media_panel.rs` |
 | 4.24 | Searchable commands | MISSING | No command palette. → R47 |
 | 4.25 | Searchable effects | DONE | `ui/choosers.rs:85` search field |
 | 4.26 | Custom keyboard shortcuts | DONE | (R15) Options › Customize Keyboard: searchable command list named by menu path, key capture, "currently used by" with the key taken from the other command, Remove, Reset, [Default]; per-look keys in prefs override the table (`keymap::set_overrides`); keyboard maps saved, loaded and deleted as .ini files in %APPDATA%\MilanPro\Keyboard; menus and toolbar tooltips show the user's keys. Tests: `keymap::overrides_replace_defaults_and_clashes_are_found`, `customize_keys::rebind_conflict_and_reset`, `keyboard_maps_save_load_and_delete`, `menus::menu_shortcut_text_follows_the_overrides`. |
-| 4.27 | High-DPI display support | PARTIAL | egui follows the per-monitor scale automatically. Not tested above 100%; the UI spec gives pixel values at 1.0. No UI scale preference. → R48 |
+| 4.27 | High-DPI display support | DONE | (R48) View › Interface Scale and Preferences › Display (Auto = Windows' scale, 100-200 %); bevels, rules and icon strokes are whole physical pixels on pixel edges (`theme::one`, `snap`; icons drawn on the physical grid), egui's anti-aliasing feather is off at 125/150/175 % so 1-point edges never blur, brand bitmaps are drawn at whole multiples of their pixels; dialogs fit the window and their pages scroll; the harness renders any scale (`MILAN_SCALE`, `MILAN_SHOT_SIZE`) and checks that text fits (`demo::overflow`). |
 | 4.28 | Proper multi-monitor support | DONE | (R14) Floating windows on any display, saved in layouts with their rect (physical pixels) and display, reopened on the primary display when theirs is gone (`ui/monitors.rs`: `EnumDisplayMonitors`, `place`); each window takes its own display's scaling and is placed in it (`monitors::settle`). Preview on External Monitor (Alt+Shift+4, Video Preview toolbar) full screen on the Preferences › Preview Device display (`App::show_external`, `preview::draw_external`). Tests: `layout_serde_round_trip_with_floating_windows`, `floating_window_on_a_removed_monitor_reopens_on_the_primary`, `external_monitor_frame_geometry`. Not checked by hand on two monitors or a 150 %/100 % mix yet (the harness never opens a window on a monitor). |
 | 4.29 | No excessive visual effects; serious professional feel | DONE | |
 | 4.30 | Save and restore workspace layouts | DONE | `Prefs.layouts` with `merge_layouts` (`settings.rs:61-75`) |
@@ -161,7 +161,7 @@ What matters most:
 | 5.12 | Track volume | DONE | |
 | 5.13 | Track panning | DONE | |
 | 5.14 | Track mute and solo | DONE | Mute, Solo, and (R2) exclusive mute/solo Shift+Z / Shift+X (`edit::exclusive_tracks`); Options › Mute All Audio / Mute All Video (playback only) |
-| 5.15 | Track automation | DONE | Volume/pan/mute envelopes; (R8c) Automation Settings per audio track and bus (`Track/Bus.automation`, `auto_controls`; Off leaves the envelopes and FX automation out of the plan), automation controls in the track header, bus tracks and Mixing Console that follow and write the envelopes (`ui/automation.rs`: Touch while held, Latch until stop, a point per 20 ms and 0.5 dB at most), FX automation envelopes (`Fx.auto`, FX Automation chooser, E / Shift+E, envelope Properties), audio event envelopes. Tests `a_touch_write_is_thinned_and_stays_inside_the_hold`, `a_threshold_envelope_changes_the_gain_reduction`, `render_e2e` (automation renders as it plays). |
+| 5.15 | Track automation | DONE | Volume/pan/mute envelopes; (R10c) the master's Volume and Mute envelopes on a Master bus track, with Automation Settings from the Master Bus window's badge; (R8c) Automation Settings per audio track and bus (`Track/Bus.automation`, `auto_controls`; Off leaves the envelopes and FX automation out of the plan), automation controls in the track header, bus tracks and Mixing Console that follow and write the envelopes (`ui/automation.rs`: Touch while held, Latch until stop, a point per 20 ms and 0.5 dB at most), FX automation envelopes (`Fx.auto`, FX Automation chooser, E / Shift+E, envelope Properties), audio event envelopes. Tests `a_touch_write_is_thinned_and_stays_inside_the_hold`, `a_threshold_envelope_changes_the_gain_reduction`, `render_e2e` (automation renders as it plays). |
 | 5.16 | Waveform rendering | DONE | `audio.rs` Waveforms |
 | 5.17 | Audio track-level effects | DONE | Batch 16 |
 | 5.18 | Audio routing | DONE | (R8a) Track header › Output (Master or a bus, `ctx.rs::routing`, `edit::set_track_out`); sends to busses (pre-volume and pre-mute) and assignable FX chains (post-volume) on the multipurpose slider (`tracks.rs`, Pre/Post Volume in its label list); busses route to the master or another bus with loops refused (`edit::set_bus_out`); `engine/mix.rs` tests `a_track_through_a_bus_at_minus_6_db_is_halved`, `a_pre_volume_send_feeds_the_bus_with_the_fader_down`, `a_bus_loop_is_rejected`, `busses_play_and_render_the_same` |
@@ -448,19 +448,19 @@ What matters most:
 |---|---|---|---|
 | 14.1 | Media browser | DONE | `ui/explorer.rs`. Its preview buttons are inert with labels (`explorer.rs:168-171`) → R57 |
 | 14.2 | Project media bin | DONE | `ui/media_panel.rs` |
-| 14.3 | Folder organization | MISSING | "Custom Bins" has no bins; "Smart Bins" shows nothing (`media_panel.rs:104, 390`). → R45a |
-| 14.4 | Tags | MISSING | The "Tagged Media" node is empty (`media_panel.rs:104`); `MediaItem` has no tags. → R45a |
-| 14.5 | Search | PARTIAL | Name substring only (`media_panel.rs:106`). → R45a |
-| 14.6 | Metadata inspection | PARTIAL | Basic fields only (`project.rs:146`). → R45b |
+| 14.3 | Folder organization | DONE | R45a: Custom Bins (nested; drag media or bins onto a bin; an item in several bins; Remove from Current Bin) and Smart Bins (saved queries) in `Project::bins` (`library.rs`), with VEGAS's bin tree menu (Create New Bin, Save as Bin, Save as Smart Bin, Delete, Rename, Edit Search). Undoable. |
+| 14.4 | Tags | DONE | R45a: `MediaItem::tags`, edited with the item menu's Media Tags...; Tagged Media lists every tag with its count; the list background's Media Tags shows them under the tiles; a Tags column in Details. |
+| 14.5 | Search | DONE | R45a: the search field takes a query over name, path, codec, tags and frame size, with `type:`, `codec:`, `tag:`, `res>=`, `fps:`, `length<`, `is:used/unused/offline` and `-` (`library::Query`); Search Media Bins... builds one from criteria rows. |
+| 14.6 | Metadata inspection | DONE | R45b: File Format Properties (see 4.9). |
 | 14.7 | Thumbnail generation | DONE | |
 | 14.8 | Waveform generation | DONE | |
 | 14.9 | Proxy generation | DONE | `proxy.rs` |
-| 14.10 | Relinking missing media | PARTIAL | Per-item "Replace..." (`media_panel.rs:276`), and automatic search relative to the project and next to it (`project.rs:432-439`). No batch relink or folder search. → R45b |
-| 14.11 | Duplicate media detection | PARTIAL | Same path only (`media.rs:85-102`). No content check. → R45b |
-| 14.12 | Media properties | PARTIAL | See 4.9 → R45b |
-| 14.13 | Import progress | PARTIAL | Probing runs in the background, but no count or progress is shown (only proxies use the status-bar progress, `status.rs:11`). → R45b |
-| 14.14 | Background media analysis | PARTIAL | Probe, thumbnails and peaks only. No loudness, scene or duplicate analysis. → R45b, R57 |
-| 14.15 | Large libraries without slowing the editor | PARTIAL | Untested. The media view rebuilds its lists each frame; there is no virtualised list for 10k items. → R45a |
+| 14.10 | Relinking missing media | DONE | Per-item Replace..., the automatic search relative to the project and next to it on Open, and R45b's Media Offline dialog: Search Folder... (recursive, by name and size), per-item Browse..., Relink all found as one undo step, or Leave Offline (`ui/dialogs/missing_media.rs`, `library::{find_in_folder, relink}`). |
+| 14.11 | Duplicate media detection | DONE | Same path, and R45b: on Import Media the worker compares each new file with the pool by size, then SHA-256 of its size and first and last 4 MB (`library::fingerprint`); a match asks "Use Existing / Add Anyway". |
+| 14.12 | Media properties | DONE | See 4.9 |
+| 14.13 | Import progress | DONE | R45b: "Importing 3 of 40" in the status bar with Cancel (the files read so far are added), for imports and drops (`media::Progress`). |
+| 14.14 | Background media analysis | PARTIAL | Probe, thumbnails, peaks and (R45b) the duplicate fingerprint on the import worker. No loudness or scene analysis. → R57 |
+| 14.15 | Large libraries without slowing the editor | DONE | R45a: the shown items are evaluated only when the history, pool, node or search change, and the list, details and thumbnail views draw only the rows on screen. Bench `large_library_frame_time_stays_under_4ms` (10,000 items). |
 | 14.16 | Drag-and-drop importing | DONE | From Windows, Explorer and Project Media (`app/drop.rs`) |
 
 ### 2.15 Section 14: reliability
@@ -474,8 +474,8 @@ What matters most:
 | 15.5 | Undo/redo history | DONE | `history.rs`, history list on the Undo split button |
 | 15.6 | Non-destructive editing | DONE | |
 | 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, as VEGAS 23) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
-| 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
-| 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
+| 15.8 | Missing-media detection | DONE | On Open a missing file marks its item offline (`MediaItem::missing`, never stored), the status bar says so and the Media Offline dialog opens; offline events are drawn hatched with "Media Offline", offline tiles likewise with a red "!". |
+| 15.9 | Media relinking | DONE | See 14.10 |
 | 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
 | 15.11 | Error logging | DONE | R44: `src/logger.rs`, Milan Pro's own file logger behind the `log` crate: `%LOCALAPPDATA%\MilanPro\logs\milan-<date>.log`, 2 MB × 5 files, level in Preferences › Update; every former stderr print logs (grep test `logger::tests::no_eprintln_left_in_the_tree`); updater, autosave, render-queue, plug-in and open/save events are logged |
 | 15.12 | Diagnostic reports | DONE | R44: Help › Create Diagnostic Report writes `%LOCALAPPDATA%\MilanPro\diagnostics\report-<time>\` with `system.txt` (Windows build, CPU, memory, GPUs and drivers through DXGI, displays), `ffmpeg.txt` (`-version`, `-hwaccels`), `prefs.json`, the logs and the crash files (`src/diagnostics.rs`, `dialogs/diagnostics.rs`); a panic writes `crashes\crash-<time>.txt` (version, backtrace, project summary, last 500 log lines) and a native crash a minidump beside it (`SetUnhandledExceptionFilter` → `MiniDumpWriteDump`); the next start offers Open crash report / Report on GitHub (the issue page with the version prefilled; nothing uploaded) |
@@ -519,11 +519,11 @@ What matters most:
 | 17.5 | GPU compositing | DONE | (R21a-c) See 3.4 and 6.5. |
 | 17.6 | Memory management | DONE | Byte-capped LRU caches (`engine/cache.rs`), decoder cap of 8 |
 | 17.7 | Cache management | DONE | (R23) Preferences › Video: Dynamic RAM Preview max (MB), the disk frame cache's size with Clear, the prerendered files folder; Clear Dynamic RAM Preview and Clean Up Prerendered Video (all or inactive files). The source and composite caches keep their fixed sizes (192 and 256 MB). |
-| 17.8 | SSD storage (cache/prerender location) | DONE | (R23) The prerendered files folder is a preference (each project gets a folder of its own inside it; Project Properties shows the project's), the disk frame cache lives under `%LOCALAPPDATA%\MilanPro\framecache`. The temp folder field stays greyed (R49). |
+| 17.8 | SSD storage (cache/prerender location) | DONE | (R23) The prerendered files folder is a preference (each project gets a folder of its own inside it; Project Properties shows the project's), the disk frame cache lives under `%LOCALAPPDATA%\MilanPro\framecache`. (R49) The temporary files folder is a preference too (TMP and TEMP for Milan Pro and FFmpeg, from the next start), with the free space shown. |
 | 17.9 | High-resolution displays | PARTIAL | Preview Auto size fits the window. Not verified at 4K/200%. → R48 |
 | 17.10 | Multiple monitors | DONE | R14: floating windows and the external preview on any display (see 4.28) |
-| 17.11 | High-refresh-rate displays | PARTIAL | egui repaints on demand and the preview is paced by the audio clock. Not tested at 120/144 Hz. → R48 |
-| 17.12 | High-DPI scaling | PARTIAL | → R48 |
+| 17.11 | High-refresh-rate displays | DONE | (R48) Paused, nothing repaints unasked: the window title was sent every frame, and every viewport command asks for another frame, so the idle window painted at the display's refresh rate (144 frames a second at 144 Hz); now it is sent when it changes. The harness's `MILAN_IDLE_CHECK` counts the frames of 2 idle seconds (test `paused_preview_paints_no_extra_frames`). Playback still paints each display refresh, as it must to move the cursor. |
+| 17.12 | High-DPI scaling | DONE | (R48) See 4.27. |
 | 17.13 | Direct3D / Vulkan / vendor acceleration paths | DONE | (R22) d3d11va, cuda and qsv are tested and chosen explicitly (Preferences › Video); `auto` only until the table is built. |
 | 17.14 | No assumption that every machine has the same acceleration | DONE | `hw_failed` fallback (`FEATURE_PLAN.md` 1.3 vdecode) |
 | 17.15 | Fallback paths for unsupported hardware | DONE | CPU compositor; software decode fallback |
@@ -768,9 +768,9 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R18a (DONE): View > Event Length (VP23).
 - R18b (DONE): video track Set Default Track Properties.
 - R10a (re-assigned from R4b by R18b): Project Properties › Audio › Resample and stretch quality.
-- R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
+- R49 (re-assigned from R15 by R18b, done): the track header's Edit Visible Button Set.
 - R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
-- R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
+- R49 (done): Display page envelope/snap colours, icon colour strength (Milan Pro has one look, so no Interface Type radios); File I/O, Deprecated Features and Project Properties Advanced pages (labelled).
 - R53 (done): Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
 
@@ -1133,7 +1133,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - VU: VEGAS has a separate VU Meters control region in the console (Properties and Layout › Show Control Regions), so the VU ballistics are that region, off by default; the peak meters stay the default everywhere.
 - Mixing Console (`ui/mixer.rs`, `Panel::MixingConsole`, View › Window › Mixing Console, Ctrl+Alt+5 / VP23 Ctrl+Alt+6): VEGAS's toolbar (Views › Channel List; Properties and Layout › Audio Properties..., Show Channels, Show Control Regions, Channel Width; Downmix Output; Dim Output; Insert Audio Track, Insert Assignable FX, Insert Bus; Insert Input Bus is R9), the Channel List (strip check boxes, for the session), and strips for audio tracks, busses, assignable FX chains and the master: Insert FX (click opens the chain), Sends (a fader per bus and chain, right-click Pre / Post Volume), I/O (output: Master or a bus; a bus loop is refused with `set_bus_out`'s message), VU Meters, Peak Meters, Faders (Arm, Mute, Solo, Invert Phase on tracks; Mute on busses; the master's Mute is Mute All Audio; Pan; the fader; a meter beside it when Peak Meters is hidden), and the label (click selects, double-click renames). Every control edit is one undo step. Layout is saved in the preferences (`Prefs.console`).
 - Master Bus window: Master Bus Properties opens Project Properties › Audio (`Command::AudioProperties`), Downmix Output plays (L+R)/2 on both sides, Dim Output (and `DimMaster`, Ctrl+Shift+F12) lowers the output 20 dB, both gliding, playback only (never rendered); Mixing Console opens the window. Its Mute is Mute All Audio; its Solo and automation badge say why they do nothing (R57 preview bus; R10a, moved there by R8c).
-- Audio Bus Tracks (View › Audio Bus Tracks, B; `Prefs.bus_tracks`): one 64 px row per bus and chain under the tracks (with the Video Bus Track), at most half the timeline (whole rows; shortcut: no scrolling of that area). Header: name, Mute, FX, Vol, Pan, meter; lane: Volume / Pan / Mute envelopes (right-click › Insert/Remove Envelope, point drags, double-click adds, point menu deletes). No Master bus track (it would need master envelopes in the engine).
+- Audio Bus Tracks (View › Audio Bus Tracks, B; `Prefs.bus_tracks`): one 64 px row per bus and chain under the tracks (with the Video Bus Track), at most half the timeline (whole rows; shortcut: no scrolling of that area). Header: name, Mute, FX, Vol, Pan, meter; lane: Volume / Pan / Mute envelopes (right-click › Insert/Remove Envelope, point drags, double-click adds, point menu deletes). No Master bus track (it would need master envelopes in the engine; R10c added both).
 - Track header (R0 items): Show Output Meters, Use Vertical Meters (off draws L/R bars across the top row) and Channel Width (meter width) work and are saved in the preferences. Ripple: VEGAS's fourth mode, Affected Tracks, Markers, and Regions, is `RippleMode::AffectedMarkersOnly` (also Post-Edit Ripple); the bus-track modes (Affected Tracks, Bus Tracks, Markers, and Regions; All) also ripple the bus tracks' envelope keys.
 - View › Mixer Preview Fader is relabelled R57: the preview bus it shows plays the Explorer's previews, which Milan Pro does not have.
 - Not done: bus Solo, a Master bus track, the strips' recording input selector (R9: DONE), the console keys (F2, D/N/W, F/I/H/M/S: they clash with global keys while the pointer is over the console).
@@ -1164,7 +1164,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - Video track FX are keyframed in VEGAS, so their "envelopes" are View › Show OFX Effect Envelopes (Beta, VP23, off by default): a video track's keyed FX numbers drawn and edited as envelopes. Automation modes are on audio tracks and busses only (as the VEGAS track menu).
 - Audio event Insert/Remove Envelope › Volume / Pan / Mute (event-relative; Pan is Balance 0 dB) play in the mixer and render.
 - Audio FX presets: built-in presets for each audio plug-in (named in VEGAS's style; VEGAS's own lists live inside its DirectX DLLs and were not read out, shortcut noted in `plugins.rs`); user presets already worked. A preset pick keeps the plug-in's FX envelopes.
-- The Master Bus window's automation badge moved to R10a (the master has no envelopes or bus track yet), and from there to R10c.
+- The Master Bus window's automation badge moved to R10a (the master has no envelopes or bus track yet), and from there to R10c (done).
 - Not done: "Smooth and thin automation data after recording" (the writes are thinned as they go), "Set controls to default values when automation is turned off" (Off keeps the static values, VEGAS's default behaviour for FX), automation of sends and of Mute, Lock Envelopes to Events for FX automation.
 
 **Scope**
@@ -1967,7 +1967,7 @@ No product code unless the research finds a stable, documented structure. If it 
 - Sources decode to their native layout (no `-ac 2`) with a channel map.
 - Stereo-to-5.1 pan law; downmix for stereo monitoring (ITU-R BS.775).
 - Multichannel render (AAC 5.1, AC-3, E-AC-3, PCM, FLAC) with `-channel_layout`; "Enable multichannel mapping" (tracks to channels).
-- From R8c: master bus envelopes (a Master bus track) and the Master Bus window's Automation Settings badge.
+- From R8c: master bus envelopes (a Master bus track) and the Master Bus window's Automation Settings badge (done in R10c).
 - From R4b (re-assigned by R18b): Project Properties › Audio › Resample and stretch quality (Milan Pro resamples with one 32-tap windowed sinc today).
 
 **Files:** `engine/mix.rs`, `engine/plan.rs`, `audio.rs`, `engine/render.rs`, `render.rs`, `project.rs` (`AudioSettings.layout`).
@@ -1975,6 +1975,14 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** a 5.1 source plays each channel to its position (a mixer test with 6 distinct sines); the downmix matrix sums correctly; a 5.1 AC-3 render probes as 6 channels with the sines in the right channels (FFT-free: Goertzel at each frequency).
 
 ### R10c: Master bus envelopes (S-M, after R10a)
+
+**Status: DONE**, except the per-channel envelopes of a 5.1 / 7.1 master (one Volume envelope gains every channel). Built as designed below:
+- Model: `MasterBus.audio_envelopes` (Volume and Mute, timeline time), `automation` and `auto_controls`, skipped when default, so old projects load and save as before. The master is an envelope and automation owner like a bus (`edit::MASTER`, "master"): `envelope_of`, `with_envelope`, `ensure_envelope`, `toggle_bus_envelope`, `automation_of` and `set_automation` take it, so automation writes, point edits and undo work unchanged.
+- Engine: `AudioPlan.master_vol_env` / `master_mute_env` (left out with automation Off), applied by the mixer after the master FX and the plug-in delay lines, ramped across each block as a track's envelopes are, at the timeline time the block is heard; playback and the render share the plan, so they hear the same envelope. The master fader stays after it (device or render).
+- Master bus track: View › Audio Bus Tracks shows a Master row last, with the Audio Master FX button, Vol (the master gain; with Show Automation Controls and a mode other than Off, the Volume envelope at the cursor, written in Touch / Latch), the master meter, and the Volume / Mute envelope lane (Insert/Remove Envelope, drags, double-click adds, point menu deletes, Automation ▸ in the header menu).
+- Master Bus window: the strip's automation badge (between fx and M) shows the mode's letter (R, T, L; empty for Off), in the Volume envelope colour while the controls are shown; a click drops Show Automation Controls and the four modes. With automation controls the window's fader shows and writes the Volume envelope instead of the master gain.
+- Tests: `master_volume_envelope_matches_a_track_envelope` (the same ramp on the master and on every track gives the same samples within 1e-5; Mute silences; Off ignores; playback's and the render's plans mix it the same; the project file keeps it), `master_automation_modes_and_envelopes` (the badge's four modes and controls, an automation write adding the envelope, Volume and Mute only).
+- Not done: per-channel master envelopes in 5.1 / 7.1; the Mixing Console's master strip fader does not follow the automation (the bus track and the Master Bus window do).
 
 **Scope:** moved from R10a (where R8c had put it): master bus Volume (and in 5.1 / 7.1 per-channel) envelopes on a Master bus track, played and rendered, and the Master Bus window's Automation Settings badge.
 
@@ -2068,6 +2076,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R45a: Bins, tags, smart bins, metadata search, large libraries (M-L)
 
+**Status: DONE.** `src/library.rs` holds the bins (`Project::bins`, `#[serde(default)]`: old projects load unchanged, no format bump), the tag helpers and the query language; `ui/media_panel.rs` draws them. Bins nest and are moved by dragging one bin onto another (or onto Custom Bins); media are dragged from the item views onto a bin. Smart bins are saved queries, shown with a magnifier, edited with Edit Search. Search Media Bins... (item, background and tree menus) turns criteria rows (field, operator, value) into the query text; Search puts it in the search field, Save as Smart Bin keeps it. Tags are edited in a small Media Tags dialog (VEGAS edits them in the tile strip; Milan Pro's tiles are drawn, not widgets). Removing media takes it out of every bin. The bin operations are functions in `library.rs` rather than `edit.rs` (they touch `Project::bins` and tags only). Harness: `MILAN_DIALOG=media-bins`, `media-tags`, `media-smart`, `media-search`. Tests: `library::tests::{the_query_parser_reads_fields_ops_quotes_and_negation, queries_evaluate_over_every_field, bin_moves_are_undoable, tags_are_set_and_counted, old_projects_load_without_bins_or_tags}`, `media_panel::tests::{search_rows_round_trip_through_the_query, large_library_frame_time_stays_under_4ms}` (10,000 items: each view's frame under 4 ms in release; search, smart-bin and tag evaluation over 5,000 and 10,000 items under 40 ms (about 12, 2.4 and 1.4 ms at 10,000 here); prints `BENCH` lines).
+
 **Scope**
 - Custom bins: nested folders; drag items into bins; an item in several bins.
 - Tags: `MediaItem.tags`, a tag editor, and the Tagged Media node lists tags.
@@ -2080,6 +2090,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** the query parser and evaluation; bin moves are undoable; with 10k synthetic items the media panel frame time stays under 4 ms (bench).
 
 ### R45b: Metadata inspector, duplicates, relink, offline marking, import progress (M-L)
+
+**Status: DONE.** Built as designed below, except: the duplicate check runs for Import Media (and File › Import), not for files dropped straight onto the timeline, whose probes start while they hover; Clean Project Media is VEGAS's Remove All Unused Media (toolbar, and now the list background menu), which also takes the media out of their bins. `MediaItem::file_size` (`#[serde(default)]`) is recorded on import so the folder search can tell a moved file from another of the same name; media imported earlier is matched by name. An item is offline when `MediaItem::offline()`: never probed, an unsupported codec, or `missing` (found again on every Open and by Project Media › Find Missing Media). The status bar's import counter covers Import Media and drops; Cancel keeps what was read. Harness: `MILAN_DIALOG=missing-media` (two demo paths pointed at a folder that does not exist, then a folder search of the demo media; nothing on disk moves), `offline-events`, `file-props`. Tests: `library::tests::{the_hash_is_stable_across_copies_and_sees_the_last_byte, relink_by_folder_finds_a_moved_file_of_the_same_size}`, `timeline::events::tests::offline_events_render_with_the_marker`, `library::tests::moved_media_opens_offline_and_relinks_by_folder` (five files moved within the temp folder after a save: the project opens with each offline, one folder search relinks every item, same-named files told apart by size), `media::tests::the_import_counter_reaches_n_of_n`, `dialogs::file_props::tests::every_field_and_tag_is_listed`.
 
 **Scope**
 - File Format Properties: every ffprobe format and stream field and tag in a tree; copy as text.
@@ -2133,6 +2145,14 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R48: High-DPI, high-refresh and animation policy (M)
 
+**Status: DONE.** As designed below, with these choices:
+- Crisp at 125-200 %: the look's chrome is drawn in whole physical pixels (`theme::one()`: 1 px at 100 and 125 %, 2 px from 150 %; `theme::snap`, `widgets::px` on physical pixel edges), icons on the physical pixel grid with whole-pixel strokes and outlines, and egui's anti-aliasing feather is off at fractional scales (a 1-point line was 1.5 px of half-transparent smear); text keeps its own anti-aliasing. Brand bitmaps (splash, About, Start) are drawn at a whole multiple of their pixels (1× up to 175 %, 2× at 200 %, nearest-neighbour), never stretched. No 2× bitmap art is needed: every icon is vector.
+- View › Interface Scale (Auto, 100, 125, 150, 175, 200 %) and the same choice in Preferences › Display; Auto follows Windows as VEGAS does.
+- The harness: `MILAN_SCALE` (1-3) and `MILAN_SHOT_SIZE` (physical window size, e.g. 3840x2160 for 200 % on 4K); each shot prints `overflow:` lines for windows off the screen and dialog text cut off across (`demo::overflow`, the egui layout check), and `MILAN_IDLE_CHECK=1` prints the frames painted in 2 idle seconds. Dialogs never grow past the window: their page scrolls (`dialogs::fit`, `page`).
+- 144 Hz: the idle repaint loop found by the check (the title sent every frame) is gone; a paused, idle window paints nothing.
+- Animation policy: `theme::anim(ms)`; Windows' client-area animation setting off makes every transition instant (egui's animation and scroll times, the chooser's hover preview).
+- Tests: `animations_off_gives_zero_duration_transitions`, `chrome_pixels_are_whole_physical_pixels`, and the ignored `harness_fits_at_every_scale` (main window, FX window, Render As, Preferences and Pan/Crop at 1, 1.25, 1.5 and 2) and `paused_preview_paints_no_extra_frames`.
+
 **Scope**
 - The screenshot harness renders key windows (main, FX window, render dialog, preferences, Pan/Crop) at zoom 1.0, 1.25, 1.5 and 2.0, and checks that text bounding boxes stay inside their containers (an egui layout check, not pixels).
 - View > Interface Scale (Auto, 100-200%) preference.
@@ -2144,6 +2164,18 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** harness runs at the 4 scales with no overflow; animations off gives zero-duration transitions.
 
 ### R49: Remaining Preferences pages and preference export (M)
+
+**Status: DONE.** Every Preferences page is live or says why a control is not:
+- General: "Automatically open last project on startup" (off, as VEGAS; the Start dialog is skipped when it opens one; `Prefs::startup_project`), "Show logo splash screen on startup", the temporary files folder (TMP and TEMP for Milan Pro and its FFmpeg children, set at the next start before any thread; the free space of its drive shown). The option list is as long as its options, so the page fits at 150 %.
+- Audio (VEGAS's Audio tab): Normalize peak level (dB) (`edit::set_normalize_peak`, VEGAS's -0.1), the preferred audio editor and the loudness log option; Quick fade length (10 ms), Dither, Import audio at project sample rate and the metronome sounds are greyed with the reason.
+- Preview Device: Identify Displays shows each display's number for 3 s (`monitors::identify`, borderless windows that never take the focus); deinterlace and studio-to-computer RGB are greyed with the reason (frames are progressive and computer RGB as they are decoded).
+- Display: Envelope Colors (Volume, Pan, Mute, Composite Level) and Snap Colors (VEGAS's 12 types) with colour buttons, Icon color strength (75 % = the icons as drawn), applied through `theme::set_user_colors`.
+- File I/O and Deprecated Features (VEGAS 23): VEGAS's legacy readers, QuickTime and DirectX switches, greyed with the reason. MIDI, CD Settings, Sync and External Control & Automation: not planned (R59). Project Properties › Advanced: Master display (R40b), 360 output (not planned, R59).
+- Project Properties › "Start all new projects with these settings" (`Prefs.new_project`): File › New and the first Untitled project take them; unchecking goes back to the built-in defaults.
+- Options › Export Preferences... / Import Preferences... (VEGAS 23's .vegprefs; Milan Pro's `.milanprefs`, JSON with a marker): a file the user picks, asking before replacing one ("... already exists. Replace it?") and before replacing the preferences on import; the import takes effect at once (keys, toolbars, layouts, colours, track defaults; `app/prefs_io.rs`).
+- Edit Visible Button Set... (track header menu, VEGAS 19): per kind, which of Compositing Mode, Track FX, Mute, Solo (video) or Arm for Record, Track FX, Mute, Solo (audio) the headers show; hidden ones are rows of the header's More menu.
+- `MILAN_APPDATA` now also moves prefs.json, so tests and the harness never touch the user's preferences.
+- Tests: `prefs_export_import_round_trip_restores_every_field` (every field set away from its default, checked), `open_last_project_flag`, `button_set_hides_per_kind`, `display_colours_and_icon_strength`.
 
 **Scope**
 - Make the Preview Device page live (from R14) and the Audio page (from R9/R8a).

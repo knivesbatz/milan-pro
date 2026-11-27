@@ -1,6 +1,8 @@
 use eframe::egui;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use crate::project::{Mastering, MediaItem, MediaType, Sequence};
 
 /// How a picked file is opened (R38: VEGAS's "Open still image sequence" check box).
@@ -33,6 +35,8 @@ pub fn probe_media_with(path: &Path, opts: ImportOpts) -> anyhow::Result<MediaIt
     }
     let media_type = classify_extension(&ext);
     let mut item = MediaItem { id: uuid::Uuid::new_v4().to_string(), path: path.to_path_buf(), name, media_type, ..Default::default() };
+    // R45b: Missing Media's folder search tells a moved file by its name and size.
+    item.file_size = std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len());
 
     // R41: RAW camera formats are offline items that say why, never read as something else.
     if let Some(why) = crate::camera::raw_reason(&ext) {
@@ -223,16 +227,68 @@ pub fn sequences_in(paths: &[PathBuf]) -> Vec<(PathBuf, (PathBuf, u32, u32), Vec
 /// Each picked file with its probe result.
 pub type ProbeBatch = Vec<(PathBuf, Result<MediaItem, String>)>;
 
+/// R45b: how far the imports running are ("Importing 3 of 40" in the status bar), and their Cancel.
+#[derive(Default)]
+pub struct Progress {
+    done: AtomicUsize,
+    total: AtomicUsize,
+    /// Batches whose worker has not finished.
+    active: AtomicUsize,
+    cancel: AtomicBool,
+}
+
+/// How a worker probes one file (`probe_media_with`; tests fake it).
+type ProbeFn = dyn Fn(&Path, ImportOpts) -> anyhow::Result<MediaItem> + Send + Sync;
+
 /// Probes imported files on a worker thread so ffprobe never blocks the UI.
 pub struct Importer {
     tx: Sender<ProbeBatch>,
     rx: Receiver<ProbeBatch>,
+    progress: Arc<Progress>,
+    /// R45b: new files found to be the same content as a pool item (`library::duplicates`), by path.
+    duplicates: Arc<Mutex<Vec<(PathBuf, crate::library::Known)>>>,
+}
+
+/// Probe `paths` in order, counting each in `progress`, until its Cancel is set; the files probed so far.
+fn run_batch(paths: Vec<(PathBuf, ImportOpts)>, progress: &Progress, probe: &dyn Fn(&Path, ImportOpts) -> anyhow::Result<MediaItem>) -> ProbeBatch {
+    let mut batch: ProbeBatch = Vec::new();
+    let file_name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    for (p, opts) in paths {
+        if progress.cancel.load(Relaxed) {
+            break;
+        }
+        if p.is_dir() {
+            let mut notes = Vec::new();
+            let found = crate::camera::import_paths(&p, &mut notes);
+            if found.is_empty() {
+                batch.push((p.clone(), Err(format!("{}: no media found in the folder", p.display()))));
+            }
+            // A card's clips count one by one.
+            progress.total.fetch_add(found.len().saturating_sub(1), Relaxed);
+            for f in found {
+                if progress.cancel.load(Relaxed) {
+                    break;
+                }
+                let r = probe(&f, ImportOpts::default()).map_err(|e| format!("{}: {e}", file_name(&f)));
+                batch.push((p.clone(), r));
+                progress.done.fetch_add(1, Relaxed);
+            }
+            for n in notes {
+                batch.push((p.clone(), Err(n)));
+            }
+            continue;
+        }
+        let r = probe(&p, opts).map_err(|e| format!("{}: {e}", file_name(&p)));
+        batch.push((p, r));
+        progress.done.fetch_add(1, Relaxed);
+    }
+    batch
 }
 
 impl Importer {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { tx, rx }
+        Self { tx, rx, progress: Arc::default(), duplicates: Arc::default() }
     }
 
     pub fn import(&self, ctx: &egui::Context, paths: Vec<PathBuf>) {
@@ -242,36 +298,60 @@ impl Importer {
     /// Probe each path with its options. A folder (R41: a camera card) is scanned on the worker and every clip found
     /// comes back keyed by the folder; an empty folder comes back as an error under its path.
     pub fn import_with(&self, ctx: &egui::Context, paths: Vec<(PathBuf, ImportOpts)>) {
-        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        self.spawn(ctx, paths, None, Arc::new(probe_media_with));
+    }
+
+    /// R45b: `import_with`, also comparing each new file with the `known` pool items by content
+    /// (`library::duplicates`), on the worker; `take_duplicates` then says which are already in the project.
+    pub fn import_checked(&self, ctx: &egui::Context, paths: Vec<(PathBuf, ImportOpts)>, known: Vec<crate::library::Known>) {
+        self.spawn(ctx, paths, Some(known), Arc::new(probe_media_with));
+    }
+
+    fn spawn(&self, ctx: &egui::Context, paths: Vec<(PathBuf, ImportOpts)>, known: Option<Vec<crate::library::Known>>, probe: Arc<ProbeFn>) {
+        let (tx, ctx, progress, dups) = (self.tx.clone(), ctx.clone(), self.progress.clone(), self.duplicates.clone());
+        progress.total.fetch_add(paths.len(), Relaxed);
+        progress.active.fetch_add(1, Relaxed);
         std::thread::spawn(move || {
-            let mut batch: ProbeBatch = Vec::new();
-            for (p, opts) in paths {
-                if p.is_dir() {
-                    let mut notes = Vec::new();
-                    let found = crate::camera::import_paths(&p, &mut notes);
-                    if found.is_empty() {
-                        batch.push((p.clone(), Err(format!("{}: no media found in the folder", p.display()))));
-                    }
-                    for f in found {
-                        let r = probe_media(&f).map_err(|e| format!("{}: {e}", f.file_name().unwrap_or_default().to_string_lossy()));
-                        batch.push((p.clone(), r));
-                    }
-                    for n in notes {
-                        batch.push((p.clone(), Err(n)));
-                    }
-                    continue;
+            let batch = run_batch(paths, &progress, &*probe);
+            if let Some(known) = known.filter(|k| !k.is_empty()) {
+                let new: Vec<PathBuf> = batch.iter().filter_map(|(_, r)| r.as_ref().ok()).filter(|m| m.sequence.is_none() && m.spanned.is_empty()).map(|m| m.path.clone()).collect();
+                let found = crate::library::duplicates(&new, &known);
+                if let Ok(mut d) = dups.lock() {
+                    d.extend(found);
                 }
-                let r = probe_media_with(&p, opts).map_err(|e| format!("{}: {e}", p.file_name().unwrap_or_default().to_string_lossy()));
-                batch.push((p, r));
             }
+            progress.active.fetch_sub(1, Relaxed);
             let _ = tx.send(batch);
             ctx.request_repaint();
         });
     }
 
-    /// A finished batch of probe results, one per picked file.
+    /// A finished batch of probe results, one per picked file. When the last running batch is taken, the counter
+    /// starts again from 0.
     pub fn poll(&self) -> Option<ProbeBatch> {
-        self.rx.try_recv().ok()
+        let b = self.rx.try_recv().ok()?;
+        if self.progress.active.load(Relaxed) == 0 {
+            self.progress.done.store(0, Relaxed);
+            self.progress.total.store(0, Relaxed);
+            self.progress.cancel.store(false, Relaxed);
+        }
+        Some(b)
+    }
+
+    /// R45b: (files probed, files picked) while an import runs or waits to be taken.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        let total = self.progress.total.load(Relaxed);
+        (total > 0).then(|| (self.progress.done.load(Relaxed).min(total), total))
+    }
+
+    /// R45b: the status bar's Cancel: the files not probed yet are skipped; those probed are still added.
+    pub fn cancel(&self) {
+        self.progress.cancel.store(true, Relaxed);
+    }
+
+    /// R45b: the duplicates found since the last call: (new file, the pool item it repeats).
+    pub fn take_duplicates(&self) -> Vec<(PathBuf, crate::library::Known)> {
+        self.duplicates.lock().map(|mut d| std::mem::take(&mut *d)).unwrap_or_default()
     }
 
     /// Where finished batches arrive, for tests that fake a probe.
@@ -279,6 +359,11 @@ impl Importer {
     pub fn sender(&self) -> Sender<ProbeBatch> {
         self.tx.clone()
     }
+}
+
+/// "Importing 3 of 40" for the status bar: the file being probed.
+pub fn progress_text((done, total): (usize, usize)) -> String {
+    format!("Importing {} of {total}", (done + 1).min(total))
 }
 
 /// Add probed `items` whose path is not in the pool yet (nor earlier in the same batch). An offline pool item (a
@@ -498,6 +583,51 @@ fn parse_ffprobe(json: &str, item: &mut MediaItem) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R45b acceptance: the import counter counts every file and reaches N of N; Cancel stops the rest.
+    #[test]
+    fn the_import_counter_reaches_n_of_n() {
+        let fake = |p: &Path, _: ImportOpts| -> anyhow::Result<MediaItem> { Ok(MediaItem { path: p.to_path_buf(), sample_rate: Some(48_000), duration: 1.0, ..Default::default() }) };
+        let paths: Vec<(PathBuf, ImportOpts)> = (0..40).map(|k| (PathBuf::from(format!("no-such-dir/f{k}.wav")), ImportOpts::default())).collect();
+        let progress = Progress::default();
+        progress.total.store(40, Relaxed);
+        let seen = std::cell::RefCell::new(Vec::new());
+        let counting = |p: &Path, o: ImportOpts| {
+            seen.borrow_mut().push(progress.done.load(Relaxed));
+            fake(p, o)
+        };
+        let batch = run_batch(paths.clone(), &progress, &counting);
+        assert_eq!(batch.len(), 40);
+        assert_eq!(*seen.borrow(), (0..40).collect::<Vec<_>>(), "one more before each file");
+        assert_eq!((progress.done.load(Relaxed), progress.total.load(Relaxed)), (40, 40));
+        assert_eq!(progress_text((40, 40)), "Importing 40 of 40");
+        assert_eq!(progress_text((2, 40)), "Importing 3 of 40");
+        // Cancel: what was probed comes back, the rest is skipped.
+        let progress = Progress::default();
+        let stop_after_3 = |p: &Path, o: ImportOpts| {
+            if progress.done.load(Relaxed) == 2 {
+                progress.cancel.store(true, Relaxed);
+            }
+            fake(p, o)
+        };
+        assert_eq!(run_batch(paths, &progress, &stop_after_3).len(), 3);
+        // Through the worker: the counter shows N of N until the batch is taken, then nothing.
+        let imp = Importer::new();
+        let ctx = egui::Context::default();
+        imp.spawn(&ctx, (0..5).map(|k| (PathBuf::from(format!("x{k}.wav")), ImportOpts::default())).collect(), None, Arc::new(fake));
+        let t0 = std::time::Instant::now();
+        while imp.progress.active.load(Relaxed) > 0 && t0.elapsed().as_secs() < 10 {
+            std::thread::yield_now();
+        }
+        assert_eq!(imp.progress(), Some((5, 5)));
+        let t0 = std::time::Instant::now();
+        let mut got = None;
+        while got.is_none() && t0.elapsed().as_secs() < 10 {
+            got = imp.poll();
+        }
+        assert_eq!(got.map(|b| b.len()), Some(5));
+        assert_eq!(imp.progress(), None);
+    }
 
     #[test]
     fn unreadable_media_is_an_error() {

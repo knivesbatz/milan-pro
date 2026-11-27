@@ -29,7 +29,7 @@ mod project_notes;
 mod properties;
 mod scopes;
 pub mod splash;
-mod status;
+pub(crate) mod status;
 mod surround;
 #[allow(dead_code)] // full token set from the spec; later stages use the rest
 pub mod theme;
@@ -63,7 +63,7 @@ pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar
 pub use properties::draw_properties;
 pub use scopes::{ScopePrefs, ScopeView, Scopes, draw_scopes, scopes_toolbar};
 pub use status::draw_status_bar;
-pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, request_context_menu, take_command_edit, take_crumb};
+pub use timeline::{BASE_PPS, MIN_TRACK_H, draw_timeline, frame_per_thumb_zoom, grid_line, rename_event, request_context_menu, set_header_buttons, take_command_edit, take_crumb};
 pub use toolbar::{Bar, draw_main_toolbar};
 pub use trackmotion::TrackMotionWin;
 pub use surround::{SurroundWin, key_pan};
@@ -80,6 +80,10 @@ pub enum WinAction {
     CreateProxy(Vec<crate::project::MediaItem>),
     /// R6b: Project Media › Edit Source Project: open this nested timeline (Open Parent Timeline returns).
     OpenNested(PathBuf),
+    /// R45b: Project Media › File Format Properties of this media (id).
+    FileProps(String),
+    /// R45b: Project Media › Find Missing Media.
+    MissingMedia,
 }
 
 /// A Pan/Crop (event id), Track Motion (track id) or FX window asked for by a timeline button, a drop or a menu; the

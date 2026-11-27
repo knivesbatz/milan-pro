@@ -857,6 +857,10 @@ impl Dock {
             }
             let b = b.with_position(pts.min).with_taskbar(false).with_window_level(if active { WindowLevel::AlwaysOnTop } else { WindowLevel::Normal });
             let act = ctx.show_viewport_immediate(float_id(p), b, |vctx, class| {
+                // R48: a floating window on a display of another scale draws on its own pixel grid.
+                let main_ppp = super::theme::ppp();
+                super::theme::set_ppp(vctx.pixels_per_point());
+                let _restore = Restore(main_ppp);
                 let mut act = None;
                 let mut draw = |ui: &mut Ui| act = self.float_ui(ui, &t, k, offscreen || class == ViewportClass::Embedded, allow_dock, &mut content);
                 if class == ViewportClass::Embedded {
@@ -1227,6 +1231,15 @@ fn float_tab(ui: &mut Ui, t: &Theme, panel: Panel, strip: Rect, tabs_top: bool) 
 
 fn hline(p: &Painter, x: Rangef, y: f32, c: Color32) {
     p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
+}
+
+/// Puts the main window's pixels per point back when a floating window's drawing ends.
+struct Restore(f32);
+
+impl std::ops::Drop for Restore {
+    fn drop(&mut self) {
+        super::theme::set_ppp(self.0);
+    }
 }
 
 #[cfg(test)]

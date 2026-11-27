@@ -79,6 +79,11 @@ fn record_time(project: &Project) -> Option<String> {
     s
 }
 
+/// R49: the free space of `dir`'s drive (Preferences › General › Temporary files folder).
+pub(crate) fn free_space(dir: &Path) -> Option<u64> {
+    free_bytes(dir)
+}
+
 fn format_hms(secs: u64) -> String {
     format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
 }

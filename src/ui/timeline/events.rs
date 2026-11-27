@@ -36,6 +36,8 @@ pub(super) struct Ev<'a> {
     pub offset: f64,
     /// An empty event (no media): drawn hatched.
     pub empty: bool,
+    /// R45b: its media is offline (the file is missing, or never read): hatched with "Media Offline" on it.
+    pub offline: bool,
     /// R18a: View › Event Media Markers: the media's markers as (timeline time, name), and Show Marker Labels.
     pub marks: Vec<(f64, &'a str)>,
     pub labels: bool,
@@ -129,6 +131,9 @@ pub(super) fn paint_event(
     if ev.empty {
         paint_hatch(p, r, mul(ev.color, 0.7));
     }
+    if ev.offline {
+        paint_offline(p, t, body, ev.color);
+    }
     if ev.clip.adjustment {
         paint_adjustment(p, r, ev.color);
     }
@@ -205,6 +210,23 @@ fn paint_adjustment(p: &Painter, r: Rect, c: Color32) {
     mesh.add_triangle(1, 2, 3);
     p.with_clip_rect(vis).add(mesh);
 }
+
+/// R45b: an offline event's body: darkened, hatched, and "Media Offline" at its visible start.
+fn paint_offline(p: &Painter, t: &Theme, body: Rect, color: Color32) {
+    p.rect_filled(body.intersect(p.clip_rect()), 0.0, mul(color, 0.55));
+    paint_hatch(p, body, mul(color, 0.85));
+    let vis = body.intersect(p.clip_rect());
+    if vis.width() > 30.0 && body.height() >= 12.0 {
+        let at = pos2(vis.min.x + 4.0, body.center().y);
+        let g = p.layout_no_wrap(OFFLINE_LABEL.into(), t.font(t.font.ui), Color32::WHITE);
+        let r = Rect::from_min_size(pos2(at.x - 2.0, at.y - g.size().y * 0.5 - 1.0), g.size() + vec2(4.0, 2.0));
+        p.with_clip_rect(vis).rect_filled(r, 0.0, Color32::from_black_alpha(160));
+        p.with_clip_rect(vis).galley(pos2(at.x, at.y - g.size().y * 0.5), g, Color32::WHITE);
+    }
+}
+
+/// The label on an offline event (VEGAS's wording).
+pub(super) const OFFLINE_LABEL: &str = "Media Offline";
 
 /// Diagonal hatching over an empty event.
 fn paint_hatch(p: &Painter, r: Rect, ink: Color32) {
@@ -447,6 +469,52 @@ pub(super) fn paint_fade_tag(p: &Painter, t: &Theme, at: Pos2, text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R45b acceptance: an offline event is drawn hatched with the "Media Offline" label; an online one is not.
+    #[test]
+    fn offline_events_render_with_the_marker() {
+        let clip = Clip::new("interview", 0.0, 4.0);
+        let texts = |offline: bool| -> Vec<String> {
+            let ctx = Context::default();
+            let mut out = Vec::new();
+            let full = ctx.run(RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 200.0))), ..Default::default() }, |ctx| {
+                let p = ctx.layer_painter(LayerId::background());
+                let t = crate::ui::theme::get();
+                let ev = Ev {
+                    rect: Rect::from_min_size(pos2(10.0, 10.0), vec2(400.0, 60.0)),
+                    clip: &clip,
+                    color: Color32::from_rgb(120, 140, 200),
+                    is_video: true,
+                    still: false,
+                    aspect: 16.0 / 9.0,
+                    selected: false,
+                    hovered: false,
+                    ripple: false,
+                    level: None,
+                    dim: false,
+                    generated: false,
+                    pps: 100.0,
+                    fps: 25.0,
+                    wave_zoom: 1.0,
+                    loop_len: None,
+                    offset: 0.0,
+                    empty: false,
+                    offline,
+                    marks: Vec::new(),
+                    labels: false,
+                };
+                paint_event(&p, &t, &ev, Color32::BLACK, None, &mut |_| None);
+            });
+            for s in full.shapes {
+                if let epaint::Shape::Text(t) = s.shape {
+                    out.push(t.galley.text().to_string());
+                }
+            }
+            out
+        };
+        assert!(texts(true).iter().any(|t| t == OFFLINE_LABEL), "{:?}", texts(true));
+        assert!(!texts(false).iter().any(|t| t == OFFLINE_LABEL));
+    }
 
     /// R3a: an 8 s clip extended to 20 s is notched at 8 and 16 s, where its media starts again; reversed, where the
     /// source wraps going backwards.

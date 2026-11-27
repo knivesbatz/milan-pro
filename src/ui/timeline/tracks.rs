@@ -39,6 +39,35 @@ enum Btn {
     Solo,
 }
 
+impl Btn {
+    /// Its key in `settings::HeaderButtons` (`dialogs::button_set`).
+    fn key(self) -> &'static str {
+        match self {
+            Btn::Arm => "arm",
+            Btn::Comp => "comp",
+            Btn::Fx => "fx",
+            Btn::Mute => "mute",
+            Btn::Solo => "solo",
+        }
+    }
+}
+
+fn header_buttons_id() -> Id {
+    Id::new("milan_header_buttons")
+}
+
+/// R49: the track headers' Edit Visible Button Set, published by the app each frame.
+pub fn set_header_buttons(ctx: &Context, set: &crate::settings::HeaderButtons) {
+    if ctx.data(|d| d.get_temp::<crate::settings::HeaderButtons>(header_buttons_id())).as_ref() != Some(set) {
+        ctx.data_mut(|d| d.insert_temp(header_buttons_id(), set.clone()));
+    }
+}
+
+/// R49: the button set (the More menu offers what a header hides).
+pub(super) fn header_buttons(ctx: &Context) -> crate::settings::HeaderButtons {
+    ctx.data(|d| d.get_temp(header_buttons_id())).unwrap_or_default()
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Slider {
     Level,
@@ -168,11 +197,17 @@ struct MeterOpts {
     show: bool,
     vertical: bool,
     width: u8,
+    /// R49: the buttons hidden by Edit Visible Button Set, by `Btn::key`, for video [0] and audio [1] headers.
+    hide: [[bool; 5]; 2],
 }
+
+const BTNS: [Btn; 5] = [Btn::Arm, Btn::Comp, Btn::Fx, Btn::Mute, Btn::Solo];
 
 fn meter_opts(ctx: &Context) -> MeterOpts {
     let s = crate::ui::menus::state(ctx);
-    MeterOpts { show: s.output_meters, vertical: s.vertical_meters, width: s.meter_width }
+    let set = header_buttons(ctx);
+    let hide = [true, false].map(|v| BTNS.map(|b| set.hides(v, b.key())));
+    MeterOpts { show: s.output_meters, vertical: s.vertical_meters, width: s.meter_width, hide }
 }
 
 /// `sends`: the project has a bus or an assignable FX chain (an audio track shows the multipurpose slider).
@@ -192,6 +227,9 @@ fn layout(t: &Theme, g: &Geo, row: &Row, armed: bool, sends: bool, mo: MeterOpts
         (false, true) => &[Btn::Arm, Btn::Fx, Btn::Mute, Btn::Solo],
         (false, false) => &[Btn::Fx, Btn::Mute, Btn::Solo],
     };
+    // R49: those the button set hides are left to the More menu.
+    let hide = &mo.hide[usize::from(!row.is_video)];
+    let kinds: Vec<Btn> = kinds.iter().copied().filter(|b| BTNS.iter().position(|x| x == b).is_none_or(|k| !hide[k])).collect();
     // Row 1: right-aligned on a 24 px pitch with a 6 px right padding; buttons that don't fit are left out.
     let mut buttons = Vec::new();
     for (k, b) in kinds.iter().rev().enumerate() {
