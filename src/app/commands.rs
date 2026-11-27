@@ -2868,6 +2868,11 @@ impl MeridianApp {
             "loudness" => self.dock.open(crate::ui::dock::Panel::LoudnessMeters),
             "edit-details" => self.dock.open(crate::ui::dock::Panel::EditDetails),
             "plugin-manager" => self.dock.open(crate::ui::dock::Panel::PluginManager),
+            // A1 review: the Plug-In Manager with its Folders popup open (the AE-format switch and notice).
+            "plugin-manager-aex" => {
+                self.dock.open(crate::ui::dock::Panel::PluginManager);
+                self.plugin_mgr.folders_open = true;
+            }
             // R34a review: the FX window on the first audio track with the first VST3 effect of MILAN_AUDIO_PLUGIN_DIR
             // (the test module's "Milan Test Gain") after the default chain; "fx-vst3-ui" also opens its editor
             // (off-screen in the harness).
@@ -2908,6 +2913,20 @@ impl MeridianApp {
                     if what != "fx-badge" {
                         self.open_fx(target);
                     }
+                }
+            }
+            // A4 review: the FX window on the focus video event with the AE-format test plug-in's "Test Params" (from
+            // MILAN_AEX_DIR): its generic controls, groups, hidden and greyed parameters, and the 8-bit / custom
+            // controls note.
+            "fx-aex" => {
+                if let Some(id) = self.focus_clip(true) {
+                    let target = edit::FxTarget::Event(id);
+                    let aex: Vec<_> = crate::engine::plugins::catalog(crate::engine::plugins::PluginKind::VideoFx).filter(|i| i.id.starts_with(crate::engine::aex::PREFIX)).collect();
+                    if let Some(info) = aex.iter().find(|i| i.name.contains("Params")).or(aex.first()) {
+                        edit::add_fx(&mut self.project, &target, crate::engine::plugins::new_fx(info, None));
+                    }
+                    self.project.modified = false;
+                    self.open_fx(target);
                 }
             }
             "prefs-display" => self.open_prefs(Some(dialogs::prefs::DISPLAY)),

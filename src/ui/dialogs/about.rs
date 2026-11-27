@@ -8,7 +8,7 @@ use super::super::widgets::{self, Brand};
 pub fn about(ctx: &Context) -> bool {
     let t = theme::get();
     let version = env!("CARGO_PKG_VERSION");
-    let (ok, close) = super::modal(ctx, "about", "About Milan Pro", vec2(500.0, 296.0), |ui| {
+    let (ok, close) = super::modal(ctx, "about", "About Milan Pro", vec2(500.0, 330.0), |ui| {
         let d = t.dialog();
         ui.spacing_mut().item_spacing.y = 4.0;
         let (r, _) = ui.allocate_exact_size(vec2(480.0, 120.0), Sense::hover());
@@ -26,6 +26,8 @@ pub fn about(ctx: &Context) -> bool {
         ] {
             ui.label(RichText::new(line).color(d.text));
         }
+        // A0: the trademark notice that goes with the AE-format effect host.
+        ui.add(Label::new(RichText::new(crate::engine::aex::NOTICE).color(d.text)).wrap());
         ui.add_space(8.0);
         super::button_row(ui, &[("OK", true)]).is_some()
     });

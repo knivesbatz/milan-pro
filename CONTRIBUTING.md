@@ -68,23 +68,34 @@ The batch rules (from [docs/FEATURE_PLAN.md](docs/FEATURE_PLAN.md) and `REMAININ
 - No binaries, media files over a few hundred kilobytes, or generated output other than the documented generated files
   (`docs/LICENSES.md`, `THIRD-PARTY-NOTICES.txt`, `docs/PERFORMANCE.md`, the screenshots in `docs/images/`).
 
-## AE-format plug-ins: no Adobe SDK material
+## AE-format (.aex) effect hosting: the clean-room rule
 
-Milan Pro's After Effects / Premiere Pro effect plug-in hosting ([docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md))
-is built without the Adobe After Effects or Premiere Pro SDKs, whose terms forbid redistributing, porting or
-translating them.
+Milan Pro can host effect plug-ins written for the Adobe After Effects effect API (`docs/AE_PREMIERE_PLUGINS.md`).
+On 2026-11-26 the project owner approved building this with **Milan's own bindings only**. For every change that
+touches `src/bin/milan-plugin-host/aex/`, `src/engine/aex/`, `tools/aex-test-plugin/` or
+`docs/compat/aex-provenance.md`:
 
-- **No Adobe headers, samples, shipped documentation, PiPL tools or copyright strings in the tree**, and no
-  translation of any of them. No dependency on crates that vendor or generate from them (`after-effects-sys`,
-  `premiere-sys`).
-- **The AE ABI bindings are hand-written** from public documentation and from behaviour observed with Milan Pro's own
-  test plug-in. Each item carries a provenance note (the public page it comes from, or "observed with
-  tools/aex-test-plugin").
-- **Contributors to the AE ABI bindings confirm in their pull request** that they have not accepted the Adobe
-  Developer Terms (or the SDK's licence) and did not consult the Adobe SDK while writing the code.
-- A CI check (added with batch A0 of that plan) fails on Adobe SDK copyright strings and header names in the tree.
-- Milan Pro ships no AE-format plug-ins, downloads none and does not work around a plug-in's own licensing: a plug-in
-  that refuses the host is reported as refused.
+1. **No Adobe SDK material, of any kind, in the repository, the build or a release**: no SDK header, sample, shipped
+   document, PiPL tool or resource script, no translation or port of any of them (to Rust or anything else), nothing
+   generated from SDK headers, and no dependency on the `after-effects`, `after-effects-sys` or `premiere-sys` crates.
+   `cargo test` fails when a file carries the SDK's copyright line, its confidentiality banner or the name of its main
+   effect header (`tests/no_adobe_material.rs`).
+2. **Every ABI item has a provenance entry** in `docs/compat/aex-provenance.md`: the public documentation page it comes
+   from, or how it was observed (with `tools/aex-test-plugin` or an open-source plug-in run by its authors' build).
+   An item with no public source is marked as such and stays UNVERIFIED until an open-source plug-in proves it.
+3. **Say in the pull request** that you have not accepted the Adobe Developer Terms of Use and did not consult the
+   Adobe SDK (headers, samples or its shipped documentation) while writing the change. Someone who has must not edit
+   `src/bin/milan-plugin-host/aex/abi.rs`; they may build SDK samples on their own machine to cross-check, and report
+   only pass/fail results, never code or numbers copied from the SDK.
+4. **No plug-in binaries in the tree.** Open-source test plug-ins (`docs/AE_PREMIERE_PLUGINS.md` §3.2) are found
+   through `MILAN_AEX_TEST_DIR` by `#[ignore]` tests; never vendor them (some of their repositories contain SDK files).
+5. **No circumvention**: Milan reports itself as a third-party host (`'PrMr'`), keeps the serial number 0, never
+   patches, hooks or fakes a licence check, and blocks Adobe's own effects (match names starting `ADBE `, files under
+   an Adobe application folder).
+6. **Trademarks, nominative use only.** Say "AE-format effect" or "effect plug-ins written for the Adobe After Effects
+   effect API"; never "After Effects compatible" or "Adobe compatible", no Adobe logos or product icons. Where the
+   feature is described, carry the notice: "Adobe, After Effects and Premiere Pro are trademarks of Adobe Inc. Milan
+   Pro is not affiliated with, endorsed or sponsored by Adobe."
 
 ## Licence of this document
 

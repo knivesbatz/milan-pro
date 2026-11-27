@@ -23,6 +23,8 @@ pub struct OfxPrefs {
     pub disabled: BTreeSet<String>,
     /// Plug-ins (by id) whose input colour space hint the user dismissed in the FX window.
     pub hints_seen: BTreeSet<String>,
+    /// A1: AE-format effects (experimental, off by default) and their folders.
+    pub aex: crate::engine::aex::AexPrefs,
 }
 
 /// One binary as last described.
@@ -110,11 +112,12 @@ fn audio_folders_with(prefs: &OfxPrefs, env: &dyn Fn(&str) -> Option<std::ffi::O
     v
 }
 
-/// A binary's extension says what hosts it: "ofx", "vst3" or "clap".
+/// A binary's extension says what hosts it: "ofx", "vst3", "clap" or (A1) "aex".
 pub fn kind_of(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("vst3") => "vst3",
         Some("clap") => "clap",
+        Some("aex") => "aex",
         _ => "ofx",
     }
 }
@@ -162,9 +165,16 @@ fn stamp(p: &Path) -> (u64, u64) {
 
 /// Describe the binaries under `dirs`: a binary whose path, size and date match `old` keeps its entry unless `force`;
 /// the others go through `describe`.
+#[cfg(test)]
 pub fn scan(dirs: &[PathBuf], old: &ScanCache, force: bool, describe: &dyn Fn(&Path) -> Binary) -> ScanCache {
+    scan_all(dirs, &[], old, force, describe)
+}
+
+/// `scan`, with (A1) the AE-format effects under `aex_dirs` (empty while that feature is off).
+pub fn scan_all(dirs: &[PathBuf], aex_dirs: &[PathBuf], old: &ScanCache, force: bool, describe: &dyn Fn(&Path) -> Binary) -> ScanCache {
     let binaries = find_binaries(dirs)
         .into_iter()
+        .chain(crate::engine::aex::find(aex_dirs))
         .map(|path| {
             let (size, mtime) = stamp(&path);
             match old.binaries.iter().find(|b| !force && b.path == path && b.size == size && b.mtime == mtime) {
@@ -179,6 +189,9 @@ pub fn scan(dirs: &[PathBuf], old: &ScanCache, force: bool, describe: &dyn Fn(&P
 /// Describe every plug-in of `binary` in a plug-in host of its own (closed afterwards). A crash or a hang costs the
 /// binary (or that plug-in) only, recorded as its error.
 pub fn describe_binary(binary: &Path) -> Binary {
+    if kind_of(binary) == "aex" {
+        return crate::engine::aex::describe_binary(binary);
+    }
     let mut out = Binary { path: binary.to_path_buf(), ..Default::default() };
     let (mut conn, n) = match Conn::start(binary) {
         Ok(c) => c,

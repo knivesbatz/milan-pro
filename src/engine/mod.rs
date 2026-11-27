@@ -3,6 +3,7 @@
 //! from persistent `vdecode` streams, and `VideoEngine` is the UI thread's handle to it.
 //! Audio: `plan::compile_audio` and `mix` (driven by `audio::Player`), with `afx` FX chains.
 //! Render: `render` runs both into one ffmpeg encoder.
+pub mod aex;
 pub mod afx;
 pub mod aplug;
 pub mod cache;

@@ -94,3 +94,35 @@ Verified on FFmpeg-generated stand-ins only (`camera_formats_e2e`, `format_corpu
 Media Properties shows the camera (make and model, or a camera MXF's identification), the reel and the start
 timecode; Project Media's item menu has "Use Media Timecode as Ruler Start", which sets the ruler offset so an event
 at the start of the timeline reads its source timecode.
+
+## AE-format effects (experimental)
+
+**AE-format effects (experimental).** Milan Pro can load some effect plug-ins written for the Adobe After Effects
+effect API (`.aex` files) that you have installed and licensed yourself. Milan Pro includes no Adobe software and no
+third-party plug-ins. It implements only a basic part of the interface, similar to what video editors (rather than
+After Effects itself) provide: simple filters with standard controls, in 8-bit. Plug-ins that need After Effects
+features such as compositions, cameras, lights, masks, their own drawn controls, GPU rendering, 32-bit float or
+SmartFX will not work, and many commercial plug-ins check for an Adobe host or are licensed only for specific hosts;
+Milan Pro does not bypass any such check. Each plug-in runs in a separate process, so a failing plug-in cannot crash
+the editor; the Plug-In Manager shows what loaded, what did not, and why. If a vendor offers an OpenFX version, use
+that instead. Check your plug-in's licence before using it in Milan Pro. Adobe does not support third-party hosts of
+its plug-in interface. Adobe, After Effects and Premiere Pro are trademarks of Adobe Inc.; Milan Pro is not
+affiliated with, endorsed or sponsored by Adobe.
+
+The feature is off by default (Plug-In Manager › Folders › Experimental: AE-format effects). The tested plug-ins are
+in `docs/compat/aex.csv`, one row per plug-in version actually run. **So far that is only Milan Pro's own test
+plug-in** (`tools/aex-test-plugin`), which is written against Milan Pro's own declarations: it proves the host
+consistent with itself, not that it matches plug-ins built by others. No third-party plug-in has been run yet; every
+one shows "Untested" in the Plug-In Manager, and none is claimed to work.
+
+| Part of the interface | In Milan Pro |
+|---|---|
+| Discovery, PiPL, Blocked (Adobe's own effects), audio effects refused | Yes (A1) |
+| Global and parameter setup; slider, float slider, fixed slider, angle, checkbox, colour, point, popup, group, layer parameters | Yes (A2); buttons, custom data, paths: not shown |
+| Utility callbacks and the handle, iterate (8-bit), world, fill matte, world transform (copy, blend), ANSI and float parameter suites | Yes (A3); sampling, convolve, 16-bit and float callbacks refused and noted |
+| 8-bit render, sequence data with flatten/resetup saved in the project | Yes (A4) |
+| Supervision (changed parameters, greyed and hidden parameters), checkout of other frames and of layer parameters (None, this event) | Yes (A5) |
+| 32-bit float (Premiere pixel-format route) | No: its suites are not documented publicly (A6 dropped) |
+| Transitions (PF Transition Suite) | No: the suite and how progress is passed are not documented publicly (A7 dropped) |
+| SmartFX, 16-bit | No: needs the "After Effects dialect", not decided (A8) |
+| Custom drawn controls, options dialogs, audio, AEGP, cameras, lights, masks, GPU | No |

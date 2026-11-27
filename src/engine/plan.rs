@@ -486,6 +486,7 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
 /// pictures they get at full quality, which sets their render scale).
 fn evals(chain: &[Fx], t: f64, full_h: u32, p: &VideoPlan) -> Vec<FxEval> {
     let frame = |f: &Fx, mut e: FxEval| {
+        crate::engine::aex::note_blob(f);
         crate::engine::ofx::add_frame_vals(&mut e, &f.id, crate::engine::ofx::restored(f), t, full_h as f64, p.fps, p.par);
         crate::engine::mvfx::frame_vals(&mut e, t, p.fps);
         e

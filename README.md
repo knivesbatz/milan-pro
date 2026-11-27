@@ -93,6 +93,17 @@ Milan Pro runs third-party **VST3** and **CLAP** audio effects (stereo, 32-bit f
 
 VST3 is hosted through the `vst3` crate (coupler-rs, MIT OR Apache-2.0; Steinberg's VST 3 SDK is MIT-licensed from version 3.8, and Milan Pro ships no SDK code: see [docs/LICENSES.md](docs/LICENSES.md)) and CLAP through `clap-sys` (MIT OR Apache-2.0). The test plug-ins in `tools/vst3-test-plugin` and `tools/clap-test-plugin` are Milan Pro's own.
 
+## AE-format effects (experimental)
+
+**AE-format effects (experimental).** Milan Pro can load some effect plug-ins written for the Adobe After Effects effect API (`.aex` files) that you have installed and licensed yourself. Milan Pro includes no Adobe software and no third-party plug-ins. It implements only a basic part of the interface, similar to what video editors (rather than After Effects itself) provide: simple filters with standard controls, in 8-bit. Plug-ins that need After Effects features such as compositions, cameras, lights, masks, their own drawn controls, GPU rendering, 32-bit float or SmartFX will not work, and many commercial plug-ins check for an Adobe host or are licensed only for specific hosts; Milan Pro does not bypass any such check. Each plug-in runs in a separate process, so a failing plug-in cannot crash the editor; the Plug-In Manager shows what loaded, what did not, and why. If a vendor offers an OpenFX version, use that instead. Check your plug-in's licence before using it in Milan Pro. Adobe does not support third-party hosts of its plug-in interface.
+
+- **Off by default.** Turn it on in **View > Window > Plug-In Manager > Folders > Experimental: AE-format effects**. Milan Pro then searches the shared plug-in folders After Effects and Premiere Pro name in the registry, `C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore` (and `...\Plugins\...`), and folders you add there (**Add AE-format Folder...**). Adobe application folders are never searched, and Adobe's own effects are listed as Blocked.
+- **What runs:** effects whose PiPL says they are video effects; they appear in the Video FX window under their own category, with generic controls for sliders, angles, checkboxes, colours, points, popups, groups and layer parameters (None or this event), keyframes and presets. Effects that read other frames of their input get them. Projects store them as `aex:<match name>`, each parameter under `p<its id>`, and their flattened sequence data in the project; a project that uses an effect you do not have keeps its settings and shows it as missing.
+- **Status:** every effect is **Untested** until a test of it is recorded in `docs/compat/aex.csv` (so far only Milan Pro's own test plug-in). Milan Pro reports itself to plug-ins as a third-party host (`'PrMr'`) with no serial number.
+- **Limits:** 8-bit only (Premiere's float pixel-format suite is not documented publicly); no transitions (the transition suite is not documented publicly); no SmartFX, audio, custom drawn controls, options dialogs, masks, cameras or AEGP suites. The interface declarations are Milan Pro's own, written from public documentation (`docs/compat/aex-provenance.md`); they are proven only against Milan Pro's own test plug-in so far, not yet against a third-party plug-in.
+
+Adobe, After Effects and Premiere Pro are trademarks of Adobe Inc. Milan Pro is not affiliated with, endorsed or sponsored by Adobe.
+
 ## Build from source
 
 ```bash

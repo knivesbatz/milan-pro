@@ -415,7 +415,7 @@ fn rtf(text: &str, font: &str) -> String {
 
 fn transition_to_vegas(t: &Transition, at: &str, notes: &mut Vec<String>) -> Option<VFx> {
     let params = t.params.iter().map(|(k, v)| (k.clone(), Keyframes { keys: vec![Keyframe { t: 0.0, v: *v, curve: Curve::Linear }] })).collect();
-    let fx = Fx { id: String::new(), plugin: t.plugin.clone(), enabled: true, params, text: BTreeMap::new(), auto: BTreeMap::new() };
+    let fx = Fx { id: String::new(), plugin: t.plugin.clone(), enabled: true, params, text: BTreeMap::new(), auto: BTreeMap::new(), blob: BTreeMap::new() };
     if !t.progress.is_empty() {
         notes.push(format!("{at}: the Transition Progress envelope is not exported"));
     }

@@ -440,7 +440,10 @@ impl MeridianApp {
         // user's plug-in list: it searches only MILAN_OFX_DIR (and, R34a, MILAN_AUDIO_PLUGIN_DIR), before its screenshot.
         let harness = launch.demo || launch.screenshot.is_some();
         let mut plugin_mgr = if harness {
-            ui::PluginManager::new(None, Some(["MILAN_OFX_DIR", "MILAN_AUDIO_PLUGIN_DIR"].iter().filter_map(|k| std::env::var_os(k).map(std::path::PathBuf::from)).collect()))
+            // A1: MILAN_AEX_DIR is the only AE-format folder the harness searches, and turns that feature on for the run.
+            let aex_dir = std::env::var_os("MILAN_AEX_DIR").filter(|d| !d.is_empty()).map(std::path::PathBuf::from);
+            prefs.ofx.aex.enabled |= aex_dir.is_some();
+            ui::PluginManager::new(None, Some(["MILAN_OFX_DIR", "MILAN_AUDIO_PLUGIN_DIR"].iter().filter_map(|k| std::env::var_os(k).map(std::path::PathBuf::from)).collect())).with_aex(Some(aex_dir.into_iter().collect()))
         } else {
             ui::PluginManager::new(crate::engine::ofx::scan::cache_path(), None)
         };

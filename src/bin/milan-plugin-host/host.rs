@@ -170,6 +170,7 @@ impl Host {
             depths: desc.props.get_s(kOfxImageEffectPropSupportedPixelDepths),
             context: context.into(),
             params: Vec::new(),
+            aex: None,
         };
         if context.is_empty() {
             return Ok(out);

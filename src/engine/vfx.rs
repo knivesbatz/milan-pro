@@ -173,7 +173,8 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
         "milan.fx.bezier_mask" => bezier_mask(img, e, k),
         GRADING => Grade::new(e).apply(img, k),
         // R33b: an OFX plug-in, through its plug-in host.
-        id if id.starts_with(crate::engine::ofx::PREFIX) => crate::engine::ofx::apply(img, e),
+        // A4: OFX and AE-format effects, through the plug-in host.
+        id if crate::engine::ofx::is_hosted(id) => crate::engine::ofx::apply(img, e),
         _ => {
             crate::engine::mvfx::apply(img, e, k);
         }

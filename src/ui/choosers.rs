@@ -237,7 +237,9 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
         let text = format!("{}: {}{}{}, {what}", pk.name, pk.desc, if pk.desc.is_empty() { "" } else { " - " }, packages::summary(pk));
         p.with_clip_rect(strip.intersect(ui.clip_rect())).text(pos2(strip.min.x + 6.0, strip.center().y), Align2::LEFT_CENTER, text, t.font(t.font.ui), t.text);
     } else if let Some(info) = c.plugin.and_then(|i| c.plugins.get(i)).filter(|_| !c.packages_shown()) {
-        let text = if info.id.starts_with(ofx::PREFIX) {
+        let text = if info.id.starts_with(crate::engine::aex::PREFIX) {
+            format!("{}, Grouping: {}, {}", info.name, info.group, crate::engine::aex::KIND)
+        } else if info.id.starts_with(ofx::PREFIX) {
             let v = info.id.rsplit_once('@').map_or("", |v| v.1);
             format!("{}{}, Grouping: {}, OFX plug-in version {v}", info.name, if info.desc.is_empty() { String::new() } else { format!(": {}", info.desc) }, info.group)
         } else {
@@ -380,7 +382,7 @@ fn package_grid(ui: &mut Ui, c: &mut Chooser, out: &mut ChooserOut) {
 
 fn thumb_image(info: &'static PluginInfo, preset: &Tile, p: f32) -> ColorImage {
     // An OFX plug-in's tile is the sample as it is: tiles are drawn on the UI thread, plug-ins run in their host.
-    if info.id.starts_with(ofx::PREFIX) {
+    if ofx::is_hosted(info.id) {
         return thumbs::sample();
     }
     match preset {

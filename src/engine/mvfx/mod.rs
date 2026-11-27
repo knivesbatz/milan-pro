@@ -140,6 +140,15 @@ pub fn event_fx(img: &mut ColorImage, e: &EventPlan, src: &mut dyn Sources, size
                 let frames: Vec<Option<Arc<ColorImage>>> = raw[1..].iter().map(|r| r.clone().map(|r| through(e, &e.fx[..i], r, k))).collect();
                 temporal::combine(img, f, &frames, &raw, k);
             }
+            None if f.id.starts_with(crate::engine::aex::PREFIX) => {
+                // A5: an AE-format effect may check out this event's source at other times (its raw source: the chain
+                // before it is not run again, shortcut).
+                let shape = img.size;
+                let mut fetch = |_layer: i32, offset: f64| {
+                    raw_frame(e, -(offset.round() as i64), src, size).filter(|i| i.size == shape)
+                };
+                crate::engine::ofx::apply_with(img, f, &mut fetch);
+            }
             None => vfx::apply(img, f, k),
         }
     }

@@ -6,7 +6,9 @@
 //! - `MILAN_PANELS=explorer,trimmer,…`: dock windows to bring to the front (names without spaces, any case).
 //! - `MILAN_OFX_DIR=<folder>` (with `MILAN_DEMO` or `MILAN_SCREENSHOT`): the only OFX folder searched (otherwise none),
 //!   scanned before the screenshot; the user's plug-in list is never read or written. `MILAN_AUDIO_PLUGIN_DIR=<folder>`
-//!   (R34a) likewise for VST3 and CLAP modules.
+//!   (R34a) likewise for VST3 and CLAP modules. `MILAN_AEX_DIR=<folder>` (A1) likewise for AE-format effects, and
+//!   turns that experimental feature on for the run (`MILAN_DIALOG=plugin-manager-aex` shows its switch, `fx-aex`
+//!   the FX window with one).
 //! - `MILAN_DROP=x,y` (with `MILAN_DEMO`): the first and last demo media hover at window point x,y as if dragged from
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.

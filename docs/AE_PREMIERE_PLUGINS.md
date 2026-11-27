@@ -298,6 +298,16 @@ Manager pane. In the UI the plug-in kind is labelled "AE-format effect".
 Residual risks to state openly: Adobe may object regardless; a vendor may object to their plug-in running in an
 unlisted host; the provenance of layout facts (2.4) is the part a lawyer should look at hardest.
 
+**Decision (owner, 2026-11-26; this is the A0 sign-off).** Build it with **Milan's own bindings**: hand-written
+`#[repr(C)]` declarations from public documentation and observation of the test plug-in, each item with a provenance
+note (`docs/compat/aex-provenance.md`); **no Adobe SDK material** of any kind in the repo, the build or a release (no
+headers, samples, PiPL tool, translations of them, no `after-effects`/`after-effects-sys`/`premiere-sys` crates,
+nothing generated from SDK headers). Source (2) of 2.4 (the `after-effects` crate's generated bindings) is therefore
+**not** used, even as a reference. Points 1-4 and 6-9 above stand as written. Point 5 is **not** decided: the host
+identity stays `'PrMr'`, `serial_num` 0, and A8 (SmartFX, which needs the opt-in "After Effects dialect") stays
+unbuilt. The rule for contributors is in `CONTRIBUTING.md`; `tests/no_adobe_material.rs` fails `cargo test` (which
+CI runs) on the SDK's copyright line, its confidentiality banner or the name of its main effect header.
+
 ---
 
 ## 3. Feasibility tiers
@@ -497,11 +507,15 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 ### A0: Legal sign-off and provenance scaffold (S, no code)
 
 - **Scope:** owner (ideally with counsel) confirms 2.6, especially points 2 and 5. Add `docs/compat/aex-provenance.md`
-  (table: item, value, source URL / observation), the CONTRIBUTING rule, a CI grep that fails on "Adobe Systems
-  Incorporated" / "ADOBE CONFIDENTIAL" / `AE_Effect.h` in the tree, the trademark notice text.
+  (table: item, value, source URL / observation), the CONTRIBUTING rule, a CI grep that fails on the SDK's copyright
+  line (the company's pre-2018 name), its confidentiality banner and the name of its main effect header in the tree
+  (the exact strings are assembled in the test, so this text does not trip it), the trademark notice text.
 - **Files:** `docs/compat/aex-provenance.md`, `CONTRIBUTING.md`, CI script.
 - **Risks:** the answer may be "do not build this"; then stop here.
 - **Acceptance:** the grep job fails on a fixture file containing the strings and passes on the tree.
+- **Status: DONE (2026-11-26).** Decision recorded in 2.6. The check is `tests/no_adobe_material.rs`
+  (`the_tree_has_no_adobe_sdk_material`, `the_check_fires_on_a_fixture`), run by `cargo test`, which
+  `.github/workflows/ci.yml` runs; no separate CI job was needed.
 
 ### A1: PiPL reader, discovery, Plug-In Manager rows (M)
 
@@ -515,6 +529,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Acceptance:** `pipl_round_trips` (writer → parser); `pipl_rejects_truncated_and_oversized` (fuzz-style table of
   bad inputs, no panic); `aex_scan_lists_the_test_plugin`; `adobe_match_names_are_blocked`; `scan_is_off_by_default`;
   `#[ignore]` `pipl_of_open_source_plugins_parses` over `MILAN_AEX_TEST_DIR` printing name/match name/flags.
+- **Status: DONE (2026-11-26).** `src/engine/aex/{mod.rs,pipl.rs,tests.rs}`, PiPL writer and `.res` writer, `scan_all` in `engine/ofx/scan.rs` (the cache source is the existing `Binary` with `PluginDesc::aex`), Status Blocked and Untested in the Plug-In Manager, the switch in Folders. Tests: `pipl_round_trips`, `pipl_rejects_truncated_and_oversized`, `aex_scan_lists_the_test_plugin` (ignored: builds the test plug-in), `adobe_match_names_are_blocked`, `scan_is_off_by_default`, `aex_files_are_found_as_after_effects_finds_them`; `pipl_of_open_source_plugins_parses` ignored, not run (no plug-in available). Bounds: one PiPL per effect, several per file supported.
 
 ### A2: ABI bindings, load, GLOBAL_SETUP and PARAM_SETUP (L)
 
@@ -532,6 +547,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   `parameters_map_both_ways_aex`; `a_plugin_that_crashes_in_global_setup_is_contained`; `#[ignore]`
   `open_source_plugins_describe` (ntsc-rs and the `after-effects` crate examples `simplest`, `paramarama`: parameter
   names and counts equal those in their source); the unserved-suite log is non-empty and exported.
+- **Status: DONE, self-consistent only (2026-11-26).** `src/bin/milan-plugin-host/aex/{abi.rs,mod.rs,suites.rs}`; the requests are the OFX ones (`Load`, `Describe`, `Render`) routed by the `.aex` extension; described effects go into the OFX registry as `aex:<match name>` (one registry, one FX window path). Every structure has compile-time size/offset assertions; every `utils` slot is filled (unserved ones note their name and return an error). Tests: `aex_test_plugin_describes`, `parameters_map_both_ways_aex` (host unit test), `a_plugin_that_crashes_in_global_setup_is_contained`; the refused-suite list is in `AexInfo::refused`, the Plug-In Manager details and tooltips. `open_source_plugins_describe` ignored, not run. Proven self-consistent only (Milan's own test plug-in); the open-source tests are `#[ignore]` over `MILAN_AEX_TEST_DIR` and were not run (no such plug-in was available), so by this plan's own rule the batch is not "done" against third-party binaries.
 
 ### A3: Core suites and callbacks (L)
 
@@ -545,6 +561,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Acceptance:** host unit tests per suite (`iterate8_visits_every_pixel_once`, `handle_suite_resize_keeps_data`,
   `copy_and_fill_respect_rects`); the test plug-in's "uses every tier-a callback" mode returns a checksum equal to a
   Rust reference.
+- **Status: DONE for what a public page documents, self-consistent only (2026-11-26).** Served: utils copy, fill, blend, premultiply, premultiply_color, iterate, iterate_origin, iterate_lut, iterate_generic, new/dispose world, handles; suites Handle 1, Iterate8 1, World 2, Fill Matte 2 (8-bit), World Transform 1 (copy, copy_hq, blend), ANSI 1, Color/Point/Angle Param 1, Param Utils 3 (update_param_ui, get_keyframe_count). Not served (noted when asked for): sampling, convolve, gaussian kernel, composite/transfer/transform, 16-bit and float variants, colour callbacks. The `utils` table order and every suite name string are class R (no public page). Tests: `iterate8_visits_every_pixel_once`, `handle_suite_resize_keeps_data`, `copy_and_fill_respect_rects` (host), `aex_callbacks_match_a_rust_reference`. Proven self-consistent only (Milan's own test plug-in); the open-source tests are `#[ignore]` over `MILAN_AEX_TEST_DIR` and were not run (no such plug-in was available), so by this plan's own rule the batch is not "done" against third-party binaries.
 
 ### A4: Render path, sequence data, project storage (L)
 
@@ -561,6 +578,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   old-project test extended for `Fx.blob`; `render_matches_preview_with_aex_plugins`; `#[ignore]`
   `ntsc_rs_aex_matches_ntsc_rs_ofx` (same settings through R33 and through A4, within a stated tolerance) — this is
   the test that proves the ABI against a third-party binary.
+- **Status: DONE, self-consistent only (2026-11-26).** 8-bit ARGB, top row first, premultiplied (both UNVERIFIED facts, class R), separate input/output buffers with 16-byte row padding; `Fx.blob` (`seq`) written by `Project::save` through `Req::AexFlatten` (flatten, then resetup), sent back with the first frame of a new host. Shortcuts: field rendering, output expansion (the output is the frame size), ARB parameters keep their defaults (their callback's layout is not public). Tests: `aex_invert_matches_the_builtin_invert`, `aex_gain_is_keyframed_at_t`, `row_order_and_channel_order_marker`, `sequence_data_survives_save_and_load`, `a_project_with_a_missing_aex_plugin_keeps_its_parameters` (also the old-project case for `Fx.blob`), `render_matches_preview_with_aex_plugins`, `aex_crash_and_hang_are_contained`; `ntsc_rs_aex_matches_ntsc_rs_ofx` ignored, not run. Proven self-consistent only (Milan's own test plug-in); the open-source tests are `#[ignore]` over `MILAN_AEX_TEST_DIR` and were not run (no such plug-in was available), so by this plan's own rule the batch is not "done" against third-party binaries.
 
 ### A5: Supervision, checkout, layer parameters (L)
 
@@ -577,6 +595,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   source frame); `layer_param_none_is_transparent`; `supervised_param_disables_its_sibling`;
   `echo_style_plugin_does_not_deadlock` (10 nested checkouts, inside the time-out); `#[ignore]` the crate examples
   `checkout` and `supervisor`.
+- **Status: DONE, self-consistent only (2026-11-26).** USER_CHANGED_PARAM for changed supervised parameters (values the plug-in changes come back as project edits), UPDATE_PARAMS_UI with `PF_UpdateParamUI` (greyed/hidden state to the FX window, shared `ParamState` with OFX), checkout of the input and of layer parameters (None / this event) at other times through `Reply::NeedFrame` (event FX get the event's raw source frame; track and bus FX get transparent). Shortcuts: a value parameter checked out at another time gives the current value (curves are not sent); the chain before the effect is not re-run for other frames. Tests: `checkout_at_other_time_returns_that_frame`, `layer_param_none_is_transparent`, `supervised_param_disables_its_sibling`, `echo_style_plugin_does_not_deadlock`, the previous-frame check in `render_matches_preview_with_aex_plugins`; `crate_examples_checkout_and_supervisor_render` ignored, not run. Proven self-consistent only (Milan's own test plug-in); the open-source tests are `#[ignore]` over `MILAN_AEX_TEST_DIR` and were not run (no such plug-in was available), so by this plan's own rule the batch is not "done" against third-party binaries.
 
 ### A6: 32-bit float through the Premiere pixel-format route (M)
 
@@ -588,6 +607,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   need a public source or stay unbuilt. If none is found, A6 is dropped and float projects quantise (stated in UI).
 - **Acceptance:** `float_frames_round_trip_above_1_0` (test plug-in doubles values; overbrights survive);
   `eight_bit_only_plugin_is_marked`; `#[ignore]` crate example `sdk_noise` renders in float.
+- **Status: DROPPED (2026-11-26) for lack of a public source.** The public pages name the PF Pixel Format Suite (`AddSupportedPixelFormat`), the PF Utility Suite and Premiere's Pixel Format Suite, but give no name string, version, function order or prototype, and no numeric pixel-format value (`docs/compat/aex-provenance.md`). Guessing the table is what this plan forbids, so float frames are not offered; every AE-format effect is 8-bit and the FX window says a float project is quantised through it. `float_frames_round_trip_above_1_0` and `sdk_noise` in float were not written.
 
 ### A7: Transitions (M)
 
@@ -598,6 +618,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Files:** `aex/host.rs`, `engine/aex/mod.rs`, `engine/composite.rs`, `ui/choosers.rs`.
 - **Risks:** thin public documentation; few open-source test subjects (none found).
 - **Acceptance:** test plug-in cross-dissolve equals the built-in at p = 0.25/0.5/0.75 (≤ 1 LSB).
+- **Status: DROPPED (2026-11-26) for lack of a public source.** The PF_TransitionSuite pages say `RegisterTransitionInputParam()` is called before adding the other clip's layer parameter, but give no prototype, table, name string or version, and nothing about how progress reaches the effect. No AE-format transitions; the cross-dissolve acceptance test was not written.
 
 ### A8: SmartFX (XL, blocked on decision 2.6(5))
 
@@ -611,6 +632,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
 - **Acceptance:** test plug-in SmartFX blur with an expanded `result_rect` matches a Rust reference; `#[ignore]` an
   open-source SmartFX effect (crate example `transformer` or an F's Plugins effect) renders; a plug-in that asks for an
   AEGP suite reports "needs After Effects (AEGP)" and is bypassed.
+- **Status: NOT BUILT.** Decision 2.6(5) was not made (2026-11-26).
 
 ### A9: Compatibility run, report, docs; optional options dialog (M, RESEARCH plus data)
 
@@ -622,6 +644,7 @@ the plug-ins of (2) prove the ABI is right, so A2-A4 are not "done" until at lea
   version and date).
 - **Acceptance:** no row says "unknown"; nothing in the docs or UI claims support for a plug-in without a passing
   row; trademark notice present in the three places of 2.5.
+- **Status: DONE for what could be run (2026-11-26).** `docs/compat/aex.csv` has one row per effect of Milan's own test plug-in, the only AE-format binary run (no open-source or commercial plug-in was available, nothing was downloaded); every third-party plug-in shows Untested. README and `docs/COMPATIBILITY.md` carry the 6.1 paragraph; the trademark notice is in README, About and the Plug-In Manager (Folders popup, row tooltips). The optional `PF_Cmd_DO_DIALOG` button was not built (it would let a plug-in open a window, against the host's no-window rule).
 
 Order and dependencies: A0 → A1 → A2 → A3 → A4 → A5; A6, A7 after A4; A8 after A5 and the decision; A9 last.
 All need R31/R32 (done for OFX). Suggested tier: after R33c, alongside tier 5 "Plug-in compatibility".

@@ -542,9 +542,9 @@ pub fn fx_from_vegas(v: &VFx, at: &str, warnings: &mut Vec<String>) -> Fx {
     let Some(m) = vegas_map::to_milan(&v.id) else {
         let what = if v.name.is_empty() { vegas_map::normalize(&v.id).to_string() } else { format!("{} ({})", v.name, vegas_map::normalize(&v.id)) };
         warnings.push(format!("{at}: {what} is not available in Milan Pro; kept disabled as an OFX placeholder"));
-        return Fx { id, plugin: vegas_map::placeholder(&v.id), enabled: false, params, text, auto: Default::default() };
+        return Fx { id, plugin: vegas_map::placeholder(&v.id), enabled: false, params, text, auto: Default::default(), blob: Default::default() };
     };
-    let mut fx = Fx { id, plugin: m.milan.to_string(), enabled: !v.bypass, params: BTreeMap::new(), text: BTreeMap::new(), auto: Default::default() };
+    let mut fx = Fx { id, plugin: m.milan.to_string(), enabled: !v.bypass, params: BTreeMap::new(), text: BTreeMap::new(), auto: Default::default(), blob: Default::default() };
     // What the VEGAS plug-in implies first; its parameters override that.
     for (k, v) in m.set {
         fx.params.insert(k.to_string(), Keyframes { keys: vec![Keyframe { t: 0.0, v: *v, curve: Curve::Linear }] });

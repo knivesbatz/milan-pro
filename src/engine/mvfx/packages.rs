@@ -94,7 +94,7 @@ pub fn instantiate(p: &Package) -> Vec<Fx> {
             let u = UserPreset { plugin: f.plugin.clone(), name: String::new(), params: f.params.clone(), text: f.text.clone() };
             match plugins::find(&f.plugin) {
                 Some(info) => plugins::new_user_fx(info, &u),
-                None => Fx { id: uuid::Uuid::new_v4().to_string(), plugin: f.plugin.clone(), enabled: false, params: Default::default(), text: f.text.clone(), auto: Default::default() },
+                None => Fx { id: uuid::Uuid::new_v4().to_string(), plugin: f.plugin.clone(), enabled: false, blob: Default::default(), params: Default::default(), text: f.text.clone(), auto: Default::default() },
             }
         })
         .collect()

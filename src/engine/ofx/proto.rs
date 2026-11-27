@@ -2,6 +2,7 @@
 //! named pipe, one reply per request. Pictures do not travel here: they are in shared memory (`Render::shm`).
 #![allow(dead_code)]
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
@@ -40,6 +41,11 @@ pub enum Req {
     DmoProbe,
     /// Can this process make a Vulkan device of its own (as Spektrafilm does)? The answer is in `Outcome::messages`.
     GpuCheck,
+    /// A4: an AE-format instance's sequence data, flattened (`Outcome::blob`; None when the host has no such instance).
+    AexFlatten { index: u32, instance: String },
+    /// A5: the answer to `Reply::NeedFrame` during a render: true when Milan wrote the frame after the output in shared
+    /// memory, false for none (the plug-in gets a transparent one).
+    Frame(bool),
     Quit,
 }
 
@@ -69,6 +75,10 @@ pub struct Render {
     pub shm_size: u64,
     pub out: u64,
     pub params: Vec<(String, PVal)>,
+    /// A4: an AE-format instance's saved data (base64 by key: "seq" its flattened sequence data), sent when the host
+    /// does not have the instance yet.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blob: BTreeMap<String, String>,
 }
 
 /// The pixel depth of the pictures in shared memory (RGBA, premultiplied).
@@ -123,6 +133,10 @@ pub enum Reply {
     Error(String),
     /// R34a/R35: the audio effects of the loaded module.
     AScanned(Vec<AudioDesc>),
+    /// A5: in the middle of a render, an AE-format effect checked out layer parameter `layer` at `offset` frames from
+    /// the frame being rendered: Milan writes that frame after the output in shared memory and answers `Req::Frame`;
+    /// the render's own reply follows.
+    NeedFrame { layer: i32, offset: f64 },
     /// An audio instance did something (opened, processed, loaded a state, its editor changed).
     AOut(AOut),
     AStateIs(AState),
@@ -297,6 +311,9 @@ pub struct Outcome {
     /// The plug-in's messages during this request, as it worded them ("Error: [id] text").
     #[serde(default)]
     pub messages: Vec<String>,
+    /// A4: an AE-format instance's flattened data (`Req::AexFlatten`), by key.
+    #[serde(default)]
+    pub blob: Option<BTreeMap<String, String>>,
 }
 
 /// What a plug-in can change about a parameter at run time.
@@ -331,6 +348,40 @@ pub struct PluginDesc {
     pub context: String,
     #[serde(default)]
     pub params: Vec<ParamDesc>,
+    /// A1-A5: an AE-format effect (`aex:` id): what its PiPL and its setup in the host said. None for OFX.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aex: Option<AexInfo>,
+}
+
+/// What is known about an AE-format effect (`docs/AE_PREMIERE_PLUGINS.md` §4.1, §4.7).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AexInfo {
+    /// The stable id (`AE_Effect_Match_Name`).
+    pub match_name: String,
+    /// The exported entry point the PiPL names.
+    pub entry: String,
+    /// Which effect PiPL of the file (0-based, in resource order).
+    pub pipl: u32,
+    /// The API version it was built for, and its own packed version.
+    pub spec: (u16, u16),
+    pub version: u32,
+    /// Its flags: from the PiPL, then as its global setup set them.
+    pub out_flags: u32,
+    pub out_flags2: u32,
+    /// Why Milan does not load it ("" when it may): Adobe's own effects.
+    pub blocked: String,
+    /// Why it cannot run (audio, no entry point, its setup failed...): "" when it can.
+    pub unsupported: String,
+    /// Went through global and parameter setup in a plug-in host (A2); false: known from its PiPL only.
+    pub described: bool,
+    /// The capability line: what it uses that Milan gives only in part.
+    pub caps: Vec<String>,
+    /// Suites it asked for that Milan does not serve ("name v1"), and utility callbacks it called that Milan does not
+    /// serve: the single most useful compatibility datum (plan §4.7).
+    pub refused: Vec<String>,
+    /// Its own message from setup, verbatim.
+    pub message: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

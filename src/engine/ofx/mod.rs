@@ -27,6 +27,12 @@ pub use scan::{OfxPrefs, ScanCache};
 
 pub const PREFIX: &str = "ofx:";
 
+/// An id this registry runs: an OFX plug-in, or (A1-A5) an AE-format effect (`engine::aex`), which goes through the same
+/// host process, protocol and parameter mapping.
+pub fn is_hosted(id: &str) -> bool {
+    id.starts_with(PREFIX) || id.starts_with(super::aex::PREFIX)
+}
+
 /// One OFX plug-in Milan Pro can run.
 #[derive(Debug)]
 pub struct Plugin {
@@ -44,6 +50,8 @@ pub enum Status {
     Ok,
     Failed(String),
     Disabled,
+    /// A1: never loaded, and why (Adobe's own AE-format effects).
+    Blocked(String),
 }
 
 impl Status {
@@ -52,6 +60,7 @@ impl Status {
             Status::Ok => "OK",
             Status::Failed(_) => "Failed",
             Status::Disabled => "Disabled",
+            Status::Blocked(_) => "Blocked",
         }
     }
 }
@@ -64,7 +73,7 @@ pub struct Entry {
     pub name: String,
     pub group: String,
     pub version: String,
-    /// "OFX", "OFX Transition" or "OFX Generator".
+    /// "OFX", "OFX Transition", "OFX Generator" or (A1) "AE-format effect".
     pub kind: &'static str,
     pub binary: PathBuf,
     pub status: Status,
@@ -119,6 +128,9 @@ fn kind_of(d: &PluginDesc) -> PluginKind {
 }
 
 pub fn id_of(d: &PluginDesc) -> String {
+    if d.aex.is_some() {
+        return super::aex::id_of(d);
+    }
     format!("{PREFIX}{}@{}", d.id, d.major)
 }
 
@@ -146,12 +158,24 @@ pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
     let mut r = Registry::default();
     for b in &cache.binaries {
         let file = b.path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+        let aex = scan::kind_of(&b.path) == "aex";
         for (i, e) in &b.errors {
-            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), kind: "OFX", binary: b.path.clone(), status: Status::Failed(e.clone()) });
+            r.entries.push(Entry { id: String::new(), name: i.map_or_else(|| file.clone(), |i| format!("{file} #{i}")), group: String::new(), version: String::new(), kind: if aex { super::aex::KIND } else { "OFX" }, binary: b.path.clone(), status: Status::Failed(e.clone()) });
         }
         for d in &b.plugins {
             let id = id_of(d);
-            let status = if disabled.contains(&id) {
+            let status = if let Some(a) = &d.aex {
+                // A1: Adobe's own effects are blocked whatever the user chose; an effect that cannot run says why.
+                if !a.blocked.is_empty() {
+                    Status::Blocked(a.blocked.clone())
+                } else if disabled.contains(&id) {
+                    Status::Disabled
+                } else if !a.unsupported.is_empty() {
+                    Status::Failed(a.unsupported.clone())
+                } else {
+                    Status::Ok
+                }
+            } else if disabled.contains(&id) {
                 Status::Disabled
             } else if let Some(why) = unsupported(d) {
                 Status::Failed(why)
@@ -168,6 +192,7 @@ pub fn set_registry(cache: &ScanCache, prefs: &OfxPrefs) {
             }
             let name = if d.label.is_empty() { d.id.clone() } else { d.label.clone() };
             let kind = match kind_of(d) {
+                _ if d.aex.is_some() => super::aex::KIND,
                 PluginKind::Transition => "OFX Transition",
                 PluginKind::Generator => "OFX Generator",
                 _ => "OFX",
@@ -191,7 +216,7 @@ pub fn generation() -> u64 {
 
 
 pub fn find(id: &str) -> Option<Arc<Plugin>> {
-    if !id.starts_with(PREFIX) {
+    if !is_hosted(id) {
         return None;
     }
     reg().usable.get(id).cloned()
@@ -281,11 +306,14 @@ pub fn hints_changed() -> Option<BTreeSet<String>> {
 
 /// The name of OFX plug-in `id` when it cannot run: "Name (off)", "Name (failed)", "identifier (missing)".
 pub fn label(id: &str) -> Option<String> {
-    let rest = id.strip_prefix(PREFIX)?;
+    let aex = id.strip_prefix(super::aex::PREFIX);
+    let rest = id.strip_prefix(PREFIX).or(aex)?;
     let r = reg();
     Some(match r.entries.iter().find(|e| e.id == id) {
         Some(e) if e.status == Status::Disabled => format!("{} (off)", e.name),
+        Some(e) if matches!(e.status, Status::Blocked(_)) => format!("{} (blocked)", e.name),
         Some(e) => format!("{} (failed)", e.name),
+        None if aex.is_some() => format!("{rest} (missing)"),
         None => format!("{} (missing)", rest.rsplit_once('@').map_or(rest, |x| x.0)),
     })
 }
@@ -293,15 +321,18 @@ pub fn label(id: &str) -> Option<String> {
 /// An instance of OFX plug-in `id` would be bypassed now (failed, crashed, turned off, unsupported or missing): the
 /// timeline badge. Cheap enough for every event on every frame.
 pub fn is_bypassed(id: &str) -> bool {
-    id.starts_with(PREFIX) && (!reg().usable.contains_key(id) || lock(&FAILED).contains_key(id))
+    is_hosted(id) && (!reg().usable.contains_key(id) || lock(&FAILED).contains_key(id))
 }
 
 const KEPT: &str = "It is bypassed; its settings are kept in the project.";
 
 /// Why an instance of `id` does not run (the FX window says it); None when it runs or is not an OFX plug-in.
 pub fn bypassed_because(id: &str) -> Option<String> {
-    if !id.starts_with(PREFIX) {
+    if !is_hosted(id) {
         return None;
+    }
+    if let Some(why) = super::aex::bypassed_because(id) {
+        return why;
     }
     let r = reg();
     let entry = r.entries.iter().find(|e| e.id == id);
@@ -325,7 +356,8 @@ pub fn bypassed_because(id: &str) -> Option<String> {
 }
 
 fn fail(p: &Plugin, why: String) {
-    let msg = format!("The OFX plug-in {} failed and is bypassed: {why}. Its settings are kept; Rescan in the Plug-In Manager tries it again.", p.info.name);
+    let what = if p.desc.aex.is_some() { "AE-format effect" } else { "OFX plug-in" };
+    let msg = format!("The {what} {} failed and is bypassed: {why}. Its settings are kept; Rescan in the Plug-In Manager tries it again.", p.info.name);
     log::warn!("ofx: {} ({}): {why}", p.info.id, p.binary.display());
     lock(&FAILED).insert(p.info.id.to_string(), why);
     lock(&EVENTS).push(msg);
@@ -350,7 +382,7 @@ fn leak_info(d: &PluginDesc) -> &'static PluginInfo {
             gpu: None,
             name: leak(if d.label.is_empty() { &d.id } else { &d.label }),
             kind: kind_of(d),
-            group: leak(if d.group.is_empty() { "OFX" } else { &d.group }),
+            group: leak(if !d.group.is_empty() { &d.group } else if d.aex.is_some() { "AE-format" } else { "OFX" }),
             category: "Third Party",
             desc: leak(d.description.lines().next().unwrap_or_default()),
             params: Box::leak(specs(d).into_boxed_slice()),
@@ -620,7 +652,7 @@ pub fn colour_hint(plugin: &str, instance: &str, e: &FxEval) -> Option<String> {
 /// time in frames, the height its pictures have at full quality (for the render scale), the frame rate and pixel aspect.
 /// `restored`: Milan holds values for it already (`restored`), so they win over the plug-in's own starting values.
 pub fn add_frame_vals(e: &mut FxEval, instance: &str, restored: bool, t: f64, full_h: f64, fps: f64, par: f64) {
-    if !e.id.starts_with(PREFIX) {
+    if !is_hosted(e.id) {
         return;
     }
     e.vals.push(("ofx.inst", Val::T(instance.to_string())));
@@ -685,9 +717,39 @@ fn runnable(e: &FxEval, kind: PluginKind, size: [usize; 2]) -> Option<Arc<Plugin
 /// Run OFX effect `e` on `img` in place. A plug-in that is unknown, turned off or failed leaves it unchanged; one that
 /// fails now is bypassed from here on, with a message (`take_events`).
 pub fn apply(img: &mut ColorImage, e: &FxEval) {
+    apply_with(img, e, &mut |_, _| None);
+}
+
+/// A5: `apply`, with `fetch` answering an AE-format effect that checks out its input (or a layer set to this event)
+/// at another time: (layer parameter, frames from this one) to that source frame (None: transparent).
+pub fn apply_with(img: &mut ColorImage, e: &FxEval, fetch: &mut dyn FnMut(i32, f64) -> Option<Arc<ColorImage>>) {
     let Some(p) = runnable(e, PluginKind::VideoFx, img.size) else { return };
-    if let Err(why) = render(&p, request(&p, e, img.size), img, None, true) {
+    if let Err(why) = render_with(&p, request(&p, e, img.size), img, None, true, fetch) {
         fail(&p, why);
+    }
+}
+
+/// A4: instance `fx` of an AE-format effect, flattened by the host running it (None when no host runs it, it failed,
+/// or it is not an AE-format effect: the FX keeps what it had).
+pub fn flatten(fx: &Fx) -> Option<std::collections::BTreeMap<String, String>> {
+    let p = find(&fx.plugin)?;
+    p.desc.aex.as_ref()?;
+    let slot = lock(&HOSTS).get(&p.binary).cloned()?;
+    let mut g = lock(&slot);
+    let conn = g.as_mut()?;
+    if !conn.sent.contains(&fx.id) {
+        return None;
+    }
+    match conn.request(&Req::AexFlatten { index: p.desc.index, instance: fx.id.clone() }, Some(client::FLATTEN_TIMEOUT)) {
+        Ok(Reply::Rendered(o)) => o.blob,
+        Ok(Reply::Error(e)) => {
+            log::warn!("aex: {} could not flatten: {e}", fx.plugin);
+            None
+        }
+        _ => {
+            *g = None;
+            None
+        }
     }
 }
 
@@ -922,14 +984,27 @@ fn with_host(binary: &Path, f: impl FnOnce(&mut Conn) -> Result<Reply, client::F
 
 /// One frame through `p`'s host: `img` is the first input when `source` (a filter's Source, a transition's
 /// SourceFrom), `second` a transition's SourceTo; the output replaces `img`.
-fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+fn render(p: &Plugin, r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+    render_with(p, r, img, second, source, &mut |_, _| None)
+}
+
+/// `render`; an AE-format effect's checkouts of other frames (`Reply::NeedFrame`) are answered by `fetch`, into the
+/// shared memory after the output.
+fn render_with(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool, fetch: &mut dyn FnMut(i32, f64) -> Option<Arc<ColorImage>>) -> Result<(), String> {
     let depth = r.depth;
     let n = img.size[0] * img.size[1] * bpp(depth);
     r.inputs = source as u32 + second.is_some() as u32;
     let out = r.inputs as usize * n;
     let instance = r.instance.clone();
+    let aex = p.desc.aex.is_some();
+    let size = img.size;
     let o = with_host(&p.binary, |conn| {
-        let need = (out + n) as u64;
+        // A4: an AE-format instance this host has not run yet gets its saved sequence data.
+        if aex && !conn.sent.contains(&r.instance) {
+            r.blob = super::aex::blob_for(&r.instance);
+        }
+        // A5: room for a checked-out frame after the output.
+        let need = (out + n + if aex { n } else { 0 }) as u64;
         if conn.shm.as_ref().is_none_or(|s| s.size < need) {
             conn.shm = None;
             // Grown in 16 MB steps, so a slightly larger frame does not remap every time.
@@ -943,7 +1018,18 @@ fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&Color
             put(b, depth, &mut shm.bytes()[n..2 * n]);
         }
         (r.shm, r.shm_size, r.out) = (shm.name.clone(), shm.size, out as u64);
-        let reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
+        let key = r.instance.clone();
+        let mut reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
+        while let Reply::NeedFrame { layer, offset } = reply {
+            let got = fetch(layer, offset).filter(|f| f.size == size);
+            if let Some(f) = &got {
+                put(f, depth, &mut conn.shm.as_mut().expect("made").bytes()[out + n..out + 2 * n]);
+            }
+            reply = conn.request(&Req::Frame(got.is_some()), Some(client::render_timeout()))?;
+        }
+        if aex && matches!(reply, Reply::Rendered(_) | Reply::Error(_)) {
+            conn.sent.insert(key);
+        }
         if matches!(reply, Reply::Rendered(_)) {
             take(&conn.shm.as_mut().expect("made").bytes()[out..out + n], depth, img);
         }
