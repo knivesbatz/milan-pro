@@ -63,6 +63,7 @@ impl MeridianApp {
             || self.subs_export.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
+            || self.lib.modal()
             || self.archive.is_some()
             || self.media_from.is_some()
             || self.prerender.is_some()
@@ -2219,6 +2220,8 @@ impl MeridianApp {
             let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
             if !missing.is_empty() {
                 self.message = Some(format!("Media offline: {}", missing.join("; ")));
+                // R45b: VEGAS's "Media offline" dialog: search a folder, browse, or leave offline.
+                self.open_missing_media(true);
             }
         }
         if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
@@ -2251,6 +2254,7 @@ impl MeridianApp {
         (self.subs_import, self.subs_export) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
+        self.lib = Default::default();
         (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
@@ -2339,6 +2343,7 @@ impl MeridianApp {
         }
         self.show_update(ctx);
         self.show_reliability(ctx);
+        self.show_library(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
             self.about = !dialogs::about(ctx);
@@ -2997,6 +3002,30 @@ impl MeridianApp {
                     self.media_view.harness_search("tag:interview res>=1920x1080 -is:offline");
                 }
                 self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                self.project.modified = false;
+            }
+            // R45b review: File Format Properties of the demo's first video (probed at once for the screenshot).
+            "file-props" => {
+                if let Some(m) = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Video) {
+                    self.lib.file_props = Some(dialogs::FileProps::new_now(&m.name, &m.path));
+                }
+            }
+            // R45b review: two demo files "moved" (their paths point into a folder that does not exist, nothing is moved
+            // on disk): offline on the timeline and in Project Media, and the Media Offline dialog after a folder search of
+            // the demo media ("missing-media"), or the timeline alone ("offline-events").
+            "missing-media" | "offline-events" => {
+                let dir = crate::demo::media_dir();
+                for m in self.project.media_pool.iter_mut().filter(|m| m.media_type != crate::project::MediaType::Audio).take(2) {
+                    m.path = dir.join("moved-away").join(m.path.file_name().unwrap_or_default());
+                    m.missing = true;
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                if what == "missing-media" {
+                    self.lib.missing = dialogs::MissingMedia::new(&self.project);
+                    if let Some(d) = &mut self.lib.missing {
+                        d.search_now(&dir);
+                    }
+                }
                 self.project.modified = false;
             }
             "notes" => {

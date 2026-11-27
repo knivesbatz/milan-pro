@@ -1,5 +1,6 @@
 mod commands;
 mod drop;
+mod library;
 mod audio_editor;
 mod reliability;
 mod multicam;
@@ -253,6 +254,8 @@ pub struct MeridianApp {
     /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
     /// crash-report offer, the diagnostic report and the roll-back offer.
     rel: reliability::Rel,
+    /// R45b (app/library.rs): Missing Media, File Format Properties and the duplicate question.
+    lib: library::Lib,
     /// R30: Export > Archive Project and Import > Media from Project, open.
     archive: Option<crate::ui::dialogs::ArchiveDlg>,
     media_from: Option<crate::ui::dialogs::MediaFromProject>,
@@ -588,6 +591,7 @@ impl MeridianApp {
             clean_prerender: None,
             audio_transition: None,
             rel: Default::default(),
+            lib: Default::default(),
         };
         // R43: autosave and session markers run outside the harness, or in it when MILAN_APPDATA points them at a test folder.
         app.rel.autosave = !launch.demo || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
@@ -752,7 +756,9 @@ impl MeridianApp {
             None => {
                 let new: Vec<_> = items.into_iter().filter(|(p, o)| o.sequence.is_some() || !crate::media::in_pool(&self.project.media_pool, p)).collect();
                 if !new.is_empty() {
-                    self.importer.import_with(ctx, new);
+                    // R45b: compared with the pool by content on the worker (duplicates under another name or folder).
+                    let known = self.project.media_pool.iter().filter(|m| m.generator.is_none() && m.subclip.is_none() && !m.missing).map(|m| crate::library::Known { id: m.id.clone(), name: m.name.clone(), path: m.path.clone() }).collect();
+                    self.importer.import_checked(ctx, new, known);
                 }
             }
         }
@@ -1015,6 +1021,8 @@ impl eframe::App for MeridianApp {
                     WinAction::Import(paths) => self.import_new(ctx, paths),
                     WinAction::CreateProxy(items) => self.proxies.add(&items),
                     WinAction::OpenNested(path) => self.open_nested(&path, 0.0),
+                    WinAction::FileProps(id) => self.open_file_props(ctx, &id),
+                    WinAction::MissingMedia => self.open_missing_media(false),
                 }
             }
             menu_action = menu_action.or(dock_action);
@@ -1095,8 +1103,13 @@ impl eframe::App for MeridianApp {
             let syncing = self.syncing.as_ref().map(|s| format!("Synchronizing audio: {:.0}%", s.job.progress() * 100.0));
             let progress = rendering.as_deref().map(|s| (s, "Stop the render")).or(proxies.as_deref().map(|s| (s, "Stop creating video proxies")));
             let progress = progress.or(syncing.as_deref().map(|s| (s, "Stop synchronizing (nothing moves)")));
+            // R45b: "Importing 3 of 40"; Cancel adds the files already read.
+            let importing = self.import_progress();
+            let progress = progress.or(importing.as_deref().map(|s| (s, "Stop importing (the files already read are added)")));
             if ui::draw_status_bar(ui, a.status, &self.project, msg.as_deref(), progress) {
-                if rendering.is_some() {
+                if rendering.is_none() && proxies.is_none() && self.syncing.is_none() && importing.is_some() {
+                    self.cancel_import();
+                } else if rendering.is_some() {
                     self.queue.cancel_running();
                 } else if proxies.is_some() {
                     self.proxies.cancel();
@@ -1199,6 +1212,8 @@ impl eframe::App for MeridianApp {
             let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().map(|(_, r)| r).partition(Result::is_ok);
             let mut errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
             let ok: Vec<crate::project::MediaItem> = ok.into_iter().filter_map(Result::ok).collect();
+            // R45b: a file already in the project under another path waits for "Add Anyway / Use Existing".
+            let ok = self.hold_duplicates(ok);
             // R37: an unsupported codec imports offline and says so, rather than failing at preview time.
             errors.extend(ok.iter().filter_map(|m| Some(format!("{} imported offline: {}", m.name, m.unsupported.as_deref()?))));
             // Files imported twice (two drops or picks before the first probe finished) are added once.

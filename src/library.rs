@@ -1,5 +1,6 @@
-//! R45a: Project Media as a library. Custom Bins and Smart Bins (`Project::bins`), media tags, and the search and
-//! smart-bin query language.
+//! R45a/R45b: Project Media as a library. Custom Bins and Smart Bins (`Project::bins`), media tags, the search and
+//! smart-bin query language, and (R45b) the content fingerprint for duplicate detection and the folder search that
+//! relinks offline media.
 //!
 //! A query is the text typed in Project Media's search field or saved in a smart bin. Its terms all have to match:
 //! a plain word or "quoted phrase" matches the name, path, codec, tags or frame size (`1920x1080`); `field:value`
@@ -14,6 +15,7 @@
 //! | `length` (`dur`) | seconds, or `m:ss` / `h:mm:ss` |
 //! | `is` | `used`, `unused`, `offline`, `online`, `tagged` |
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::project::{MediaItem, MediaType, Project};
 
@@ -507,6 +509,168 @@ pub fn all_tags(pool: &[MediaItem]) -> Vec<(String, usize)> {
     v
 }
 
+// ---- R45b: fingerprints and relinking ----
+
+/// How much of each end of a file the fingerprint reads.
+pub const FINGERPRINT_SPAN: u64 = 4 << 20;
+
+/// R45b: a file's content fingerprint for duplicate detection: SHA-256 over its size and its first and last 4 MB
+/// (the whole file when shorter). Copies have the same one; a change in either end, or in the size, gives another.
+pub fn fingerprint(path: &Path) -> std::io::Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let size = f.metadata()?.len();
+    let mut h = Sha256::new();
+    h.update(size.to_le_bytes());
+    let mut buf = vec![0u8; 1 << 16];
+    let mut read_span = |f: &mut std::fs::File, from: u64, len: u64, h: &mut Sha256| -> std::io::Result<()> {
+        f.seek(SeekFrom::Start(from))?;
+        let mut left = len;
+        while left > 0 {
+            let n = f.read(&mut buf[..left.min(1 << 16) as usize])?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+            left -= n as u64;
+        }
+        Ok(())
+    };
+    if size <= 2 * FINGERPRINT_SPAN {
+        read_span(&mut f, 0, size, &mut h)?;
+    } else {
+        read_span(&mut f, 0, FINGERPRINT_SPAN, &mut h)?;
+        read_span(&mut f, size - FINGERPRINT_SPAN, FINGERPRINT_SPAN, &mut h)?;
+    }
+    Ok(h.finalize().into())
+}
+
+/// An item already in the project, as the import worker compares new files against it.
+#[derive(Clone, Debug)]
+pub struct Known {
+    pub id: String,
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// R45b: which of the probed `new` files (by path) is the same content as a `known` item at another path: same
+/// size, then the same `fingerprint`. Runs on the import worker; each file is read at most once.
+pub fn duplicates(new: &[PathBuf], known: &[Known]) -> Vec<(PathBuf, Known)> {
+    let size = |p: &Path| std::fs::metadata(p).ok().filter(|m| m.is_file()).map(|m| m.len());
+    let new_sizes: Vec<(PathBuf, u64)> = new.iter().filter_map(|p| Some((p.clone(), size(p)?))).collect();
+    if new_sizes.is_empty() {
+        return Vec::new();
+    }
+    let wanted: HashSet<u64> = new_sizes.iter().map(|(_, s)| *s).collect();
+    let mut by_size: HashMap<u64, Vec<&Known>> = HashMap::new();
+    for k in known {
+        if let Some(s) = size(&k.path).filter(|s| wanted.contains(s)) {
+            by_size.entry(s).or_default().push(k);
+        }
+    }
+    let mut prints: HashMap<PathBuf, Option<[u8; 32]>> = HashMap::new();
+    let mut print = |p: &Path| *prints.entry(p.to_path_buf()).or_insert_with(|| fingerprint(p).ok());
+    let mut out = Vec::new();
+    for (p, s) in &new_sizes {
+        let Some(cands) = by_size.get(s) else { continue };
+        let Some(mine) = print(p) else { continue };
+        if let Some(k) = cands.iter().find(|k| k.path != *p && print(&k.path) == Some(mine)) {
+            out.push((p.clone(), (*k).clone()));
+        }
+    }
+    out
+}
+
+/// A missing file to look for: its file name and, when known, its size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wanted {
+    pub name: String,
+    pub size: Option<u64>,
+}
+
+impl Wanted {
+    pub fn of(m: &MediaItem) -> Wanted {
+        Wanted { name: m.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), size: m.file_size }
+    }
+}
+
+/// R45b: Missing Media › Search Folder: look through `dir` and the folders below it (to 32 levels, not following
+/// links) for each wanted file, by name (any case) and size; the first match each. `cancel` stops the walk.
+pub fn find_in_folder(dir: &Path, wanted: &[Wanted], cancel: &std::sync::atomic::AtomicBool) -> Vec<Option<PathBuf>> {
+    let names: HashSet<String> = wanted.iter().map(|w| w.name.to_lowercase()).collect();
+    let mut found: HashMap<String, Vec<(PathBuf, u64)>> = HashMap::new();
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                if depth < 32 {
+                    stack.push((e.path(), depth + 1));
+                }
+            } else if ft.is_file() {
+                let n = e.file_name().to_string_lossy().to_lowercase();
+                if names.contains(&n) {
+                    let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                    found.entry(n).or_default().push((e.path(), len));
+                }
+            }
+        }
+    }
+    for v in found.values_mut() {
+        v.sort();
+    }
+    wanted
+        .iter()
+        .map(|w| found.get(&w.name.to_lowercase())?.iter().find(|(_, len)| w.size.is_none_or(|s| s == *len)).map(|(p, _)| p.clone()))
+        .collect()
+}
+
+/// R45b: point media `id` at `path` (Missing Media's relink, Browse): the item is online again; a still sequence or
+/// a spanned clip moves its other files along by folder. False if `id` is unknown or `path` is its path already.
+pub fn relink(project: &mut Project, id: &str, path: &Path) -> bool {
+    let Some(m) = project.media_pool.iter_mut().find(|m| m.id == id && m.path != path) else { return false };
+    let (old_dir, new_dir) = (m.path.parent().map(Path::to_path_buf), path.parent().map(Path::to_path_buf));
+    if let (Some(od), Some(nd)) = (old_dir, new_dir) {
+        for s in &mut m.spanned {
+            if let Ok(rest) = s.strip_prefix(&od) {
+                *s = nd.join(rest);
+            }
+        }
+    }
+    let parent = m.id.clone();
+    m.path = path.to_path_buf();
+    m.rel_path = None;
+    m.missing = !path.exists();
+    if m.file_size.is_none() {
+        m.file_size = std::fs::metadata(path).ok().map(|x| x.len());
+    }
+    // Subclips read the parent's file.
+    let new_path = m.path.clone();
+    for s in project.media_pool.iter_mut().filter(|s| s.subclip.as_ref().is_some_and(|c| c.parent == parent)) {
+        s.path = new_path.clone();
+        s.missing = false;
+    }
+    project.mark_modified();
+    true
+}
+
+/// R45b: mark every file-based item whose file is gone (and clear the mark on those found again). True if any
+/// mark changed.
+pub fn refresh_missing(pool: &mut [MediaItem]) -> bool {
+    let mut changed = false;
+    for m in pool.iter_mut() {
+        let gone = !m.path.as_os_str().is_empty() && m.generator.is_none() && !m.path.exists();
+        changed |= gone != m.missing;
+        m.missing = gone;
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -680,5 +844,105 @@ mod tests {
         assert!(!back.media_pool[3].missing, "the offline mark is found again on open, not stored");
     }
 
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join("milan-agent").join("r45").join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
 
+    /// R45b acceptance: the fingerprint is the same for a copy and differs after a 1-byte change at the end; a
+    /// duplicate is found by content at another path.
+    #[test]
+    fn the_hash_is_stable_across_copies_and_sees_the_last_byte() {
+        let d = temp("hash");
+        let data: Vec<u8> = (0..(9u32 << 20)).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+        let (a, b, c) = (d.join("a.bin"), d.join("sub_copy.bin"), d.join("c.bin"));
+        std::fs::write(&a, &data).unwrap();
+        std::fs::copy(&a, &b).unwrap();
+        let mut changed = data.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        std::fs::write(&c, &changed).unwrap();
+        let fa = fingerprint(&a).unwrap();
+        assert_eq!(fa, fingerprint(&b).unwrap());
+        assert_eq!(fa, fingerprint(&a).unwrap(), "stable");
+        assert_ne!(fa, fingerprint(&c).unwrap());
+        // A change in the middle (outside both ends) of a long file is not read; a short file is read whole.
+        let small = d.join("small.bin");
+        std::fs::write(&small, b"hello").unwrap();
+        std::fs::write(d.join("small2.bin"), b"hellp").unwrap();
+        assert_ne!(fingerprint(&small).unwrap(), fingerprint(&d.join("small2.bin")).unwrap());
+        let known = [Known { id: "k".into(), name: "a.bin".into(), path: a.clone() }];
+        let dups = duplicates(&[b.clone(), c.clone(), a.clone()], &known);
+        assert_eq!(dups.len(), 1, "the copy, not the changed file nor the same path");
+        assert_eq!((dups[0].0.clone(), dups[0].1.id.as_str()), (b, "k"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R45b acceptance (relink end to end): media moved within the temp folder after a save; the project opens with
+    /// each item offline, and one folder search relinks every item (two of the same name in other folders are told
+    /// apart by size); saved and opened again, all are online.
+    #[test]
+    fn moved_media_opens_offline_and_relinks_by_folder() {
+        let d = temp("relink-e2e");
+        std::fs::create_dir_all(d.join("orig/cam a")).unwrap();
+        let files = ["orig/a.wav", "orig/cam a/clip.mov", "orig/cam a/b.wav", "orig/still.png", "orig/clip.mov"];
+        let mut p = Project::new("relink");
+        for (k, f) in files.iter().enumerate() {
+            let path = d.join(f);
+            std::fs::write(&path, vec![k as u8; 100 + k * 10]).unwrap();
+            let size = std::fs::metadata(&path).unwrap().len();
+            p.media_pool.push(MediaItem { id: format!("m{k}"), name: f.rsplit('/').next().unwrap().into(), path, sample_rate: Some(48_000), file_size: Some(size), ..Default::default() });
+        }
+        let file = d.join("show.mnle");
+        p.save(&file).unwrap();
+        // Move every file into a new tree (two folders of the same name), the project stays.
+        for (k, f) in files.iter().enumerate() {
+            let to = d.join("moved").join(format!("disk {}", k % 2)).join(f.replace("orig/", "").replace('/', "_"));
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            let named = to.with_file_name(f.rsplit('/').next().unwrap());
+            std::fs::rename(d.join(f), &named).unwrap();
+        }
+        let opened = Project::open(&file).unwrap().project;
+        assert!(opened.media_pool.iter().all(|m| m.missing && m.offline()), "every item opens offline");
+        let mut p = opened;
+        let wanted: Vec<Wanted> = p.media_pool.iter().map(Wanted::of).collect();
+        let found = find_in_folder(&d.join("moved"), &wanted, &std::sync::atomic::AtomicBool::new(false));
+        assert!(found.iter().all(Option::is_some), "{found:?}");
+        for (m, f) in p.media_pool.clone().iter().zip(&found) {
+            assert!(relink(&mut p, &m.id, f.as_ref().unwrap()));
+        }
+        assert!(p.media_pool.iter().all(|m| !m.offline() && std::fs::metadata(&m.path).unwrap().len() == m.file_size.unwrap()));
+        p.save(&file).unwrap();
+        let again = Project::open(&file).unwrap().project;
+        assert!(again.media_pool.iter().all(|m| !m.missing));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// R45b acceptance: relink by folder finds a moved file of the same size (not a same-named file of another size).
+    #[test]
+    fn relink_by_folder_finds_a_moved_file_of_the_same_size() {
+        let d = temp("relink");
+        std::fs::create_dir_all(d.join("old")).unwrap();
+        std::fs::create_dir_all(d.join("new/deep/er")).unwrap();
+        std::fs::create_dir_all(d.join("new/other")).unwrap();
+        let old = d.join("old/Clip.MOV");
+        std::fs::write(&old, vec![7u8; 1000]).unwrap();
+        let mut m = MediaItem { id: "m".into(), name: "Clip.MOV".into(), path: old.clone(), sample_rate: Some(48_000), file_size: Some(1000), ..Default::default() };
+        std::fs::rename(&old, d.join("new/deep/er/clip.mov")).unwrap();
+        std::fs::write(d.join("new/other/Clip.MOV"), vec![7u8; 999]).unwrap(); // same name, other size
+        let mut pool = vec![m.clone()];
+        assert!(refresh_missing(&mut pool) && pool[0].offline());
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let found = find_in_folder(&d.join("new"), &[Wanted::of(&m), Wanted { name: "none.wav".into(), size: None }], &stop);
+        assert_eq!(found, [Some(d.join("new/deep/er/clip.mov")), None]);
+        // Without a known size the name alone decides.
+        m.file_size = None;
+        assert!(find_in_folder(&d.join("new"), &[Wanted::of(&m)], &stop)[0].is_some());
+        let mut p = Project::new("t");
+        p.media_pool = pool;
+        assert!(relink(&mut p, "m", found[0].as_ref().unwrap()));
+        assert!(!p.media_pool[0].offline() && p.media_pool[0].path == d.join("new/deep/er/clip.mov"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

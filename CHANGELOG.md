@@ -13,6 +13,14 @@ the minor number for feature releases, the patch number for fixes.
   Media Bins with criteria rows. The search field takes words or fields (`type:video`, `tag:interview`,
   `res>=1920x1080`, `fps:25`, `length<1:30`, `is:unused`, `-` to exclude). Project Media draws only what is on
   screen, so 10,000 items scroll like ten (R45a).
+- **Missing media and relinking:** a file missing on Open marks its media offline (hatched "Media Offline" events
+  and tiles) and opens the Media Offline dialog: Search Folder looks through a folder tree by name and size, Browse
+  picks one file, Relink fixes every item found in one undo step (also Project Media > Find Missing Media) (R45b).
+- **File Format Properties** lists every format, stream, chapter and program field and tag ffprobe reports, with
+  Copy as Text (R45b).
+- **Duplicates and import progress:** importing a file already in the project under another name or folder (same
+  size and SHA-256 of its first and last 4 MB) asks "Use Existing / Add Anyway"; the status bar counts "Importing
+  3 of 40" with Cancel (R45b).
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
   with screenshots, a feature table, system requirements and the roadmap (R53).

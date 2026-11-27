@@ -99,6 +99,15 @@ impl FileDrop {
         self.pending.push(Pending { paths, place: Some((track, time, edit::DropMode::AcrossTime)), slideshow: Some(show) });
     }
 
+    /// R45b: the drop's probes, for the status bar's import counter, and its Cancel.
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.importer.progress()
+    }
+
+    pub fn cancel(&self) {
+        self.importer.cancel();
+    }
+
     /// New/Open: drops still waiting are cancelled, and probes still running are ignored.
     pub fn reset(&mut self) {
         *self = Self::new();

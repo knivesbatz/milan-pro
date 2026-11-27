@@ -1292,6 +1292,10 @@ pub struct MediaItem {
     /// R45a: Media Tags (Project Media's Tagged Media node, searches and smart bins).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// R45b: the file's size in bytes when it was imported, so Missing Media's folder search can tell a moved file
+    /// from another of the same name; None for media imported before R45b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
     /// R45b: the file was not found when the project was opened (or at the last Missing Media check): offline until
     /// relinked. Found again on every open, never stored.
     #[serde(skip)]
