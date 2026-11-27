@@ -2837,6 +2837,17 @@ impl MeridianApp {
             "prefs" => self.open_prefs(None),
             // R48/R49 review: Preferences on page n (0 = General, in tab order).
             p if p.starts_with("prefs-page-") => self.open_prefs(p["prefs-page-".len()..].parse().ok()),
+            // R10c review: the Master bus track with a Volume envelope (a dip and a fade) and Mute, automation Read
+            // with its controls shown, the Master Bus window in front.
+            "master-env" => {
+                use crate::project::{Curve, EnvKind, Envelope, Keyframe, Keyframes};
+                let key = |t: f64, v: f32| Keyframe { t, v, curve: Curve::Linear };
+                let m = &mut self.project.timeline.master;
+                m.audio_envelopes = vec![Envelope { kind: EnvKind::Volume, points: Keyframes { keys: vec![key(0.0, 0.0), key(4.0, 0.0), key(6.0, -12.0), key(9.0, -12.0), key(12.0, 0.0), key(15.0, -60.0)] } }];
+                m.auto_controls = true;
+                self.prefs.bus_tracks = true;
+                self.dock.open(crate::ui::dock::Panel::MasterBus);
+            }
             // R44/R46 review: Preferences on Milan Pro's own Update page.
             "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab())),
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection

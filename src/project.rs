@@ -1660,11 +1660,28 @@ pub struct MasterBus {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub video_envelopes: Vec<Envelope>,
     pub fade_colors: [[u8; 3]; 2],
+    /// R10c: the Master bus track's Volume and Mute envelopes (timeline time), and its Automation Settings and Show
+    /// Automation Controls (the Master Bus window's automation badge), as a bus has them. Owner id `edit::MASTER`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub audio_envelopes: Vec<Envelope>,
+    #[serde(deserialize_with = "lenient", skip_serializing_if = "AutoMode::is_read")]
+    pub automation: AutoMode,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub auto_controls: bool,
 }
 
 impl Default for MasterBus {
     fn default() -> Self {
-        Self { gain: [1.0, 1.0], audio_fx: Vec::new(), video_fx: Vec::new(), video_envelopes: Vec::new(), fade_colors: fade_colors() }
+        Self {
+            gain: [1.0, 1.0],
+            audio_fx: Vec::new(),
+            video_fx: Vec::new(),
+            video_envelopes: Vec::new(),
+            fade_colors: fade_colors(),
+            audio_envelopes: Vec::new(),
+            automation: AutoMode::Read,
+            auto_controls: false,
+        }
     }
 }
 
@@ -2769,6 +2786,10 @@ mod tests {
             video_fx: vec![fx("milan.fx.lut")],
             video_envelopes: vec![env(EnvKind::MotionBlur), env(EnvKind::Supersampling), env(EnvKind::FadeToColor)],
             fade_colors: [[1, 2, 3], [4, 5, 6]],
+            // R10c: the Master bus track's envelopes and automation.
+            audio_envelopes: vec![env(EnvKind::Volume), env(EnvKind::Mute)],
+            automation: AutoMode::Latch,
+            auto_controls: true,
         };
         p.settings.motion_blur = BlurType::AsymmetricPyramid;
         {

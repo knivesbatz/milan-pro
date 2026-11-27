@@ -1,7 +1,12 @@
 //! Master Bus window (§5.12): toolbar, strip header, peak readouts, two live meters with a 3 dB scale,
-//! and the master fader (one linked thumb) that sets the playback gain.
+//! and the master fader (one linked thumb) that sets the playback gain. R10c: the strip's automation badge (Automation
+//! Settings: Off, Read, Write (Touch), Write (Latch), and Show Automation Controls); with automation controls on, the
+//! fader shows and writes the master's Volume envelope.
 use eframe::egui::*;
 use crate::audio::Master;
+use crate::edit;
+use crate::history::History;
+use crate::project::{AutoMode, EnvKind, Project};
 use super::icons::{Icon, paint_icon};
 use super::keymap::Command;
 use super::menus::send;
@@ -41,8 +46,10 @@ pub fn master_bus_toolbar(ui: &mut Ui, master: &Master, console: bool) {
     }
 }
 
-/// `fx`: the Audio Master FX chain has plug-ins (its fx button is lit; a click opens it).
-pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
+/// `fx`: the Audio Master FX chain has plug-ins (its fx button is lit; a click opens it). R10c: `project` and `history`
+/// for the automation badge and an automation fader; True when the fader is an automation control (its moves are
+/// envelope writes, never the master gain).
+pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool, project: &mut Project, history: &mut History) -> bool {
     let t = theme::get();
     let lv = mixer::level(ui.ctx(), MASTER);
 
@@ -52,9 +59,10 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
     let head = Rect::from_min_size(r.min + vec2(8.0, 6.0), vec2(10.0, 10.0));
     p.rect_stroke(head, 0.0, Stroke::new(1.0_f32, ink), StrokeKind::Inside);
     p.text(pos2(head.max.x + 6.0, head.center().y), Align2::LEFT_CENTER, "Master", t.font(t.font.ui), ink);
-    // Strip row: fx · M · S.
+    // Strip row: fx · automation · M · S.
+    automation_badge(ui, &p, Rect::from_min_size(pos2(r.min.x + 26.0, r.min.y + 22.0), vec2(16.0, 16.0)), project, history);
     for (i, icon) in [Icon::TrackFx, Icon::Mute, Icon::Solo].into_iter().enumerate() {
-        let c = Rect::from_min_size(pos2(r.min.x + 6.0 + 20.0 * i as f32, r.min.y + 22.0), vec2(16.0, 16.0));
+        let c = Rect::from_min_size(pos2(r.min.x + 6.0 + 20.0 * (i + usize::from(i > 0)) as f32, r.min.y + 22.0), vec2(16.0, 16.0));
         match icon {
             Icon::TrackFx => {
                 paint_icon(&p, c, Icon::TrackFx, None);
@@ -94,8 +102,9 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
 
     let top = r.min.y + 54.0;
     let bottom = r.max.y - 26.0;
+    let auto = super::automation::control_mode(project, edit::MASTER);
     if bottom - top < 40.0 {
-        return;
+        return auto.is_some();
     }
     let to_y = |d: f32| top + (bottom - top) * (-d / RANGE_DB).clamp(0.0, 1.0);
     for (c, &x) in wells.iter().enumerate() {
@@ -131,11 +140,67 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
         }
     }
 
-    faders(ui, view, r, top, bottom, wells);
+    // R10c: an automation fader shows the envelope at the cursor (or the value being written).
+    let saved = view.gain;
+    if auto.is_some() {
+        let g = super::automation::gain_of(super::automation::value(ui.ctx(), project, edit::MASTER, EnvKind::Volume));
+        view.gain = [g, g];
+    }
+    faders(ui, view, r, top, bottom, wells, auto, project, history);
     for c in 0..2 {
         let g = 20.0 * view.gain[c].max(1e-6).log10() + 0.0;
         let text = if view.gain[c] <= 1e-5 { "-Inf.".to_owned() } else { format!("{g:.1}") };
         p.text(pos2(wells[c] + 5.0, bottom + 6.0), Align2::CENTER_TOP, text, font.clone(), t.text);
+    }
+    if auto.is_some() {
+        view.gain = saved;
+    }
+    auto.is_some()
+}
+
+/// R10c: the strip's automation badge: a circle with the mode's letter (R, T, L; empty when Off), in the Volume
+/// envelope's colour while Show Automation Controls is on. A click drops the Automation Settings menu: Show
+/// Automation Controls and the four modes, one undo step each.
+fn automation_badge(ui: &mut Ui, p: &Painter, r: Rect, project: &mut Project, history: &mut History) {
+    let t = theme::get();
+    let (mode, shown) = edit::automation_of(project, edit::MASTER).unwrap_or_default();
+    let c = r.center().floor() + vec2(0.5, 0.5);
+    let ink = if shown && mode != AutoMode::Off { t.envelope_volume } else { t.text };
+    p.circle_stroke(c, 6.5, Stroke::new(1.0_f32, ink));
+    let letter = match mode {
+        AutoMode::Off => "",
+        AutoMode::Read => "R",
+        AutoMode::Touch => "T",
+        AutoMode::Latch => "L",
+    };
+    p.text(c, Align2::CENTER_CENTER, letter, t.bold(9.0), ink);
+    let resp = ui.interact(r, ui.id().with("master_auto"), Sense::click()).on_hover_text(format!("Automation Settings: {}{}", mode.name(), if shown { ", controls shown" } else { "" }));
+    let pid = ui.id().with("master_auto_menu");
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(pid));
+    }
+    let mut pick = None;
+    super::chrome::with_menu_style(&ui.ctx().clone(), &t, || {
+        #[allow(deprecated)]
+        popup::popup_below_widget(ui, pid, &resp, PopupCloseBehavior::CloseOnClick, |ui| {
+            ui.set_min_width(200.0);
+            use super::menus::{Mark, entry};
+            if entry(ui, "Show Automation Controls", "", true, Mark::Check(shown)) {
+                pick = Some((None, Some(!shown)));
+            }
+            super::menus::sep(ui);
+            for m in AutoMode::ALL {
+                if entry(ui, m.name(), "", true, Mark::Radio(m == mode)) {
+                    pick = Some((Some(m), None));
+                }
+            }
+        });
+    });
+    if let Some((m, shown)) = pick {
+        let before = project.clone();
+        if edit::set_automation(project, &[edit::MASTER.to_string()], m, shown) {
+            history.push(before);
+        }
     }
 }
 
@@ -144,8 +209,10 @@ pub(crate) fn paint_bar(p: &Painter, well: Rect, y: f32, to_y: &dyn Fn(f32) -> f
     super::widgets::led_bar(p, well, y, to_y, &theme::get());
 }
 
-/// Faders travel the meter height: one stereo thumb left of the wells. Double-click resets to 0 dB.
-fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, wells: [f32; 2]) {
+/// Faders travel the meter height: one stereo thumb left of the wells. Double-click resets to 0 dB. R10c: as an
+/// automation control (`auto`), a move writes the master's Volume envelope (`automation::touch`) instead.
+#[allow(clippy::too_many_arguments)]
+fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, wells: [f32; 2], auto: Option<AutoMode>, project: &mut Project, history: &mut History) {
     let t = theme::get();
     let p = ui.painter().clone();
     let xs: Vec<f32> = vec![(r.min.x + wells[0]) * 0.5 - 2.0];
@@ -169,7 +236,20 @@ fn faders(ui: &mut Ui, view: &mut MasterView, r: Rect, top: f32, bottom: f32, we
                 view.gain[ch] = g;
             }
         };
-        if resp.double_clicked() {
+        if let Some(mode) = auto {
+            let moved = if resp.double_clicked() {
+                Some(1.0)
+            } else {
+                resp.interact_pointer_pos().filter(|_| resp.dragged()).map(|pos| fader_gain((bottom - pos.y) / (bottom - top)))
+            };
+            if moved.is_some() || resp.is_pointer_button_down_on() {
+                let v = moved.map(super::automation::db_of);
+                super::automation::touch(ui.ctx(), project, history, edit::MASTER, EnvKind::Volume, mode, v);
+                if let Some(g) = moved {
+                    view.gain = [g, g];
+                }
+            }
+        } else if resp.double_clicked() {
             set(1.0, view);
         } else if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged()) {
             set(fader_gain((bottom - pos.y) / (bottom - top)), view);

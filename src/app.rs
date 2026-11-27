@@ -955,9 +955,12 @@ impl eframe::App for MeridianApp {
                     ui::master_bus_toolbar(bar, &self.audio.master, console_open);
                     // The faders edit the project's master gain (saved with it, used by the render).
                     self.master_view.gain = self.project.timeline.master.gain;
-                    ui::master_bus(body, &mut self.master_view, !self.project.timeline.master.audio_fx.is_empty());
-                    let down = body.input(|i| i.pointer.any_down());
-                    set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
+                    let fx = !self.project.timeline.master.audio_fx.is_empty();
+                    // R10c: an automation fader writes the master's Volume envelope, never the gain.
+                    if !ui::master_bus(body, &mut self.master_view, fx, &mut self.project, &mut self.history) {
+                        let down = body.input(|i| i.pointer.any_down());
+                        set_master_gain(&mut self.project, &mut self.history, &mut self.master_gesture, self.master_view.gain, down);
+                    }
                 }
                 Panel::MixingConsole => {
                     console_prefs |= ui::mixer_toolbar(bar, &mut self.prefs.console, &self.audio.master);

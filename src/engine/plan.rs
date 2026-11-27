@@ -1069,6 +1069,10 @@ pub struct AudioPlan {
     /// R10a: playback's master fader, so a surround project's master meter and loudness tap are post-fader as the
     /// stereo device tap is (None in a render).
     pub master: Option<Arc<crate::audio::Master>>,
+    /// R10c: the master's Volume and Mute envelopes (None without points, or with its automation Off), applied after
+    /// the master FX in playback and render alike.
+    pub master_vol_env: Option<Envelope>,
+    pub master_mute_env: Option<Envelope>,
 }
 
 /// R8a: the busses and assignable FX chains in mixing order (each before the bus it goes to), each one's output as an
@@ -1249,6 +1253,8 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
             }
         })
         .collect();
+    let m = &p.timeline.master;
+    let master_envs: &[Envelope] = if m.automation.plays() { &m.audio_envelopes } else { &[] };
     AudioPlan {
         tracks,
         buses,
@@ -1263,6 +1269,8 @@ pub fn compile_audio_in(p: &Project, stack: &[PathBuf]) -> AudioPlan {
         loud: None,
         stems: false,
         master: None,
+        master_vol_env: env(master_envs, EnvKind::Volume),
+        master_mute_env: env(master_envs, EnvKind::Mute),
     }
 }
 

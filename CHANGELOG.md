@@ -11,6 +11,9 @@ the minor number for feature releases, the patch number for fixes.
 - **High-DPI:** View > Interface Scale (Auto or 100-200 %, also in Preferences > Display); bevels, rules and icons
   stay sharp at 125, 150, 175 and 200 % (whole physical pixels, no blurred half pixels), dialogs fit small windows
   and scroll their pages; Windows' "Show animations" setting turns every transition off (R48).
+- **Master bus envelopes:** a Master bus track (View > Audio Bus Tracks) with Volume and Mute envelopes, played and
+  rendered alike, and the Master Bus window's Automation Settings badge (Off, Read, Write (Touch), Write (Latch)); with
+  automation controls shown, the master faders write the Volume envelope (R10c).
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
   with screenshots, a feature table, system requirements and the roadmap (R53).
