@@ -92,6 +92,38 @@ impl Gloss {
     }
 }
 
+/// The light of a bevel (UI_SPEC.md §4.1): the lip rings on the upper half of chrome, and the colour a soft gloss
+/// is mixed toward (white on Silver; faint on Dark, whose lips are thin).
+#[derive(Clone, Copy, Debug)]
+pub struct Bevel {
+    pub lip: Color32,
+    pub lip_soft: Color32,
+    pub soften: Color32,
+    /// The outline of a check box or radio (on Dark, light enough to show on a dark field).
+    pub field_edge: Color32,
+}
+
+/// The two token sets of the design system (UI_SPEC.md §2 Silver, §2.9 Dark); Silver is the default. Saved in the
+/// preferences (Options › Preferences › Display › Theme).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ThemeKind {
+    #[default]
+    Silver,
+    Dark,
+}
+
+impl ThemeKind {
+    pub const ALL: [ThemeKind; 2] = [ThemeKind::Silver, ThemeKind::Dark];
+
+    /// The label in Preferences › Display.
+    pub fn label(self) -> &'static str {
+        match self {
+            ThemeKind::Silver => "Silver",
+            ThemeKind::Dark => "Dark",
+        }
+    }
+}
+
 /// The one accent (UI_SPEC.md §2.5).
 #[derive(Clone, Copy, Debug)]
 pub struct Amber {
@@ -244,6 +276,13 @@ pub struct Theme {
     pub gloss_bar: Gloss,
     pub gloss_lit: Gloss,
     pub gloss_pressed: Gloss,
+    /// Slider and fader knobs (Silver: `gloss`; Dark: light grey lozenges, as the dark skins draw them).
+    pub gloss_knob: Gloss,
+    pub bevel: Bevel,
+    /// Event names on the event header gradient (the track colour lit toward white): dark ink in both token sets.
+    pub event_ink: Color32,
+    /// Which token set this is.
+    pub kind: ThemeKind,
     pub ink: Ink,
 
     // Menus
@@ -558,6 +597,10 @@ impl Theme {
             gloss_bar,
             gloss_lit,
             gloss_pressed,
+            gloss_knob: gloss,
+            bevel: Bevel { lip: hex(0xFFFFFF), lip_soft: hex(0xFFFFFF).gamma_multiply(0.45), soften: hex(0xFFFFFF), field_edge: silver.s5 },
+            event_ink: ink.text,
+            kind: ThemeKind::Silver,
             ink,
 
             menu_text: black,
@@ -696,10 +739,153 @@ impl Theme {
         }
     }
 
+    /// The token set of `kind`.
+    pub fn of(kind: ThemeKind) -> Self {
+        match kind {
+            ThemeKind::Silver => Self::new(),
+            ThemeKind::Dark => Self::dark(),
+        }
+    }
+
+    /// UI_SPEC.md §2.9: the Dark token set. The same metrics, fonts, recipes and domain colours as Silver; gunmetal
+    /// brushed chrome with thin light lips, near-black LCD wells with azure read-outs, dark fields with light ink, a
+    /// steel-grey selection, azure lit toggles and the same amber.
+    pub fn dark() -> Self {
+        let mut t = Self::new();
+        let silver = Silver {
+            s0: hex(0x5A6069),
+            s1: hex(0x3A3E45),
+            s2: hex(0x33363C),
+            s3: hex(0x2A2D32),
+            s4: hex(0x202226),
+            s5: hex(0x121315),
+            s6: hex(0x08090A),
+        };
+        let slate = Slate { hi: hex(0x3C4048), lo: hex(0x23262B), frame: hex(0x16181B), ridge: (hex(0x50555E), hex(0x0A0B0C)), text: hex(0xE8EAEE) };
+        let lcd = Lcd {
+            deep: hex(0x06090D),
+            well: hex(0x0A0F15),
+            hover: hex(0x142030),
+            rule: hex(0x1E2B3A),
+            ghost: hex(0x0E1824),
+            outline: hex(0x000000),
+            text: hex(0x46A8FF),
+            text_hi: hex(0xD2E8FF),
+            text_dim: hex(0x3A8FDB),
+            digits: hex(0x5BB8FF),
+        };
+        let sel = Sel {
+            top: hex(0x4C5463),
+            bottom: hex(0x394050),
+            mid: hex(0x434A58),
+            lip: hex(0x6A7384),
+            text: hex(0xFFFFFF),
+            lit_top: hex(0x2A609F),
+            lit_bottom: hex(0x1E4F8C),
+            lit_outline: hex(0x46A8FF),
+        };
+        let ink = Ink {
+            text: hex(0xE4E7EC),
+            label: hex(0xB9C0CA),
+            button: hex(0xDCE6F4),
+            glyph: hex(0x5CB4FF),
+            disabled: hex(0xA6ACB6),
+            paper: hex(0x16191D),
+            paper_disabled: hex(0x24272C),
+        };
+        t.gloss = Gloss { top: hex(0x5C626C), upper: hex(0x4A4F58), line: hex(0x383C43), low: hex(0x2C2F35), bounce: hex(0x33373E) };
+        t.gloss_bar = Gloss { top: hex(0x484C54), upper: hex(0x393C43), line: hex(0x2C2F35), low: hex(0x222428), bounce: hex(0x2A2D32) };
+        t.gloss_lit = Gloss { top: hex(0x2A609F), upper: hex(0x22568F), line: hex(0x1A477C), low: hex(0x163E6E), bounce: hex(0x1B4578) };
+        t.gloss_pressed = Gloss { top: hex(0x222428), upper: hex(0x2A2D32), line: hex(0x33363C), low: hex(0x3E424A), bounce: hex(0x383C43) };
+        t.gloss_knob = Gloss { top: hex(0xF0F2F5), upper: hex(0xCDD1D7), line: hex(0xA3A9B2), low: hex(0x7E848D), bounce: hex(0x8E949D) };
+        t.bevel = Bevel { lip: hex(0xFFFFFF).gamma_multiply(0.28), lip_soft: hex(0xFFFFFF).gamma_multiply(0.10), soften: hex(0x3A3E45), field_edge: hex(0x7A818C) };
+        t.kind = ThemeKind::Dark;
+        let metal = Metal {
+            hi: silver.s1,
+            mid: silver.s2,
+            lo: silver.s4,
+            light: silver.s0,
+            face: silver.s2,
+            shadow: silver.s5,
+            dark: silver.s6,
+            streak: 0.25,
+            header_tint: hex(0xFFFFFF),
+            specular: silver.s0,
+            pressed: sel.lit_bottom,
+        };
+        let azure = hex(0x3C9CFF);
+        t.menu_text = ink.text;
+        t.menu_popup_bg = silver.s1;
+        t.menu_popup_border = silver.s6;
+        t.menu_popup_hover = sel.mid;
+        t.menu_popup_text = ink.text;
+        t.menu_popup_text_disabled = ink.disabled;
+        t.frame = slate.frame;
+        t.toolbar_bg = metal.mid;
+        t.line_dark = metal.shadow;
+        t.panel_bg = silver.s2;
+        t.band_bg = silver.s3;
+        // Charcoal lanes: dark, neutral, so the pastel events keep their colour and their ink.
+        t.lane_bg = hex(0x1D2025);
+        t.empty_lane_bg = hex(0x16181B);
+        t.tab_text = ink.label;
+        t.tab_text_active = ink.text;
+        t.tab_text_hover = ink.text;
+        t.text = ink.text;
+        t.text_secondary = ink.label;
+        t.text_label = ink.label;
+        t.text_value = ink.text;
+        t.text_dim = ink.label;
+        t.text_disabled = ink.disabled;
+        // The icons' black ink drawn light (icons.rs maps near-black strokes to it on Dark).
+        t.icon = hex(0xE6E8EC);
+        t.icon_disabled = ink.disabled;
+        t.input_bg = ink.paper;
+        t.input_placeholder = ink.disabled;
+        t.tooltip_bg = silver.s1;
+        t.tooltip_text = ink.text;
+        t.tooltip_border = silver.s6;
+        t.button_active_bg = sel.lit_bottom;
+        t.button_hover_bg = metal.hi;
+        t.accent = azure;
+        t.track_header_bg = silver.s2;
+        t.track_header_top = metal.light;
+        t.track_separator = slate.frame;
+        t.track_separator_2 = silver.s5;
+        t.strip_divider = metal.dark;
+        t.time_display_bg = lcd.deep;
+        t.time_display_text = lcd.digits;
+        t.ruler_text = ink.text;
+        t.ruler_major_tick = ink.text;
+        t.ruler_minor_tick = ink.label;
+        t.grid_line = hex(0x2E323A);
+        t.scroll_track = silver.s4;
+        t.scroll_arrow = ink.glyph;
+        t.loop_sel_line = azure;
+        t.loop_bar_on = azure;
+        t.length_tag_bg = silver.s1;
+        t.length_tag_text = ink.text;
+        t.workspace_bg = hex(0x2B2E33);
+        t.workspace_grid = hex(0x3C4048);
+        t.workspace_frame = hex(0x9AA1AB);
+        t.kf_ruler = silver.s3;
+        t.kf_lane = silver.s2;
+        t.kf_lane_alt = hex(0x2E3136);
+        t.kf_row_sel = hex(0x2B4A70);
+        t.meter_bg = lcd.deep;
+        t.meter_label = ink.text;
+        t.fader_track = metal.shadow;
+        t.fader_thumb = metal.face;
+        t.fader_thumb_bar = metal.dark;
+        t.warning_text = hex(0xFF8A7A);
+        (t.silver, t.slate, t.lcd, t.sel, t.ink, t.metal) = (silver, slate, lcd, sel, ink, metal);
+        t
+    }
+
     /// The tokens mapped onto egui::Visuals: silver faces, paper fields, `r_ctl` corners, the selection blue; popups
     /// and tooltips on `s1` with an `s6` outline (UI_SPEC.md §5).
     pub fn visuals(&self) -> Visuals {
-        let mut v = Visuals::light();
+        let mut v = if self.kind == ThemeKind::Dark { Visuals::dark() } else { Visuals::light() };
         v.override_text_color = Some(self.text);
         v.panel_fill = self.panel_bg;
         v.window_fill = self.silver.s1;
@@ -1007,6 +1193,20 @@ pub fn icon_strength(c: Color32, k: f32) -> Color32 {
 }
 
 static CURRENT: LazyLock<RwLock<Theme>> = LazyLock::new(|| RwLock::new(Theme::new()));
+/// The token set chosen in Preferences › Display (`MILAN_THEME=dark` in the harness).
+static KIND: RwLock<ThemeKind> = RwLock::new(ThemeKind::Silver);
+
+/// Switches the token set and applies it to `ctx` at once (live, no restart).
+pub fn set_kind(ctx: &egui::Context, kind: ThemeKind) {
+    if *KIND.read().unwrap() != kind {
+        *KIND.write().unwrap() = kind;
+        apply(ctx);
+    }
+}
+
+pub fn kind() -> ThemeKind {
+    *KIND.read().unwrap()
+}
 /// Track colours edited in Preferences › Display; replaces the default palette when set.
 static PALETTE: RwLock<Option<[Color32; 8]>> = RwLock::new(None);
 
@@ -1022,7 +1222,7 @@ pub fn get() -> Theme {
 
 /// Stores the theme (with the user's track colours) and applies it to `ctx`.
 pub fn apply(ctx: &egui::Context) {
-    let mut t = Theme::new();
+    let mut t = Theme::of(kind());
     if let Some(p) = *PALETTE.read().unwrap() {
         t.track_colors = p;
     }
@@ -1086,11 +1286,29 @@ mod tests {
     /// on the worst stop of each background a label can sit on.
     #[test]
     fn contrast_aa() {
-        let t = Theme::new();
+        for t in [Theme::new(), Theme::dark()] {
+            contrast_aa_of(&t);
+        }
+    }
+
+    /// `c` lightened by `f` toward white: the streak texture's lightest pixel.
+    fn lighter(c: Color32, f: f32) -> Color32 {
+        let k = |v: u8| (v as f32 + (255.0 - v as f32) * f).round() as u8;
+        Color32::from_rgb(k(c.r()), k(c.g()), k(c.b()))
+    }
+
+    fn contrast_aa_of(t: &Theme) {
+        let t = *t;
         let (s, l, sel, ink, d) = (t.silver, t.lcd, t.sel, t.ink, t.dialog());
-        // The streak texture over a bar: at most 18/255 per unit, at `streak` opacity, darker.
+        // The streak texture over a bar: at most 18/255 per unit, at `streak` opacity, darker or lighter.
         let streak = 18.0 / 255.0 * t.metal.streak;
         let pairs = [
+            ("ink on lightened bar top", ink.text, lighter(t.gloss_bar.top, streak)),
+            ("ink on bar gloss top", ink.text, t.gloss_bar.top),
+            ("ink on gloss top", ink.text, t.gloss.top),
+            ("button label on gloss top", ink.button, t.gloss.top),
+            ("ink on lit gloss top", ink.text, t.gloss_lit.top),
+            ("label on bar gloss top", ink.label, t.gloss_bar.top),
             ("ink on chrome bottom", ink.text, s.s3),
             ("ink on streaked bar bottom", ink.text, darker(t.metal.lo, streak)),
             ("ink on recess", ink.text, s.s4),
@@ -1152,7 +1370,7 @@ mod tests {
             .filter(|&(_, r)| r < 4.5)
             .map(|(name, r)| format!("{name}: {r:.2}"))
             .collect();
-        assert!(fails.is_empty(), "below WCAG AA 4.5:1: {fails:?}");
+        assert!(fails.is_empty(), "{:?}: below WCAG AA 4.5:1: {fails:?}", t.kind);
         // The streaks stay faint: ±2 % at most.
         assert!(streak <= 0.02, "{streak}");
     }

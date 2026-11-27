@@ -196,6 +196,10 @@ pub struct Prefs {
     pub envelope_colors: BTreeMap<String, [u8; 3]>,
     pub snap_colors: BTreeMap<String, [u8; 3]>,
     pub icon_strength: u8,
+    /// Options › Preferences › Display › Theme: the design system's token set (Silver, the default, or Dark).
+    /// Older preferences load as Silver. Window layouts are the same in both.
+    #[serde(default)]
+    pub theme: crate::ui::theme::ThemeKind,
 }
 
 /// R49: the buttons a track header hides (keys of `dialogs::button_set::VIDEO` / `AUDIO`); they stay in its More menu.
@@ -450,6 +454,7 @@ impl Default for Prefs {
             envelope_colors: BTreeMap::new(),
             snap_colors: BTreeMap::new(),
             icon_strength: 75,
+            theme: crate::ui::theme::ThemeKind::Silver,
         }
     }
 }
@@ -1244,6 +1249,7 @@ mod tests {
             envelope_colors: BTreeMap::from([("Volume".to_string(), [1, 2, 3])]),
             snap_colors: BTreeMap::from([("Cursor".to_string(), [4, 5, 6])]),
             icon_strength: 40,
+            theme: crate::ui::theme::ThemeKind::Dark,
         };
         // Every field differs from its default, so the round trip below checks each one.
         let (mine, def) = (serde_json::to_value(&p).unwrap(), serde_json::to_value(Prefs::default()).unwrap());
@@ -1279,6 +1285,7 @@ mod tests {
         let d = serde_json::from_str::<Prefs>("{}").unwrap();
         assert!(!d.open_last && d.temp_folder.is_none() && d.new_project.is_none() && d.header_buttons == HeaderButtons::default());
         assert_eq!((d.normalize_peak_db, d.icon_strength, d.ui_scale), (-0.1, 75, None));
+        assert_eq!(d.theme, crate::ui::theme::ThemeKind::Silver, "older preferences load as Silver");
     }
 
     /// A broken `layouts` (not a map, or a bad entry) loses only what is broken, never the other preferences.

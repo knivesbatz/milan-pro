@@ -121,7 +121,7 @@ pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
 pub fn menu_style(base: &Style, t: &Theme) -> Style {
     let mut s = base.clone();
     let v = &mut s.visuals;
-    v.dark_mode = false;
+    v.dark_mode = t.kind == super::theme::ThemeKind::Dark;
     v.override_text_color = Some(t.menu_popup_text);
     v.window_fill = t.menu_popup_bg;
     v.panel_fill = t.menu_popup_bg;

@@ -24,6 +24,8 @@
 //! - R48: each screenshot run prints `overflow: ...` (stdout) for every text that does not fit (`overflow`), and
 //!   `MILAN_IDLE_CHECK=1` waits 2 s with nothing requested after the picture settles and prints `idle frames: n`, the
 //!   frames painted meanwhile (a paused preview must cost none at any refresh rate).
+//! - `MILAN_THEME=dark` (or `silver`): the design system's token set for the run, whatever Preferences › Display ›
+//!   Theme says (the demo harness reads no preferences, so it is Silver otherwise).
 //! - `MILAN_HW_TABLE=<file.json>` (R22): the hardware acceleration table to show in Preferences › Video, loaded as it
 //!   is (no probe); `hw_capability_table` writes one to %TEMP%\milan-agent\hw-probe\hw.json.
 use eframe::egui::{self, ColorImage};

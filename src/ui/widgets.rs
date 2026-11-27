@@ -258,6 +258,8 @@ pub enum Chrome {
     Pressed,
     /// Lit: a toggle that is on (sky-blue chrome, `lit.outline`).
     Active,
+    /// A slider or fader knob (`gloss_knob`; the same as Raised on Silver).
+    Knob,
 }
 
 /// Chrome over `r` with corners of `radius` (UI_SPEC.md §4.1 bevel recipe): the state's glossy gradient (bright
@@ -273,13 +275,14 @@ pub fn chrome(p: &Painter, r: Rect, radius: f32, state: Chrome) {
     let o = hair();
     let (gloss, outline) = match state {
         Chrome::Raised => (t.gloss, s.s6),
+        Chrome::Knob => (t.gloss_knob, s.s6),
         Chrome::Hover => (theme::Gloss { upper: s.s0, line: t.gloss.upper, low: t.gloss.line, bounce: t.gloss.upper, ..t.gloss }, sel.lit_outline),
         Chrome::Pressed => (t.gloss_pressed, s.s6),
         Chrome::Active => (t.gloss_lit, sel.lit_outline),
     };
     grad(p, r, radius, &gloss.stops(0.5));
     let thin = r.height().min(r.width()) < 12.0;
-    let white = Color32::WHITE;
+    let white = t.bevel.lip;
     let (light, dark) = match state {
         Chrome::Active => ([white.gamma_multiply(0.9), white.gamma_multiply(0.4)], [sel.lit_outline.gamma_multiply(0.55), sel.lit_outline.gamma_multiply(0.2)]),
         _ => ([white, white.gamma_multiply(0.45)], [s.s5, s.s5.gamma_multiply(0.35)]),
@@ -435,7 +438,7 @@ pub fn groove_v_value(p: &Painter, cx: f32, y: Rangef, value_y: Option<f32>, m: 
 /// centre notch; `tint` (automation) colours the notch and the knob faintly.
 pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
     let k = px(Rect::from_center_size(r.center(), vec2(r.width().max(17.0), r.height().min(11.0).max(9.0))));
-    chrome(p, k, k.height() * 0.5, Chrome::Raised);
+    chrome(p, k, k.height() * 0.5, Chrome::Knob);
     if let Some(t) = tint {
         p.rect_filled(k.shrink(2.0), k.height() * 0.5 - 2.0, t.gamma_multiply(0.22));
     }
@@ -448,7 +451,7 @@ pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
 pub fn fader_thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
     let r = px(r);
     let rad = r.width().min(r.height()) * 0.5;
-    chrome(p, r, rad, Chrome::Raised);
+    chrome(p, r, rad, Chrome::Knob);
     if let Some(t) = tint {
         p.rect_filled(r.shrink(2.0), rad - 2.0, t.gamma_multiply(0.22));
     }
@@ -547,7 +550,7 @@ pub fn frame_edge(p: &Painter, r: Rect, rad: f32, outer: Color32) {
     p.add(mesh);
     // The panel's chrome rim: a light ring over its upper half and a dark one over its lower half, inside the
     // outline (the content starts 2 px in).
-    rim(p, r, rad, [Color32::WHITE, Color32::TRANSPARENT], [t.silver.s5, Color32::TRANSPARENT], false);
+    rim(p, r, rad, [t.bevel.lip, Color32::TRANSPARENT], [t.silver.s5, Color32::TRANSPARENT], false);
     p.rect_stroke(r, rad, Stroke::new(hair(), t.slate.lo), StrokeKind::Inside);
 }
 
@@ -834,7 +837,7 @@ pub fn strip_card(p: &Painter, r: Rect, selected: bool) {
     let (s, g) = (t.silver, t.gloss_lit);
     let stops = if selected { [(0.0, g.top), (0.4, g.upper), (1.0, g.low)] } else { [(0.0, s.s1), (0.35, s.s2), (1.0, s.s3)] };
     grad(p, r, rad, &stops);
-    rim(p, r, rad, [Color32::WHITE, Color32::WHITE.gamma_multiply(0.4)], [s.s5, s.s5.gamma_multiply(0.35)], false);
+    rim(p, r, rad, [t.bevel.lip, t.bevel.lip.gamma_multiply(0.4)], [s.s5, s.s5.gamma_multiply(0.35)], false);
     p.rect_stroke(r, rad, Stroke::new(hair(), s.s6), StrokeKind::Inside);
 }
 
@@ -843,11 +846,11 @@ pub fn header_metal(p: &Painter, r: Rect, t: &Theme, selected: bool) {
     let r = px(r);
     // A softer gloss than a button's (the card is 56 px tall): bright upper half, a mid-line, a darker lower half.
     let g = if selected { t.gloss_lit } else { t.gloss };
-    let soft = |c: Color32| mix(c, Color32::WHITE, 0.3);
+    let soft = |c: Color32| mix(c, t.bevel.soften, 0.3);
     grad(p, r, 0.0, &[(0.0, g.top), (0.47, soft(g.upper)), (0.53, soft(g.line)), (1.0, soft(g.low))]);
     let o = hair();
-    hl(p, r.min.x, r.max.x, r.min.y + o, Color32::WHITE.gamma_multiply(0.6));
-    vl(p, r.min.x, r.min.y, r.max.y, Color32::WHITE.gamma_multiply(0.8));
+    hl(p, r.min.x, r.max.x, r.min.y + o, t.bevel.lip.gamma_multiply(0.6));
+    vl(p, r.min.x, r.min.y, r.max.y, t.bevel.lip.gamma_multiply(0.8));
     vl(p, r.max.x - o, r.min.y, r.max.y, t.silver.s5);
 }
 
@@ -880,7 +883,7 @@ pub fn check_box(p: &Painter, r: Rect, checked: bool, enabled: bool, _ink: Color
     let b = px(Rect::from_center_size(r.center(), vec2(13.0, 13.0)));
     let rad = t.m.r_small as f32;
     p.rect_filled(b, rad, if enabled { t.ink.paper } else { t.ink.paper_disabled });
-    recess_edge(p, b, rad, m);
+    recess_edge(p, b, rad, &Metal { shadow: t.bevel.field_edge, ..*m });
     if checked {
         let c = if enabled { t.ink.glyph } else { t.ink.disabled };
         let o = b.min;
@@ -899,7 +902,8 @@ pub fn radio_mark(p: &Painter, r: Rect, on: bool, enabled: bool, _ink: Color32, 
     p.circle_filled(c, rad, if enabled { t.ink.paper } else { t.ink.paper_disabled });
     let pts: Vec<Pos2> = (0..=12).map(|i| c + Vec2::angled(PI * 1.1 + PI * 0.8 * i as f32 / 12.0) * (rad - 1.2)).collect();
     p.add(Shape::line(pts, Stroke::new(1.0_f32, Color32::from_black_alpha(60))));
-    p.circle_stroke(c, rad - 0.5, Stroke::new(1.0_f32, m.shadow));
+    let _ = m;
+    p.circle_stroke(c, rad - 0.5, Stroke::new(1.0_f32, t.bevel.field_edge));
     if on {
         let dot = if enabled { t.sel.mid } else { t.ink.disabled };
         p.circle_filled(c, 3.0, dot);

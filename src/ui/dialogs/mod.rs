@@ -86,7 +86,7 @@ pub fn style(base: &Style, t: &Theme) -> Style {
     let d = t.dialog();
     let mut s = base.clone();
     let v = &mut s.visuals;
-    v.dark_mode = false;
+    v.dark_mode = t.kind == theme::ThemeKind::Dark;
     v.override_text_color = Some(d.text);
     v.panel_fill = d.page;
     v.window_fill = d.field;

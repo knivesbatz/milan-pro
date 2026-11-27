@@ -672,8 +672,18 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, (env_k, snap_k): (&mut
     if widgets::checkbox(ui, &mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
         d.float_dock = Some(float_dock);
     }
-    // R48: Milan Pro's own (also View › Interface Scale); Auto follows Windows, as VEGAS does.
+    // The design system's token set (UI_SPEC.md §2, §2.9), applied with OK / Apply, no restart.
     ui.add_space(4.0);
+    super::row(ui, "Theme:", 120.0, true, |ui| {
+        widgets::combo(ui, "pref_theme", 200.0, d.theme.label(), |ui| {
+            for k in theme::ThemeKind::ALL {
+                ui.selectable_value(&mut d.theme, k, k.label());
+            }
+        })
+        .response
+        .on_hover_text("Silver chrome with navy read-outs, or dark gunmetal with azure read-outs. Layouts are the same in both.");
+    });
+    // R48: Milan Pro's own (also View › Interface Scale); Auto follows Windows, as VEGAS does.
     super::row(ui, "Interface scale:", 120.0, true, |ui| {
         let name = |s: Option<u16>| s.map_or("Auto (Windows setting)".to_string(), |p| format!("{p} %"));
         widgets::combo(ui, "pref_scale", 200.0, name(d.ui_scale), |ui| {
@@ -688,6 +698,7 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, (env_k, snap_k): (&mut
     if default_all(ui) {
         d.track_colors = None;
         (d.auto_hide_docks, d.tabs_on_top, d.float_dock, d.ui_scale) = (false, false, None, None);
+        d.theme = theme::ThemeKind::Silver;
         (d.envelope_colors, d.snap_colors, d.icon_strength) = (Default::default(), Default::default(), 75);
     }
 }

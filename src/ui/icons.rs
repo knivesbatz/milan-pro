@@ -143,6 +143,19 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, tint: Option<Color3
     draw(&pen, icon);
 }
 
+/// `paint_icon` in the light-surface colours whatever the theme: for glyphs on the light event header gradient.
+pub fn paint_icon_on_light(painter: &Painter, rect: Rect, icon: Icon) {
+    let mut t = Theme::new();
+    t.icon_strength = theme::get().icon_strength;
+    let side = rect.width().min(rect.height());
+    let s = side / 16.0;
+    let k = painter.pixels_per_point();
+    let o = ((rect.center() - vec2(side, side) * 0.5) * k).round() / k;
+    let mirror = matches!(icon, Icon::Redo | Icon::GoToEnd | Icon::NextFrame | Icon::TrimEnd | Icon::Forward);
+    let pen = Pen { p: painter, o, s, w: s, k, force: None, mirror, t: &t };
+    draw(&pen, icon);
+}
+
 /// Icon palette (UI_SPEC.md §7): the 16 VGA colours less the garish ones, plus the Windows
 /// 2000/XP icon tones (folder yellows, document cream, steel blues, leaf greens, two more greys). Every icon colour is
 /// snapped to its nearest member.
@@ -199,7 +212,16 @@ impl Pen<'_> {
     /// The forced tint, else the colour snapped to the palette.
     fn c(&self, c: Color32) -> Color32 {
         // R49: Preferences › Display › Icon color strength, then the period palette.
-        self.force.unwrap_or_else(|| quantize_2006(theme::icon_strength(c, self.t.icon_strength)))
+        self.force.unwrap_or_else(|| {
+            let q = quantize_2006(theme::icon_strength(c, self.t.icon_strength));
+            // Dark: the black ink of glyphs, letters and pointers is drawn light, so it reads on dark chrome (the
+            // fills keep their colours and dark outline).
+            if self.t.kind == theme::ThemeKind::Dark && q.r() < 0x50 && q.g() < 0x50 && q.b() < 0x50 && c.a() > 0 {
+                Color32::from_rgba_premultiplied(0xE0, 0xE0, 0xE0, q.a())
+            } else {
+                q
+            }
+        })
     }
     fn ink(&self) -> Color32 {
         self.c(self.t.icon)
