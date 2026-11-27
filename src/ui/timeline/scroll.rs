@@ -198,10 +198,12 @@ fn paint_bars(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: 
     arrow(p, h.left, (-1.0, 0.0), ink);
     btn(h.right);
     arrow(p, h.right, (1.0, 0.0), ink);
-    btn(h.thumb);
-    if h.thumb.width() >= 14.0 {
+    // Thumbs: chrome pills with three grip ridges (UI_SPEC.md §5 Scrollbar).
+    let pill = |r: Rect| crate::ui::widgets::chrome(p, r.shrink(1.0), (r.width().min(r.height()) * 0.5 - 1.0).max(0.0), Chrome::Raised);
+    pill(h.thumb);
+    if h.thumb.width() >= 18.0 {
         let c = h.thumb.center().floor();
-        for dx in [-2.0, 1.0] {
+        for dx in [-4.0, -1.0, 2.0] {
             p.rect_filled(Rect::from_min_size(pos2(c.x + dx, h.thumb.min.y + 4.0), vec2(1.0, h.thumb.height() - 8.0)), 0.0, m.shadow);
             p.rect_filled(Rect::from_min_size(pos2(c.x + dx + 1.0, h.thumb.min.y + 4.0), vec2(1.0, h.thumb.height() - 8.0)), 0.0, m.light);
         }
@@ -218,10 +220,10 @@ fn paint_bars(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: 
     p.rect_filled(Rect::from_min_max(pos2(g.vscroll.min.x, g.lanes.min.y), pos2(g.vscroll.max.x, g.lanes.max.y)), 0.0, t.scroll_track);
     btn(v.corner);
     paint_icon(p, v.corner.shrink(2.0), Icon::InsertMarker, None);
-    btn(v.thumb);
-    if v.thumb.height() >= 14.0 {
+    pill(v.thumb);
+    if v.thumb.height() >= 18.0 {
         let c = v.thumb.center().floor();
-        for dy in [-2.0, 1.0] {
+        for dy in [-4.0, -1.0, 2.0] {
             p.rect_filled(Rect::from_min_size(pos2(v.thumb.min.x + 4.0, c.y + dy), vec2(v.thumb.width() - 8.0, 1.0)), 0.0, m.shadow);
             p.rect_filled(Rect::from_min_size(pos2(v.thumb.min.x + 4.0, c.y + dy + 1.0), vec2(v.thumb.width() - 8.0, 1.0)), 0.0, m.light);
         }

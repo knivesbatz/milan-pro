@@ -30,9 +30,18 @@ fn tip(resp: Response, text: &str) -> Response {
     resp.on_hover_text(text)
 }
 
-/// The chrome behind a button's 22×22 hit area: every button is a raised chrome bevel; hover brightens it, a press or
-/// an active toggle sinks it (UI_SPEC.md §5).
+/// The chrome behind a button's 22×22 hit area (UI_SPEC.md §5 Toolbar button): every button is raised chrome; hover
+/// lifts it, a press inverts it, an active toggle lights it.
 fn paint_state(p: &Painter, hit: Rect, resp: &Response, enabled: bool, active: bool) {
+    paint_state_r(p, hit, resp, enabled, active, None);
+}
+
+/// The transport's playback buttons are round (UI_SPEC.md §5 Transport button).
+fn round(icon: Icon) -> bool {
+    matches!(icon, Icon::Record | Icon::Loop | Icon::PlayFromStart | Icon::Play | Icon::Pause | Icon::Stop | Icon::GoToStart | Icon::GoToEnd | Icon::PrevFrame | Icon::NextFrame)
+}
+
+fn paint_state_r(p: &Painter, hit: Rect, resp: &Response, enabled: bool, active: bool, radius: Option<f32>) {
     let t = theme::get();
     let state = if active || (enabled && resp.is_pointer_button_down_on()) {
         if active { super::widgets::Chrome::Active } else { super::widgets::Chrome::Pressed }
@@ -41,7 +50,10 @@ fn paint_state(p: &Painter, hit: Rect, resp: &Response, enabled: bool, active: b
     } else {
         super::widgets::Chrome::Raised
     };
-    super::widgets::chrome_button(p, hit, state, &t.metal);
+    match radius {
+        Some(r) => super::widgets::chrome(p, hit, r, state),
+        None => super::widgets::chrome_button(p, hit, state, &t.metal),
+    }
 }
 
 /// One `button_pitch`-wide cell: 22×22 hit area with a 16 px vector glyph (§5.2).
@@ -60,7 +72,7 @@ fn button(ui: &mut Ui, icon: Icon, text: &str, clickable: bool, lit: bool, activ
     let sense = if clickable { Sense::click() } else { Sense::hover() };
     let (cell, resp) = ui.allocate_exact_size(vec2(t.m.button_pitch, t.m.button), sense);
     let hit = Rect::from_center_size(cell.center(), Vec2::splat(t.m.button));
-    paint_state(ui.painter(), hit, &resp, clickable, active);
+    paint_state_r(ui.painter(), hit, &resp, clickable, active, round(icon).then_some(t.m.button * 0.5));
     let tint = (!lit).then_some(t.icon_disabled);
     paint_icon(ui.painter(), Rect::from_center_size(hit.center(), Vec2::splat(t.m.icon)), icon, tint);
     tip(resp, text)

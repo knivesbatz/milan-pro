@@ -224,7 +224,7 @@ pub fn draw_media_browser(
         if project.media_pool.is_empty() {
             let t = theme::get();
             ui.add_space(30.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new("Drop media here or use Import Media...").color(t.text_dim)));
+            ui.vertical_centered(|ui| ui.label(RichText::new("Drop media here or use Import Media...").color(t.lcd.text)));
             return;
         }
         let resps = match view.mode {
@@ -534,7 +534,6 @@ const DETAIL_COLS: [(&str, f32); 7] =
     [("Name", 180.0), ("Use Count", 70.0), ("Type", 60.0), ("Length", 90.0), ("Frame Rate", 80.0), ("Frame Size", 90.0), ("Path", 400.0)];
 
 fn details(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(usize, Response)> {
-    let t = theme::get();
     widgets::header_row(ui, &DETAIL_COLS);
     let fps = project.settings.frame_rate;
     let mut out = Vec::new();
@@ -554,7 +553,7 @@ fn details(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Ve
             size,
             m.path.display().to_string(),
         ];
-        widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, if sel.contains(&i) { Color32::WHITE } else { t.text });
+        widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, widgets::list_ink(ui, sel.contains(&i)));
         badges(ui.painter(), m, project, pos2(r.rect.min.x + DETAIL_COLS[0].1 - 6.0, r.rect.min.y + 2.0), -1.0);
         out.push((i, r));
     }
@@ -569,7 +568,7 @@ fn list(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(
         let r = widgets::list_row(ui, ROW_H, sel.contains(&i));
         let icon = if m.media_type == MediaType::Audio { Icon::TrackAudio } else { Icon::TrackVideo };
         paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, None);
-        let color = if sel.contains(&i) { Color32::WHITE } else { t.text };
+        let color = widgets::list_ink(ui, sel.contains(&i));
         let name = ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
         badges(ui.painter(), m, project, pos2(name.max.x + 5.0, r.rect.min.y + 2.0), 1.0);
         out.push((i, r));

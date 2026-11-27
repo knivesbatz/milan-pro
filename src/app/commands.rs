@@ -2861,6 +2861,11 @@ impl MeridianApp {
                 self.dock.open(crate::ui::dock::Panel::VideoFx);
                 self.choosers[1].show_for_harness((what == "video-fx-mvfx").then_some("milan.fx.glow"));
             }
+            // The chrome review: Media Generators on Titles & Text's presets.
+            "generators-titles" => {
+                self.dock.open(crate::ui::dock::Panel::MediaGenerators);
+                self.choosers[2].show_for_harness(Some("milan.gen.text"));
+            }
             "transitions-mvfx" => {
                 self.dock.open(crate::ui::dock::Panel::Transitions);
                 self.choosers[0].show_for_harness(Some("milan.tr.page_peel"));

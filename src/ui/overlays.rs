@@ -267,7 +267,7 @@ pub fn draw_overlays(ui: &mut Ui, v: &mut OverlaysView, project: &mut Project, h
         if let Some(p) = missing {
             ui.add_space(30.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new(format!("The folder of this pack is missing:\n{}", p.display())).color(t.text_dim));
+                ui.label(RichText::new(format!("The folder of this pack is missing:\n{}", p.display())).color(t.lcd.text));
                 if widgets::push_button(ui, "Locate...").clicked() {
                     cmds.push(Cmd::Locate(p.clone()));
                 }
@@ -281,7 +281,7 @@ pub fn draw_overlays(ui: &mut Ui, v: &mut OverlaysView, project: &mut Project, h
                 "No overlays here."
             };
             ui.add_space(30.0);
-            ui.vertical_centered(|ui| ui.label(RichText::new(text).color(t.text_dim)));
+            ui.vertical_centered(|ui| ui.label(RichText::new(text).color(t.lcd.text)));
         } else if v.details {
             details(ui, v, &items, fps, &mut cmds);
         } else {
@@ -372,7 +372,7 @@ fn grid(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], thumbs: &mut Thumbs,
                     }
                 }
                 _ if v.lib.unreadable(&path) => {
-                    p.text(th.center(), Align2::CENTER_CENTER, "Unreadable", t.font(t.font.ui), t.text_dim);
+                    p.text(th.center(), Align2::CENTER_CENTER, "Unreadable", t.font(t.font.ui), t.lcd.text);
                 }
                 _ => {}
             }
@@ -381,7 +381,7 @@ fn grid(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], thumbs: &mut Thumbs,
         let fav = v.lib.index.favorites.contains(&path);
         if fav || resp.hovered() {
             let star = Rect::from_min_size(pos2(th.max.x - 17.0, th.min.y + 1.0), vec2(16.0, 16.0));
-            paint_icon(ui.painter(), star, Icon::Favorite, Some(if fav { t.accent } else { t.text_dim }));
+            paint_icon(ui.painter(), star, Icon::Favorite, Some(if fav { t.amber.base } else { t.silver.s5 }));
             if ui.interact(star, resp.id.with("fav"), Sense::click()).on_hover_text(if fav { "Remove from Favorites" } else { "Add to Favorites" }).clicked() {
                 cmds.push(Cmd::Favorite(path.clone()));
             }
@@ -427,10 +427,10 @@ fn details(ui: &mut Ui, v: &mut OverlaysView, items: &[usize], fps: f64, cmds: &
                 [it.name.clone(), pack, state.into(), String::new(), String::new(), String::new(), String::new(), ix.tags.get(&it.path).map_or(String::new(), |ts| ts.join(", "))]
             }
         };
-        widgets::row_cells(ui, r.rect, &COLS, &values, if selected { Color32::WHITE } else { t.text });
+        widgets::row_cells(ui, r.rect, &COLS, &values, widgets::list_ink(ui, selected));
         if ix.favorites.contains(&it.path) {
             let star = Rect::from_min_size(pos2(r.rect.min.x + COLS[0].1 - 22.0, r.rect.center().y - 8.0), vec2(16.0, 16.0));
-            paint_icon(ui.painter(), star, Icon::Favorite, Some(if selected { Color32::WHITE } else { t.accent }));
+            paint_icon(ui.painter(), star, Icon::Favorite, Some(t.amber.base));
         }
         item_interaction(ui, v, &r, &it.path, cmds);
     }

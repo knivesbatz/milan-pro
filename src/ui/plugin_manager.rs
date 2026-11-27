@@ -273,7 +273,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
         widgets::header_row(ui, &cols);
         if rows.is_empty() {
             ui.add_space(8.0);
-            ui.label(RichText::new(if pm.scanning() { "Scanning plug-in folders..." } else { "No plug-ins match." }).color(t.text_dim));
+            ui.label(RichText::new(if pm.scanning() { "Scanning plug-in folders..." } else { "No plug-ins match." }).color(t.lcd.text));
         }
         for r in &rows {
             let sel = pm.sel.as_ref() == Some(&r.key);
@@ -283,13 +283,7 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
             let bx = Rect::from_center_size(pos2(resp.rect.min.x + CHECK_W * 0.5, resp.rect.center().y), vec2(12.0, 12.0));
             let hit = ui.interact(bx.expand(3.0), resp.id.with("on"), if ext { Sense::click() } else { Sense::hover() });
             let p = ui.painter();
-            widgets::sunken(p, bx, if ext { t.input_bg } else { t.metal.face }, &t.metal);
-            if on {
-                let c = bx.center();
-                let s = Stroke::new(1.5_f32, if !ext { t.text_dim } else if sel { Color32::WHITE } else { t.text });
-                p.line_segment([c + vec2(-3.5, 0.0), c + vec2(-1.0, 2.5)], s);
-                p.line_segment([c + vec2(-1.0, 2.5), c + vec2(3.5, -3.0)], s);
-            }
+            widgets::check_box(p, bx, on, ext, t.text, &t.metal);
             if hit.clicked() {
                 if on {
                     prefs.disabled.insert(r.id.clone());
@@ -299,10 +293,11 @@ pub fn plugin_manager(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut OfxPrefs)
                 out.prefs_changed = true;
             }
             hit.on_hover_text(if !ext { "Built-in plug-ins are always on" } else if on { "On: offered in the FX choosers. Click to turn it off" } else { "Off: not offered or run; projects that use it keep it, bypassed. Click to turn it on" });
-            let color = if sel { Color32::WHITE } else if !on { t.text_dim } else { t.text };
-            let status_color = if matches!(r.status, Status::Failed(_)) && !sel { t.warning_text } else { color };
+            // LCD text in the list well (UI_SPEC.md §5): dimmer when off, amber when the plug-in failed.
+            let color = if sel { t.sel.text } else if !on { t.lcd.text_dim } else { t.lcd.text };
+            let status_color = if matches!(r.status, Status::Failed(_)) && !sel { t.amber.text } else { color };
             let x = resp.rect.min.x + CHECK_W;
-            paint_icon(ui.painter(), Rect::from_min_size(pos2(x + 4.0, resp.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, sel.then_some(Color32::WHITE));
+            paint_icon(ui.painter(), Rect::from_min_size(pos2(x + 4.0, resp.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, None);
             widgets::row_cells(ui, Rect::from_min_max(pos2(x + 18.0, resp.rect.min.y), resp.rect.max), &[("", COLS[0].1 - 18.0)], std::slice::from_ref(&r.name), color);
             let at = |k: usize| x + COLS[..k].iter().map(|c| c.1).sum::<f32>();
             widgets::row_cells(ui, Rect::from_min_max(pos2(at(1), resp.rect.min.y), resp.rect.max), &COLS[1..3], &[r.kind.to_string(), r.group.clone()], color);

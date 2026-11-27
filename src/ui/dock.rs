@@ -971,7 +971,9 @@ impl Dock {
         let gr = &self.groups[g];
         let panel = gr.tabs[gr.active.min(gr.tabs.len() - 1)];
         let strip = self.window_ui(ui, t, panel, col, content);
-        self.tab_strip(ui, t, g, strip)
+        let act = self.tab_strip(ui, t, g, strip);
+        super::widgets::frame_edge(ui.painter(), col, t.m.r_frame as f32, t.frame);
+        act
     }
 
     /// A window's toolbar and body in `col`, filled by `content`; returns where its tab strip goes.
@@ -985,11 +987,12 @@ impl Dock {
             (Rect::from_min_max(pos2(col.min.x, col.max.y - h), col.max), col.min.y, col.max.y - h)
         };
         let bar = Rect::from_min_max(pos2(col.min.x, top), pos2(col.max.x, top + t.m.dock_toolbar_h));
-        // Metal toolbar with a grip at its left end, the body in a sunken 3D frame.
+        // A chrome toolbar with a grip at its left end over the panel body (the group's frame is drawn round both by
+        // `frame_edge`).
         super::widgets::metal_bar(&p, bar, &t.metal);
         super::widgets::grip(&p, bar, &t.metal);
         let body = Rect::from_min_max(pos2(col.min.x, bar.max.y), pos2(col.max.x, bottom));
-        super::widgets::sunken(&p, body, t.panel_bg, &t.metal);
+        p.rect_filled(body, 0.0, t.panel_bg);
         let body = Rect::from_min_max(pos2(col.min.x, bar.max.y + 1.0), pos2(col.max.x, bottom));
         let bar = bar.with_min_x(bar.min.x + 8.0);
 
@@ -1008,10 +1011,7 @@ impl Dock {
     fn tab_strip(&mut self, ui: &mut Ui, t: &Theme, g: usize, strip: Rect) -> Option<TabAction> {
         let clip = strip.intersect(ui.clip_rect());
         let p = ui.painter().with_clip_rect(clip);
-        // Darker metal behind the tabs; the content's 3D frame edge runs along the strip.
-        super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
-        let y = if self.tabs_top { strip.max.y - 1.0 } else { strip.min.y };
-        hline(&p, strip.x_range(), y, if self.tabs_top { t.metal.shadow } else { t.metal.light });
+        tab_strip_bg(&p, t, strip, self.tabs_top);
         let mut clicked = None;
         let mut action: Option<TabAction> = None;
         let tabs = self.groups[g].tabs.clone();
@@ -1057,7 +1057,7 @@ impl Dock {
             let r = Rect::from_min_size(pos2(x, strip.min.y), vec2(widths[i], strip.height()));
             let resp = ui.interact(r.intersect(tabs_clip), ui.id().with(("dock_tab", panel)), Sense::click_and_drag());
             let hovered = resp.hovered();
-            classic_tab(&p, t, r, is_active, self.tabs_top);
+            classic_tab(&p, t, r, is_active, self.tabs_top, hovered);
             let color = if hovered && !is_active {
                 t.tab_text_hover
             } else if is_active {
@@ -1069,7 +1069,13 @@ impl Dock {
             // Inactive tabs sit 1 px further out (they stand back from the active one).
             let shift = if is_active { 0.0 } else if self.tabs_top { 1.0 } else { -1.0 };
             let ty = (r.center().y - galley.size().y * 0.5).round() - shift;
-            p.galley(pos2(tx, ty), galley, color);
+            if is_active {
+                // The active tab's label in bold.
+                let g = p.layout_no_wrap(panel.title().to_owned(), t.bold(t.font.dock_tab), color);
+                p.galley(pos2(tx, ty), g, color);
+            } else {
+                p.galley(pos2(tx, ty), galley, color);
+            }
             if is_active {
                 // â–¡ maximise in dock and Ã— close, each in a 13 px cell (Â§4.4).
                 for (k, icon) in [Icon::DockMaximize, Icon::DockClose].into_iter().enumerate() {
@@ -1192,32 +1198,28 @@ fn screen_rect(ctx: &Context, r: Rect) -> Rect {
     r.translate(origin) * ctx.pixels_per_point()
 }
 
-/// A dock tab (Windows tab control, tabs hanging under the content when `tabs_top` is off): a metal face with a
-/// 3D edge on three sides, open towards the content; the active tab joins the content and stands 2 px taller.
-fn classic_tab(p: &Painter, t: &Theme, r: Rect, active: bool, tabs_top: bool) {
-    let m = &t.metal;
+/// The recess behind a tab strip (UI_SPEC.md §5 Dock tabs): `s4`, with the content's edge (`s5`) along the side the
+/// tabs hang from.
+fn tab_strip_bg(p: &Painter, t: &Theme, strip: Rect, tabs_top: bool) {
+    p.rect_filled(strip, 0.0, t.silver.s4);
+    let y = if tabs_top { strip.max.y - 1.0 } else { strip.min.y };
+    hline(p, strip.x_range(), y, t.silver.s5);
+}
+
+/// A dock tab: `widgets::tab_face` hanging under the content (standing on it when `tabs_top`), the active one with the
+/// amber lamp.
+fn classic_tab(p: &Painter, _t: &Theme, r: Rect, active: bool, tabs_top: bool, hovered: bool) {
     let r = if active { r } else if tabs_top { r.with_min_y(r.min.y + 2.0) } else { r.with_max_y(r.max.y - 2.0) };
-    let tint = if active { Color32::WHITE } else { Color32::from_rgb(0xD2, 0xD5, 0xDA) };
-    super::widgets::metal_tinted(p, r, m, tint);
-    let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
-    line(r.min, pos2(r.min.x + 1.0, r.max.y), m.light);
-    line(pos2(r.max.x - 1.0, r.min.y), r.max, m.dark);
-    line(pos2(r.max.x - 2.0, r.min.y + 1.0), pos2(r.max.x - 1.0, r.max.y - 1.0), m.shadow);
-    if tabs_top {
-        line(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0), m.light);
-    } else {
-        line(pos2(r.min.x, r.max.y - 1.0), r.max, m.dark);
-        line(pos2(r.min.x + 1.0, r.max.y - 2.0), pos2(r.max.x - 1.0, r.max.y - 1.0), m.shadow);
-    }
+    super::widgets::tab_face(p, r, active, hovered, tabs_top, true);
 }
 
 /// A floating window's tab strip: its one tab, drawn active (the native title bar has the close button).
 fn float_tab(ui: &mut Ui, t: &Theme, panel: Panel, strip: Rect, tabs_top: bool) -> Response {
     let p = ui.painter_at(strip);
-    super::widgets::metal_tinted(&p, strip, &t.metal, Color32::from_rgb(0xB4, 0xB8, 0xBE));
-    let galley = p.layout_no_wrap(panel.title().to_owned(), t.font(t.font.dock_tab), t.tab_text_active);
+    tab_strip_bg(&p, t, strip, tabs_top);
+    let galley = p.layout_no_wrap(panel.title().to_owned(), t.bold(t.font.dock_tab), t.tab_text_active);
     let r = Rect::from_min_size(strip.min, vec2(galley.size().x + 16.0, strip.height()));
-    classic_tab(&p, t, r, true, tabs_top);
+    classic_tab(&p, t, r, true, tabs_top, false);
     let pos = pos2(r.min.x + 8.0, (r.center().y - galley.size().y * 0.5).round());
     p.galley(pos, galley, t.tab_text_active);
     ui.interact(r, ui.id().with(("float_tab", panel)), Sense::click_and_drag())

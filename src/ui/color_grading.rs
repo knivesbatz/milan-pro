@@ -189,7 +189,7 @@ fn wheel(ui: &mut Ui, fx: &mut Fx, e: &FxEval, title: &str, prefix: &str, neutra
     let inner = outer - 8.0;
     let p = ui.painter();
     // The wheel on a sunken dark well.
-    widgets::sunken(p, rect, t.lane_bg, &t.metal);
+    widgets::sunken(p, rect, t.neutral_well, &t.metal);
     // Hue ring: red up, then blue and green clockwise, as `AXES`.
     let mut mesh = Mesh::default();
     let n = 60;
@@ -315,7 +315,7 @@ fn curves(ui: &mut Ui, st: &mut ColorGrading, fx: &mut Fx, e: &FxEval) {
     }
     let p = ui.painter_at(rect.expand(2.0));
     // A sunken dark well with a dotted grid and chrome knobs on the curve.
-    widgets::sunken(&p, rect.expand(2.0), t.lane_bg, &t.metal);
+    widgets::sunken(&p, rect.expand(2.0), t.neutral_well, &t.metal);
     for k in 1..4 {
         let f = k as f32 / 4.0;
         widgets::dotted(&p, pos2(rect.min.x + f * rect.width(), rect.min.y), pos2(rect.min.x + f * rect.width(), rect.max.y), t.grid_line);

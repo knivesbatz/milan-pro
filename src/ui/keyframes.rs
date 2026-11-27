@@ -225,7 +225,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     ];
     let p = ui.painter_at(rect);
     let row = Rect::from_min_max(pos2(rect.min.x, body.max.y), rect.max);
-    // Metal button row under a sunken lane well, chrome buttons, a black LCD time read-out.
+    // A chrome button row under a recessed lane well, chrome buttons (Sync Cursor lit), the time on an LCD.
     super::widgets::metal_bar(&p, row, &t.metal);
     super::widgets::bevel(&p, body, false, &t.metal);
     for (k, (tip, act)) in buttons.into_iter().enumerate() {
@@ -245,8 +245,8 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
         }
     }
     let tc = Rect::from_min_max(pos2(row.max.x - 96.0, row.min.y + 3.0), pos2(row.max.x - 4.0, row.max.y - 3.0));
-    super::widgets::sunken(&p, tc, t.time_display_bg, &t.metal);
-    p.text(tc.center(), Align2::CENTER_CENTER, format_timecode(at.max(0.0), fps), t.bold(11.0), t.time_display_text);
+    super::widgets::lcd_well(&p, tc, true, true);
+    super::widgets::lcd_value(&p, tc.center(), Align2::CENTER_CENTER, &format_timecode(at.max(0.0), fps), 11.0);
 
     // ---- Painting ----
     let p = p.with_clip_rect(body.shrink(2.0).intersect(p.clip_rect()));

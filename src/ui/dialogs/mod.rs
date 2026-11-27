@@ -1,5 +1,5 @@
-//! Modal dialogs (UI_SPEC.md §8.2): Windows 2000 property sheets. This module holds the shared frame (title row with
-//! ? and ×, tabs, group headings, 75×23 buttons) and the dialogs themselves.
+//! Modal dialogs (UI_SPEC.md §5 Dialogs, §8.3): the shared frame (slate caption with ? and ×, chrome tabs, section
+//! title tabs, 75×23 push buttons) and the dialogs themselves.
 mod about;
 mod archive;
 mod audio_transition;
@@ -67,7 +67,7 @@ use super::theme::{self, Theme};
 use super::widgets;
 
 pub const BUTTON: Vec2 = vec2(75.0, 23.0);
-/// The title row: a 3 px 3D frame, an 18 px Windows 2000 caption, 3 px to the body.
+/// The title row: a 1 px frame, a 20 px slate caption, 3 px to the body.
 const TITLE_H: f32 = 24.0;
 
 /// The title row's height.
@@ -75,7 +75,7 @@ pub fn title_h() -> f32 {
     TITLE_H
 }
 
-/// Widget style inside dialogs: Windows 2000 controls on the property-sheet palette.
+/// Widget style inside dialogs: the design system's controls on the panel silver.
 pub fn style(base: &Style, t: &Theme) -> Style {
     let d = t.dialog();
     let mut s = base.clone();
@@ -86,8 +86,8 @@ pub fn style(base: &Style, t: &Theme) -> Style {
     v.window_fill = d.field;
     v.extreme_bg_color = d.field;
     v.window_stroke = Stroke::new(1.0_f32, d.border);
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
+    v.window_corner_radius = CornerRadius::same(t.m.r_ctl);
+    v.menu_corner_radius = CornerRadius::same(t.m.r_ctl);
     v.selection.bg_fill = d.accent;
     v.selection.stroke = Stroke::new(1.0_f32, d.accent_text);
     v.text_cursor.stroke = Stroke::new(1.0_f32, d.text);
@@ -114,8 +114,8 @@ pub fn style(base: &Style, t: &Theme) -> Style {
         st.corner_radius = r;
         st.expansion = 0.0;
     }
-    // Windows 2000 controls: white sunken fields with a grey edge, #D4D0C8 button faces with a dark edge, the
-    // #316AC5 highlight; combo popups white with a 1 px dark border.
+    // Paper fields with an `s5` edge, silver button faces with an `s6` edge, the lit outline on hover, the selection
+    // blue; combo popups with an `s6` outline (the paper `window_fill` below for their lists).
     let dm = t.dialog_metal();
     w.inactive.bg_stroke = Stroke::new(1.0_f32, dm.shadow);
     w.inactive.weak_bg_fill = d.button;
@@ -168,7 +168,7 @@ pub fn window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl Fn
 /// Its layer is `tool_layer(id)`.
 pub fn tool_window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
     let t = theme::get();
-    let frame = Frame::NONE.fill(t.panel_bg);
+    let frame = Frame::NONE.fill(t.panel_bg).corner_radius(t.m.r_frame);
     area(ctx, id, size, UiKind::Window).show(ctx, |ui| frame.show(ui, |ui| framed(ui, id, title, size, body)).inner).inner
 }
 
@@ -189,13 +189,12 @@ fn area(ctx: &Context, id: &str, size: Vec2, kind: UiKind) -> Area {
 fn dialog_frame() -> Frame {
     let t = theme::get();
     let d = t.dialog();
-    // The 3D frame is painted in `framed`.
-    Frame::NONE.fill(d.body)
+    // The frame and caption are painted in `framed`.
+    Frame::NONE.fill(d.body).corner_radius(t.m.r_frame)
 }
 
-/// Title row with "?" and × above `body`; whether × was clicked. The Windows 2000 window: a raised 3D frame round the
-/// whole dialog, the navy → light-blue caption gradient with bold white Tahoma and bevelled ? / ×
-/// caption buttons (`classic_caption`, shared with the tool windows and floating windows).
+/// Title row with "?" and × above `body`; whether × was clicked (`classic_caption`, shared with the tool windows and
+/// floating windows).
 fn framed<R>(ui: &mut Ui, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
     ui.set_min_size(size);
     ui.set_max_size(size);
@@ -211,52 +210,63 @@ fn framed<R>(ui: &mut Ui, id: &str, title: &str, size: Vec2, body: impl FnOnce(&
     (inner.inner, close)
 }
 
-/// The window chrome over `win`: a raised 3D frame (`dialog_metal`), the Windows 2000 caption
-/// gradient inset 3 px with the title in bold white Tahoma and, if `help`, a "?" button beside the × button (both
-/// 16×14 bevelled). True when × is clicked. The body starts `TITLE_H` below `win.min`.
+/// The window chrome over `win` (UI_SPEC.md §5 Dialogs): a `slate.frame` outline with `r_frame` corners, the 20 px
+/// slate caption with the bold title centred between two grooved ridges and, if `help`, a "?" button beside the ×
+/// button (16 × 14 chrome, `ink.glyph`). True when × is clicked. The body starts `TITLE_H` below `win.min`.
 pub fn classic_caption(ui: &mut Ui, win: Rect, title: &str, id: &str, help: bool) -> bool {
     let t = theme::get();
     let d = t.dialog();
-    let dm = t.dialog_metal();
     let p = ui.painter().clone();
     let win = widgets::px(win);
-    widgets::bevel(&p, win, true, &dm);
-    p.rect_stroke(win.shrink(2.0), 0.0, Stroke::new(1.0_f32, dm.face), StrokeKind::Inside);
-    let cap = Rect::from_min_size(win.min + vec2(3.0, 3.0), vec2(win.width() - 6.0, 18.0));
-    let mut mesh = Mesh::default();
-    mesh.colored_vertex(cap.left_top(), d.caption.0);
-    mesh.colored_vertex(cap.right_top(), d.caption.1);
-    mesh.colored_vertex(cap.right_bottom(), d.caption.1);
-    mesh.colored_vertex(cap.left_bottom(), d.caption.0);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    p.add(mesh);
-    p.with_clip_rect(cap.shrink2(vec2(2.0, 0.0))).text(pos2(cap.min.x + 5.0, cap.center().y), Align2::LEFT_CENTER, title, t.bold(11.0), d.caption_text);
+    let rad = t.m.r_frame as f32;
+    let cap = Rect::from_min_size(win.min + vec2(1.0, 1.0), vec2(win.width() - 2.0, 20.0));
+    // The body: a brushed-panel sweep from `s1` to `s3` (no streaks: text sits on it), rounded at the bottom only.
+    let body = win.with_min_y(cap.max.y);
+    let s = &t.silver;
+    widgets::grad(&p.with_clip_rect(body.intersect(p.clip_rect())), body.with_min_y(body.min.y - rad), rad, &[(0.0, s.s1), (0.3, s.s2), (1.0, s.s3)]);
+    // Rounded at the top only: painted taller and clipped at the caption's bottom.
+    let pc = p.with_clip_rect(cap.intersect(p.clip_rect()));
+    widgets::grad(&pc, cap.with_max_y(cap.max.y + rad), rad - 1.0, &[(0.0, d.caption.0), (1.0, d.caption.1)]);
+    pc.rect_filled(Rect::from_min_max(pos2(cap.min.x + rad, cap.min.y), pos2(cap.max.x - rad, cap.min.y + 1.0)), 0.0, t.slate.ridge.0);
+    p.rect_filled(Rect::from_min_max(pos2(cap.min.x, cap.max.y), pos2(cap.max.x, cap.max.y + 1.0)), 0.0, t.slate.ridge.1);
     let mut close = false;
     let buttons: &[(&str, bool)] = if help { &[("?", false), ("×", true)] } else { &[("×", true)] };
+    let first_button = cap.max.x - 3.0 - 18.0 * buttons.len() as f32;
+    // The title centred over the caption, between two grooved ridges (light over dark, twice).
+    let g = p.layout_no_wrap(title.to_owned(), t.bold(11.0), d.caption_text);
+    let room = Rangef::new(cap.min.x + 8.0, first_button - 6.0);
+    let tw = g.size().x.min(room.span());
+    let tx = (cap.center().x - tw * 0.5).clamp(room.min, (room.max - tw).max(room.min)).round();
+    let cy = cap.center().y.round();
+    let ridge = |x0: f32, x1: f32| {
+        if x1 - x0 > 8.0 {
+            for (dy, c) in [(-3.0, t.slate.ridge.0), (-2.0, t.slate.ridge.1), (1.0, t.slate.ridge.0), (2.0, t.slate.ridge.1)] {
+                p.rect_filled(Rect::from_min_max(pos2(x0, cy + dy), pos2(x1, cy + dy + 1.0)), 0.0, c);
+            }
+        }
+    };
+    ridge(room.min, tx - 8.0);
+    ridge(tx + tw + 8.0, room.max);
+    p.with_clip_rect(Rect::from_x_y_ranges(room, cap.y_range()).intersect(p.clip_rect())).galley(pos2(tx, (cy - g.size().y * 0.5).round()), g, d.caption_text);
     for (k, (glyph, is_close)) in buttons.iter().enumerate() {
-        let r = Rect::from_min_size(pos2(cap.max.x - 2.0 - 16.0 * (buttons.len() - k) as f32 - if *is_close { 0.0 } else { 2.0 }, cap.min.y + 2.0), vec2(16.0, 14.0));
+        let r = Rect::from_min_size(pos2(first_button + 18.0 * k as f32, cap.min.y + 3.0), vec2(16.0, 14.0));
         let hit = ui.interact(r, Id::new(id).with(("cap", k)), Sense::click());
         let pressed = hit.is_pointer_button_down_on();
-        p.rect_filled(r, 0.0, dm.face);
-        widgets::bevel(&p, r, !pressed, &dm);
-        let c = r.center().floor() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
+        let state = if pressed { widgets::Chrome::Pressed } else if hit.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
+        widgets::chrome(&p, r, t.m.r_small as f32, state);
+        let c = r.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
         if *is_close {
-            // A 7×7 pixel × in black.
-            let mut m = Mesh::default();
-            for i in -3..=3 {
-                let i = i as f32;
-                m.add_colored_rect(Rect::from_min_size(pos2(c.x + i - 0.5, c.y + i - 0.5), vec2(1.0, 1.0)), t.text);
-                m.add_colored_rect(Rect::from_min_size(pos2(c.x + i - 0.5, c.y - i - 0.5), vec2(1.0, 1.0)), t.text);
-                m.add_colored_rect(Rect::from_min_size(pos2(c.x + i + 0.5, c.y + i - 0.5), vec2(1.0, 1.0)), t.text);
-                m.add_colored_rect(Rect::from_min_size(pos2(c.x + i + 0.5, c.y - i - 0.5), vec2(1.0, 1.0)), t.text);
-            }
-            p.add(m);
+            let s = Stroke::new(1.6_f32, t.ink.glyph);
+            p.line_segment([c + vec2(-3.0, -3.0), c + vec2(3.0, 3.0)], s);
+            p.line_segment([c + vec2(-3.0, 3.0), c + vec2(3.0, -3.0)], s);
         } else {
-            p.text(c, Align2::CENTER_CENTER, *glyph, t.bold(11.0), t.text);
+            p.text(c, Align2::CENTER_CENTER, *glyph, t.bold(11.0), t.ink.glyph);
         }
         close |= *is_close && hit.clicked();
     }
+    // A lip under the caption on the body, then the outline over the caption's corners.
+    p.rect_filled(Rect::from_min_max(pos2(win.min.x + 1.0, cap.max.y + 1.0), pos2(win.max.x - 1.0, cap.max.y + 2.0)), 0.0, t.silver.s0);
+    p.rect_stroke(win, rad, Stroke::new(1.0_f32, t.slate.frame), StrokeKind::Inside);
     close
 }
 
@@ -276,8 +286,8 @@ pub fn report(ctx: &Context, title: &str, intro: &str, lines: &[String]) -> bool
     ok || close
 }
 
-/// Native tab control; `rows` front row first. The row holding the selected tab is drawn next to the page,
-/// as Win32 multi-row tabs do.
+/// Tab control (UI_SPEC.md §5 Dialogs: chrome tabs standing on the page); `rows` front row first. The row holding
+/// the selected tab is drawn next to the page, as Win32 multi-row tabs do.
 pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {
     let t = theme::get();
     let d = t.dialog();
@@ -295,7 +305,6 @@ pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {
     let mut order: Vec<usize> = (0..rows.len()).filter(|&r| r != sel_row).collect();
     order.push(sel_row);
     let p = ui.painter().clone();
-    let dm = t.dialog_metal();
     let font = t.font(11.0);
     for (slot, &ri) in order.iter().enumerate() {
         let row = rows[ri];
@@ -311,18 +320,15 @@ pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {
             let r = Rect::from_min_size(pos2(x, y), vec2(tw, row_h));
             let r = if selected { r.expand2(vec2(2.0, 2.0)) } else { r };
             let resp = ui.interact(r, ui.id().with(("tab", i)), Sense::click());
-            // Windows tab control: a raised tab (white left/top, dark right), the selected one joined to the page.
+            // Chrome tabs standing on the page; the selected one joins it (its label bold).
             let rp = widgets::px(r);
-            p.rect_filled(rp, 0.0, dm.face);
-            let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
-            line(rp.min, pos2(rp.min.x + 1.0, rp.max.y), dm.light);
-            line(rp.min + vec2(1.0, 0.0), pos2(rp.max.x - 1.0, rp.min.y + 1.0), dm.light);
-            line(pos2(rp.max.x - 1.0, rp.min.y + 1.0), rp.max, dm.dark);
-            line(pos2(rp.max.x - 2.0, rp.min.y + 1.0), pos2(rp.max.x - 1.0, rp.max.y), dm.shadow);
-            if !selected {
-                line(pos2(rp.min.x, rp.max.y - 1.0), rp.max, dm.light);
+            widgets::tab_face(&p, rp, selected, resp.hovered(), true, false);
+            if selected {
+                ui.data_mut(|dd| dd.insert_temp(Id::new("milan_dialog_tab_sel"), rp));
+                p.text(r.center(), Align2::CENTER_CENTER, *label, t.bold(11.0), d.text);
+            } else {
+                p.text(r.center(), Align2::CENTER_CENTER, *label, font.clone(), t.ink.label);
             }
-            p.text(r.center(), Align2::CENTER_CENTER, *label, font.clone(), d.text);
             if resp.clicked() {
                 *sel = i;
             }
@@ -342,38 +348,35 @@ pub fn page<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
         ui.set_max_height(height);
         add(ui)
     });
-    // The page is a raised panel (white left/top, dark right/bottom) that the selected tab joins.
-    let dm = t.dialog_metal();
+    // The page is a panel (an `s6` outline, the `s0` lip inside its top and left) that the selected tab joins: the
+    // outline is opened under that tab.
     let r = widgets::px(out.response.rect);
     let p = ui.painter();
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0)), 0.0, dm.light);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0)), 0.0, dm.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, dm.dark);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, dm.dark);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.max.y - 2.0), r.max - vec2(1.0, 1.0)), 0.0, dm.shadow);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 2.0, r.min.y + 1.0), r.max - vec2(1.0, 1.0)), 0.0, dm.shadow);
+    let rad = t.m.r_ctl as f32;
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.max.x - rad, r.min.y + 2.0)), 0.0, t.silver.s0);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.min.x + 2.0, r.max.y - rad)), 0.0, t.silver.s0);
+    p.rect_stroke(r, CornerRadius { nw: 0, ne: t.m.r_ctl, sw: t.m.r_ctl, se: t.m.r_ctl }, Stroke::new(1.0_f32, t.silver.s6), StrokeKind::Inside);
+    if let Some(tab) = ui.data(|dd| dd.get_temp::<Rect>(Id::new("milan_dialog_tab_sel"))).filter(|tab| (tab.max.y - r.min.y).abs() <= 3.0 && tab.min.x >= r.min.x - 1.0) {
+        p.rect_filled(Rect::from_min_max(pos2(tab.min.x + 1.0, r.min.y), pos2(tab.max.x - 1.0, r.min.y + 2.0)), 0.0, t.silver.s2);
+    }
     out.inner
 }
 
-/// A sunken white box (a list or a text area): the frame the Preferences option lists, the Render Queue and other
-/// dialog lists sit in.
+/// A recessed paper well (a list or a text area; UI_SPEC.md §1, paper for typing): the frame the Preferences option
+/// lists, the Render Queue and other dialog lists sit in.
 pub fn field_box<R>(ui: &mut Ui, margin: i8, add: impl FnOnce(&mut Ui) -> R) -> R {
     let t = theme::get();
     let d = t.dialog();
-    let out = Frame::NONE.fill(d.field).inner_margin(margin + 2).show(ui, add);
-    widgets::bevel(ui.painter(), out.response.rect, false, &t.dialog_metal());
+    let out = Frame::NONE.fill(d.field).corner_radius(t.m.r_ctl).inner_margin(margin + 2).show(ui, add);
+    widgets::recess_edge(ui.painter(), out.response.rect, t.m.r_ctl as f32, &t.dialog_metal());
     out.inner
 }
 
-/// Group heading: text then a 2 px etched line to the right edge (§5.15.1).
+/// Group heading: a section title tab (UI_SPEC.md §5) with its groove to the right edge.
 pub fn group(ui: &mut Ui, text: &str) {
-    let d = theme::get().dialog();
-    let r = ui.label(text).rect;
-    let y = r.center().y.floor() + 0.5;
-    let x0 = r.max.x + 6.0;
-    let x1 = ui.max_rect().max.x;
-    ui.painter().hline(x0..=x1, y, Stroke::new(1.0_f32, d.etch.0));
-    ui.painter().hline(x0..=x1, y + 1.0, Stroke::new(1.0_f32, d.etch.1));
+    let w = (ui.max_rect().max.x - ui.cursor().min.x).max(40.0);
+    let (r, _) = ui.allocate_exact_size(vec2(w, 18.0), Sense::hover());
+    widgets::section_tab(ui.painter(), r, text);
 }
 
 /// 75×23 push button; `default` gets the black ring (OK, Render…).
@@ -381,9 +384,8 @@ pub fn button(ui: &mut Ui, label: &str, enabled: bool, default: bool) -> Respons
     classic_button(ui, label, BUTTON, enabled, default)
 }
 
-/// Windows 2000 push button (`widgets::classic_push` in the property-sheet palette): #D4D0C8 face with the 2 px 3D
-/// edge (sunken while pressed), the default button's black ring outside it, the label in Tahoma (greyed with a white
-/// emboss when disabled).
+/// Push button (`widgets::classic_push`, UI_SPEC.md §5): raised chrome, pressed inverted, the default one ringed in
+/// the lit outline with a bold label, disabled flat with `ink.disabled`.
 pub fn classic_button(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default: bool) -> Response {
     let t = theme::get();
     let d = t.dialog();
@@ -415,9 +417,11 @@ pub fn swatch(ui: &mut Ui, color: Color32, enabled: bool) -> Response {
     let d = t.dialog();
     let (r, resp) = ui.allocate_exact_size(vec2(60.0, 23.0), if enabled { Sense::click() } else { Sense::hover() });
     let rp = widgets::px(r);
-    ui.painter().rect_filled(rp, 0.0, d.button);
-    widgets::bevel(ui.painter(), rp, true, &t.dialog_metal());
-    ui.painter().rect_filled(r.shrink2(vec2(7.0, 6.0)), 0.0, color);
+    let state = if resp.is_pointer_button_down_on() { widgets::Chrome::Pressed } else if enabled && resp.hovered() { widgets::Chrome::Hover } else { widgets::Chrome::Raised };
+    widgets::chrome(ui.painter(), rp, t.m.r_ctl as f32, state);
+    let well = widgets::px(r.shrink2(vec2(7.0, 6.0)));
+    ui.painter().rect_filled(well, 1.0, color);
+    ui.painter().rect_stroke(well, 1.0, Stroke::new(1.0_f32, d.border), StrokeKind::Outside);
     resp
 }
 

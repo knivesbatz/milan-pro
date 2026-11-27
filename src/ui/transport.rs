@@ -202,11 +202,11 @@ fn length_boxes(p: &Painter, rect: Rect, project: &Project) {
         let x = rect.max.x - 8.0 - w * (3 - k) as f32;
         let r = Rect::from_min_size(pos2(x, rect.center().y - 7.0), vec2(14.0, 14.0));
         let cell = Rect::from_min_max(pos2(x - 2.0, rect.min.y), pos2(x + w - 4.0, rect.max.y));
-        // Sunken white read-outs, as Vegas 6 draws its selection boxes.
+        // Small LCD read-outs (UI_SPEC.md §8.1): `lcd.text` on a navy well.
         super::widgets::metal(p, cell, &t.metal);
-        super::widgets::sunken(p, Rect::from_min_max(pos2(r.max.x + 2.0, rect.min.y + 3.0), pos2(cell.max.x - 2.0, rect.max.y - 3.0)), t.input_bg, &t.metal);
+        super::widgets::lcd_well(p, Rect::from_min_max(pos2(r.max.x + 2.0, rect.min.y + 3.0), pos2(cell.max.x - 2.0, rect.max.y - 3.0)), true, false);
         paint_icon(p, r, icon, None);
-        p.text(pos2(r.max.x + 6.0, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), t.text);
+        p.text(pos2(r.max.x + 6.0, rect.center().y), Align2::LEFT_CENTER, text, font.clone(), t.lcd.text);
     }
 }
 
@@ -231,7 +231,7 @@ pub fn draw_rate(ui: &Ui, rect: Rect, playing: bool) -> Option<f32> {
         }
         super::widgets::groove(p, Rangef::new(x0, x1), cy, &t.metal);
         let normal = to_x(1.0);
-        p.add(Shape::convex_polygon(vec![pos2(normal, cy + 6.0), pos2(normal + 4.0, cy + 10.0), pos2(normal - 4.0, cy + 10.0)], t.text, Stroke::NONE));
+        p.add(Shape::convex_polygon(vec![pos2(normal, cy + 6.0), pos2(normal + 4.0, cy + 10.0), pos2(normal - 4.0, cy + 10.0)], t.ink.glyph, Stroke::NONE));
         super::widgets::thumb(p, Rect::from_center_size(pos2(to_x(rate), cy), vec2(11.0, 17.0)), &t.metal, None);
     }
     let shown = if rate != 0.0 { rate } else if playing { 1.0 } else { 0.0 };

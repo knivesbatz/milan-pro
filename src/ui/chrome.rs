@@ -1,5 +1,5 @@
 //! Window frame (UI_SPEC.md §4): band layout of the client area under the native title bar, the in-window menu row,
-//! and the metal bands with their 3D edges and dotted splitters.
+//! and the chrome bars on the slate frame with its splitters.
 use eframe::egui::*;
 use super::theme::Theme;
 
@@ -91,7 +91,7 @@ fn hline(p: &Painter, x: Rangef, y: f32, c: Color32) {
     p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, c);
 }
 
-/// The bands: brushed metal with 3D edges and dotted splitters.
+/// The bands: chrome bars with their lip and shade on the slate frame, and the splitters.
 pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
     let m = &t.metal;
     let all = full.x_range();
@@ -116,7 +116,8 @@ pub fn paint_bands(p: &Painter, t: &Theme, a: &Areas, full: Rect) {
     }
 }
 
-/// Popup style for menus: white with a 3D grey border and the #316AC5 highlight bar (Windows XP).
+/// Popup style for menus (UI_SPEC.md §5 Menus): `s1` with an `s6` outline and `r_ctl` corners; the row under the
+/// pointer lit (`lit.bottom` with the `lit.outline`), its ink unchanged.
 pub fn menu_style(base: &Style, t: &Theme) -> Style {
     let mut s = base.clone();
     let v = &mut s.visuals;
@@ -125,24 +126,24 @@ pub fn menu_style(base: &Style, t: &Theme) -> Style {
     v.window_fill = t.menu_popup_bg;
     v.panel_fill = t.menu_popup_bg;
     v.window_stroke = Stroke::new(1.0_f32, t.menu_popup_border);
-    v.menu_corner_radius = CornerRadius::same(t.m.widget_radius);
+    v.menu_corner_radius = CornerRadius::same(t.m.r_ctl);
     v.popup_shadow = Shadow::NONE;
-    let hover_text = t.text_bright;
     let w = &mut v.widgets;
-    // Shortcut text and separators in black / grey, as Windows draws them.
-    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, t.menu_popup_text_disabled);
+    // Shortcut text in ink, separators as grooves (`menus::sep`).
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, t.silver.s5);
     w.noninteractive.fg_stroke = Stroke::new(1.0_f32, t.menu_popup_text);
     w.inactive.fg_stroke = Stroke::new(1.0_f32, t.menu_popup_text);
     w.inactive.bg_fill = t.menu_popup_bg;
-    w.inactive.bg_stroke = Stroke::new(1.0_f32, t.menu_popup_text_disabled);
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, t.silver.s5);
     for st in [&mut w.hovered, &mut w.active, &mut w.open] {
-        st.bg_fill = t.menu_popup_hover;
-        st.weak_bg_fill = t.menu_popup_hover;
-        st.fg_stroke = Stroke::new(1.0_f32, hover_text);
-        st.bg_stroke = Stroke::NONE;
+        st.bg_fill = t.sel.lit_bottom;
+        st.weak_bg_fill = t.sel.lit_bottom;
+        st.fg_stroke = Stroke::new(1.0_f32, t.menu_popup_text);
+        st.bg_stroke = Stroke::new(1.0_f32, t.sel.lit_outline);
+        st.corner_radius = CornerRadius::same(t.m.r_small);
     }
-    v.selection.bg_fill = t.menu_popup_hover;
-    v.selection.stroke = Stroke::new(1.0_f32, hover_text);
+    v.selection.bg_fill = t.sel.mid;
+    v.selection.stroke = Stroke::new(1.0_f32, t.sel.text);
     s.spacing.interact_size.y = t.m.popup_row_h;
     s.spacing.item_spacing.y = 0.0;
     s.spacing.menu_margin = Margin::same(3);
@@ -166,15 +167,12 @@ pub fn menu_row<R>(ui: &mut Ui, rect: Rect, f: impl FnOnce(&mut Ui) -> R) -> R {
     f(&mut child)
 }
 
-/// The classic 3D border of a popup (menus, drop-downs): egui paints the fill and a 1 px `shadow` line; this adds the
-/// light inner top-left and dark outer bottom-right rows over it.
+/// The popup's edge (menus, drop-downs): egui paints the `s1` fill and the rounded `s6` outline; this adds the `s0`
+/// lip inside the top, as on all raised chrome.
 pub fn classic_popup_border(p: &Painter, r: Rect, t: &Theme) {
-    let m = &t.metal;
     let r = Rect::from_min_max(r.min.round(), r.max.round());
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.max.x - 1.0, r.min.y + 2.0)), 0.0, m.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.min.y + 1.0), pos2(r.min.x + 2.0, r.max.y - 1.0)), 0.0, m.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, m.dark);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, m.dark);
+    let rad = t.m.r_ctl as f32;
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + rad, r.min.y + 1.0), pos2(r.max.x - rad, r.min.y + 2.0)), 0.0, t.silver.s0);
 }
 
 #[cfg(test)]

@@ -164,10 +164,10 @@ fn paint_media_marks(p: &Painter, t: &Theme, ev: &Ev) {
         let x = (r.min.x as f64 + (at - ev.clip.position) * ev.pps).floor() as f32;
         pm.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), r.y_range()), 0.0, t.marker_flag);
         if ev.labels && !name.is_empty() {
-            let g = pm.layout_no_wrap(name.to_string(), t.font(10.0), t.event_text);
+            let g = pm.layout_no_wrap(name.to_string(), t.font(10.0), t.marker_text);
             let y = r.max.y - g.size().y - 3.0;
             pm.rect_filled(Rect::from_min_size(pos2(x + 1.0, y), g.size() + vec2(4.0, 0.0)), 0.0, t.marker_flag);
-            pm.galley(pos2(x + 3.0, y), g, t.event_text);
+            pm.galley(pos2(x + 3.0, y), g, t.marker_text);
         }
     }
 }

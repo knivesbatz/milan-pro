@@ -11,14 +11,14 @@ use super::{Geo, Rename, TlState, SNAP_PX};
 /// `crumbs`: R6b's breadcrumb runs along the top, so the time sits lower.
 pub(super) fn draw_time_display(p: &Painter, r: Rect, project: &Project, crumbs: bool) {
     let t = theme::get();
-    // Black LCD well sunk into the metal (Vegas 5–7).
+    // The big LCD (UI_SPEC.md §5): a navy read-out well with its dot grid on the chrome, segmented digits.
     crate::ui::widgets::metal(p, r, &t.metal);
-    crate::ui::widgets::sunken(p, r.shrink2(vec2(3.0, 4.0)), t.time_display_bg, &t.metal);
+    let well = r.shrink2(vec2(3.0, 4.0));
+    crate::ui::widgets::lcd_well(p, well, true, true);
     let cy = r.center().y.round();
-    let font = t.bold(t.font.time_display);
     let tc = project.settings.ruler_time(project.timeline.cursor_position);
-    let y = if crumbs { cy + 7.0 } else { cy };
-    p.with_clip_rect(r).text(pos2(r.max.x - 8.0, y), Align2::RIGHT_CENTER, tc, font, t.time_display_text);
+    let (y, h) = if crumbs { (cy + 7.0, 13.0) } else { (cy, (well.height() - 12.0).clamp(11.0, 22.0)) };
+    crate::ui::widgets::lcd_value(&p.with_clip_rect(well), pos2(well.max.x - 8.0, y), Align2::RIGHT_CENTER, &tc, h);
 }
 
 /// (loop bar, marker bar, ruler) rows of the band. The ruler stands on the band's bottom, under the CD layout and
@@ -445,7 +445,7 @@ pub(super) fn paint_band(p: &Painter, g: &Geo, project: &Project, dragging_loop:
         };
         let (num, label) = b.text(tl);
         p_b.rect_filled(tag, 0.0, fill);
-        p_b.text(tag.center(), Align2::CENTER_CENTER, num, t.bold(10.0), Color32::WHITE);
+        p_b.text(tag.center(), Align2::CENTER_CENTER, num, t.bold(10.0), t.marker_text);
         if !label.is_empty() {
             p_b.text(pos2(tag.max.x + 3.0, tag.center().y), Align2::LEFT_CENTER, label, t.font(t.font.ui), t.text);
         }

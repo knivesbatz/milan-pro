@@ -842,11 +842,11 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         let n = lv.ch.max(2);
         if n > 2 {
             let clip = lv.clip[..n].iter().any(|c| *c);
-            p.text(read.center(), Align2::CENTER_CENTER, lv.peak_text(), font.clone(), if clip { t.meter_red } else { t.text });
+            p.text(read.center(), Align2::CENTER_CENTER, lv.peak_text(), font.clone(), if clip { t.warning_text } else { t.text });
         } else {
             for ch in 0..2 {
                 let at = if ch == 0 { read.left_center() + vec2(2.0, 0.0) } else { read.right_center() - vec2(2.0, 0.0) };
-                p.text(at, if ch == 0 { Align2::LEFT_CENTER } else { Align2::RIGHT_CENTER }, lv.readout(ch), font.clone(), if lv.clip[ch] { t.meter_red } else { t.text });
+                p.text(at, if ch == 0 { Align2::LEFT_CENTER } else { Align2::RIGHT_CENTER }, lv.readout(ch), font.clone(), if lv.clip[ch] { t.warning_text } else { t.text });
             }
         }
         let half_w = if n > 2 { (n as f32 * 8.0 - 1.0) * 0.5 } else { 9.0 };

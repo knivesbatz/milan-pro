@@ -1411,13 +1411,14 @@ fn breadcrumb(ui: &Ui, r: Rect, crumbs: &[String]) {
     for (k, name) in crumbs.iter().enumerate() {
         let last = k + 1 == crumbs.len();
         if k > 0 {
-            let g = p.layout_no_wrap(" \u{203A} ".into(), font.clone(), t.text_dim);
+            let g = p.layout_no_wrap(" \u{203A} ".into(), font.clone(), t.lcd.text_dim);
             let w = g.size().x;
-            p.galley(pos2(x, r.min.y + 2.0), g, t.text_dim);
+            p.galley(pos2(x, r.min.y + 5.0), g, t.lcd.text_dim);
             x += w;
         }
-        let g = p.layout_no_wrap(name.clone(), font.clone(), if last { t.time_display_text } else { t.accent });
-        let at = Rect::from_min_size(pos2(x, r.min.y + 2.0), g.size());
+        // Inside the time display's LCD well: LCD text, the timeline shown brightest.
+        let g = p.layout_no_wrap(name.clone(), font.clone(), if last { t.lcd.text_hi } else { t.lcd.text });
+        let at = Rect::from_min_size(pos2(x, r.min.y + 5.0), g.size());
         x += g.size().x;
         p.galley(at.min, g, t.text);
         if !last {

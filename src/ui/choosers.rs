@@ -138,12 +138,9 @@ pub fn draw_chooser_toolbar(ui: &mut Ui, c: &mut Chooser) {
         let w = ui.painter().layout_no_wrap(chip.to_string(), font.clone(), t.text).size().x + 24.0;
         let (r, resp) = ui.allocate_exact_size(vec2(w, 24.0), Sense::click());
         let active = c.chip == k;
-        let p = ui.painter();
-        // Chrome buttons, the active category pressed in.
-        use super::widgets::Chrome;
-        let state = if active { Chrome::Active } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised };
-        widgets::chrome_button(p, r.shrink2(vec2(0.0, 1.0)), state, &t.metal);
-        p.text(r.center(), Align2::CENTER_CENTER, *chip, font, t.text);
+        // Toggle pills (UI_SPEC.md §5), the active category lit.
+        let _ = font;
+        widgets::pill_paint(ui.painter(), Rect::from_center_size(r.center(), vec2(r.width() - 2.0, 18.0)), chip, active, resp.hovered(), true);
         if resp.clicked() {
             c.chip = k;
         }
@@ -187,8 +184,8 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
                 let sel = c.pkg_sel.as_deref() == Some(pk.name.as_str());
                 let r = widgets::list_row(ui, 26.0, sel);
                 let p = ui.painter();
-                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, sel.then_some(Color32::WHITE));
-                p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, &pk.name, t.font(t.font.ui), if sel { Color32::WHITE } else { t.text });
+                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, None);
+                p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, &pk.name, t.font(t.font.ui), widgets::list_ink(ui, sel));
                 if r.clicked() {
                     c.pkg_sel = Some(pk.name.clone());
                 }
@@ -202,12 +199,12 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
             let r = {
                 let r = widgets::list_row(ui, 26.0, sel);
                 let p = ui.painter();
-                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, sel.then_some(Color32::WHITE));
-                p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, name, t.font(t.font.ui), if sel { Color32::WHITE } else { t.text });
+                paint_icon(p, Rect::from_min_size(pos2(r.rect.min.x + 8.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), Icon::FxBadge, None);
+                p.text(pos2(r.rect.min.x + 32.0, r.rect.center().y), Align2::LEFT_CENTER, name, t.font(t.font.ui), widgets::list_ink(ui, sel));
                 let fav = favorites.iter().any(|f| f == id);
                 if fav || r.hovered() {
                     let star = Rect::from_center_size(pos2(r.rect.max.x - 14.0, r.rect.center().y), vec2(16.0, 16.0));
-                    paint_icon(p, star, Icon::Favorite, Some(if fav { t.accent } else { t.text_dim }));
+                    paint_icon(p, star, Icon::Favorite, Some(if fav { t.amber.base } else { t.lcd.text_dim }));
                     if ui.interact(star, r.id.with("fav"), Sense::click()).clicked() {
                         if fav {
                             favorites.retain(|f| f != id);
@@ -230,7 +227,7 @@ pub fn draw_chooser(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorite
     // Description strip.
     let strip = Rect::from_min_max(pos2(area.min.x, body.max.y), area.max);
     let p = ui.painter();
-    widgets::sunken(p, strip, t.metal.mid, &t.metal);
+    widgets::sunken(p, strip.shrink2(vec2(0.0, 1.0)), t.input_bg, &t.metal);
     let package = c.packages_shown().then(|| c.pkg_sel.as_ref().and_then(|n| c.packages.iter().find(|p| &p.name == n))).flatten();
     if let Some(pk) = package {
         let what = if pk.builtin { "FX Package" } else { "FX Package (yours)" };

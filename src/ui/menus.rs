@@ -516,7 +516,7 @@ fn row(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, mark: Mark, why:
     let c = pos2(r.rect.min.x + 14.0, r.rect.center().y);
     match mark {
         Mark::Check(true) => {
-            let s = Stroke::new(1.5_f32, text);
+            let s = Stroke::new(1.5_f32, if enabled { theme::get().ink.glyph } else { text });
             ui.painter().line_segment([c + vec2(-4.0, 0.0), c + vec2(-1.5, 3.0)], s);
             ui.painter().line_segment([c + vec2(-1.5, 3.0), c + vec2(4.0, -3.5)], s);
         }
@@ -561,11 +561,12 @@ pub fn inert(ui: &mut Ui, label: &str, mark: Mark, why: Why) {
     row(ui, label, "", false, mark, Some(why));
 }
 
+/// Separator: a groove (`s5` over `s0`) from the mark gutter to the right edge.
 pub fn sep(ui: &mut Ui) {
     let t = theme::get();
     let (_, r) = ui.allocate_space(vec2(ui.available_width(), 9.0));
-    let y = r.center().y.floor() + 0.5;
-    ui.painter().hline(r.x_range().shrink(4.0), y, Stroke::new(1.0_f32, t.text_dim.gamma_multiply(0.4)));
+    let x = Rangef::new(r.min.x + 26.0, r.max.x - 4.0);
+    super::widgets::etched_h(ui.painter(), x, r.center().y.floor(), &t.metal);
 }
 
 /// Submenu row with ▸ (egui draws the arrow and opens it on hover).
@@ -1359,7 +1360,7 @@ pub fn draw_menu_bar(ui: &mut Ui) {
     }
 
     egui::menu::bar(ui, |ui| {
-        // Bar labels on the metal row, with a raised bevel on hover and a sunken one while open.
+        // Bar labels on the chrome row: a lit pill on hover, the selection pill with a white label while open.
         let v = ui.visuals_mut();
         v.override_text_color = Some(t.menu_text);
         v.widgets.hovered.weak_bg_fill = Color32::TRANSPARENT;
@@ -1376,9 +1377,19 @@ pub fn draw_menu_bar(ui: &mut Ui) {
             let mut resp = ui.add(b);
             resp.id = id; // a fixed id, so Alt+letter can open the menu and `draw_menu_bar` can tell which is open
             if open || resp.hovered() {
-                // Behind the label (the bevel's inside is the metal row itself): raised on hover, sunken while open.
-                let r = Rect::from_x_y_ranges(resp.rect.x_range(), Rangef::new(resp.rect.min.y - 1.0, resp.rect.max.y + 1.0));
-                super::widgets::edge(ui.painter(), r, !open, &t.metal);
+                // Over the label (opaque), then the label again on top.
+                let r = Rect::from_x_y_ranges(resp.rect.x_range(), Rangef::new(resp.rect.min.y, resp.rect.max.y));
+                let p = ui.painter();
+                let ink = if open {
+                    super::widgets::selection_bar(p, r, t.m.r_ctl as f32);
+                    p.rect_stroke(super::widgets::px(r), t.m.r_ctl as f32, Stroke::new(1.0_f32, t.lcd.outline), StrokeKind::Inside);
+                    t.sel.text
+                } else {
+                    super::widgets::chrome(p, r, t.m.r_ctl as f32, super::widgets::Chrome::Active);
+                    t.menu_text
+                };
+                let g = p.layout_job(label_job(ui, label, ink, 0.0));
+                p.galley((r.center() - g.size() * 0.5).round(), g, ink);
             }
             if want == Some(k) {
                 **bar = Some(MenuRoot::new(resp.rect.left_bottom(), id));

@@ -185,7 +185,9 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     let film = Rect::from_min_max(pos2(rect.min.x + 4.0, rect.max.y - bottom_h - transport_h - film_h), pos2(rect.max.x - 4.0, rect.max.y - bottom_h - transport_h));
     let wave = Rect::from_min_max(pos2(film.min.x, film.min.y - wave_h), pos2(film.max.x, film.min.y));
     let monitor = Rect::from_min_max(rect.min, pos2(rect.max.x, wave.min.y - 4.0));
-    // The strips in a sunken well, the transport and read-outs on a metal bar (as the Video Preview).
+    // The picture on black, the strips in a dark well, the transport and read-outs on a chrome bar (as the Video
+    // Preview).
+    p.rect_filled(monitor, 0.0, t.preview_bg);
     super::widgets::metal_bar(&p, Rect::from_min_max(pos2(rect.min.x, film.max.y + 3.0), rect.max), &t.metal);
     super::widgets::sunken(&p, wave.union(film).expand(2.0), t.lane_bg, &t.metal);
 
@@ -224,8 +226,8 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
         }
     }
 
-    // Filmstrip: frames across the strip, the in/out range shaded, yellow flags above the strip.
-    p.rect_filled(film, 0.0, t.frame);
+    // Filmstrip: frames across the strip on black, the in/out range shaded, yellow flags above the strip.
+    p.rect_filled(film, 0.0, t.preview_bg);
     if m.media_type != MediaType::Audio {
         let cell = (film.height() * 16.0 / 9.0).max(8.0);
         let n = (film.width() / cell).ceil() as usize;
@@ -283,17 +285,16 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     // In ◤ · Out ◥ · Length.
     let (a, b) = tr.range(&m);
     let y = (rect.max.y - bottom_h * 0.5).round();
-    let font = t.font(t.font.transport_time);
     let items = [(Icon::LengthCursor, a), (Icon::LengthSelEnd, b), (Icon::LengthLength, b - a)];
     let x0 = (rect.center().x - 1.5 * 130.0).round();
-    // Cyan LCD digits in a sunken black well, as the Video Preview's status strip.
-    let ink = t.time_display_text;
+    // Segmented LCD digits in a read-out well, as the timeline's time display.
+    let ink = t.lcd.text;
     let well = Rect::from_center_size(pos2(rect.center().x, y), vec2(3.0 * 130.0 + 4.0, bottom_h - 4.0));
-    super::widgets::sunken(&p, well, t.time_display_bg, &t.metal);
+    super::widgets::lcd_well(&p, well, true, true);
     for (k, (icon, v)) in items.into_iter().enumerate() {
         let x = x0 + k as f32 * 130.0;
         paint_icon(&p, Rect::from_min_size(pos2(x, y - 7.0), vec2(14.0, 14.0)), icon, Some(ink));
-        p.text(pos2(x + 20.0, y), Align2::LEFT_CENTER, format_timecode(v, fps), font.clone(), ink);
+        super::widgets::lcd_value(&p, pos2(x + 20.0, y), Align2::LEFT_CENTER, &format_timecode(v, fps), 12.0);
     }
 }
 

@@ -318,7 +318,7 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
         widgets::checkbox(ui, &mut view.show_stats, "Show Playback Statistics");
     });
 
-    // The transport row and the status block sit on metal under the picture.
+    // The transport row and the status block sit on a chrome bar under the picture.
     let bar = Rect::from_min_max(pos2(rect.min.x, video.max.y), rect.max);
     widgets::metal_bar(&p, bar, &t.metal);
     if view.show_transport {
@@ -379,8 +379,8 @@ fn status_block(p: &Painter, rect: Rect, status_h: f32, frame: Rect, project: &P
     let font = t.font(t.font.ui);
     let shown_fps = preview.playback().and_then(|(sh, _)| sh.fps);
     // light2026: page "1920x1080, 30.000p" · blue square "480x270, 30.000p" · frame "0" · display "748x421".
-    // The same read-outs as cyan LCD digits in a sunken black well (the Vegas 6 status strip).
-    let (ink, warn) = (t.time_display_text, t.warning_text.lerp_to_gamma(Color32::from_rgb(0xFF, 0x60, 0x40), 0.7));
+    // The same read-outs on an LCD (UI_SPEC.md §8.2): bright LCD text, the preview's own values in amber.
+    let (ink, warn) = (t.lcd.text_hi, t.amber.text);
     let items = [
         (Icon::New, format!("{}x{}, {fps:.3}p", s.width, s.height), ink),
         (Icon::StatusPreview, format!("{pw}x{ph}, {fps:.3}p"), warn),
@@ -393,7 +393,7 @@ fn status_block(p: &Painter, rect: Rect, status_h: f32, frame: Rect, project: &P
     let cy = (rect.max.y - status_h * 0.5).round();
     let mut x = (rect.center().x - total * 0.5).round();
     let well = Rect::from_center_size(pos2(rect.center().x, cy), vec2(total + 24.0, status_h - 4.0));
-    widgets::sunken(p, well, t.time_display_bg, &t.metal);
+    widgets::lcd_well(p, well, true, true);
     for ((icon, _, c), g) in items.iter().zip(galleys) {
         paint_icon(p, Rect::from_min_size(pos2(x, cy - 7.0), vec2(icon_w, icon_w)), *icon, Some(ink));
         x += icon_w + gap;
