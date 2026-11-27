@@ -679,7 +679,7 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
     let slant = 0.08;
     // x shifts right as y goes up.
     let sk = |pt: Pos2| pos2(pt.x + (r.max.y - pt.y) * slant, pt.y);
-    let edge = mix(lit, t.lcd.text, 0.7);
+    let edge = mix(lit, t.lcd.text, 0.35);
     let glow = t.lcd.text.gamma_multiply(0.16);
     let mut ghosts: Vec<Shape> = Vec::new();
     let mut glows: Vec<Shape> = Vec::new();
@@ -698,7 +698,7 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
             let (y0, ym, y1) = (r.min.y, r.min.y + h * 0.5, r.max.y);
             let g = th * 0.5;
             // Each segment runs between the centre lines of its neighbours, less a hairline gap, with pointed ends.
-            let gap = (h * 0.018).max(0.4);
+            let gap = (h * 0.008).max(0.25);
             let hseg = |y: f32| {
                 let (xa, xb) = (x0 + g + gap, x1 - g - gap);
                 [pos2(xa, y), pos2(xa + g, y - g), pos2(xb - g, y - g), pos2(xb, y), pos2(xb - g, y + g), pos2(xa + g, y + g)]
@@ -719,10 +719,11 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
             for (k, s) in segs.into_iter().enumerate() {
                 if bits & (1 << k) != 0 {
                     glows.push(poly(s, glow, (h * 0.07).max(1.2)));
-                    lits.push(poly(s, edge, 0.0));
-                    lits.push(poly(s, lit, -(th * 0.18).max(0.5)));
+                    // Solid: the lit colour over the whole segment, a lighter sheen down its middle.
+                    lits.push(poly(s, edge, 0.25));
+                    lits.push(poly(s, lit, -(th * 0.12).max(0.35)));
                 } else {
-                    ghosts.push(poly(s, ghost, 0.0));
+                    ghosts.push(poly(s, mix(ghost, t.lcd.deep, 0.35), 0.0));
                 }
             }
         } else if matches!(ch, ':' | ';' | '.' | ',') {
