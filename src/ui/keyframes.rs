@@ -282,7 +282,11 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     while k <= view {
         let x = x_of(k).round() + 0.5;
         p.vline(x, Rangef::new(ruler.max.y - 5.0, ruler.max.y), Stroke::new(1.0_f32, ink.ruler_major_tick));
-        p.text(pos2(x + 3.0, ruler.min.y + 1.0), Align2::LEFT_TOP, format_timecode(k, fps), t.font(10.0), ink.ruler_text);
+        // A label that would run past the lanes' end is left out (its tick stays).
+        let label = p.layout_no_wrap(format_timecode(k, fps), t.font(10.0), ink.ruler_text);
+        if x + 3.0 + label.size().x <= lanes.max.x {
+            p.galley(pos2(x + 3.0, ruler.min.y + 1.0), label, ink.ruler_text);
+        }
         k += step;
     }
     for (i, &kt) in times.iter().enumerate() {
