@@ -118,10 +118,14 @@ pub fn master_bus(ui: &mut Ui, view: &mut MasterView, fx: bool) {
         }
     }
     let step = (bottom - top) / 20.0;
+    // A short window labels every 6 or 12 dB so no two labels overlap (the ticks stay at 3 dB).
+    let every = [1, 2, 4].into_iter().find(|n| step * *n as f32 >= font.size + 1.0).unwrap_or(4);
     for k in 1..=19 {
         let y = (top + step * k as f32).round();
         let label = (3 * k).to_string();
-        p.text(pos2(cx, y), Align2::CENTER_CENTER, label, font.clone(), t.meter_label);
+        if k % every == 0 {
+            p.text(pos2(cx, y), Align2::CENTER_CENTER, label, font.clone(), t.meter_label);
+        }
         for x in [wells[0] + 11.0, wells[1] - 3.0] {
             p.rect_filled(Rect::from_min_size(pos2(x, y), vec2(2.0, 1.0)), 0.0, t.meter_label);
         }

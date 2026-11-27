@@ -81,6 +81,9 @@ target\release\milan-pro.exe
 | `MILAN_UPDATE_API=http://127.0.0.1:<port>/...` | Point the updater at a local test server (any other value is ignored). |
 | `MILAN_UPDATE_AUTO=1` | With a local `MILAN_UPDATE_API`: check, download and install without clicks (the end-to-end updater test). |
 | `MILAN_SHOT_TRACE=1` | Print what the screenshot is waiting for, when a run does not end. |
+| `MILAN_SCALE=1.5` | Render at this interface scale (1 to 3) whatever the display's; prints `overflow:` lines for text that does not fit. |
+| `MILAN_SHOT_SIZE=3840x2160` | The window's physical size (default 1920x1080), e.g. a 4K display at `MILAN_SCALE=2`. |
+| `MILAN_IDLE_CHECK=1` | After the shot, wait 2 s asking for nothing and print `idle frames: n`, the frames painted meanwhile. |
 
 The plug-in host has its own probe variables (`MILAN_HOST_DESKTOP`, `MILAN_HOST_LOG`, `MILAN_HOST_PROBE`) used by the
 compatibility reports in `docs/compat/`.

@@ -175,6 +175,7 @@ impl MeridianApp {
             marker_labels: self.prefs.marker_labels,
             event_length: self.prefs.event_length,
             metronome: self.prefs.metronome,
+            ui_scale: self.prefs.ui_scale.unwrap_or(0),
         }
     }
 
@@ -1633,6 +1634,11 @@ impl MeridianApp {
                 self.prefs.ofx_envelopes = !self.prefs.ofx_envelopes;
                 self.save_prefs();
             }
+            InterfaceScale(s) => {
+                // R48: applied from the next frame (`theme::zoom_for`).
+                self.prefs.ui_scale = (s != 0).then_some(s.clamp(100, 200));
+                self.save_prefs();
+            }
             NextFxEnvelope | PrevFxEnvelope => {
                 // R8c (E / Shift+E): select the focus track's next or previous FX envelope (drawn on top, as hovered).
                 let ofx = self.prefs.ofx_envelopes;
@@ -2829,6 +2835,8 @@ impl MeridianApp {
             // The Edit menu dropped open.
             "menu-edit" => crate::ui::menus::request_open(ctx, 1),
             "prefs" => self.open_prefs(None),
+            // R48/R49 review: Preferences on page n (0 = General, in tab order).
+            p if p.starts_with("prefs-page-") => self.open_prefs(p["prefs-page-".len()..].parse().ok()),
             // R44/R46 review: Preferences on Milan Pro's own Update page.
             "prefs-update" => self.open_prefs(Some(dialogs::prefs::update_tab())),
             // The selected event copied first (without the demo's loop region, which would make Copy a time-selection

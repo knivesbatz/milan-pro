@@ -579,6 +579,9 @@ impl Theme {
             sp.scroll.floating = false;
             // A grey 3D-face handle on the white rail.
             sp.scroll.foreground_color = false;
+            // R48: egui's own transitions (collapsing, scroll-to) follow the animation policy.
+            s.animation_time = anim(83.0);
+            s.scroll_animation.duration = egui::Rangef::new(anim(100.0), anim(300.0));
         });
     }
 }
@@ -645,6 +648,96 @@ impl Theme {
     }
 }
 
+// ---- R48: physical pixels and the animation policy ----
+
+std::thread_local! {
+    /// Physical pixels per point of the window being drawn (`set_ppp`, once per frame); 1 in tests.
+    static PPP: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    /// Tests force the animation setting; None reads Windows.
+    static ANIM_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The window's pixels per point this frame (the app sets it before drawing; floating windows on another display
+/// set their own).
+pub fn set_ppp(ppp: f32) {
+    PPP.with(|c| c.set(if ppp.is_finite() && ppp > 0.0 { ppp } else { 1.0 }));
+}
+
+pub fn ppp() -> f32 {
+    PPP.with(|c| c.get())
+}
+
+/// `v` points on the nearest physical pixel edge, so a 1 px bevel or rule starts on a pixel at 125, 150 and 175 %.
+pub fn snap(v: f32) -> f32 {
+    let k = ppp();
+    (v * k).round() / k
+}
+
+/// One pixel of the look's chrome (a bevel, an etched rule, an outline) in points: a whole number of physical
+/// pixels, the nearest to one point (1 px at 100 and 125 %, 2 px at 150 to 200 %), never a blurred 1.5.
+pub fn one() -> f32 {
+    let k = ppp();
+    k.round().max(1.0) / k
+}
+
+/// True when `ppp` is not a whole number: lines and fills are then drawn without egui's anti-aliasing feather, so
+/// 1-point edges land on whole pixels instead of smearing over two (text keeps its own anti-aliasing).
+pub fn fractional(ppp: f32) -> bool {
+    (ppp - ppp.round()).abs() > 1e-3
+}
+
+/// R48: View › Interface Scale's choices (percent); the preference's None is Auto (the display's own scale, as
+/// VEGAS follows Windows).
+pub const SCALES: [u16; 5] = [100, 125, 150, 175, 200];
+
+/// The zoom factor that gives interface scale `pref` (None: Auto) on a display of `native` pixels per point.
+pub fn zoom_for(pref: Option<u16>, native: f32) -> f32 {
+    match pref {
+        None => 1.0,
+        Some(p) => (p.clamp(100, 200) as f32 / 100.0) / native.max(0.25),
+    }
+}
+
+/// Once per frame, before drawing: the look's painters learn the pixels per point, and egui's anti-aliasing feather
+/// is off at fractional scales (125, 150, 175 %), where it would blur every 1-point edge over two pixels.
+pub fn begin_frame(ctx: &egui::Context) {
+    let ppp = ctx.pixels_per_point();
+    set_ppp(ppp);
+    let feather = !fractional(ppp);
+    if ctx.tessellation_options(|o| o.feathering) != feather {
+        ctx.tessellation_options_mut(|o| o.feathering = feather);
+    }
+}
+
+/// Windows' "Show animations in Windows" (`SPI_GETCLIENTAREAANIMATION`); on where it cannot be read.
+pub fn animations() -> bool {
+    if let Some(on) = ANIM_OVERRIDE.with(|c| c.get()) {
+        return on;
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW};
+        let mut on: i32 = 1;
+        // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL into the buffer it is given.
+        let ok = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&mut on as *mut i32).cast(), 0) };
+        ok == 0 || on != 0
+    }
+    #[cfg(not(windows))]
+    true
+}
+
+/// Tests: force the animation setting (None: read Windows again).
+#[cfg(test)]
+pub fn set_animations(on: Option<bool>) {
+    ANIM_OVERRIDE.with(|c| c.set(on));
+}
+
+/// The one animation helper: a transition of `ms` milliseconds as seconds, 0 when Windows animations are off (every
+/// transition is then immediate).
+pub fn anim(ms: f32) -> f32 {
+    if animations() { ms.max(0.0) / 1000.0 } else { 0.0 }
+}
+
 static CURRENT: LazyLock<RwLock<Theme>> = LazyLock::new(|| RwLock::new(Theme::new()));
 /// Track colours edited in Preferences › Display; replaces the default palette when set.
 static PALETTE: RwLock<Option<[Color32; 8]>> = RwLock::new(None);
@@ -681,5 +774,41 @@ mod tests {
         assert_eq!((c.font.ui, c.m.icon_stroke, c.m.widget_radius, c.metal.streak), (11.0, 1.0, 0, 1.0));
         assert_eq!((c.menu_popup_bg, c.menu_popup_hover, c.text), (hex(0xFFFFFF), hex(0x316AC5), hex(0x000000)));
         assert!(!c.visuals().dark_mode);
+    }
+
+    /// R48: with Windows animations off every transition is immediate (egui's too); on, they take their time.
+    #[test]
+    fn animations_off_gives_zero_duration_transitions() {
+        let ctx = egui::Context::default();
+        set_animations(Some(false));
+        assert_eq!(anim(250.0), 0.0);
+        Theme::new().apply(&ctx);
+        let s = ctx.style();
+        assert_eq!((s.animation_time, s.scroll_animation.duration.max), (0.0, 0.0));
+        // An animated bool reaches its end in the very frame it flips.
+        let id = egui::Id::new("r48_anim");
+        let _ = ctx.run(egui::RawInput::default(), |c| assert_eq!(c.animate_bool(id, false), 0.0));
+        let _ = ctx.run(egui::RawInput::default(), |c| assert_eq!(c.animate_bool(id, true), 1.0));
+        set_animations(Some(true));
+        assert_eq!(anim(250.0), 0.25);
+        Theme::new().apply(&ctx);
+        assert!(ctx.style().animation_time > 0.0);
+        set_animations(None);
+    }
+
+    /// R48: chrome pixels are whole physical pixels at every interface scale, on pixel edges.
+    #[test]
+    fn chrome_pixels_are_whole_physical_pixels() {
+        for (k, px) in [(1.0, 1.0), (1.25, 1.0), (1.5, 2.0), (1.75, 2.0), (2.0, 2.0)] {
+            set_ppp(k);
+            assert_eq!(one() * k, px, "at {k}");
+            let v = snap(10.3) * k;
+            assert_eq!(v, v.round(), "at {k}");
+            assert_eq!(fractional(k), k.fract() != 0.0);
+        }
+        set_ppp(1.0);
+        // Interface Scale: Auto keeps the display's scale; 150 % on a 125 % display zooms by 1.2.
+        assert_eq!((zoom_for(None, 1.25), zoom_for(Some(150), 1.25), zoom_for(Some(100), 1.0)), (1.0, 1.2, 1.0));
+        assert_eq!(zoom_for(Some(400), 1.0), 2.0, "at most 200 %");
     }
 }

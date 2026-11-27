@@ -150,6 +150,7 @@ pub fn with_style<R>(ctx: &Context, f: impl FnOnce() -> R) -> R {
 /// A modal, movable dialog of `size` (title row included) with a native-style title row: title text, a greyed
 /// "?" and ×. Returns the body's result and whether × or Esc asked to close.
 pub fn modal<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let size = fit(ctx, size);
     with_style(ctx, || {
         let (area, frame) = (area(ctx, id, size, UiKind::Modal), dialog_frame());
         let resp = Modal::new(Id::new(id)).area(area).frame(frame).backdrop_color(Color32::TRANSPARENT).show(ctx, |ui| framed(ui, id, title, size, body));
@@ -161,6 +162,7 @@ pub fn modal<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnO
 
 /// `modal` without the modality: the app stays usable behind it, and Esc does not close it.
 pub fn window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let size = fit(ctx, size);
     with_style(ctx, || area(ctx, id, size, UiKind::Window).show(ctx, |ui| dialog_frame().show(ui, |ui| framed(ui, id, title, size, body)).inner).inner)
 }
 
@@ -174,6 +176,12 @@ pub fn tool_window<R>(ctx: &Context, id: &str, title: &str, size: Vec2, body: im
 
 pub fn tool_layer(id: &str) -> LayerId {
     LayerId::new(Order::Foreground, Id::new(id))
+}
+
+/// R48: a dialog never larger than the window (a small display at 150-200 %); its page scrolls instead (`page`).
+fn fit(ctx: &Context, size: Vec2) -> Vec2 {
+    let room = ctx.screen_rect().size() - vec2(8.0, 8.0);
+    vec2(size.x.min(room.x), size.y.min(room.y)).max(vec2(200.0, 150.0))
 }
 
 fn area(ctx: &Context, id: &str, size: Vec2, kind: UiKind) -> Area {
@@ -221,7 +229,7 @@ pub fn classic_caption(ui: &mut Ui, win: Rect, title: &str, id: &str, help: bool
     let p = ui.painter().clone();
     let win = widgets::px(win);
     widgets::bevel(&p, win, true, &dm);
-    p.rect_stroke(win.shrink(2.0), 0.0, Stroke::new(1.0_f32, dm.face), StrokeKind::Inside);
+    p.rect_stroke(win.shrink(2.0 * theme::one()), 0.0, Stroke::new(theme::one(), dm.face), StrokeKind::Inside);
     let cap = Rect::from_min_size(win.min + vec2(3.0, 3.0), vec2(win.width() - 6.0, 18.0));
     let mut mesh = Mesh::default();
     mesh.colored_vertex(cap.left_top(), d.caption.0);
@@ -315,12 +323,13 @@ pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {
             let rp = widgets::px(r);
             p.rect_filled(rp, 0.0, dm.face);
             let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
-            line(rp.min, pos2(rp.min.x + 1.0, rp.max.y), dm.light);
-            line(rp.min + vec2(1.0, 0.0), pos2(rp.max.x - 1.0, rp.min.y + 1.0), dm.light);
-            line(pos2(rp.max.x - 1.0, rp.min.y + 1.0), rp.max, dm.dark);
-            line(pos2(rp.max.x - 2.0, rp.min.y + 1.0), pos2(rp.max.x - 1.0, rp.max.y), dm.shadow);
+            let o = theme::one();
+            line(rp.min, pos2(rp.min.x + o, rp.max.y), dm.light);
+            line(rp.min + vec2(o, 0.0), pos2(rp.max.x - o, rp.min.y + o), dm.light);
+            line(pos2(rp.max.x - o, rp.min.y + o), rp.max, dm.dark);
+            line(pos2(rp.max.x - 2.0 * o, rp.min.y + o), pos2(rp.max.x - o, rp.max.y), dm.shadow);
             if !selected {
-                line(pos2(rp.min.x, rp.max.y - 1.0), rp.max, dm.light);
+                line(pos2(rp.min.x, rp.max.y - o), rp.max, dm.light);
             }
             p.text(r.center(), Align2::CENTER_CENTER, *label, font.clone(), d.text);
             if resp.clicked() {
@@ -336,22 +345,35 @@ pub fn page<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let t = theme::get();
     let d = t.dialog();
     let frame = Frame::NONE.fill(d.page);
+    // R48: what is left for the page above the dialog's button row; a dialog squeezed by a small window scrolls its
+    // page (at 100 % on a 1080-line display nothing changes).
+    let room = (ui.available_height() - 16.0 - 40.0).floor().max(120.0);
     let out = frame.inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.set_min_height(height);
-        ui.set_max_height(height);
-        add(ui)
+        if room >= height {
+            ui.set_min_height(height);
+            ui.set_max_height(height);
+            return add(ui);
+        }
+        ui.set_min_height(room);
+        ui.set_max_height(room);
+        ScrollArea::vertical().id_salt("dialog_page").max_height(room).auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_max_height(height);
+            add(ui)
+        })
+        .inner
     });
     // The page is a raised panel (white left/top, dark right/bottom) that the selected tab joins.
     let dm = t.dialog_metal();
     let r = widgets::px(out.response.rect);
     let p = ui.painter();
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0)), 0.0, dm.light);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0)), 0.0, dm.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, dm.dark);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, dm.dark);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, r.max.y - 2.0), r.max - vec2(1.0, 1.0)), 0.0, dm.shadow);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 2.0, r.min.y + 1.0), r.max - vec2(1.0, 1.0)), 0.0, dm.shadow);
+    let o = theme::one();
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - o, r.min.y + o)), 0.0, dm.light);
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + o, r.max.y - o)), 0.0, dm.light);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - o), r.max), 0.0, dm.dark);
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x - o, r.min.y), r.max), 0.0, dm.dark);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x + o, r.max.y - 2.0 * o), r.max - vec2(o, o)), 0.0, dm.shadow);
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 2.0 * o, r.min.y + o), r.max - vec2(o, o)), 0.0, dm.shadow);
     out.inner
 }
 

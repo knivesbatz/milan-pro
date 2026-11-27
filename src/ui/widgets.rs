@@ -80,8 +80,9 @@ pub fn metal(p: &Painter, r: Rect, m: &Metal) {
 pub fn metal_bar(p: &Painter, r: Rect, m: &Metal) {
     let r = px(r);
     metal(p, r, m);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 1.0)), 0.0, m.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, m.shadow);
+    let o = theme::one();
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + o)), 0.0, m.light);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - o), r.max), 0.0, m.shadow);
 }
 
 /// Classic 2 px 3D edge inside `r`: raised = light/face on the top-left, shadow/dark on the bottom-right; sunken
@@ -90,18 +91,20 @@ pub fn bevel(p: &Painter, r: Rect, raised: bool, m: &Metal) {
     let r = px(r);
     let (tl1, tl2, br1, br2) = if raised { (m.light, m.face, m.dark, m.shadow) } else { (m.shadow, m.dark, m.light, m.face) };
     let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
+    // R48: each ring is one whole physical pixel (or two at 150-200 %), never a fraction.
+    let o = theme::one();
     // Outer ring.
-    line(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0), tl1);
-    line(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0), tl1);
-    line(pos2(r.min.x, r.max.y - 1.0), r.max, br1);
-    line(pos2(r.max.x - 1.0, r.min.y), r.max, br1);
+    line(r.min, pos2(r.max.x - o, r.min.y + o), tl1);
+    line(r.min, pos2(r.min.x + o, r.max.y - o), tl1);
+    line(pos2(r.min.x, r.max.y - o), r.max, br1);
+    line(pos2(r.max.x - o, r.min.y), r.max, br1);
     // Inner ring.
-    let i = r.shrink(1.0);
-    if i.width() > 2.0 && i.height() > 2.0 {
-        line(i.min, pos2(i.max.x - 1.0, i.min.y + 1.0), tl2);
-        line(i.min, pos2(i.min.x + 1.0, i.max.y - 1.0), tl2);
-        line(pos2(i.min.x, i.max.y - 1.0), i.max, br2);
-        line(pos2(i.max.x - 1.0, i.min.y), i.max, br2);
+    let i = r.shrink(o);
+    if i.width() > 2.0 * o && i.height() > 2.0 * o {
+        line(i.min, pos2(i.max.x - o, i.min.y + o), tl2);
+        line(i.min, pos2(i.min.x + o, i.max.y - o), tl2);
+        line(pos2(i.min.x, i.max.y - o), i.max, br2);
+        line(pos2(i.max.x - o, i.min.y), i.max, br2);
     }
 }
 
@@ -109,10 +112,11 @@ pub fn bevel(p: &Painter, r: Rect, raised: bool, m: &Metal) {
 pub fn edge(p: &Painter, r: Rect, raised: bool, m: &Metal) {
     let r = px(r);
     let (tl, br) = if raised { (m.light, m.shadow) } else { (m.shadow, m.light) };
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0)), 0.0, tl);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0)), 0.0, tl);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, br);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, br);
+    let o = theme::one();
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - o, r.min.y + o)), 0.0, tl);
+    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + o, r.max.y - o)), 0.0, tl);
+    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - o), r.max), 0.0, br);
+    p.rect_filled(Rect::from_min_max(pos2(r.max.x - o, r.min.y), r.max), 0.0, br);
 }
 
 /// How a chrome button is drawn.
@@ -159,15 +163,15 @@ pub fn sunken(p: &Painter, r: Rect, fill: Color32, m: &Metal) {
 
 /// Etched separator: a shadow line with a light line beside it (vertical over `y` at `x`).
 pub fn etched_v(p: &Painter, x: f32, y: Rangef, m: &Metal) {
-    let x = x.floor();
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x + 1.0, x + 2.0), y), 0.0, m.light);
+    let (x, o) = (theme::snap(x.floor()), theme::one());
+    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + o), y), 0.0, m.shadow);
+    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x + o, x + 2.0 * o), y), 0.0, m.light);
 }
 
 pub fn etched_h(p: &Painter, x: Rangef, y: f32, m: &Metal) {
-    let y = y.floor();
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y + 1.0, y + 2.0)), 0.0, m.light);
+    let (y, o) = (theme::snap(y.floor()), theme::one());
+    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + o)), 0.0, m.shadow);
+    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y + o, y + 2.0 * o)), 0.0, m.light);
 }
 
 /// Toolbar grip: two raised 2 px bars (light + shadow) down the bar's left end, as Office 2000 / Vegas 6 toolbars.
@@ -206,10 +210,10 @@ pub fn dotted_splitter(p: &Painter, r: Rect, across: bool, m: &Metal) {
 
 /// Sunken 3 px slider groove over `x` centred on `cy`.
 pub fn groove(p: &Painter, x: Rangef, cy: f32, m: &Metal) {
-    let cy = cy.floor();
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy - 1.0, cy)), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy, cy + 1.0)), 0.0, m.dark);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy + 1.0, cy + 2.0)), 0.0, m.light);
+    let (cy, o) = (theme::snap(cy.floor()), theme::one());
+    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy - o, cy)), 0.0, m.shadow);
+    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy, cy + o)), 0.0, m.dark);
+    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy + o, cy + 2.0 * o)), 0.0, m.light);
 }
 
 /// Metallic slider thumb: raised chrome block with a dark centre line (Vegas 5–7 fader handle).
@@ -225,10 +229,10 @@ pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
 
 /// Sunken 3 px vertical slider groove down `y` centred on `cx` (fader tracks).
 pub fn groove_v(p: &Painter, cx: f32, y: Rangef, m: &Metal) {
-    let cx = cx.floor();
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx - 1.0, cx), y), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx, cx + 1.0), y), 0.0, m.dark);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx + 1.0, cx + 2.0), y), 0.0, m.light);
+    let (cx, o) = (theme::snap(cx.floor()), theme::one());
+    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx - o, cx), y), 0.0, m.shadow);
+    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx, cx + o), y), 0.0, m.dark);
+    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx + o, cx + 2.0 * o), y), 0.0, m.light);
 }
 
 /// Thumb of a vertical fader: `thumb` with the centre line across it (the Vegas 5–7 fader handle, dark bar
@@ -307,9 +311,26 @@ pub fn brand_tex(ctx: &Context, which: Brand) -> TextureHandle {
     };
     let data = eframe::icon_data::from_png_bytes(png).expect("assets/brand PNGs are valid");
     let image = ColorImage::from_rgba_unmultiplied([data.width as usize, data.height as usize], &data.rgba);
-    let handle = ctx.load_texture(format!("milan_brand_{which:?}"), image, TextureOptions::LINEAR);
+    // Nearest when enlarged: the bitmaps are only ever drawn at whole multiples of their pixels (`brand_size`).
+    let opts = TextureOptions { magnification: TextureFilter::Nearest, ..TextureOptions::LINEAR };
+    let handle = ctx.load_texture(format!("milan_brand_{which:?}"), image, opts);
     ctx.data_mut(|d| d.insert_temp(id, handle.clone()));
     handle
+}
+
+/// R48: the size in points a brand bitmap of `px` pixels is drawn at: a whole number of physical pixels per bitmap
+/// pixel (1 at 100-175 %, 2 at 200 %), never a blurred 1.5; at 125-175 % it is that much smaller in points.
+pub fn brand_size(px: Vec2) -> Vec2 {
+    let k = theme::ppp();
+    px * k.floor().max(1.0) / k
+}
+
+/// The brand bitmap `which` of `px` pixels, centred in `slot`, at `brand_size`, on physical pixel edges.
+pub fn brand_image(p: &Painter, slot: Rect, which: Brand, px_size: Vec2) {
+    let tex = brand_tex(p.ctx(), which);
+    let r = px(Rect::from_center_size(slot.center(), brand_size(px_size)));
+    let r = Rect::from_min_size(r.min, brand_size(px_size));
+    p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
 }
 
 /// Black triangle of a classic scrollbar / spinner arrow in `r`; `dir` = (dx, dy) it points to.
@@ -694,7 +715,9 @@ pub const ROW_H: f32 = 20.0;
 
 /// `r` with its corners on whole pixels.
 pub fn px(r: Rect) -> Rect {
-    Rect::from_min_max(r.min.round(), r.max.round())
+    // R48: on physical pixel edges at any interface scale (whole points at 100 %).
+    let s = |p: Pos2| pos2(theme::snap(p.x.round()), theme::snap(p.y.round()));
+    Rect::from_min_max(s(r.min), s(r.max))
 }
 
 /// One tree node. Returns (row response, expander clicked).

@@ -179,6 +179,8 @@ pub struct Prefs {
     pub disk_cache_mb: u32,
     pub prerender_folder: Option<PathBuf>,
     pub prerender_template: Option<String>,
+    /// R48: View › Interface Scale in percent (100-200); None = Auto, the display's own scale.
+    pub ui_scale: Option<u16>,
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -391,6 +393,7 @@ impl Default for Prefs {
             disk_cache_mb: 0,
             prerender_folder: None,
             prerender_template: None,
+            ui_scale: None,
         }
     }
 }

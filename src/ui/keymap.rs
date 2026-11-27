@@ -149,6 +149,8 @@ pub enum Command {
     InsertAdjustmentEvent, InsertSlideshow, InsertAudioTransition, InsertTime, ResizeGenerated,
     /// R39: Insert › Subtitles from File... / from Regions; File › Export › Subtitles....
     InsertSubtitles, InsertSubtitlesRegions, ExportSubtitles,
+    /// R48: View › Interface Scale (Milan Pro's own): a scale in percent, 0 = Auto (the display's own).
+    InterfaceScale(u16),
 }
 
 use Command::*;

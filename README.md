@@ -13,7 +13,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 | Area | Status in 0.9 |
 |---|---|
-| Interface | One look modelled on the Windows video editors of 2005-2007, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette |
+| Interface | One look modelled on the Windows video editors of 2005-2007, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette; sharp at 100-200 % display scaling (View > Interface Scale) |
 | Editing | Multitrack video and audio; move, trim, split, snapping and grid; ripple; slip, slide, roll and stretch; takes; groups; subclips; nested timelines; multicamera editing; Expanded Edit and edge trimming; markers, regions and command markers; adjustment tracks and events; undo/redo |
 | Effects and compositing | Video FX, transitions and generators (Titles & Text, Credit Roll, Test Pattern and more) with presets and keyframes; subtitles (SRT, WebVTT and ASS with its styles) as Titles & Text events, exported as SRT or WebVTT; the looks, lens tricks, temporal effects and transitions of 2001-2009 music videos ([below](#music-video-fx-2001-2009)) and FX Packages (saved FX chains applied in one step); Color Grading with `.cube` LUTs; Event Pan/Crop with Bezier masks; Track Motion in 2D and 3D; parent/child compositing and all VEGAS compositing modes; Video Scopes |
 | Media | Any format the bundled FFmpeg can read, checked against its capabilities: a codec it cannot decode imports offline with the reason, and Media Properties says what decodes, proxies and renders each file ([docs/FORMAT_SUPPORT.md](docs/FORMAT_SUPPORT.md) is the tested matrix); still image sequences as one clip, animated GIF/WebP, and PNG, JPEG, 16-bit TIFF, BMP, WebP, TGA, DPX, JPEG 2000, PSD, OpenEXR and Radiance HDR stills; HDR (PQ, HLG) sources detected and shown on the SDR timeline through a view transform shared by preview, proxies and renders; camera cards (AVCHD, XDCAM, XAVC, P2, Canon XF, GoPro) with spanned recordings joined; MXF, ProRes, DNxHD/DNxHR and CineForm |
@@ -128,7 +128,7 @@ The full list, with scope and acceptance tests per batch, is section 5 of [docs/
 
 - **Media:** a 10-bit / HDR pipeline (R40b); master bus envelopes (R10c).
 - **Media management:** bins, tags, smart bins and metadata search (R45a); a metadata inspector, duplicates and relinking (R45b).
-- **Interface:** high-DPI scaling and an animation policy (R48); the remaining Preferences pages and preference export (R49).
+- **Interface:** the remaining Preferences pages and preference export (R49).
 - **Project:** a Cargo workspace split (R50), CI quality gates (R51), the public compatibility matrix and example VEGAS projects (R55).
 - **Plug-ins:** CLAP editor windows, OFX GPU render paths, and After Effects / Premiere Pro effect hosting ([docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md)).
 - **VEGAS long tail** (R57-R60, to be decided): media and event commands, disc burning, control surfaces, scripting.

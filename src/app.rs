@@ -768,7 +768,12 @@ fn aplug_owner(p: &crate::project::Project, fx: &str) -> Option<String> {
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
+        // R48: the painters' pixel grid, and View › Interface Scale (the harness sets its own scale).
+        if self.shot.is_none() {
+            ctx.set_zoom_factor(theme::zoom_for(self.prefs.ui_scale, ctx.native_pixels_per_point().unwrap_or(1.0)));
+        }
+        theme::begin_frame(ctx);
+        if self.env_dialog && crate::demo::harness_sized(ctx) {
             self.env_dialog = false;
             self.open_from_env(ctx);
         }
@@ -823,7 +828,12 @@ impl eframe::App for MeridianApp {
         // R44: what a crash report says about the project (paths only when the privacy option is off).
         let summary = self.project.summary();
         crate::logger::set_project(format!("{} ({}): {summary}", self.project.name, self.project.path.as_ref().map_or("unsaved".to_string(), |p| p.display().to_string())), summary.clone());
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        // R48: only when it changes; a viewport command asks for another frame, so sending it every frame repainted
+        // the idle window at the display's refresh rate (144 frames a second on a 144 Hz display).
+        if ctx.data(|d| d.get_temp::<String>(egui::Id::new("milan_title"))).as_deref() != Some(title.as_str()) {
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("milan_title"), title.clone()));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
         let t = theme::get();
 
         let mut drag = self.file_drag(ctx);

@@ -602,9 +602,22 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     if widgets::checkbox(ui, &mut float_dock, "Allow floating windows to dock (hold Ctrl to override)").changed() {
         d.float_dock = Some(float_dock);
     }
+    // R48: Milan Pro's own (also View › Interface Scale); Auto follows Windows, as VEGAS does.
+    ui.add_space(4.0);
+    super::row(ui, "Interface scale:", 120.0, true, |ui| {
+        let name = |s: Option<u16>| s.map_or("Auto (Windows setting)".to_string(), |p| format!("{p} %"));
+        widgets::combo(ui, "pref_scale", 200.0, name(d.ui_scale), |ui| {
+            ui.selectable_value(&mut d.ui_scale, None, name(None));
+            for p in theme::SCALES {
+                ui.selectable_value(&mut d.ui_scale, Some(p), name(Some(p)));
+            }
+        })
+        .response
+        .on_hover_text("The size of text, icons and bevels. Whole-pixel edges stay sharp at every scale.");
+    });
     if default_all(ui) {
         d.track_colors = None;
-        (d.auto_hide_docks, d.tabs_on_top, d.float_dock) = (false, false, None);
+        (d.auto_hide_docks, d.tabs_on_top, d.float_dock, d.ui_scale) = (false, false, None, None);
     }
 }
 
