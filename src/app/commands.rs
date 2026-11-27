@@ -2971,6 +2971,34 @@ impl MeridianApp {
             "props-audio" => self.settings.open_tab(&self.project, 1),
             "props-summary" => self.settings.open_tab(&self.project, 3),
             // R16a: two notes (left unmodified: the harness never marks the project changed) in Project Notes.
+            // R45a review: Project Media with tags, custom bins (one nested) and smart bins, on a custom bin ("media-bins"),
+            // a tag ("media-tags"), a smart bin ("media-smart") or with Search Media Bins open ("media-search").
+            "media-bins" | "media-tags" | "media-smart" | "media-search" => {
+                let ids: Vec<String> = self.project.media_pool.iter().map(|m| m.id.clone()).collect();
+                let id = |k: usize| ids.get(k).cloned().into_iter().collect::<Vec<_>>();
+                crate::library::set_tags(&mut self.project, &[id(0), id(1)].concat(), &["interview".into(), "day 1".into()]);
+                crate::library::set_tags(&mut self.project, &id(2), &["b roll".into()]);
+                crate::library::set_tags(&mut self.project, &id(3), &["music".into()]);
+                let selects = crate::library::new_bin(&mut self.project, "Selects", None);
+                crate::library::add_to_bin(&mut self.project, &selects, &[id(0), id(2), id(4)].concat());
+                let day = crate::library::new_bin(&mut self.project, "Day 1", Some(&selects));
+                crate::library::add_to_bin(&mut self.project, &day, &[id(0), id(1)].concat());
+                let b = crate::library::new_bin(&mut self.project, "B Roll", None);
+                crate::library::add_to_bin(&mut self.project, &b, &id(2));
+                crate::library::new_smart_bin(&mut self.project, "Unused video", "type:video is:unused");
+                crate::library::new_smart_bin(&mut self.project, "HD and up", "res>=1920x1080");
+                let pick = match what.as_str() {
+                    "media-tags" => "Tagged: interview",
+                    "media-smart" => "Smart: HD and up",
+                    _ => "Selects",
+                };
+                self.media_view.harness_select(&self.project, pick);
+                if what == "media-search" {
+                    self.media_view.harness_search("tag:interview res>=1920x1080 -is:offline");
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                self.project.modified = false;
+            }
             "notes" => {
                 use crate::project::Note;
                 self.project.notes = vec![Note { at: 1.0, text: "Tighten the cut into the title".into(), resolved: false }, Note { at: 4.5, text: "Music level checked".into(), resolved: true }];

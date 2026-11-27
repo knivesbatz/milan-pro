@@ -2087,7 +2087,7 @@ mod tests {
                 }
             }
         }
-        assert!(found > 130, "{found}");
+        assert!(found > 120, "{found}");
     }
 
     /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.

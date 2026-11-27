@@ -8,6 +8,11 @@ the minor number for feature releases, the patch number for fixes.
 ## Unreleased
 
 ### Added
+- **Bins, tags and smart bins:** Project Media's Custom Bins (nested; drag media or bins onto a bin; an item can
+  be in several), Smart Bins (saved searches), Media Tags with the Tagged Media node listing each tag, and Search
+  Media Bins with criteria rows. The search field takes words or fields (`type:video`, `tag:interview`,
+  `res>=1920x1080`, `fps:25`, `length<1:30`, `is:unused`, `-` to exclude). Project Media draws only what is on
+  screen, so 10,000 items scroll like ten (R45a).
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
   with screenshots, a feature table, system requirements and the roadmap (R53).

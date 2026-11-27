@@ -448,9 +448,9 @@ What matters most:
 |---|---|---|---|
 | 14.1 | Media browser | DONE | `ui/explorer.rs`. Its preview buttons are inert with labels (`explorer.rs:168-171`) → R57 |
 | 14.2 | Project media bin | DONE | `ui/media_panel.rs` |
-| 14.3 | Folder organization | MISSING | "Custom Bins" has no bins; "Smart Bins" shows nothing (`media_panel.rs:104, 390`). → R45a |
-| 14.4 | Tags | MISSING | The "Tagged Media" node is empty (`media_panel.rs:104`); `MediaItem` has no tags. → R45a |
-| 14.5 | Search | PARTIAL | Name substring only (`media_panel.rs:106`). → R45a |
+| 14.3 | Folder organization | DONE | R45a: Custom Bins (nested; drag media or bins onto a bin; an item in several bins; Remove from Current Bin) and Smart Bins (saved queries) in `Project::bins` (`library.rs`), with VEGAS's bin tree menu (Create New Bin, Save as Bin, Save as Smart Bin, Delete, Rename, Edit Search). Undoable. |
+| 14.4 | Tags | DONE | R45a: `MediaItem::tags`, edited with the item menu's Media Tags...; Tagged Media lists every tag with its count; the list background's Media Tags shows them under the tiles; a Tags column in Details. |
+| 14.5 | Search | DONE | R45a: the search field takes a query over name, path, codec, tags and frame size, with `type:`, `codec:`, `tag:`, `res>=`, `fps:`, `length<`, `is:used/unused/offline` and `-` (`library::Query`); Search Media Bins... builds one from criteria rows. |
 | 14.6 | Metadata inspection | PARTIAL | Basic fields only (`project.rs:146`). → R45b |
 | 14.7 | Thumbnail generation | DONE | |
 | 14.8 | Waveform generation | DONE | |
@@ -460,7 +460,7 @@ What matters most:
 | 14.12 | Media properties | PARTIAL | See 4.9 → R45b |
 | 14.13 | Import progress | PARTIAL | Probing runs in the background, but no count or progress is shown (only proxies use the status-bar progress, `status.rs:11`). → R45b |
 | 14.14 | Background media analysis | PARTIAL | Probe, thumbnails and peaks only. No loudness, scene or duplicate analysis. → R45b, R57 |
-| 14.15 | Large libraries without slowing the editor | PARTIAL | Untested. The media view rebuilds its lists each frame; there is no virtualised list for 10k items. → R45a |
+| 14.15 | Large libraries without slowing the editor | DONE | R45a: the shown items are evaluated only when the history, pool, node or search change, and the list, details and thumbnail views draw only the rows on screen. Bench `large_library_frame_time_stays_under_4ms` (10,000 items). |
 | 14.16 | Drag-and-drop importing | DONE | From Windows, Explorer and Project Media (`app/drop.rs`) |
 
 ### 2.15 Section 14: reliability
@@ -2061,6 +2061,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** log rotation; the panic hook writes a file (test via `std::panic::catch_unwind` in a child process); the diagnostic report contains each section; no `eprintln!` left (grep test).
 
 ### R45a: Bins, tags, smart bins, metadata search, large libraries (M-L)
+
+**Status: DONE.** `src/library.rs` holds the bins (`Project::bins`, `#[serde(default)]`: old projects load unchanged, no format bump), the tag helpers and the query language; `ui/media_panel.rs` draws them. Bins nest and are moved by dragging one bin onto another (or onto Custom Bins); media are dragged from the item views onto a bin. Smart bins are saved queries, shown with a magnifier, edited with Edit Search. Search Media Bins... (item, background and tree menus) turns criteria rows (field, operator, value) into the query text; Search puts it in the search field, Save as Smart Bin keeps it. Tags are edited in a small Media Tags dialog (VEGAS edits them in the tile strip; Milan Pro's tiles are drawn, not widgets). Removing media takes it out of every bin. The bin operations are functions in `library.rs` rather than `edit.rs` (they touch `Project::bins` and tags only). Harness: `MILAN_DIALOG=media-bins`, `media-tags`, `media-smart`, `media-search`. Tests: `library::tests::{the_query_parser_reads_fields_ops_quotes_and_negation, queries_evaluate_over_every_field, bin_moves_are_undoable, tags_are_set_and_counted, old_projects_load_without_bins_or_tags}`, `media_panel::tests::{search_rows_round_trip_through_the_query, large_library_frame_time_stays_under_4ms}` (10,000 items: each view's frame under 4 ms in release; search, smart-bin and tag evaluation over 5,000 and 10,000 items under 20 ms; prints `BENCH` lines).
 
 **Scope**
 - Custom bins: nested folders; drag items into bins; an item in several bins.
