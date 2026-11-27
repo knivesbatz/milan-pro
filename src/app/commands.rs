@@ -3013,6 +3013,18 @@ impl MeridianApp {
             "props-ruler" => self.settings.open_tab(&self.project, 2),
             "props-audio" => self.settings.open_tab(&self.project, 1),
             "props-summary" => self.settings.open_tab(&self.project, 3),
+            // R40b: Project Properties in 32-bit floating point (full range, ACEScct, Rec.709 view) and in HDR10.
+            "props-float" | "props-hdr" => {
+                use crate::project::pixel::{AcesSpace, HdrMode, PixelFormat, ViewTransform};
+                let px = &mut self.project.settings.pixel;
+                if what == "props-hdr" {
+                    px.set_hdr(HdrMode::Hdr10);
+                } else {
+                    px.set_format(PixelFormat::FloatFull);
+                    (px.aces_space, px.view) = (AcesSpace::AcesCct, ViewTransform::Rec709);
+                }
+                self.settings.open(&self.project);
+            }
             // R16a: two notes (left unmodified: the harness never marks the project changed) in Project Notes.
             // R45a review: Project Media with tags, custom bins (one nested) and smart bins, on a custom bin ("media-bins"),
             // a tag ("media-tags"), a smart bin ("media-smart") or with Search Media Bins open ("media-search").

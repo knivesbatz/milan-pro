@@ -2,7 +2,6 @@
 use eframe::egui::{self, ColorImage};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -38,14 +37,22 @@ struct Stills {
 }
 
 impl Stills {
-    fn start(&mut self, key: SrcKey, path: &Path, pre: &str, w: u32, h: u32) {
+    fn start(&mut self, key: SrcKey, m: &plan::MediaRef, w: u32, h: u32) {
         if self.pending.insert(key.clone()) {
-            let (tx, path, pre) = (self.tx.clone(), path.to_path_buf(), pre.to_string());
+            let (tx, m) = (self.tx.clone(), m.clone());
             std::thread::spawn(move || {
-                let img = crate::decode::still(&path, w, h, key.3, &pre);
+                let img = still(&m, w, h, key.3);
                 let _ = tx.send((key, img));
             });
         }
+    }
+}
+
+/// A still of `m` at `w` x `h`: 8-bit, or (R40b) at a float project's depth for it.
+fn still(m: &plan::MediaRef, w: u32, h: u32, scaler: &'static str) -> Result<ColorImage, String> {
+    match m.wide.as_deref().filter(|i| i.depth != crate::engine::wide::Depth::B8) {
+        Some(i) => crate::decode::still_wide(&m.path, w, h, scaler, &m.pre, m.matrix, i.depth),
+        None => crate::decode::still(&m.path, w, h, scaler, &m.pre),
     }
 }
 
@@ -142,18 +149,18 @@ impl Live<'_> {
             (Some((e, t)), _) => Ok(Arc::new(generate::render(e, w, h, *t))),
             // Playing, a still not decoded yet (pre-warm missed it) loads in the background.
             (None, None) if self.deadline.is_some() => {
-                self.stills.start(key, &s.m.path, &s.m.pre, w, h);
+                self.stills.start(key, &s.m, w, h);
                 self.exact = false;
                 return None;
             }
-            (None, None) => crate::decode::still(&s.m.path, w, h, self.q.scaler(), &s.m.pre).map(Arc::new),
+            (None, None) => still(&s.m, w, h, self.q.scaler()).map(Arc::new),
             (None, Some(sf)) => {
                 // R23: a paused frame of a heavy source (a seek, a RAM preview build) comes from the disk cache when
                 // it is there, and goes into it once decoded; playback never waits on the disk.
                 let heavy = self.deadline.is_none() && s.m.proxy_for(self.q).is_none() && crate::engine::hw::heavy(s.m.codec.as_deref(), s.m.w);
                 let dkey = self.disk.as_ref().filter(|_| heavy).map(|_| diskcache::key(&key.0, key.1, w, h, key.3, key.4, key.5));
                 if let Some(img) = dkey.and_then(|k| self.disk.as_mut()?.get(k)) {
-                    self.sources.insert(key, img.clone(), w as usize * h as usize * 4);
+                    self.sources.insert(key, img.clone(), img.pixels.len() * 4);
                     return Some(img);
                 }
                 match self.pool.frame(&s.m, sf, w, h, self.q, self.deadline) {
@@ -173,7 +180,7 @@ impl Live<'_> {
         };
         match got {
             Ok(img) => {
-                self.sources.insert(key, img.clone(), w as usize * h as usize * 4);
+                self.sources.insert(key, img.clone(), img.pixels.len() * 4);
                 Some(img)
             }
             Err(e) => {
@@ -421,7 +428,7 @@ impl Worker {
             }
             match src.sf {
                 Some(sf) => self.pool.prewarm(&src.m, sf, dw, dh, q, play),
-                None if play => self.stills.start(key, &src.m.path, &src.m.pre, dw, dh),
+                None if play => self.stills.start(key, &src.m, dw, dh),
                 None => {}
             }
         }
@@ -463,8 +470,12 @@ impl Worker {
         if let Some(img) = self.composites.get(&key) {
             return (img, None);
         }
-        if let Some(img) = self.from_prerender(n, w, h, q, deadline) {
-            return (img, None);
+        // R40b: prerendered sections are 8-bit files; a float project composes its frames.
+        let wk = self.plan.working.clone();
+        if wk.is_none() {
+            if let Some(img) = self.from_prerender(n, w, h, q, deadline) {
+                return (img, None);
+            }
         }
         self.sync_disk();
         if deadline.is_none() {
@@ -489,14 +500,27 @@ impl Worker {
         // R21a: on the GPU when Preferences › Video chose one, renders too (so a render shows what was previewed); a
         // frame the GPU cannot do composes on the CPU.
         let compositor = crate::engine::gpu::compositor();
-        let compose = |fp: &plan::FramePlan, live: &mut Live| {
-            compositor.compose(fp, live, wu, hu, bilinear, k).unwrap_or_else(|| {
+        let compose = |fp: &plan::FramePlan, live: &mut Live| match &wk {
+            // R40b: a float project composes in float, on the GPU when it can.
+            Some(wk) => compositor.compose_wide(fp, live, wu, hu, bilinear, k, wk).unwrap_or_else(|| {
+                live.drawn.clear();
+                Picture::wide(Arc::new(crate::engine::wide::compose::compose(fp, live, wu, hu, bilinear, k, wk)), wk.clone())
+            }),
+            None => compositor.compose(fp, live, wu, hu, bilinear, k).unwrap_or_else(|| {
                 live.drawn.clear(); // a GPU attempt may have drawn some layers already
                 Picture::cpu(Arc::new(composite::compose(fp, live, wu, hu, bilinear, k)))
-            })
+            }),
         };
+        let weights = || fp.samples.iter().map(|s| s.1).collect::<Vec<_>>();
         let img = Arc::new(if subs.is_empty() {
             compose(&fp, &mut live)
+        } else if let Some(wk) = &wk {
+            let mut frames = Vec::new();
+            for s in &subs {
+                live.drawn.clear();
+                frames.push((*compose(s, &mut live).wide_image().expect("a float frame").0).clone());
+            }
+            Picture::wide(Arc::new(crate::engine::wide::compose::mean(&frames, &weights())), wk.clone())
         } else {
             // Motion blur / supersampling: the mean of the sub-frames, on the CPU (each read back from the GPU).
             let mut frames = Vec::new();
@@ -504,8 +528,12 @@ impl Worker {
                 live.drawn.clear(); // each sub-frame draws the same layers: they hold the same pictures
                 frames.push((*compose(s, &mut live).image()).clone());
             }
-            Picture::cpu(Arc::new(composite::mean(&frames, &fp.samples.iter().map(|s| s.1).collect::<Vec<_>>())))
+            Picture::cpu(Arc::new(composite::mean(&frames, &weights())))
         });
+        // R40b: a float frame's display picture is made here, off the UI thread (a render needs none).
+        if img.is_wide() && img.gpu().is_none() && !self.render {
+            let _ = img.image();
+        }
         let (exact, mut err, shown) = (live.exact, live.err, live.shown);
         // A LUT that cannot load draws ungraded: say so in the preview, and fail a render like a missing file.
         err = err.or_else(|| fp.fx().into_iter().find_map(lut::error));
@@ -809,6 +837,7 @@ pub(crate) mod tests {
             flow: false,
             pre: String::new(),
             input: Vec::new(),
+            wide: None,
         });
         let at = SrcAt { m: m.clone(), sf: None, generator: None, nested: None };
         let solid = |c| Arc::new(ColorImage { size: [4, 4], pixels: vec![c; 16] });

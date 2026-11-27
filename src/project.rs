@@ -4,7 +4,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub mod migrate;
+pub mod pixel;
 pub mod validate;
+
+pub use pixel::PixelSettings;
 
 /// R42: the project file format this build writes. 0 means a file from before versioning (every file up to Milan Pro
 /// 0.7.0); `migrate` brings older files up, and a newer one opens read-only (`Project::read_only`).
@@ -117,6 +120,10 @@ pub struct ProjectSettings {
     /// varispeed and shuttle resampler uses (Preview 16 taps, Good 32, Best 64).
     #[serde(default, deserialize_with = "lenient", skip_serializing_if = "AudioQuality::is_good")]
     pub resample_quality: AudioQuality,
+    /// R40b: Project Properties › Video › Pixel format, Compositing gamma, ACES and View transform (`pixel.rs`). An
+    /// 8-bit project saves none of it.
+    #[serde(default, deserialize_with = "lenient", skip_serializing_if = "PixelSettings::is_8bit")]
+    pub pixel: PixelSettings,
 }
 
 /// R10a: the master bus mode (Project Properties › Audio). VEGAS offers Stereo and 5.1 Surround; 7.1 is Milan Pro's.
@@ -1902,6 +1909,7 @@ impl Default for ProjectSettings {
             color_management: ColorManagement::default(),
             layout: BusMode::Stereo,
             resample_quality: AudioQuality::Good,
+            pixel: PixelSettings::default(),
         }
     }
 }

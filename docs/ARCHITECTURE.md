@@ -120,7 +120,7 @@ one; prerendered sections and the optional disk cache for heavy sources (HEVC, A
 match the plan's hash.
 
 **Compositor** (`engine/composite.rs`, `engine/gpu/`). A `Compositor` trait with two implementations. The CPU one
-blends premultiplied 8-bit layers bottom to top in row stripes. The GPU one (wgpu on Vulkan, R21) gives the same
+blends premultiplied 8-bit layers bottom to top in row stripes. A 32-bit floating point project (R40b, `engine/wide`) runs the same steps in f32 (`wide/compose.rs`, and `gpu/wide.rs` on `Rgba16Float` textures) in its working space (video-coded or linear Rec.709, or an ACES color space), from sources decoded at 16 bits or in float, and renders through its view transform at 16 bits. The GPU one (wgpu on Vulkan, R21) gives the same
 picture (the contract is within 2/255 per channel; it is bit-exact on every plan tested): integer passes for the integer blend modes, and a replay of the CPU's float
 operations for the float modes. Video FX, transitions and generators with a GPU port run as WGSL passes; those
 without (Bezier Masking, text, OFX plug-ins) run on the CPU and are uploaded. On the shared device the preview shows the

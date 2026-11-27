@@ -65,6 +65,7 @@ impl Entry {
             flow: false,
             pre: String::new(),
             input: Vec::new(),
+            wide: None,
         }
     }
 

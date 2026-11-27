@@ -16,7 +16,8 @@ use crate::engine::plan::{self, VideoPlan, compile_audio};
 use crate::engine::surround;
 use crate::engine::worker::Worker;
 use crate::project::{BusMode, FieldOrder, Project, ProjectSettings};
-use crate::render::{Ctl, Fit, Job, Opts, Template, fit, is_rgb, utc};
+use crate::render::{ColorOut, Ctl, Fit, Job, Opts, Template, fit, is_rgb, utc};
+use crate::engine::wide::{Out, WImage, Working};
 
 /// Share of the progress bar the audio pass takes before the video pass.
 const AUDIO_SHARE: f64 = 0.05;
@@ -82,6 +83,37 @@ fn pattern(first: &Path, dir: &Path) -> PathBuf {
     dir.join(format!("{stem}_%06d.{ext}"))
 }
 
+/// R40b: how frames go to the encoder: 8-bit RGBA (an 8-bit project into an SDR template, as before R40b), 16-bit
+/// RGBA through the view transform (a 32-bit floating point project, or an HDR template), or linear float planes (an
+/// OpenEXR render of a float project: scene light, highlights kept).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pipe {
+    Rgba8,
+    Rgba16,
+    /// Planar float, with the alpha plane when the template keeps alpha (no conversion in FFmpeg: its scaler would clip).
+    Float { alpha: bool },
+}
+
+impl Pipe {
+    fn pix_fmt(self) -> &'static str {
+        match self {
+            Pipe::Rgba8 => "rgba",
+            Pipe::Rgba16 => "rgba64le",
+            Pipe::Float { alpha: true } => "gbrapf32le",
+            Pipe::Float { alpha: false } => "gbrpf32le",
+        }
+    }
+}
+
+pub(crate) fn pipe_of(t: &Template, s: &ProjectSettings) -> Pipe {
+    let Some(v) = &t.video else { return Pipe::Rgba8 };
+    match (s.pixel.float(), v.color != ColorOut::Sdr) {
+        (true, false) if v.codec == "exr" => Pipe::Float { alpha: v.alpha() },
+        (false, false) => Pipe::Rgba8,
+        _ => Pipe::Rgba16,
+    }
+}
+
 /// The output `-vf`: rotation, letterbox, pixel aspect ratio, the BT.709 conversion of YUV outputs, interlacing.
 fn video_filter(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit) -> String {
     let Some(v) = &t.video else { return String::new() };
@@ -100,7 +132,13 @@ fn video_filter(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit) -> String 
     let pix = v.pix_fmt();
     if !is_rgb(pix) {
         let range = if pix.starts_with("yuvj") { "pc" } else { "tv" };
-        parts.push(format!("scale=out_color_matrix=bt709:out_range={range}"));
+        // R40b: 16-bit frames convert with exact rounding; HDR goes to Rec.2020's matrix.
+        match (v.color, pipe_of(t, s)) {
+            (ColorOut::Sdr, Pipe::Rgba8) => parts.push(format!("scale=out_color_matrix=bt709:out_range={range}")),
+            (ColorOut::Sdr, _) => parts.push(format!("scale=out_color_matrix=bt709:out_range={range}:flags=accurate_rnd+full_chroma_int")),
+            // The frames carry their tags to the encoder (FFmpeg 9 takes them from the frames, not `-color_trc`).
+            (c, _) => parts.push(format!("scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd+full_chroma_int,setparams=color_primaries=bt2020:color_trc={}:colorspace=bt2020nc:range=tv", c.trc())),
+        }
     }
     match v.field(s) {
         FieldOrder::Progressive => {}
@@ -125,7 +163,7 @@ pub fn encoder_args(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit, fps: &
     pcm.push("-i".into());
     let mut inputs = 1;
     if t.video.is_some() {
-        a.extend(st(&["-f", "rawvideo", "-pix_fmt", "rgba", "-s", &format!("{}x{}", f.compose.0, f.compose.1), "-framerate", fps, "-i", "-"]));
+        a.extend(st(&["-f", "rawvideo", "-pix_fmt", pipe_of(t, s).pix_fmt(), "-s", &format!("{}x{}", f.compose.0, f.compose.1), "-framerate", fps, "-i", "-"]));
         if t.audio.is_some() {
             a.extend(pcm);
             a.push(audio.to_string_lossy().into_owned());
@@ -151,7 +189,10 @@ pub fn encoder_args(t: &Template, s: &ProjectSettings, rot: u16, f: &Fit, fps: &
     if let Some(v) = &t.video {
         a.extend(st(&["-vf", &video_filter(t, s, rot, f)]));
         if !is_rgb(v.pix_fmt()) {
-            a.extend(st(&["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"]));
+            match v.color {
+                ColorOut::Sdr => a.extend(st(&["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"])),
+                c => a.extend(st(&["-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", c.trc()])),
+            }
         }
         a.extend(t.video_args(s));
     }
@@ -353,7 +394,8 @@ fn encode(p: &Project, t: &Template, (a, b): (f64, f64), opts: Opts, (part, tmp,
     let fed = match (vp, frames) {
         (Some(vp), Some(n)) => {
             log.frames = n.1 - n.0;
-            feed_video(vp, n, f.compose, quality, alpha, stdin, ctl)
+            let feed = Feed::of(t, s, vp.working.clone());
+            feed_video(vp, n, f.compose, quality, (alpha, feed), stdin, ctl)
         }
         // `move`: stdin closes when the mix ends, which tells the encoder to finish.
         _ => mix_range(p, (a, b), opts.quickfade, ctl, 1.0, (mix_channels(t), opts.multichannel), loud, move |bytes| stdin.write_all(bytes).is_ok()),
@@ -468,17 +510,66 @@ fn mix_range(p: &Project, (a, b): (f64, f64), quickfade: bool, ctl: &Ctl, share:
 /// composing and encoding overlap. No deadlines (nothing is dropped), no composite cache, decoders read forward. With
 /// `alpha` the premultiplied pixels are written unmultiplied, as ffmpeg's rgba is. Ok(false): the encoder stopped
 /// taking frames. Progress goes AUDIO_SHARE..1.
+/// R40b: what the writer turns each frame into (Pipe): 8-bit as before, 16 bits through a view transform (None:
+/// tone-mapped to SDR, an HDR project into an SDR template), or linear float planes.
+enum Feed {
+    Rgba8,
+    Wide16(Arc<Working>, Option<Out>),
+    Float(Arc<Working>, bool),
+}
+
+impl Feed {
+    /// The feed of template 	 from a project with settings s and working space wk (None: 8-bit).
+    fn of(t: &Template, s: &ProjectSettings, wk: Option<Arc<Working>>) -> Feed {
+        let wk = wk.unwrap_or_else(|| Arc::new(Working::sdr(s.color_management)));
+        match (pipe_of(t, s), t.video.as_ref().map_or(ColorOut::Sdr, |v| v.color)) {
+            (Pipe::Rgba8, _) => Feed::Rgba8,
+            (Pipe::Float { alpha }, _) => Feed::Float(wk, alpha),
+            (Pipe::Rgba16, ColorOut::Hdr10) => Feed::Wide16(wk, Some(Out::Pq)),
+            (Pipe::Rgba16, ColorOut::Hlg) => Feed::Wide16(wk, Some(Out::Hlg)),
+            (Pipe::Rgba16, ColorOut::Sdr) => {
+                let out = (!wk.out.hdr()).then_some(wk.out);
+                Feed::Wide16(wk, out)
+            }
+        }
+    }
+}
+
+/// A composed frame on its way to the writer: 8-bit, or float with its working space.
+enum Sent {
+    B8(Arc<ColorImage>),
+    Wide(Arc<WImage>, Arc<Working>),
+}
+
 #[allow(clippy::too_many_arguments)]
-fn feed_video(vp: VideoPlan, (n0, n1): (i64, i64), (w, h): (u32, u32), q: crate::decode::Quality, alpha: bool, mut stdin: ChildStdin, ctl: &Ctl) -> Result<bool, String> {
+fn feed_video(vp: VideoPlan, (n0, n1): (i64, i64), (w, h): (u32, u32), q: crate::decode::Quality, (alpha, feed): (bool, Feed), mut stdin: ChildStdin, ctl: &Ctl) -> Result<bool, String> {
     let fps = vp.fps;
-    let (tx, rx) = mpsc::sync_channel::<Arc<ColorImage>>(3);
+    let (tx, rx) = mpsc::sync_channel::<Sent>(3);
+    let wide = !matches!(feed, Feed::Rgba8);
     let writer = std::thread::spawn(move || {
-        rx.iter().all(|img| {
-            if alpha {
-                let px: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
-                stdin.write_all(&px).is_ok()
-            } else {
-                stdin.write_all(bytemuck::cast_slice(&img.pixels)).is_ok()
+        let k = crate::engine::composite::stripes();
+        rx.iter().all(|sent| {
+            let (base, out) = match &feed {
+                Feed::Rgba8 => {
+                    let Sent::B8(img) = sent else { return false };
+                    return if alpha {
+                        let px: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+                        stdin.write_all(&px).is_ok()
+                    } else {
+                        stdin.write_all(bytemuck::cast_slice(&img.pixels)).is_ok()
+                    };
+                }
+                Feed::Wide16(base, out) => (base, Some(*out)),
+                Feed::Float(base, _) => (base, None),
+            };
+            let (img, wk) = match sent {
+                Sent::Wide(i, wk) => (i, wk),
+                // An 8-bit project into an HDR template: its frames as SDR.
+                Sent::B8(c) => (Arc::new(base.from_sdr8(&c)), base.clone()),
+            };
+            match out {
+                Some(o) => stdin.write_all(bytemuck::cast_slice(&wk.to_out16(&img, o, k))).is_ok(),
+                None => stdin.write_all(bytemuck::cast_slice(&wk.to_linear_planes(&img, matches!(feed, Feed::Float(_, true))))).is_ok(),
             }
         })
     });
@@ -495,8 +586,12 @@ fn feed_video(vp: VideoPlan, (n0, n1): (i64, i64), (w, h): (u32, u32), q: crate:
             r = Err(format!("Frame {} ({:.3} s): {e}", n - n0, n as f64 / fps));
             break;
         }
-        // R21c: a frame the GPU composed is read back here, for the encoder.
-        if tx.send(img.image()).is_err() {
+        // R21c: a frame the GPU composed is read back here, for the encoder (R40b: in float when it is).
+        let sent = match img.wide_image().filter(|_| wide) {
+            Some((i, wk)) => Sent::Wide(i, wk),
+            None => Sent::B8(img.image()),
+        };
+        if tx.send(sent).is_err() {
             break; // the writer stopped: its result says so
         }
         if (n - n0) % 30 == 29 {
@@ -513,7 +608,7 @@ fn feed_video(vp: VideoPlan, (n0, n1): (i64, i64), (w, h): (u32, u32), q: crate:
 mod tests {
     use super::*;
     use crate::project::{Clip, MediaItem, Track, TrackKind};
-    use crate::render::{BUILTIN, Status, content_end};
+    use crate::render::{BUILTIN, Status, VideoEnc, content_end};
     use std::time::{Duration, Instant};
 
     fn settings() -> ProjectSettings {
@@ -545,15 +640,19 @@ mod tests {
             let muxer = t.container().unwrap().muxer;
             assert!(joined.ends_with(&format!("-f {muxer} {}.partial", out.display())) || t.sequence(), "{}: {joined}", t.name);
             // The command line does not grow with the timeline: events never appear in it.
-            assert!(a.iter().map(|x| x.len() + 3).sum::<usize>() < 1100, "{}: {} characters", t.name, joined.len());
+            // (R40b: HDR10's mastering metadata and frame tags add about 200.)
+            assert!(a.iter().map(|x| x.len() + 3).sum::<usize>() < 1300, "{}: {} characters", t.name, joined.len());
             match (&t.video, &t.audio) {
                 (Some(v), au) => {
-                    assert!(joined.contains("-f rawvideo -pix_fmt rgba -s 1920x1080 -framerate 30000/1001 -i - ") || v.size.is_some(), "{joined}");
+                    // R40b: an HDR template takes 16-bit frames, even from an 8-bit project.
+                    let pipe = if v.color == ColorOut::Sdr { "rgba" } else { "rgba64le" };
+                    assert!(joined.contains(&format!("-f rawvideo -pix_fmt {pipe} -s 1920x1080 -framerate 30000/1001 -i - ")) || v.size.is_some(), "{joined}");
                     // R22: a hardware template names the encoder it resolves to (the software one in a test run).
                     let enc = t.resolved().0.video.unwrap().codec;
                     assert!(joined.contains(&format!("-c:v {enc} ")) && joined.contains(&format!("-pix_fmt {}", v.pix_fmt())), "{}: {joined}", t.name);
                     assert_eq!(joined.contains(&format!("-f f32le -ar 48000 -ac {} -i {} -map 0:v -map 1:a", mix_in(t), tmp.display())), au.is_some(), "{joined}");
-                    assert_eq!(joined.contains("out_color_matrix=bt709") && joined.contains("-colorspace bt709"), !crate::render::is_rgb(v.pix_fmt()), "{joined}");
+                    let (m, tags) = if v.color == ColorOut::Sdr { ("bt709", "-colorspace bt709") } else { ("bt2020", "-colorspace bt2020nc -color_primaries bt2020 -color_trc ") };
+                    assert_eq!(joined.contains(&format!("out_color_matrix={m}")) && joined.contains(tags), !crate::render::is_rgb(v.pix_fmt()), "{joined}");
                 }
                 (None, _) => {
                     assert!(!joined.contains("rawvideo") && !joined.contains("-map") && !joined.contains(".f32"), "{joined}");
@@ -580,6 +679,21 @@ mod tests {
         let s24 = ProjectSettings { bit_depth: 24, ..settings() };
         assert!(args(find("WAV audio only"), &s24, Path::new("o")).join(" ").contains("-c:a pcm_s24le"));
         assert!(args(find("FLAC audio"), &s24, Path::new("o")).join(" ").contains("-sample_fmt s32 -bits_per_raw_sample 24"));
+        // R40b: HDR10 carries its static metadata; HLG is tagged; a float project feeds 16-bit frames converted with
+        // exact rounding (an OpenEXR render takes linear float); an 8-bit project's SDR renders are as before.
+        let hdr10 = j("MP4 HEVC HDR10 (PQ)");
+        assert!(hdr10.contains("-pix_fmt yuv420p10le -x265-params hdr10=1:repeat-headers=1:master-display=G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1):max-cll=1000,400"), "{hdr10}");
+        assert!(hdr10.contains("-colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084") && hdr10.contains("scale=out_color_matrix=bt2020:out_range=tv:flags=accurate_rnd+full_chroma_int"), "{hdr10}");
+        assert!(j("MP4 HEVC HLG").contains("-color_trc arib-std-b67") && !j("MP4 HEVC HLG").contains("hdr10=1"));
+        assert!(j("ProRes 4444 XQ").contains("-profile:v 5 -pix_fmt yuv444p10le") && j("ProRes 4444 XQ HDR10 (PQ)").contains("-color_trc smpte2084"));
+        use crate::project::pixel::{PixelFormat, PixelSettings};
+        let float = |f| ProjectSettings { pixel: PixelSettings { format: f, ..Default::default() }, ..settings() };
+        let h264 = args(find("MP4 H.264 (AAC)"), &float(PixelFormat::FloatVideo), Path::new("o")).join(" ");
+        assert!(h264.contains("-pix_fmt rgba64le -s 1920x1080") && h264.contains("out_range=tv:flags=accurate_rnd+full_chroma_int"), "{h264}");
+        assert!(args(find("OpenEXR sequence"), &float(PixelFormat::FloatFull), Path::new("o")).join(" ").contains("-pix_fmt gbrpf32le -s"));
+        assert!(j("MP4 H.264 (AAC)").contains("-pix_fmt rgba -s 1920x1080") && !j("MP4 H.264 (AAC)").contains("accurate_rnd"));
+        let bad = Template { video: Some(VideoEnc { color: ColorOut::Hdr10, ..find("MP4 H.264 (AAC)").video.clone().unwrap() }), ..find("MP4 H.264 (AAC)").clone() };
+        assert!(bad.check().unwrap_err().contains("needs a 10-bit YUV pixel format"));
         // Chapters come in as a third input, mapped.
         let f = fit(&s, 0, (1920, 1080), 1.0, false);
         let a = encoder_args(&BUILTIN[0], &s, 0, &f, "30", Path::new("a.f32"), Some(Path::new("c.ffmeta")), Path::new("o")).join(" ");
@@ -1675,9 +1789,14 @@ mod tests {
 
         // The table, between its markers in docs/FORMAT_SUPPORT.md.
         let doc = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs").join("FORMAT_SUPPORT.md");
-        let text = std::fs::read_to_string(&doc).unwrap_or_default();
+        // R40b: the notes on 8-bit-only handling that R40b's float pipeline answers.
+        let text = std::fs::read_to_string(&doc)
+            .unwrap_or_default()
+            .replace("clip) and Radiance HDR is tone-mapped first, until R40b's float pipeline.", "clip) and Radiance HDR is tone-mapped first in an 8-bit project; a 32-bit floating point project keeps OpenEXR in\nfloat (R40b, below the render table).")
+            .replace("HDR output (an HDR timeline and HDR render) is R40b.", "An HDR timeline and HDR renders are R40b's (below the render table).");
         let (a, b) = ("<!-- render-table:start -->", "<!-- render-table:end -->");
-        let body = format!("{a}\nGenerated by `render_templates_e2e` ({}), {} UTC: 2 s of a 320x240 30 fps, {} Hz project.\n\n{table}{b}", ffmpeg_version(), utc(std::time::SystemTime::now()), p.settings.sample_rate);
+        const FLOAT: &str = "\n**10-bit, HDR and float (R40b).** In a 32-bit floating point project (Project Properties › Video › Pixel format) 10-bit and wider sources decode at 16 bits and OpenEXR / float TIFF in float (values above 1.0 kept), frames compose in float and go to the encoder at 16 bits (OpenEXR: linear float), so the 10-bit templates (ProRes, DNxHR HQX / 444, CineForm, HEVC Main10, FFV1 10-bit) keep 10 bits; an 8-bit project renders as before. HDR10 (HEVC: Rec.2020, PQ, mastering display and content light level SEI; ProRes 4444 XQ: tagged) and HLG templates write the project's HDR view transform, or an SDR project with SDR white at 203 cd/m². ACES: the AP0 / AP1 color spaces and ACEScc / ACEScct are exact, the ACES SDR output transforms are a fitted curve; OpenColorIO itself is not available (C++ with no Rust port), so an exact OCIO transform is baked into a .cube LUT and chosen as the view transform.\n";
+        let body = format!("{a}\nGenerated by `render_templates_e2e` ({}), {} UTC: 2 s of a 320x240 30 fps, {} Hz project.\n\n{table}{FLOAT}{b}", ffmpeg_version(), utc(std::time::SystemTime::now()), p.settings.sample_rate);
         let new = match (text.find(a), text.find(b)) {
             (Some(i), Some(k)) => format!("{}{body}{}", &text[..i], &text[k + b.len()..]),
             _ => format!("{text}{body}\n"),

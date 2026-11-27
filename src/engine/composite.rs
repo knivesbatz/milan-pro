@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::engine::picture::Picture;
 use crate::engine::plan::{EventPlan, FramePlan, Item, Nested, SrcAt, TrackPlan};
 use crate::engine::plugins::FxEval;
+use crate::engine::wide::{Depth, WImage, Working};
 use crate::engine::{raster, transition, vfx};
 use crate::project::{Composite, Halo};
 
@@ -62,6 +63,16 @@ impl Affine {
 /// Decoded pictures for the compositor; a None draws nothing (the implementation records why).
 pub trait Sources {
     fn get(&mut self, s: &SrcAt, w: u32, h: u32) -> Option<Arc<ColorImage>>;
+
+    /// R40b: the picture in the float working space `wk`: a source decoded at 16 bits or in float (`MediaRef::wide`)
+    /// through its input transform, anything 8-bit (generated media, an 8-bit nested timeline's source) as SDR.
+    fn get_wide(&mut self, s: &SrcAt, w: u32, h: u32, wk: &Working) -> Option<Arc<WImage>> {
+        let img = self.get(s, w, h)?;
+        Some(Arc::new(match s.m.wide.as_deref() {
+            Some(i) if s.generator.is_none() && img.size == [w as usize * i.depth.factor(), h as usize] => i.convert(&img, w as usize, h as usize, i.depth == Depth::B8),
+            _ => wk.from_sdr8(&img),
+        }))
+    }
 }
 
 /// R21a: what composes a frame plan into a picture: this module's code (`CpuCompositor`, the reference) or the GPU
@@ -70,6 +81,11 @@ pub trait Compositor: Send + Sync {
     /// `compose`: frame `fp` at `w` x `h`; None when this compositor cannot make this frame (the caller then uses the
     /// CPU, which composes every frame). R21c: the GPU leaves the frame on the GPU (`Picture::gpu`).
     fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<Picture>;
+    /// R40b: `compose` in float, in working space `wk` (a 32-bit floating point project); None as for `compose`.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_wide(&self, _fp: &FramePlan, _src: &mut dyn Sources, _w: usize, _h: usize, _bilinear: bool, _k: usize, _wk: &Arc<Working>) -> Option<Picture> {
+        None
+    }
     /// For the Preferences and the benches.
     fn name(&self) -> String;
 }
@@ -80,6 +96,10 @@ pub struct CpuCompositor;
 impl Compositor for CpuCompositor {
     fn compose(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize) -> Option<Picture> {
         Some(Picture::cpu(Arc::new(compose(fp, src, w, h, bilinear, k))))
+    }
+
+    fn compose_wide(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize, wk: &Arc<Working>) -> Option<Picture> {
+        Some(Picture::wide(Arc::new(crate::engine::wide::compose::compose(fp, src, w, h, bilinear, k, wk)), wk.clone()))
     }
 
     fn name(&self) -> String {
@@ -786,6 +806,7 @@ pub(crate) mod tests {
             flow: false,
             pre: String::new(),
             input: Vec::new(),
+            wide: None,
         })
     }
 

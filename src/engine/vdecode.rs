@@ -13,6 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use crate::decode::Quality;
 use crate::engine::plan::MediaRef;
+use crate::engine::wide::Depth;
 
 /// At most this many decoders run at once; the least recently used goes first.
 const MAX_STREAMS: usize = 8;
@@ -66,6 +67,9 @@ pub struct DecSpec<'a> {
     pub pre: &'a str,
     /// R38: input options before `-i` (`MediaRef::input`).
     pub input: &'a [String],
+    /// R40b: what the frames come out as (`wide::Depth`): 8-bit `rgba`, or for a float project's 16-bit and float
+    /// sources `rgba64le` and `gbrapf32le`.
+    pub depth: Depth,
 }
 
 /// ffmpeg arguments (after `-nostdin`) streaming frames `sf - lead`, ... on the project-fps grid.
@@ -102,15 +106,8 @@ pub fn args(s: &DecSpec) -> Vec<String> {
     a.extend(["-an", "-sn", "-dn", "-vf"].map(String::from));
     let rate = if s.flow { format!("minterpolate=fps={}:mi_mode=mci", s.fps_str) } else { format!("fps={}:round=up:start_time=0", s.fps_str) };
     // The transform runs after the rate filter, so only frames on the grid are converted.
-    a.push(format!(
-        "{}{rate},{trim}{}scale={}:{}:flags={}:in_color_matrix={}:out_range=full,format=rgba",
-        s.deint,
-        s.pre,
-        s.w,
-        s.h,
-        s.scaler,
-        s.matrix.unwrap_or("auto"),
-    ));
+    // R40b: 16-bit and float output (`Depth::scale`) keep 10-bit and wider sources' precision.
+    a.push(format!("{}{rate},{trim}{}{}", s.deint, s.pre, s.depth.scale(s.w, s.h, s.scaler, s.matrix)));
     if let Some(n) = s.frames {
         a.extend(["-frames:v".into(), n.to_string()]);
     }
@@ -122,6 +119,8 @@ struct VideoStream {
     media: Arc<str>,
     w: u32,
     h: u32,
+    /// R40b: how its frames are held (a 16-bit or float frame is a `ColorImage` 2 or 4 times as wide).
+    depth: Depth,
     scaler: &'static str,
     /// Reads the media's proxy (Draft and Preview), not the source.
     proxy: bool,
@@ -163,10 +162,11 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
     let (mut out, err) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
     // A chunk (`frames` set) is read whole while nobody waits on it: room for all of it.
     let (tx, rx) = mpsc::sync_channel(spec.frames.map_or(4, |n| (n - spec.lead).max(1) as usize));
+    let depth = spec.depth;
     let (n, mut lead) = (spec.w as usize * spec.h as usize, spec.lead);
     std::thread::spawn(move || {
         loop {
-            let mut px = vec![Color32::TRANSPARENT; n];
+            let mut px = vec![Color32::TRANSPARENT; n * depth.factor()];
             if out.read_exact(bytemuck::cast_slice_mut(&mut px)).is_err() {
                 break;
             }
@@ -174,8 +174,11 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
                 lead -= 1;
                 continue;
             }
-            if has_alpha {
-                crate::decode::premultiply(&mut px);
+            match depth {
+                Depth::B8 if has_alpha => crate::decode::premultiply(&mut px),
+                // R40b: planar G, B, R, A floats, interleaved as RGBA (a wider picture's alpha stays straight).
+                Depth::F32 => px = interleave(&px, n),
+                _ => {}
             }
             if tx.send(px).is_err() {
                 break;
@@ -183,7 +186,20 @@ fn spawn(spec: &DecSpec, media: Arc<str>, has_alpha: bool, proxy: bool, grid: f6
         }
     });
     let err = std::thread::spawn(move || BufReader::new(err).lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).last().unwrap_or_default());
-    Ok(VideoStream { media, w: spec.w, h: spec.h, scaler: spec.scaler, proxy, grid, hw: !spec.hwaccel.is_empty(), next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None })
+    Ok(VideoStream { media, w: spec.w, h: spec.h, depth, scaler: spec.scaler, proxy, grid, hw: !spec.hwaccel.is_empty(), next_sf: spec.sf, rx, child, err: Some(err), used: Instant::now(), last: None })
+}
+
+/// R40b: `gbrapf32le` planes of `n` pixels as interleaved RGBA f32 (four `Color32`s a pixel).
+pub(crate) fn interleave(planes: &[Color32], n: usize) -> Vec<Color32> {
+    let b: &[u8] = bytemuck::cast_slice(planes);
+    let mut out = vec![Color32::TRANSPARENT; n * 4];
+    let o: &mut [u8] = bytemuck::cast_slice_mut(&mut out);
+    for i in 0..n {
+        for (c, plane) in [2, 0, 1, 3].into_iter().enumerate() {
+            o[i * 16 + c * 4..i * 16 + c * 4 + 4].copy_from_slice(&b[(plane * n + i) * 4..(plane * n + i) * 4 + 4]);
+        }
+    }
+    out
 }
 
 pub enum Pull {
@@ -215,8 +231,10 @@ fn end_key(m: &MediaRef, q: Quality) -> (Arc<str>, bool, u64) {
     (m.id.clone(), m.proxy_for(q).is_some(), m.grid.to_bits())
 }
 
+/// A frame `w` x `h`; R40b: a 16-bit or float one (more `Color32`s than pixels) as a picture that many times as wide.
 fn image(px: Vec<Color32>, w: u32, h: u32) -> Arc<ColorImage> {
-    Arc::new(ColorImage { size: [w as usize, h as usize], pixels: px })
+    let fw = if px.len() > (w * h) as usize { px.len() / h.max(1) as usize } else { w as usize };
+    Arc::new(ColorImage { size: [fw, h as usize], pixels: px })
 }
 
 impl DecoderPool {
@@ -297,7 +315,8 @@ impl DecoderPool {
         let (deint, pre, input) = if proxy.is_none() { (m.deint, m.pre.as_str(), m.input.as_slice()) } else { ("", "", &[][..]) };
         let threads = if proxy.is_none() && (frames.is_some() || (self.seeking && !play)) { seek_threads() } else { 2 };
         let frames = frames.map(|n| n + lead);
-        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hwaccel: &hwaccel, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames, pre, input };
+        let depth = m.wide.as_ref().map_or(Depth::B8, |i| i.depth);
+        let spec = DecSpec { path, sf, lead, fps_str: &fps_str, fps, w, h, scaler: q.scaler(), hwaccel: &hwaccel, matrix: m.matrix, deint, stream: m.stream, flow: m.flow, threads, frames, pre, input, depth };
         spawn(&spec, m.id.clone(), m.has_alpha, proxy.is_some(), m.grid).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))
     }
 
@@ -314,7 +333,8 @@ impl DecoderPool {
 
     /// R20: frames per chunk at `w` x `h`: 1 s, or less so that a chunk and those decoding ahead fit `BACK_BYTES`.
     fn chunk_len(&self, m: &MediaRef, w: u32, h: u32) -> i64 {
-        let fit = BACK_BYTES / (BACK_AHEAD + 1) / (w as usize * h as usize * 4).max(1);
+        let per = m.wide.as_ref().map_or(1, |i| i.depth.factor());
+        let fit = BACK_BYTES / (BACK_AHEAD + 1) / (w as usize * h as usize * 4 * per).max(1);
         (fit as i64).clamp(1, self.grid(m).0.ceil().max(1.0) as i64)
     }
 
@@ -377,7 +397,7 @@ impl DecoderPool {
                     let Ok(s) = self.start(m, from, w, h, q, false, Some(end - from + 1)) else { break };
                     // Over budget: the least recently read chunks go, but not those from here to `to` (they always fit).
                     self.chunks.push(Chunk { s, from, to: end, frames: Vec::new(), at: None });
-                    let bytes = |c: &Chunk| (c.to - c.from + 1) as usize * c.s.w as usize * c.s.h as usize * 4;
+                    let bytes = |c: &Chunk| (c.to - c.from + 1) as usize * c.s.w as usize * c.s.h as usize * 4 * c.s.depth.factor();
                     let keep = |c: &Chunk| same(&c.s) && c.from >= from && c.to <= to;
                     while self.chunks.iter().map(bytes).sum::<usize>() > BACK_BYTES || self.chunks.len() > MAX_STREAMS {
                         let Some(i) = (0..self.chunks.len()).filter(|&i| !keep(&self.chunks[i])).min_by_key(|&i| self.chunks[i].s.used) else { break };
@@ -543,7 +563,7 @@ mod tests {
     use super::*;
 
     fn spec(path: &Path) -> DecSpec<'_> {
-        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hwaccel: "", matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None, pre: "", input: &[] }
+        DecSpec { path, sf: 90, lead: 1, fps_str: "30000/1001", fps: 30000.0 / 1001.0, w: 960, h: 540, scaler: "fast_bilinear", hwaccel: "", matrix: Some("bt709"), deint: "", stream: 0, flow: false, threads: 2, frames: None, pre: "", input: &[], depth: Depth::B8 }
     }
 
     #[test]
@@ -627,6 +647,7 @@ mod tests {
             flow: false,
             pre: String::new(),
             input: Vec::new(),
+            wide: None,
         };
         assert!(pool.wants_hw(&m("h264", 1920)).is_none());
         let auto = Some("auto".to_string());
@@ -710,7 +731,7 @@ mod tests {
 
     /// A 64x64 30 fps video, for the ramp clips.
     fn ramp_ref() -> MediaRef {
-        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false, pre: String::new(), input: Vec::new() }
+        MediaRef { id: "ramp".into(), path: "".into(), w: 64, h: 64, duration: 1.0, fps: 30.0, still: false, has_alpha: false, matrix: None, codec: None, deint: "", proxy: None, grid: 0.0, offset: 0.0, stream: 0, flow: false, pre: String::new(), input: Vec::new(), wide: None }
     }
 
     fn gray(p: Pull) -> Option<u8> {

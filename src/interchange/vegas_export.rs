@@ -160,7 +160,13 @@ pub fn export(p: &Project) -> (VegasExport, Vec<String>) {
             .into(),
             bit_depth: s.bit_depth as u32,
             bus_mode: "Stereo".into(),
-            pixel_format: "Int8Bit".into(),
+            // R40b: VEGAS's PixelFormat names (a VEGAS without the full range one keeps its own setting).
+            pixel_format: match s.pixel.format {
+                crate::project::pixel::PixelFormat::Bit8 => "Int8Bit",
+                crate::project::pixel::PixelFormat::FloatVideo => "Float32Bit",
+                crate::project::pixel::PixelFormat::FloatFull => "Float32BitFullRange",
+            }
+            .into(),
         },
         tracks,
         markers: tl.markers.iter().map(|m| VSpan { t: m.position, length: 0.0, name: m.name.clone() }).collect(),
