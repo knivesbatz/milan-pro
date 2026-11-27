@@ -1812,7 +1812,7 @@ The user asked for this explicitly. Today a drag from Project Media, the Explore
 | Not requested, skipped | Ctrl+drag copy; right-drag Move/Copy Here; Shuffle, Split Trim and Zoom tools; Fade to Color envelope; event Loop switch; Slip All Takes; keyboard nudge (egui cannot tell numpad keys apart); Synchronize/Sync Link; Paste Event Attributes; floating dock windows; Organize Layouts; per-track record inputs; punch-in; input monitoring; plug-in presets for audio FX; an EQ curve graph. |
 | GPU compositing | `compose()` is frame-in, frame-out, so a GPU backend can replace it if 4K Best with heavy FX drops frames. |
 
-**VEGAS behaviours to confirm in VEGAS before or while building:**
+**VEGAS behaviours to confirm in VEGAS before or while building** (R55: listed in `docs/COMPATIBILITY.md` with Milan Pro's current behaviour and the question for each; all still open):
 - The video crossfade dissolve rule (decision 0.9).
 - An Auto Ripple trim of an event start.
 - Whether the VP16 Selection tool rubber band also sets the time selection.

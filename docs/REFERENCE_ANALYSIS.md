@@ -66,6 +66,8 @@ inventoried `Audio_x64` as 11 DirectX audio plug-in DLLs (Track EQ / Compressor 
 plug-in packs, the ExpressFX set, the multiband dynamics `mchammer_x64`, the vinyl restoration tool) with their `.chm`
 help. The R35 probe on 2026-11-26 found no DMO from a VEGAS DLL registered on this machine (section 6.3), so the folder's
 contents as listed in November may have been removed or never registered since; this document does not re-count them.
+R55 re-read the folder in place (2026-11-27): the 11 DLLs are there, unregistered; their 39 plug-in names are rows of
+the matrix in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ---
 

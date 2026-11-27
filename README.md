@@ -124,7 +124,7 @@ Requires Rust 1.85+ (edition 2024) on Windows. The binaries are written to `targ
 | [Look specification](docs/UI_SPEC.md) | How the interface is drawn |
 | [docs/VEGAS_UI_SPEC.md](docs/VEGAS_UI_SPEC.md) | VEGAS Pro's interface, measured: the reference for layout, menus and keys |
 | [docs/INTERCHANGE.md](docs/INTERCHANGE.md) | VEGAS, OTIO, EDL, FCP XML and FCPXML import and export, field by field |
-| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | Audio devices, VEGAS projects, interchange formats and plug-ins: what works with what |
+| [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) | The plug-in matrix (every VEGAS Pro 15 plug-in and every tested plug-in, one status each), tested VEGAS versions, example VEGAS projects, audio devices and interchange formats |
 | [docs/FORMAT_SUPPORT.md](docs/FORMAT_SUPPORT.md) | Media and render formats |
 | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) | Playback and compositing benchmarks |
 | [docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md) | The plan for hosting After Effects / Premiere Pro effect plug-ins |
@@ -137,7 +137,7 @@ Requires Rust 1.85+ (edition 2024) on Windows. The binaries are written to `targ
 
 The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.10.0:
 
-- **Project:** a Cargo workspace split (R50), CI quality gates (R51), the public compatibility matrix and example VEGAS projects (R55).
+- **Project:** a Cargo workspace split (R50), CI quality gates (R51).
 - **Plug-ins:** CLAP editor windows, OFX GPU render paths, and the rest of AE-format effect hosting beyond today's experimental 8-bit filters: float, transitions and SmartFX ([docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md)).
 - **VEGAS long tail** (R57-R60, to be decided): media and event commands, disc burning, control surfaces, scripting.
 
