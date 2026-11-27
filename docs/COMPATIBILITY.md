@@ -73,3 +73,24 @@ Simple Delay, Multi-Tap Delay, Wave Hammer and the ExpressFX plug-ins map to Mil
 Reverb, Delay and Limiter; VEGAS's DirectX plug-ins expose no parameters to scripts, so only the preset name goes
 with them. Every other plug-in is a disabled `ofx:<id>` placeholder in Milan Pro, listed in the import report; VEGAS's
 own OFX bundles stay placeholders because they run only inside VEGAS (`docs/compat/ofx-vegas15.md`).
+
+## Camera formats (R41)
+
+File › Import › Camera Card Folder (or a folder dropped on Project Media or the timeline) scans a card for its clips.
+Verified on FFmpeg-generated stand-ins only (`camera_formats_e2e`, `format_corpus_e2e`); no camera originals were used.
+
+| Format | What Milan Pro does |
+|---|---|
+| AVCHD (`PRIVATE/AVCHD/BDMV/STREAM/*.MTS`) | Each recording is one clip. Parts of a recording split at the 2 GB limit (the clock runs on from one part to the next) are joined into one item through a `<first part>-span.ffconcat` list written beside the first part; a read-only card imports the parts one by one and says so. Stand-in: an H.264/AC-3 transport stream cut in two. Timecode from the H.264 pic-timing SEI is read when present (the stand-in has none: FFmpeg's encoders cannot write it; the parser is unit-tested). |
+| XDCAM HD / HD422 (`Clip/*.MXF`), XDCAM EX (`BPAV/CLPR/*/*.MP4`) | Decodes (MPEG-2 4:2:2 in MXF OP1a stand-in); MXF timecode read. EX spans are not joined (the `.SMI` links are not read). |
+| XAVC / XAVC-S (MXF or MP4) | Decodes (H.264 4:2:2 10-bit MOV/MP4 stand-in with make, model and a timecode track); camera and timecode in Media Properties. |
+| P2 (`CONTENTS/VIDEO`, `CONTENTS/AUDIO`, MXF OP-Atom) | Picture and sound essence import as separate items (AVC-Intra 100 in MXF OP1a and DNxHD/PCM OP-Atom stand-ins). Group them on the timeline. |
+| Canon XF (`CONTENTS/CLIPS001/*/*.MXF`) | Decodes (MPEG-2 4:2:2 MXF); spans are not joined. |
+| GoPro (`DCIM/100GOPRO/GX01xxxx.MP4`) | Chapters of one recording join into one item; the GPMF telemetry stream is skipped. |
+| ProRes, DNxHD, DNxHR, CineForm | Decode; render templates: MOV ProRes 422 / 422 HQ / 4444 (alpha), DNxHR LB/SQ/HQ/HQX/444, MXF DNxHR HQ, MXF DNxHD 145 1080, CineForm. |
+| Blackmagic RAW, RED R3D, ARRIRAW, Canon Cinema RAW Light, Nikon N-RAW | Not supported: they need proprietary SDKs that cannot be redistributed with an MIT program, and FFmpeg has no decoders. The files import as offline items that say why. |
+| CinemaDNG | Not supported: FFmpeg's DNG reading has no camera colour matrix, white balance or the common compressions. Single DNG stills import as pictures with that caveat; DNG frames are not offered as a sequence. |
+
+Media Properties shows the camera (make and model, or a camera MXF's identification), the reel and the start
+timecode; Project Media's item menu has "Use Media Timecode as Ruler Start", which sets the ruler offset so an event
+at the start of the timeline reads its source timecode.

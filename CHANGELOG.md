@@ -17,6 +17,20 @@ the minor number for feature releases, the patch number for fixes.
   plug-in compatibility and media formats, and a pull request template (R54).
 - [docs/LICENSES.md](docs/LICENSES.md), generated from `Cargo.lock` by `tools/licenses.ps1`, with the FFmpeg, codec
   patent, plug-in SDK, font and installer notes; the installer now ships `THIRD-PARTY-NOTICES.txt` (R56).
+- **Format capability system:** the bundled FFmpeg's demuxers, decoders, encoders, muxers, pixel formats and filters
+  are read once per FFmpeg version; a codec it cannot decode imports offline with the reason (a red "!" badge), and
+  Media Properties says what decodes, proxies and renders each file. A generated, legal test corpus
+  (`tools/make-test-media.ps1`) checks decoding of every listed format; [docs/FORMAT_SUPPORT.md](docs/FORMAT_SUPPORT.md)
+  has the results (R37).
+- **Image sequences and stills:** numbered stills open as one clip at the project rate (with VEGAS's "Open still
+  image sequence" question), animated GIF/WebP play as video, more still formats (16-bit TIFF, TGA, DPX, JPEG 2000,
+  PSD, OpenEXR, Radiance HDR), and PNG, TIFF, OpenEXR and DPX sequence renders (R38).
+- **HDR detection:** PQ and HLG sources are detected (transfer, primaries, bit depth, HDR10 metadata) and shown on the
+  SDR timeline through a view transform that the preview, proxies and renders share, chosen in Project Properties >
+  Color management; BT.2020 SDR is converted to Rec.709; an "HDR" badge in Project Media (R40a).
+- **Camera cards:** File > Import > Camera Card Folder (or a dropped folder) imports AVCHD, XDCAM, XAVC, P2, Canon XF
+  and GoPro clips, joins spanned recordings into one clip and seeks transport streams exactly; camera, reel and
+  timecode in Media Properties; an MXF DNxHD render template; camera RAW formats import offline with the reason (R41).
 
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro

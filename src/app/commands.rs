@@ -58,6 +58,7 @@ impl MeridianApp {
             || self.expand_ask.is_some()
             || self.command_props.is_some()
             || self.slideshow.is_some()
+            || self.seq_ask.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
             || self.archive.is_some()
@@ -878,7 +879,17 @@ impl MeridianApp {
             RenderQueue => self.queue_win.open = true,
             BatchRender => self.batch = Some(ui::render_queue::BatchRender::new(&self.project)),
             RenderAudioTracks => self.render_tracks = Some(ui::render_queue::RenderTracks::new(&self.project)),
-            ImportMedia => ui::import_media(ctx, &self.importer),
+            ImportMedia => {
+                if let Some(paths) = ui::pick_media() {
+                    self.stage_import(ctx, paths, None);
+                }
+            }
+            // R41: a camera card (or any folder): scanned for its clips, spanned recordings joined.
+            ImportCamera => {
+                if let Some(dir) = rfd::FileDialog::new().set_title("Camera card or media folder").pick_folder() {
+                    self.stage_import(ctx, vec![dir], None);
+                }
+            }
             // R28/R29: every interchange import goes through the VEGAS import's thread and report.
             ImportVegas | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml => {
                 let fmt = match c {
@@ -2195,6 +2206,18 @@ impl MeridianApp {
     /// Save prompt, About, Preferences, Welcome and Keyboard Shortcuts.
     pub(super) fn show_dialogs(&mut self, ctx: &egui::Context) {
         self.show_expand(ctx);
+        // R38: the "Open still image sequence" question; its answer is remembered, as VEGAS's Open dialog keeps it.
+        if let Some(ok) = self.seq_ask.as_mut().and_then(|d| d.show(ctx)) {
+            if let Some(d) = self.seq_ask.take() {
+                if ok {
+                    if self.prefs.still_sequence != d.open_as_sequence {
+                        self.prefs.still_sequence = d.open_as_sequence;
+                        self.save_prefs();
+                    }
+                    self.import_resolved(ctx, d.resolve(), d.drop.clone());
+                }
+            }
+        }
         if let Some(action) = self.confirm {
             let name = self.project.name.clone();
             let (hit, close) = dialogs::modal(ctx, "save_changes", "Milan Pro", egui::vec2(380.0, 150.0), |ui| {
@@ -3008,6 +3031,40 @@ impl MeridianApp {
                 if let Some(d) = &mut self.slideshow {
                     d.pictures = self.project.media_pool.iter().map(|m| m.path.clone()).collect();
                 }
+            }
+            // R40a review: Media Properties (the Properties window) on a generated HDR10 (PQ) clip with mastering
+            // metadata beside the demo media, with its capability verdict (R37).
+            "media-props" => {
+                let path = crate::demo::media_dir().join("hdr_pq.mp4");
+                if !path.exists() {
+                    let mut cmd = crate::proc::ffmpeg();
+                    cmd.args(["-v", "error", "-y", "-f", "lavfi", "-i", "smptehdbars=s=1920x1080:r=25:d=2,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"])
+                        .args(["-vf", "zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt2020,zscale=t=smpte2084:m=bt2020nc:r=tv:npl=203,format=yuv420p10le"])
+                        .args(["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error:hdr10=1:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400"])
+                        .args(["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-metadata", "make=Sony", "-metadata", "model=ILME-FX3", "-timecode", "01:00:00:00"])
+                        .arg(&path);
+                    let _ = crate::proc::output(&mut cmd);
+                }
+                if let Ok(m) = crate::media::probe_media(&path) {
+                    let _ = crate::engine::caps::get();
+                    crate::media::merge_new(&mut self.project.media_pool, vec![m]);
+                    self.selected_media = self.project.media_pool.iter().position(|m| m.path == path);
+                    self.sel.clips.clear();
+                    self.selected_clip = None;
+                    self.dock.open(crate::ui::dock::Panel::Properties);
+                    self.project.modified = false;
+                }
+            }
+            // R38 review: a 12-frame PNG sequence beside the demo media, picked as File › Import would: the question.
+            "sequence" => {
+                let dir = crate::demo::media_dir().join("seq");
+                let _ = std::fs::create_dir_all(&dir);
+                if !dir.join("frame_0012.png").exists() {
+                    let mut cmd = crate::proc::ffmpeg();
+                    cmd.args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=12:d=1", "-start_number", "1"]).arg(dir.join("frame_%04d.png"));
+                    let _ = crate::proc::output(&mut cmd);
+                }
+                self.stage_import(ctx, vec![dir.join("frame_0001.png")], None);
             }
             "insert-time" => self.exec(ctx, InsertTime),
             "audio-transition" => {

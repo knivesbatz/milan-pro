@@ -55,7 +55,7 @@ pub use master_bus::{MasterView, master_bus, master_bus_toolbar};
 pub use mixer::{ConsolePrefs, ConsoleView, feed_levels, mixer_toolbar, mixing_console, show_level, MASTER as MASTER_LEVEL};
 pub use media_panel::{MediaView, draw_media_browser, draw_media_toolbar};
 pub use overlays::{OverlaysView, draw_overlays, draw_overlays_toolbar, overlay_dialogs, place_in_layout};
-pub use menus::{MenuAction, add_marker, draw_menu_bar, import_media};
+pub use menus::{MenuAction, add_marker, draw_menu_bar, pick_media};
 pub use pancrop::PanCropWin;
 pub use plugin_manager::{PluginManager, plugin_manager, plugin_manager_toolbar};
 pub use preview::{PreviewView, draw_external, draw_preview, draw_preview_toolbar};

@@ -63,6 +63,8 @@ impl Entry {
             offset: 0.0,
             stream: 0,
             flow: false,
+            pre: String::new(),
+            input: Vec::new(),
         }
     }
 

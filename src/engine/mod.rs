@@ -7,6 +7,10 @@ pub mod afx;
 pub mod aplug;
 pub mod cache;
 pub mod caches;
+pub mod caps;
+pub mod color;
+#[cfg(test)]
+mod formats_e2e;
 pub mod composite;
 pub mod diskcache;
 // shortcut: the font list, plug-in catalogue, user presets, LUT export and chooser thumbnails are used by the

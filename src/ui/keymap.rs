@@ -13,7 +13,7 @@ use crate::decode::Quality;
 pub enum Command {
     // File
     New, NewEmpty, Open, Close, Save, SaveAs, SaveVersion, RenderAs, ImportMedia, ImportVegas, Properties, Welcome, Exit,
-    ExportVegas, ArchiveProject, ImportMediaFromProject,
+    ExportVegas, ArchiveProject, ImportMediaFromProject, ImportCamera,
     // R28/R29: interchange formats (`interchange::Format`).
     ImportOtio, ImportEdl, ImportXmeml, ImportFcpxml, ExportOtio, ExportEdl, ExportXmeml, ExportFcpxml,
     OpenRecent(usize),

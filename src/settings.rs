@@ -46,6 +46,8 @@ pub struct Prefs {
     pub quantize: bool,
     /// Preferences › Editing: "New still image length (seconds)" for stills added to the timeline.
     pub still_len: f64,
+    /// R38: the "Open still image sequence" box as last answered (VEGAS keeps it in its Open dialog).
+    pub still_sequence: bool,
     /// Options › Automatic Crossfades: overlapping events on a track crossfade.
     pub auto_crossfade: bool,
     /// Options › Quickfade Audio Edits: a 10 ms fade at audio event edges without one, in playback and render.
@@ -323,6 +325,7 @@ impl Default for Prefs {
             skipped_update: None,
             quantize: true,
             still_len: 5.0,
+            still_sequence: false,
             auto_crossfade: true,
             quickfade: true,
             snap_grid: false,
@@ -652,13 +655,36 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
         ("Compositing gamma:", "2.222 (Video)", Later("R40b")),
         ("ACES version:", "1.0", Later("R40b")),
         ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
-        ("View transform:", "Off", Later("R40b")),
     ];
     grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
-    grid.insert(6, ("Look modification transform:", "Off", Later("R40b")));
+    grid.push(("Look modification transform:", "Off", Later("R40b")));
     for (k, (label, value, why)) in grid.into_iter().enumerate() {
         dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
     }
+    // R40a: VEGAS's View transform row is Color management here: how HDR (PQ, HLG) and BT.2020 sources reach the
+    // 8-bit Rec.709 timeline (tone-mapped by default; the preview, proxies and renders all go through it).
+    dialogs::row(ui, "Color management:", 175.0, true, |ui| {
+        use crate::project::ColorManagement;
+        widgets::combo(ui, "pp_cm", 200.0, d.color_management.name(), |ui| {
+            for c in ColorManagement::ALL {
+                ui.selectable_value(&mut d.color_management, c, c.name());
+            }
+        })
+        .response
+        .on_hover_text("HDR sources: reference white 203 cd/m² becomes SDR white, highlights roll off (Möbius) or clip. Off decodes every source as Rec.709, which washes HDR out.");
+    });
+    // R40a: what the project's media needs the transform for.
+    let mut kinds: Vec<(&str, usize)> = Vec::new();
+    for h in project.media_pool.iter().filter_map(|m| m.hdr()) {
+        match kinds.iter_mut().find(|k| k.0 == h.label()) {
+            Some(k) => k.1 += 1,
+            None => kinds.push((h.label(), 1)),
+        }
+    }
+    let found = if kinds.is_empty() { "None: every source is SDR Rec.709".to_string() } else { kinds.iter().map(|(l, n)| format!("{n} {l}")).collect::<Vec<_>>().join(", ") };
+    dialogs::row(ui, "HDR / wide-gamut media:", 175.0, true, |ui| {
+        ui.label(found);
+    });
     // VEGAS's order: Full-resolution rendering quality, Motion blur type, Deinterlace method, then Resample mode.
     dialogs::row(ui, "Full-resolution rendering quality:", 175.0, true, |ui| {
         widgets::combo(ui, "pp_quality", 200.0, format!("{:?}", d.render_quality), |ui| {

@@ -109,9 +109,10 @@ fn same_length(d: f64, src: f64, m: &MediaItem) -> bool {
 }
 
 /// Media Create Video Proxy applies to: file-based video without alpha (the H.264 proxy has none, so an overlay
-/// would turn opaque at Draft and Preview).
+/// would turn opaque at Draft and Preview). R38: an image sequence is read from its files; R37: an item of a codec this
+/// FFmpeg build cannot decode has nothing to proxy.
 pub fn is_video(m: &MediaItem) -> bool {
-    m.media_type == MediaType::Video && m.generator.is_none() && !m.has_alpha
+    m.media_type == MediaType::Video && m.generator.is_none() && !m.has_alpha && m.sequence.is_none() && m.unsupported.is_none()
 }
 
 /// Preferences › Video "proxy 4K, HEVC and AV1 automatically on import".
@@ -124,13 +125,16 @@ pub fn wants_auto(m: &MediaItem) -> bool {
 ///   container start, and a video-only proxy of a clip whose audio starts first would run ahead by the gap.
 /// - The source's colour matrix is kept, since the decoder reads the proxy with it (RGB sources would shift hue).
 /// - Interlaced sources are deinterlaced here; scaling woven fields would smear them.
+/// - R40a: an HDR or BT.2020 source is tone-mapped / converted here (`color::view_transform` with the default colour
+///   management), and the decoders skip the transform when they read the proxy; the proxy is then BT.709.
 pub fn args(m: &MediaItem, out: &Path) -> Vec<String> {
     let mut a: Vec<String> = ["-hide_banner", "-v", "error", "-i"].map(String::from).to_vec();
     a.push(m.path.to_string_lossy().into_owned());
-    let matrix = crate::engine::plan::matrix(m).map(|x| format!(":in_color_matrix={x}:out_color_matrix={x}")).unwrap_or_default();
+    let pre = crate::engine::color::view_transform(m, crate::project::ColorManagement::default());
+    let matrix = if pre.is_empty() { crate::engine::plan::matrix(m).map(|x| format!(":in_color_matrix={x}:out_color_matrix={x}")).unwrap_or_default() } else { ":out_color_matrix=bt709".to_string() };
     let deint = if m.interlaced { "yadif=deint=interlaced," } else { "" };
     a.extend(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf"].map(String::from));
-    a.push(format!("{deint}scale='min(1280,iw)':-2:flags=bicubic{matrix},format=yuv420p"));
+    a.push(format!("{deint}{pre}scale='min(1280,iw)':-2:flags=bicubic{matrix},format=yuv420p"));
     a.extend(
         [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-g", "15", "-bf", "0", "-tune", "fastdecode", "-fps_mode", "passthrough", "-c:a", "aac", "-ac", "1",
@@ -438,6 +442,13 @@ mod tests {
         // Interlaced SD (no matrix known: the decoder reads both with auto) is deinterlaced first.
         let sd = MediaItem { width: Some(720), height: Some(576), interlaced: true, ..m.clone() };
         assert!(args(&sd, out).join(" ").contains(" -vf yadif=deint=interlaced,scale='min(1280,iw)':-2:flags=bicubic,format=yuv420p "));
+        // R40a: an HDR source is tone-mapped into a BT.709 proxy.
+        let hdr = MediaItem { transfer: Some("smpte2084".into()), primaries: Some("bt2020".into()), color_matrix: Some("bt2020nc".into()), ..m.clone() };
+        let a = args(&hdr, out).join(" ");
+        assert!(a.contains(" -vf zscale=t=linear:npl=203,") && a.contains("format=gbrp,scale='min(1280,iw)':-2:flags=bicubic:out_color_matrix=bt709,format=yuv420p "), "{a}");
+        // R38/R37: no proxy for a sequence or an offline item.
+        assert!(!is_video(&MediaItem { sequence: Some(crate::project::Sequence { pattern: "a_%04d.png".into(), start: 1, count: 2, fps: 24.0 }), ..m.clone() }));
+        assert!(!is_video(&MediaItem { unsupported: Some("unsupported codec x".into()), ..m.clone() }));
         assert_eq!(progress("out_time_us=2500000", 10.0), Some(0.25));
         assert_eq!(progress("out_time_us=N/A", 10.0), None);
         assert_eq!(progress("frame=12", 10.0), None);
@@ -568,6 +579,8 @@ mod tests {
                 offset: 0.0,
                 stream: 0,
                 flow: false,
+                pre: String::new(),
+                input: Vec::new(),
             };
             // Same quality (scaler) for both: Preview reads the proxy when there is one, else the source.
             let (with, without) = (media(Some(proxy.clone())), media(None));

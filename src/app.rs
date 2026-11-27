@@ -242,6 +242,8 @@ pub struct MeridianApp {
     command_props: Option<crate::ui::dialogs::CommandProps>,
     /// R18b: Insert › Slideshow and Insert › Audio Transition, open.
     slideshow: Option<crate::ui::dialogs::Slideshow>,
+    /// R38: the "Open still image sequence" question about an import or drop, open.
+    seq_ask: Option<crate::ui::dialogs::SequenceAsk>,
     audio_transition: Option<crate::ui::dialogs::AudioTransition>,
     /// R42-R46 (app/reliability.rs): Save Version, the broken-file offer, notes from opening a file, crash recovery, the
     /// crash-report offer, the diagnostic report and the roll-back offer.
@@ -571,6 +573,7 @@ impl MeridianApp {
             audio_edits: Default::default(),
             command_props: None,
             slideshow: None,
+            seq_ask: None,
             archive: None,
             media_from: None,
             prerender: None,
@@ -638,7 +641,8 @@ impl MeridianApp {
     fn file_drag(&mut self, ctx: &egui::Context) -> ui::FileDrag {
         let modal = self.modal_open();
         let (hovered, dropped): (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) = ctx.input(|i| {
-            let keep = |p: &Option<std::path::PathBuf>| p.clone().filter(|p| ui::is_media(p));
+            // R41: a folder (a camera card) comes along: the importer scans it.
+            let keep = |p: &Option<std::path::PathBuf>| p.clone().filter(|p| ui::is_media(p) || p.is_dir());
             (i.raw.hovered_files.iter().filter_map(|f| keep(&f.path)).collect(), i.raw.dropped_files.iter().filter_map(|f| keep(&f.path)).collect())
         });
         let os = !hovered.is_empty() || !dropped.is_empty();
@@ -715,9 +719,34 @@ impl MeridianApp {
 
     /// Import `paths` that are not in the project yet (background probe; the app adds them when done).
     fn import_new(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>) {
-        let new: Vec<_> = paths.into_iter().filter(|p| !crate::media::in_pool(&self.project.media_pool, p)).collect();
-        if !new.is_empty() {
-            self.importer.import(ctx, new);
+        self.stage_import(ctx, paths, None);
+    }
+
+    /// R38: an import (`drop` None) or a drop (`Some(place)`; `Some(None)` is a drop on Project Media) of `paths`.
+    /// When a picked still has numbered siblings, the "Open still image sequence" question comes first; its answer
+    /// (or none to ask) goes on to `import_resolved`.
+    pub(crate) fn stage_import(&mut self, ctx: &egui::Context, paths: Vec<std::path::PathBuf>, drop: Option<Option<drop::Place>>) {
+        let seqs = crate::media::sequences_in(&paths);
+        if !seqs.is_empty() && self.seq_ask.is_none() {
+            let fps = self.project.settings.frame_rate;
+            self.seq_ask = Some(crate::ui::dialogs::SequenceAsk::new(paths, drop, seqs, self.prefs.still_sequence, fps));
+            return;
+        }
+        let items = paths.into_iter().map(|p| (p, crate::media::ImportOpts::default())).collect();
+        self.import_resolved(ctx, items, drop);
+    }
+
+    /// Probe `items` (each with its options) in the background: a drop reuses its hover probes and is placed when
+    /// they are done; an import adds what is new to Project Media.
+    pub(crate) fn import_resolved(&mut self, ctx: &egui::Context, items: Vec<(std::path::PathBuf, crate::media::ImportOpts)>, drop: Option<Option<drop::Place>>) {
+        match drop {
+            Some(place) => self.file_drop.drop_with(ctx, items, place),
+            None => {
+                let new: Vec<_> = items.into_iter().filter(|(p, o)| o.sequence.is_some() || !crate::media::in_pool(&self.project.media_pool, p)).collect();
+                if !new.is_empty() {
+                    self.importer.import_with(ctx, new);
+                }
+            }
         }
     }
 }
@@ -845,7 +874,6 @@ impl eframe::App for MeridianApp {
                         &mut self.media_view,
                         &mut self.selected_media,
                         &mut self.sel.clips,
-                        &self.importer,
                         &mut actions,
                     );
                     ui::draw_media_browser(
@@ -1126,9 +1154,9 @@ impl eframe::App for MeridianApp {
         // Files dropped on the timeline are placed once probed; dropped from Windows anywhere else, only imported
         // (§5.4). Both reuse the probes started while the files hovered.
         if let Some((paths, track, time, mode)) = drag.dropped_at.take() {
-            self.file_drop.drop(paths, Some((track, time, mode)));
+            self.stage_import(ctx, paths, Some(Some((track, time, mode))));
         } else if drag.os_dropped {
-            self.file_drop.drop(drag.files, None);
+            self.stage_import(ctx, drag.files, Some(None));
         }
         // Media added below (drops and imports append to the pool) may get a video proxy automatically.
         let pool_len = self.project.media_pool.len();
@@ -1156,13 +1184,16 @@ impl eframe::App for MeridianApp {
             let Some(batch) = self.importer.poll() else { break };
             let before = self.project.clone();
             let (ok, errors): (Vec<_>, Vec<_>) = batch.into_iter().map(|(_, r)| r).partition(Result::is_ok);
-            let errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
+            let mut errors: Vec<String> = errors.into_iter().filter_map(Result::err).collect();
+            let ok: Vec<crate::project::MediaItem> = ok.into_iter().filter_map(Result::ok).collect();
+            // R37: an unsupported codec imports offline and says so, rather than failing at preview time.
+            errors.extend(ok.iter().filter_map(|m| Some(format!("{} imported offline: {}", m.name, m.unsupported.as_deref()?))));
             // Files imported twice (two drops or picks before the first probe finished) are added once.
-            if crate::media::merge_new(&mut self.project.media_pool, ok.into_iter().filter_map(Result::ok).collect()) {
+            if crate::media::merge_new(&mut self.project.media_pool, ok) {
                 self.history.push(before);
                 self.project.mark_modified();
             }
-            self.message = (!errors.is_empty()).then(|| format!("Import failed: {}", errors.join("; ")));
+            self.message = (!errors.is_empty()).then(|| format!("Import: {}", errors.join("; ")));
         }
         if self.prefs.auto_proxy {
             let added = self.project.media_pool.get(pool_len..).unwrap_or_default();

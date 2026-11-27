@@ -101,6 +101,57 @@ pub struct ProjectSettings {
     /// R16a: Project Properties › Summary.
     #[serde(default, skip_serializing_if = "Summary::is_empty")]
     pub summary: Summary,
+    /// R40a: Project Properties › Color management: how HDR (PQ, HLG) and BT.2020 sources reach the 8-bit Rec.709
+    /// timeline. A project saved before R40a decoded them as they came, but that was the misinterpretation 7.58 names,
+    /// so it opens with the default (tone-mapped) as well.
+    #[serde(default, deserialize_with = "lenient")]
+    pub color_management: ColorManagement,
+}
+
+/// R40a: Project Properties › Color management (VEGAS 23's View transform row, for the SDR timeline Milan Pro has).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorManagement {
+    /// HDR sources are tone-mapped to Rec.709 SDR (reference white 203 cd/m² as BT.2408 has it, highlights rolled off
+    /// above 50 % with the Möbius curve) and BT.2020 SDR sources converted to Rec.709.
+    #[default]
+    Sdr,
+    /// As `Sdr`, but highlights above reference white clip instead of rolling off.
+    SdrClip,
+    /// No view transform: every source is decoded with its own matrix as if it were Rec.709 SDR (how Milan Pro worked
+    /// before R40a; HDR looks washed out). Here for comparisons only.
+    Off,
+}
+
+impl ColorManagement {
+    pub const ALL: [ColorManagement; 3] = [ColorManagement::Sdr, ColorManagement::SdrClip, ColorManagement::Off];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorManagement::Sdr => "SDR (Rec.709): HDR sources tone-mapped",
+            ColorManagement::SdrClip => "SDR (Rec.709): HDR sources clipped",
+            ColorManagement::Off => "Off (sources as coded, not recommended)",
+        }
+    }
+}
+
+/// R40a: a source's dynamic range class (`MediaItem::hdr`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hdr {
+    Pq,
+    Hlg,
+    /// Wide gamut, standard range.
+    Sdr2020,
+}
+
+impl Hdr {
+    /// The Project Media badge and Media Properties wording.
+    pub fn label(self) -> &'static str {
+        match self {
+            Hdr::Pq => "HDR (PQ)",
+            Hdr::Hlg => "HDR (HLG)",
+            Hdr::Sdr2020 => "BT.2020",
+        }
+    }
 }
 
 /// Project Properties › Field order (and a render template's).
@@ -1004,6 +1055,91 @@ pub struct MediaItem {
     /// View › Event Media Markers shows them; empty for media imported before R18a.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<(f64, String)>,
+    /// R38: a numbered still image sequence opened as one clip (VEGAS's "Open still image sequence"): `path` is its
+    /// first file, and the frames are read with ffmpeg's image2 demuxer at `Sequence::fps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<Sequence>,
+    /// R40a: ffprobe `color_transfer` (bt709, smpte2084 = PQ, arib-std-b67 = HLG...) and `color_primaries` (bt709,
+    /// bt2020...) when the source is tagged; the picture's bit depth (`bits_per_raw_sample`, else from its pix_fmt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primaries: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u8>,
+    /// R40a: HDR10 static metadata: the mastering display's luminance range and the content light levels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mastering: Option<Mastering>,
+    /// R41: camera metadata: the make and model (`make`/`model` tags, or an MXF's `company_name`/`product_name`) and
+    /// the reel or tape (`reel_name`, `material_package_name`, `tape_name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reel: Option<String>,
+    /// R41: a spanned camera clip joined from these files (an AVCHD `.MTS` series, GoPro chapters): `path` is the
+    /// `.ffconcat` list ffmpeg reads them through, beside the first file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spanned: Vec<PathBuf>,
+    /// R37: why this item is offline although its file is there: a stream whose codec the bundled FFmpeg has no
+    /// decoder for ("unsupported codec <name>"). Never decoded as something else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<String>,
+}
+
+/// R38: a numbered still image sequence (`shot_0001.png`, `shot_0002.png`, ...) as ffmpeg's image2 demuxer reads it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Sequence {
+    /// The printf-style file name pattern (`shot_%04d.png`; a `%` of the name doubled) in the folder of the item's
+    /// `path` (its first file), so the sequence moves with the project's media like any file.
+    pub pattern: PathBuf,
+    /// The first number and how many consecutive files follow it.
+    pub start: u32,
+    pub count: u32,
+    /// The rate the stills play at: the project's frame rate when it was opened (VEGAS: Project Properties).
+    pub fps: f64,
+}
+
+impl Sequence {
+    /// The pattern ffmpeg's image2 demuxer opens for a sequence whose first file is `first`: the pattern in its folder,
+    /// with any `%` of the folder doubled.
+    pub fn input_path(&self, first: &Path) -> PathBuf {
+        let name = self.pattern.file_name().unwrap_or_default();
+        match first.parent().filter(|d| !d.as_os_str().is_empty()) {
+            Some(dir) => PathBuf::from(dir.to_string_lossy().replace('%', "%%")).join(name),
+            None => PathBuf::from(name),
+        }
+    }
+
+    /// The file name of frame number `n` of the pattern (`shot_%04d.png`, 7 -> `shot_0007.png`).
+    pub fn file_name(&self, n: u32) -> String {
+        let p = self.pattern.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        // The number is the last `%0Nd`; a `%%` before it is a literal `%`.
+        let Some(a) = p.rfind("%0") else { return p };
+        let Some(len) = p[a + 1..].find('d') else { return p };
+        let width: usize = p[a + 1..a + 1 + len].parse().unwrap_or(0);
+        format!("{}{:0width$}{}", p[..a].replace("%%", "%"), n, &p[a + 2 + len..])
+    }
+
+    /// Every file of the sequence, in `dir` (Archive Project copies them all).
+    pub fn files(&self, dir: &Path) -> Vec<PathBuf> {
+        (self.start..self.start + self.count).map(|n| dir.join(self.file_name(n))).collect()
+    }
+
+    /// `shot_0001.png ... shot_0048.png (48 frames at 24.000 fps)`, for Media Properties.
+    pub fn describe(&self) -> String {
+        format!("{} ... {} ({} frames at {:.3} fps)", self.file_name(self.start), self.file_name(self.start + self.count.saturating_sub(1)), self.count, self.fps)
+    }
+}
+
+/// R40a: HDR10 static metadata as ffprobe reports it (side data of the video stream).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Mastering {
+    /// Mastering display luminance, cd/m² (0 when unknown).
+    pub min_luminance: f64,
+    pub max_luminance: f64,
+    /// Content light level: MaxCLL and MaxFALL, cd/m² (0 when unknown).
+    pub max_cll: u32,
+    pub max_fall: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1033,9 +1169,40 @@ fn relative(path: &Path, base: &Path) -> Option<PathBuf> {
 }
 
 impl MediaItem {
-    /// Never probed: a file that was missing when a VEGAS project was imported (no picture or sound known).
+    /// Never probed: a file that was missing when a VEGAS project was imported (no picture or sound known); or (R37) a
+    /// file whose codec the bundled FFmpeg cannot decode (`unsupported`).
     pub fn is_offline(&self) -> bool {
-        self.generator.is_none() && self.width.is_none() && self.sample_rate.is_none()
+        self.unsupported.is_some() || (self.generator.is_none() && self.width.is_none() && self.sample_rate.is_none())
+    }
+
+    /// R40a: the picture's dynamic range and gamut as tagged: PQ or HLG (HDR), BT.2020 SDR, or plain SDR (None).
+    pub fn hdr(&self) -> Option<Hdr> {
+        let t = self.transfer.as_deref().unwrap_or("");
+        let p = self.primaries.as_deref().unwrap_or("");
+        match t {
+            "smpte2084" => Some(Hdr::Pq),
+            "arib-std-b67" => Some(Hdr::Hlg),
+            _ if p == "bt2020" || matches!(t, "bt2020-10" | "bt2020-12") => Some(Hdr::Sdr2020),
+            _ => None,
+        }
+    }
+
+    /// R40a: the colour space as VEGAS's Media Properties names it ("Rec.709", "Rec.2020 ST.2084 (PQ, HDR10)", ...).
+    pub fn color_space_name(&self) -> String {
+        match self.hdr() {
+            Some(Hdr::Pq) => "Rec.2020 ST.2084 (PQ, HDR10)".into(),
+            Some(Hdr::Hlg) => "Rec.2020 HLG".into(),
+            Some(Hdr::Sdr2020) => "Rec.2020 (SDR)".into(),
+            None => match (self.primaries.as_deref(), self.transfer.as_deref(), self.color_matrix.as_deref()) {
+                (Some("bt709"), _, _) | (None, Some("bt709"), _) | (None, None, Some("bt709")) => "Rec.709".into(),
+                (Some("bt470bg"), _, _) | (None, None, Some("bt470bg")) => "Rec.601 (PAL)".into(),
+                (Some("smpte170m"), _, _) | (None, None, Some("smpte170m")) => "Rec.601 (NTSC)".into(),
+                (None, Some("iec61966-2-1"), _) => "sRGB".into(),
+                (None, Some("linear"), _) => "Linear (scene-referred)".into(),
+                (None, None, None) => "Untagged (treated as Rec.709)".into(),
+                (p, t, m) => [p, t, m].into_iter().flatten().collect::<Vec<_>>().join(" / "),
+            },
+        }
     }
 
     /// Time in the file of time `t` of this item (a subclip starts part way into its file).
@@ -1482,6 +1649,7 @@ impl Default for ProjectSettings {
             adjust_media: true,
             bit_depth: 16,
             summary: Summary::default(),
+            color_management: ColorManagement::default(),
         }
     }
 }
@@ -2191,7 +2359,7 @@ mod tests {
             }
         };
         strip(&mut v["timeline"], &["loop_region", "master", "record_dir"]);
-        strip(&mut v["settings"], &["ruler", "resample", "field_order", "par", "rotation", "render_quality", "deinterlace", "adjust_media", "bit_depth"]);
+        strip(&mut v["settings"], &["ruler", "resample", "field_order", "par", "rotation", "render_quality", "deinterlace", "adjust_media", "bit_depth", "color_management"]);
         strip(&mut v["timeline"]["video_tracks"][0], &["composite", "motion", "fx", "envelopes", "invert", "fade_colors"]);
         strip(&mut v["timeline"]["audio_tracks"][0], &["fx", "invert", "fade_colors"]);
         let clip_keys = ["fade_in", "gain_db", "fade_in_curve", "fade_out_curve", "rate", "reverse", "muted", "pan_crop", "fx", "transition", "envelopes", "group", "takes", "looping"];
@@ -2201,6 +2369,13 @@ mod tests {
         let back: Project = serde_json::from_value(v).unwrap();
         // R1: an old project opens at 120 bpm in 4/4, Time & Frames from 0.
         assert_eq!(back.settings.ruler, Ruler { format: RulerFormat::TimeFrames, offset: 0.0, tempo: 120.0, beats_per_measure: 4, beat_note: 4 });
+        // R40a: an old project tone-maps HDR sources like a new one (the old behaviour was the misinterpretation).
+        assert_eq!(back.settings.color_management, ColorManagement::Sdr);
+        // R37-R41: an old media item has no sequence, colour tags, camera tags or spans, and is not offline.
+        let m = &back.media_pool[0];
+        assert!(m.sequence.is_none() && m.transfer.is_none() && m.primaries.is_none() && m.bit_depth.is_none() && m.mastering.is_none());
+        assert!(m.camera.is_none() && m.reel.is_none() && m.spanned.is_empty() && m.unsupported.is_none() && m.hdr().is_none());
+        assert_eq!(m.color_space_name(), "Untagged (treated as Rec.709)");
         let r: Ruler = serde_json::from_str(r#"{"format":"Bars","tempo":90}"#).unwrap(); // a format from a newer build
         assert_eq!((r.format, r.tempo, r.beats_per_measure), (RulerFormat::TimeFrames, 90.0, 4));
         let tl = &back.timeline;
@@ -2430,8 +2605,22 @@ mod tests {
             timecode: Some(3600.5),
             created: Some(1_714_566_896.25),
             markers: vec![(1.5, "Chorus".into())],
+            // R37/R38/R40a/R41: sequence, colour tags, HDR metadata, camera tags, spans and the unsupported reason.
+            sequence: Some(Sequence { pattern: PathBuf::from(r"C:\shots\shot_%04d.png"), start: 1, count: 48, fps: 24.0 }),
+            transfer: Some("smpte2084".into()),
+            primaries: Some("bt2020".into()),
+            bit_depth: Some(10),
+            mastering: Some(Mastering { min_luminance: 0.005, max_luminance: 1000.0, max_cll: 1000, max_fall: 400 }),
+            camera: Some("Sony ILCE-7M4".into()),
+            reel: Some("A001".into()),
+            spanned: vec![PathBuf::from(r"C:\card\00000.MTS"), PathBuf::from(r"C:\card\00001.MTS")],
+            unsupported: Some("unsupported codec foo".into()),
             ..Default::default()
         });
+        p.settings.color_management = ColorManagement::SdrClip;
+        assert_eq!(p.media_pool[0].hdr(), Some(Hdr::Pq));
+        assert_eq!(p.media_pool[0].sequence.as_ref().unwrap().describe(), "shot_0001.png ... shot_0048.png (48 frames at 24.000 fps)");
+        assert!(p.media_pool[0].is_offline(), "an unsupported codec is offline");
         p.timeline.commands = vec![CommandMarker { position: 2.0, command: "URL".into(), parameter: "https://example.com".into(), comment: "Shop".into() }];
         p.timeline.cd_tracks = vec![CdTrack { start: 2.0, end: 5.0, name: "Intro".into(), isrc: "USRC17607839".into(), protect: true, emphasis: true }];
         p.timeline.cd_indexes = vec![3.5];

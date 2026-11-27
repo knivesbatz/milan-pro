@@ -5,11 +5,10 @@ use crate::decode::Thumbs;
 use crate::edit;
 use crate::engine::sync::{self, By};
 use crate::history::History;
-use crate::media::Importer;
 use crate::project::*;
 use super::dock::Panel;
 use super::icons::{Icon, paint_icon};
-use super::menus::{self, Fixed, Later, M::*, NotPlanned, import_media};
+use super::menus::{self, Fixed, Later, M::*, NotPlanned, pick_media};
 use super::toolbar::{arrow_menu, inert_button, split_button, tool_button};
 use super::widgets::{self, ROW_H};
 use super::{MediaDrag, WinAction, theme};
@@ -137,7 +136,6 @@ pub fn draw_media_toolbar(
     view: &mut MediaView,
     selected: &mut Option<usize>,
     sel_clips: &mut Vec<String>,
-    importer: &Importer,
     actions: &mut Vec<WinAction>,
 ) {
     let t = theme::get();
@@ -156,7 +154,9 @@ pub fn draw_media_toolbar(
     ui.painter().text(pos2(icon.max.x + 4.0, rect.center().y), Align2::LEFT_CENTER, "Import Media...", t.font(t.font.ui), t.text);
     paint_icon(ui.painter(), Rect::from_center_size(pos2(rect.max.x - 9.0, rect.center().y), vec2(16.0, 16.0)), Icon::DropDown, None);
     if resp.on_hover_text("Import Media...").clicked() {
-        import_media(ui.ctx(), importer);
+        if let Some(paths) = pick_media() {
+            actions.push(WinAction::Import(paths));
+        }
     }
     tool_button(ui, Icon::Capture, &NotPlanned("R59").tip("Capture Video"), false, false);
     inert_button(ui, Icon::WebMedia, &NotPlanned("R59").tip("Get Media from the Web"), false);
@@ -282,6 +282,13 @@ pub fn draw_media_browser(
             remove_media(project, history, targets(view, &items, i));
             (*selected, *sel_clips) = (None, Vec::new());
         }
+        Some((i, ItemCmd::RulerTimecode)) => {
+            if let Some(tc) = project.media_pool[i].timecode {
+                history.push(project.clone());
+                project.settings.ruler.offset = tc;
+                project.mark_modified();
+            }
+        }
         Some((i, ItemCmd::EditSource)) => actions.push(WinAction::OpenNested(project.media_pool[i].path.clone())),
         Some((i, ItemCmd::Explore)) => super::dialogs::open_folder(&project.media_pool[i].path),
         Some((i, ItemCmd::Proxy)) => actions.push(WinAction::CreateProxy(targets(view, &items, i).into_iter().map(|k| project.media_pool[k].clone()).collect())),
@@ -328,6 +335,8 @@ enum ItemCmd {
     EditSource,
     /// R17a: Lay Out Tracks Using Media Timecode / Date/Time Stamp.
     LayOut(By),
+    /// R41: the ruler starts at this media's timecode (an event at 0 then reads its source timecode on the ruler).
+    RulerTimecode,
 }
 
 /// `selected`: a right-click on a selected item keeps the selection, so its menu acts on all of it.
@@ -367,6 +376,7 @@ fn item_interaction(ui: &Ui, r: &Response, i: usize, selected: bool, video: bool
         // R17a: greyed, as in VEGAS, when none of the media has timecode.
         item(ui, "Lay Out Tracks Using Media &Timecode", ItemCmd::LayOut(By::Timecode), timecode());
         item(ui, "Lay Out Tracks Using Media &Date/Time Stamp", ItemCmd::LayOut(By::Date), true);
+        item(ui, "Use Media Timecode as Ruler Sta&rt", ItemCmd::RulerTimecode, timecode());
         menus::show(ui, ITEM_VIEW);
         item(ui, "&Properties...", ItemCmd::Properties, true);
         menus::show(ui, ITEM_V23);
@@ -481,9 +491,7 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
                 if let Some(tex) = thumbs.get(m, thumb_time(m)) {
                     widgets::paint_thumb(p, thumb, tex);
                 }
-                if crate::proxy::ready(&m.path).is_some() {
-                    proxy_badge(p, thumb.right_top() + vec2(-2.0, 2.0));
-                }
+                badges(p, m, project, thumb.right_top() + vec2(-2.0, 2.0), -1.0);
             }
         }
         out.push((i, resp));
@@ -491,12 +499,35 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
     out
 }
 
-/// "P" on media that has a video proxy, its top-right corner at `tr`.
-fn proxy_badge(p: &Painter, tr: Pos2) {
+/// A small lettered badge with its top-right corner at `tr`; returns its width.
+fn badge(p: &Painter, tr: Pos2, text: &str, fill: Color32) -> f32 {
     let t = theme::get();
-    let r = Rect::from_min_max(tr - vec2(13.0, 0.0), tr + vec2(0.0, 13.0));
-    p.rect_filled(r, 0.0, t.accent);
-    p.text(r.center(), Align2::CENTER_CENTER, "P", t.font(10.0), Color32::WHITE);
+    let w = (text.len() as f32 * 7.0 + 4.0).max(13.0);
+    let r = Rect::from_min_max(tr - vec2(w, 0.0), tr + vec2(0.0, 13.0));
+    p.rect_filled(r, 0.0, fill);
+    p.text(r.center(), Align2::CENTER_CENTER, text, t.font(10.0), Color32::WHITE);
+    w
+}
+
+/// The badges of `m` from `at` on: "P" (a video proxy), R40a "HDR" (an HDR source shown through the view transform;
+/// Media Properties says how), R37 "!" (offline: a codec this FFmpeg build cannot decode). `dir` is -1 to lay
+/// them out leftwards from a right corner, +1 rightwards from a left one.
+fn badges(p: &Painter, m: &MediaItem, project: &Project, at: Pos2, dir: f32) {
+    let mut x = at.x;
+    let mut put = |text: &str, fill: Color32| {
+        let tr = if dir < 0.0 { pos2(x, at.y) } else { pos2(x + (text.len() as f32 * 7.0 + 4.0).max(13.0), at.y) };
+        let w = badge(p, tr, text, fill);
+        x += dir * (w + 2.0);
+    };
+    if m.unsupported.is_some() {
+        put("!", Color32::from_rgb(200, 40, 40));
+    }
+    if crate::proxy::ready(&m.path).is_some() {
+        put("P", theme::get().accent);
+    }
+    if matches!(crate::engine::color::badge(m, project.settings.color_management), Some("HDR → SDR")) {
+        put("HDR", Color32::from_rgb(170, 110, 20));
+    }
 }
 
 const DETAIL_COLS: [(&str, f32); 7] =
@@ -524,9 +555,7 @@ fn details(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Ve
             m.path.display().to_string(),
         ];
         widgets::row_cells(ui, r.rect, &DETAIL_COLS, &values, if sel.contains(&i) { Color32::WHITE } else { t.text });
-        if crate::proxy::ready(&m.path).is_some() {
-            proxy_badge(ui.painter(), pos2(r.rect.min.x + DETAIL_COLS[0].1 - 6.0, r.rect.min.y + 2.0));
-        }
+        badges(ui.painter(), m, project, pos2(r.rect.min.x + DETAIL_COLS[0].1 - 6.0, r.rect.min.y + 2.0), -1.0);
         out.push((i, r));
     }
     out
@@ -542,9 +571,7 @@ fn list(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize]) -> Vec<(
         paint_icon(ui.painter(), Rect::from_min_size(pos2(r.rect.min.x + 6.0, r.rect.center().y - 8.0), vec2(16.0, 16.0)), icon, None);
         let color = if sel.contains(&i) { Color32::WHITE } else { t.text };
         let name = ui.painter().text(pos2(r.rect.min.x + 28.0, r.rect.center().y), Align2::LEFT_CENTER, &m.name, t.font(t.font.ui), color);
-        if crate::proxy::ready(&m.path).is_some() {
-            proxy_badge(ui.painter(), pos2(name.max.x + 18.0, r.rect.min.y + 2.0));
-        }
+        badges(ui.painter(), m, project, pos2(name.max.x + 5.0, r.rect.min.y + 2.0), 1.0);
         out.push((i, r));
     }
     out

@@ -627,7 +627,7 @@ mod tests {
         let mut prefs = Prefs { render_favorites: vec!["Web 720p".into()], ..Default::default() };
         prefs.render_templates.push(Template { name: "My 4K".into(), ..BUILTIN[6].clone() });
         let mut d = RenderDialog { search: "dnxhr".into(), ..Default::default() };
-        assert!(d.listed(&p, &prefs).iter().all(|t| t.format().contains("DNxHR") || t.name.contains("DNxHR")) && d.listed(&p, &prefs).len() == 6);
+        assert!(d.listed(&p, &prefs).iter().all(|t| t.format().contains("DNxHR") || t.name.contains("DNxHR")) && d.listed(&p, &prefs).len() == 7, "the DNxHR templates and MXF DNxHD 145 1080 (the same encoder)");
         d.search = "4k".into();
         assert_eq!(d.listed(&p, &prefs).iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["YouTube 2160p", "My 4K"]);
         d.search.clear();

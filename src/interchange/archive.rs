@@ -37,6 +37,9 @@ pub struct Item {
     /// project: trimming is possible.
     pub trimmable: bool,
     pub duration: f64,
+    /// R38/R41: an item read from several files (a still image sequence's frames, a spanned clip's list and parts):
+    /// all of them, `path` first. They are copied whole into a folder of their own. Empty for a single file.
+    pub files: Vec<PathBuf>,
 }
 
 /// What the archive will hold: one row per distinct media file (generated media needs no file).
@@ -57,17 +60,20 @@ pub fn plan(p: &Project) -> Vec<Item> {
             continue;
         }
         let meta = std::fs::metadata(&m.path).ok();
+        let files = crate::media::files_of(m);
+        let files = if files.len() > 1 { files } else { Vec::new() };
         let mut it = Item {
             path: m.path.clone(),
             name: m.path.file_name().map_or(m.name.clone(), |n| n.to_string_lossy().into_owned()),
-            size: meta.as_ref().map_or(0, |md| md.len()),
-            online: meta.as_ref().is_some_and(|md| md.is_file()),
+            size: if files.is_empty() { meta.as_ref().map_or(0, |md| md.len()) } else { files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|md| md.len()).sum() },
+            online: meta.as_ref().is_some_and(|md| md.is_file()) && files.iter().all(|f| f.is_file()),
             used: None,
             trimmable: false,
             duration: m.file_time(m.duration),
+            files,
         };
         extend(&mut it, p, m);
-        it.trimmable = it.online && matches!(m.media_type, MediaType::Video | MediaType::Audio) && !m.nested && !subclip_parents.contains(&m.path);
+        it.trimmable = it.online && it.files.is_empty() && matches!(m.media_type, MediaType::Video | MediaType::Audio) && !m.nested && !subclip_parents.contains(&m.path);
         items.push(it);
     }
     let _ = tl;
@@ -185,6 +191,18 @@ pub fn run(mut project: Project, dest: &Path, opts: &Options, progress: &dyn Fn(
             (Some(_), MediaType::Video) => format!("{}.mp4", it.path.file_stem().map_or(it.name.clone(), |s| s.to_string_lossy().into_owned())),
             _ => it.name.clone(),
         };
+        // R38/R41: a sequence or spanned clip goes into a folder of its own, its files keeping their names.
+        if !it.files.is_empty() {
+            let stem = it.path.file_stem().map_or(it.name.clone(), |s| s.to_string_lossy().into_owned());
+            let sub = unique_name(&media_dir, &stem, &mut taken);
+            std::fs::create_dir_all(&sub)?;
+            for f in &it.files {
+                std::fs::copy(f, sub.join(f.file_name().unwrap_or_default()))?;
+            }
+            report.copied += 1;
+            moved.insert(it.path.clone(), (sub.join(it.path.file_name().unwrap_or_default()), 0.0));
+            continue;
+        }
         let out = unique_name(&media_dir, &out_name, &mut taken);
         match trim {
             Some((start, end)) => {
@@ -208,6 +226,9 @@ pub fn run(mut project: Project, dest: &Path, opts: &Options, progress: &dyn Fn(
     for m in &mut project.media_pool {
         let Some((out, start)) = moved.get(&m.path) else { continue };
         m.path = out.clone();
+        if !m.spanned.is_empty() {
+            m.spanned = crate::camera::list_members(out);
+        }
         if *start > 0.0 || moved.values().any(|(o, s)| o == out && *s > 0.0) {
             if let Ok(probed) = crate::media::probe_media(out) {
                 (m.duration, m.width, m.height, m.codec) = (probed.duration, probed.width, probed.height, probed.codec);

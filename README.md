@@ -16,13 +16,14 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 | Interface | One look modelled on the Windows video editors of 2005-2007, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette |
 | Editing | Multitrack video and audio; move, trim, split, snapping and grid; ripple; slip, slide, roll and stretch; takes; groups; subclips; nested timelines; multicamera editing; Expanded Edit and edge trimming; markers, regions and command markers; adjustment tracks and events; undo/redo |
 | Effects and compositing | Video FX, transitions and generators (Titles & Text, Credit Roll, Test Pattern and more) with presets and keyframes; Color Grading with `.cube` LUTs; Event Pan/Crop with Bezier masks; Track Motion in 2D and 3D; parent/child compositing and all VEGAS compositing modes; Video Scopes |
+| Media | Any format the bundled FFmpeg can read, checked against its capabilities: a codec it cannot decode imports offline with the reason, and Media Properties says what decodes, proxies and renders each file ([docs/FORMAT_SUPPORT.md](docs/FORMAT_SUPPORT.md) is the tested matrix); still image sequences as one clip, animated GIF/WebP, and PNG, JPEG, 16-bit TIFF, BMP, WebP, TGA, DPX, JPEG 2000, PSD, OpenEXR and Radiance HDR stills; HDR (PQ, HLG) sources detected and shown on the SDR timeline through a view transform shared by preview, proxies and renders; camera cards (AVCHD, XDCAM, XAVC, P2, Canon XF, GoPro) with spanned recordings joined; MXF, ProRes, DNxHD/DNxHR and CineForm |
 | Preview | Real-time multi-layer preview composited on the GPU (wgpu on Vulkan) or the CPU; persistent decoders and frame caches; proxies; Dynamic RAM Preview and Selectively Prerender Video; a disk cache for heavy sources; hardware decoding when it measures faster |
 | Audio | Streaming mixer with busses, assignable FX chains, sends, six pan types and automation; Mixing Console and Loudness Meters; built-in audio FX; recording and input monitoring; cpal or WASAPI exclusive output |
 | Plug-ins | Third-party OFX video effects, transitions and generators; VST3 and CLAP audio effects with presets and latency compensation, and VST3 editor windows; all in a separate process, so a crash cannot take the editor down |
-| Render | Render As through the preview's own engine with 38 built-in templates and your own; render queue, Batch Render, Render to New Track; NVENC, Quick Sync, AMF and Media Foundation encoders after a startup test |
+| Render | Render As through the preview's own engine with built-in templates and your own; PNG, TIFF, OpenEXR and DPX image sequences; render queue, Batch Render, Render to New Track; NVENC, Quick Sync, AMF and Media Foundation encoders after a startup test |
 | Interchange | VEGAS Pro both ways through scripts; OpenTimelineIO; CMX 3600 EDL; FCP7 XML (Premiere Pro, DaVinci Resolve); FCPXML 1.10; AAF through OpenTimelineIO's adapter; project archive ([docs/INTERCHANGE.md](docs/INTERCHANGE.md)) |
 | Reliability | `.mnle` JSON project files with versioned migrations and `.mnle.bak`; autosave and crash recovery; logs, crash reports and a diagnostic report; an auto-updater with channels, verification and rollback |
-| Not yet | Multichannel and surround audio, a 10-bit / HDR pipeline, subtitles, image sequences, camera RAW formats, bins and metadata search: see [Roadmap](#roadmap) |
+| Not yet | Multichannel and surround audio, a 10-bit / HDR pipeline, subtitles, bins and metadata search: see [Roadmap](#roadmap) |
 
 ## System requirements
 
@@ -115,7 +116,7 @@ Requires Rust 1.85+ (edition 2024) on Windows. The binaries are written to `targ
 
 The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.8.0:
 
-- **Media:** a format capability report and test corpus (R37), image sequences and stills (R38), subtitles and closed captions (R39), HDR detection and display (R40a), a 10-bit / HDR pipeline (R40b), multichannel and surround audio with the Surround Panner (R10a, R10b), professional camera formats where FFmpeg can read them (R41).
+- **Media:** subtitles and closed captions (R39), a 10-bit / HDR pipeline (R40b), multichannel and surround audio with the Surround Panner (R10a, R10b).
 - **Media management:** bins, tags, smart bins and metadata search (R45a); a metadata inspector, duplicates and relinking (R45b).
 - **Interface:** high-DPI scaling and an animation policy (R48); the remaining Preferences pages and preference export (R49).
 - **Project:** a Cargo workspace split (R50), CI quality gates (R51), the public compatibility matrix and example VEGAS projects (R55).

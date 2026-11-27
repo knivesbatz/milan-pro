@@ -1320,6 +1320,10 @@ mod tests {
                     "prores_ks" => "prores",
                     "dnxhd" => "dnxhd",
                     "tiff" => "tiff",
+                    // R22: the hardware templates' device encoder, or software when none passed.
+                    "h264_hw" => "h264",
+                    "hevc_hw" => "hevc",
+                    "av1_hw" => "av1",
                     c => c,
                 };
                 assert_eq!(vs["codec_name"], want, "{}", t.name);

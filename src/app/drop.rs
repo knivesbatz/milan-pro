@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use eframe::egui;
 use crate::edit;
-use crate::media::{Importer, in_pool, merge_new};
+use crate::media::{ImportOpts, Importer, in_pool, merge_new};
 use crate::project::{MediaItem, Project};
 
 /// A drop waiting for probes: its files and where it goes on the timeline (None: only imported).
@@ -33,12 +33,14 @@ pub struct FileDrop {
     /// Files whose probe has been started.
     asked: HashSet<PathBuf>,
     probed: HashMap<PathBuf, Result<MediaItem, String>>,
+    /// R41: a dropped folder (a camera card): the probes of every clip the scan found in it.
+    probed_dirs: HashMap<PathBuf, Vec<Result<MediaItem, String>>>,
     pending: Vec<Pending>,
 }
 
 impl FileDrop {
     pub fn new() -> Self {
-        Self { importer: Importer::new(), asked: HashSet::new(), probed: HashMap::new(), pending: Vec::new() }
+        Self { importer: Importer::new(), asked: HashSet::new(), probed: HashMap::new(), probed_dirs: HashMap::new(), pending: Vec::new() }
     }
 
     /// Start probing the `paths` that are not in the pool and not asked for yet. With nothing hovering or waiting,
@@ -47,6 +49,7 @@ impl FileDrop {
         if paths.is_empty() && self.pending.is_empty() {
             self.asked.clear();
             self.probed.clear();
+            self.probed_dirs.clear();
             return;
         }
         let new: Vec<PathBuf> = paths.iter().filter(|p| !in_pool(pool, p) && self.asked.insert((*p).clone())).cloned().collect();
@@ -59,8 +62,10 @@ impl FileDrop {
     pub fn items(&self, paths: &[PathBuf], pool: &[MediaItem]) -> Option<Vec<MediaItem>> {
         let mut out = Vec::new();
         for p in paths {
-            if let Some(m) = pool.iter().find(|m| m.path == *p && m.subclip.is_none() && !m.is_offline()) {
+            if let Some(m) = pool.iter().find(|m| m.path == *p && m.subclip.is_none() && m.sequence.is_none() && !m.is_offline()) {
                 out.push(m.clone());
+            } else if let Some(rs) = self.probed_dirs.get(p) {
+                out.extend(rs.iter().flatten().cloned());
             } else if let Ok(m) = self.probed.get(p)? {
                 out.push(m.clone());
             }
@@ -71,6 +76,20 @@ impl FileDrop {
     /// Import `paths` once they are probed (reusing the hover probes), and place them at `place` if given.
     pub fn drop(&mut self, paths: Vec<PathBuf>, place: Option<Place>) {
         self.pending.push(Pending { paths, place, slideshow: None });
+    }
+
+    /// R38: `drop`, where some files open with their own options (a still as its sequence): those are probed again
+    /// that way, replacing the hover probe of the plain still.
+    pub fn drop_with(&mut self, ctx: &egui::Context, items: Vec<(PathBuf, ImportOpts)>, place: Option<Place>) {
+        let again: Vec<(PathBuf, ImportOpts)> = items.iter().filter(|(_, o)| *o != ImportOpts::default()).cloned().collect();
+        for (p, _) in &again {
+            self.probed.remove(p);
+            self.asked.insert(p.clone());
+        }
+        if !again.is_empty() {
+            self.importer.import_with(ctx, again);
+        }
+        self.drop(items.into_iter().map(|(p, _)| p).collect(), place);
     }
 
     /// R18b: Insert › Slideshow: import the pictures `paths` once probed and lay them out from `time` on video track
@@ -89,20 +108,38 @@ impl FileDrop {
     /// already in the pool is reused) and placed as the drop menu chose (crossfading when `xfade`), as one undo step.
     pub fn poll(&mut self, project: &mut Project, still_len: f64, xfade: bool) -> Option<Placed> {
         while let Some(batch) = self.importer.poll() {
-            self.probed.extend(batch);
+            for (p, r) in batch {
+                if p.is_dir() {
+                    self.probed_dirs.entry(p).or_default().push(r);
+                } else {
+                    self.probed.insert(p, r);
+                }
+            }
         }
-        let known = |p: &PathBuf| in_pool(&project.media_pool, p) || self.probed.contains_key(p);
+        let known = |p: &PathBuf| in_pool(&project.media_pool, p) || self.probed.contains_key(p) || self.probed_dirs.contains_key(p);
         let k = self.pending.iter().position(|d| d.paths.iter().all(known))?;
         let d = self.pending.remove(k);
         let before = project.clone();
-        let usable = |p: &PathBuf| in_pool(&project.media_pool, p);
-        let errors: Vec<String> = d.paths.iter().filter(|p| !usable(p)).filter_map(|p| self.probed.get(p)?.as_ref().err().cloned()).collect();
-        let new: Vec<MediaItem> = d.paths.iter().filter(|p| !usable(p)).filter_map(|p| self.probed.get(p)?.as_ref().ok().cloned()).collect();
+        // R41: a folder stands for the clips its scan found (each under the clip's own path); R38: a still opened as
+        // its sequence stands for the sequence item (its first file, which is not the still).
+        let key = |p: &PathBuf, r: &Result<MediaItem, String>| r.as_ref().map_or_else(|_| (p.clone(), false), |m| (m.path.clone(), m.sequence.is_some()));
+        let results: Vec<((PathBuf, bool), Option<&Result<MediaItem, String>>)> = d
+            .paths
+            .iter()
+            .flat_map(|p| match self.probed_dirs.get(p) {
+                Some(rs) => rs.iter().map(|r| (key(p, r), Some(r))).collect::<Vec<_>>(),
+                None => vec![(self.probed.get(p).map_or_else(|| (p.clone(), false), |r| key(p, r)), self.probed.get(p))],
+            })
+            .collect();
+        let find = |pool: &[MediaItem], (p, seq): &(PathBuf, bool)| pool.iter().position(|m| m.path == *p && m.subclip.is_none() && m.sequence.is_some() == *seq && !m.is_offline());
+        let usable = |k: &(PathBuf, bool)| find(&project.media_pool, k).is_some();
+        let errors: Vec<String> = results.iter().filter(|(k, _)| !usable(k)).filter_map(|(_, r)| (*r)?.as_ref().err().cloned()).collect();
+        let new: Vec<MediaItem> = results.iter().filter(|(k, _)| !usable(k)).filter_map(|(_, r)| (*r)?.as_ref().ok().cloned()).collect();
         let added = merge_new(&mut project.media_pool, new);
         if added {
             project.mark_modified();
         }
-        let idxs: Vec<usize> = d.paths.iter().filter_map(|p| project.media_pool.iter().position(|m| m.path == *p && m.subclip.is_none())).collect();
+        let idxs: Vec<usize> = results.iter().filter_map(|(k, _)| find(&project.media_pool, k)).collect();
         let (ids, refused) = match &d.place {
             Some((track, time, _)) if d.slideshow.is_some() => {
                 let target = track.as_deref().and_then(|id| project.find_track(id)).filter(|t| t.0).map(|t| t.1);

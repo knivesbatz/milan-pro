@@ -59,6 +59,64 @@ pub fn draw_properties(
                 if let Some(ref codec) = item.codec {
                     prop_row(ui, "Codec", codec);
                 }
+                // R38: a still image sequence; R41: a spanned clip's parts.
+                if let Some(seq) = &item.sequence {
+                    prop_row(ui, "Sequence", &seq.describe());
+                }
+                if !item.spanned.is_empty() {
+                    prop_row(ui, "Spanned parts", &format!("{} files joined", item.spanned.len()));
+                }
+                // R40a: bit depth, colour space, HDR metadata and how the source reaches the timeline.
+                if item.generator.is_none() && !item.nested && item.media_type != MediaType::Audio && item.unsupported.is_none() {
+                    if let Some(b) = item.bit_depth {
+                        prop_row(ui, "Bit depth", &format!("{b}-bit"));
+                    }
+                    prop_row(ui, "Color space", &item.color_space_name());
+                    if let Some(t) = &item.transfer {
+                        prop_row(ui, "Transfer", t);
+                    }
+                    if let Some(p) = &item.primaries {
+                        prop_row(ui, "Primaries", p);
+                    }
+                    if let Some(m) = &item.color_matrix {
+                        prop_row(ui, "Matrix", m);
+                    }
+                    if let Some(md) = item.mastering {
+                        if md.max_luminance > 0.0 {
+                            prop_row(ui, "Mastering display", &format!("{:.4} - {:.0} cd/m²", md.min_luminance, md.max_luminance));
+                        }
+                        if md.max_cll > 0 || md.max_fall > 0 {
+                            prop_row(ui, "Content light level", &format!("MaxCLL {} cd/m², MaxFALL {} cd/m²", md.max_cll, md.max_fall));
+                        }
+                    }
+                    let cm = project.settings.color_management;
+                    let handling = match crate::engine::color::badge(item, cm) {
+                        Some("HDR → SDR") => match cm {
+                            crate::project::ColorManagement::SdrClip => "HDR → SDR: Rec.709, highlights clipped (Project Properties › Color management)",
+                            _ => "HDR → SDR: tone-mapped to Rec.709, reference white 203 cd/m² (Project Properties › Color management)",
+                        },
+                        Some("BT.2020 → Rec.709") => "BT.2020 → Rec.709 (Project Properties › Color management)",
+                        Some(_) => "Linear light shown with a simple sRGB transfer (R40b brings a float pipeline)",
+                        None if item.hdr().is_some() => "None: decoded as Rec.709 (Color management is Off)",
+                        None => "SDR, used as it is",
+                    };
+                    prop_row(ui, "View transform", handling);
+                }
+                // R17a/R41: timecode, camera make/model and reel.
+                if let Some(tc) = item.timecode {
+                    prop_row(ui, "Timecode", &format_timecode(tc, item.frame_rate.filter(|f| *f > 0.0).unwrap_or(project.settings.frame_rate)));
+                }
+                if let Some(c) = &item.camera {
+                    prop_row(ui, "Camera", c);
+                }
+                if let Some(r) = &item.reel {
+                    prop_row(ui, "Reel", r);
+                }
+                // R37: the capability verdict (decode, proxy, render) from the FFmpeg table.
+                let caps = crate::engine::caps::try_get();
+                for (k, v) in crate::engine::caps::verdict(item, caps.as_deref()) {
+                    prop_row(ui, &k, &v);
+                }
             });
             return;
         }
