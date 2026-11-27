@@ -105,6 +105,11 @@ pub fn crash_offer_window(ctx: &Context, report: &Path) -> Option<CrashChoice> {
     }
 }
 
+/// R53: Help › Contents and Index opens the documentation folder of the repository; Help › Download User Manual
+/// (VEGAS 23) the README, which links every document. Milan Pro ships no help file: the docs live with the source.
+pub const DOCS_URL: &str = "https://github.com/knivesbatz/milan-pro/tree/main/docs";
+pub const MANUAL_URL: &str = "https://github.com/knivesbatz/milan-pro/blob/main/README.md";
+
 /// The new-issue page with the version and the report's name filled in.
 pub fn issue_url(version: &str, report: &Path) -> String {
     let name = report.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

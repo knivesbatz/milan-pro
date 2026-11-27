@@ -1,0 +1,37 @@
+name: Feature request
+description: Something Milan Pro should do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The planned work is in docs/REMAINING.md (section 5). If your idea is already a batch there, say so and add what you need from it.
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The task, in your own words, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: How other editors do it
+      description: What VEGAS Pro (which version), or another editor, does for this. Describe it in your own words; please do not paste screenshots or text from their manuals.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you suggest
+      description: Menu, shortcut, window or behaviour.
+  - type: input
+    id: batch
+    attributes:
+      label: Related batch in docs/REMAINING.md (if any)
+      placeholder: "R39"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the open issues and docs/REMAINING.md.
+          required: true

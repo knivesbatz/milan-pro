@@ -35,9 +35,9 @@ Counts cover the rows of section 2 (roll-up rows in 2.19 are not counted).
 
 | Status | Rows |
 |---|---|
-| DONE | 242 |
-| PARTIAL | 114 |
-| MISSING | 64 |
+| DONE | 319 |
+| PARTIAL | 79 |
+| MISSING | 22 |
 | NOT FEASIBLE | 4 (plus 5 partial infeasibilities inside other rows; section 6 lists all 9) |
 | **Total** | **424** |
 
@@ -48,7 +48,7 @@ What matters most:
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
-- **Documentation gaps:** no REFERENCE_ANALYSIS, ARCHITECTURE, CONTRIBUTING, issue templates, compatibility matrix, format report or licence review. `docs/FEATURE_PLAN.md` line 3 still says "plan only. Nothing here is built yet", which is stale.
+- **Documentation (R52-R54, R56):** [REFERENCE_ANALYSIS.md](REFERENCE_ANALYSIS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md), [LICENSES.md](LICENSES.md), `CONTRIBUTING.md`, the Code of Conduct, issue forms and the changelog are written. Still open: the compatibility matrix (R55) and the format report (R37).
 - **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
 ---
@@ -59,13 +59,13 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 1.1 | Locate VEGAS, exact version and components | PARTIAL | `docs/VEGAS_UI_SPEC.md:2478` names VEGAS Pro 15.0 build 177. There is no component inventory; section 4 below is the first. → R52 |
+| 1.1 | Locate VEGAS, exact version and components | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 1: VEGAS Pro 15.0 build 177, the program folder and the shared plug-in folder, component by component. |
 | 1.2 | Study interface, layout, menus, toolbars, timeline, preview, media, audio, FX, transitions, render | DONE | `docs/VEGAS_UI_SPEC.md` (2522 lines; measured [L] from the VP15 install plus VP16/VP23 references) |
-| 1.3 | Examine settings and supported project, media and plug-in formats | MISSING | Not documented. FileIO plug-ins, render formats and project formats are unlisted. → R52 |
-| 1.4 | Identify installed video and audio plug-ins and their formats | PARTIAL | `FEATURE_PLAN.md:1812-1813` says "no third-party OFX installed". That is wrong: `HitFilmVegasBasic.ofx` (FXHOME, 7 effects) is installed. Audio DX plug-ins are not mentioned. → R52, R31 |
-| 1.5 | Research integration points, SDKs, plug-in standards, interop | PARTIAL | `FEATURE_PLAN.md` section 3 has a few lines. Not documented: the .NET scripting API (`ScriptPortal.Vegas.dll`), the OFX host, VST via `sfvstwrap.dll`/`sfvstserver.exe`, DirectX audio, FileIO SDK, AAF (`AAFCOAPI.dll`, `ProjectInterchange.dll`). → R52 |
-| 1.6 | Detailed reference document | PARTIAL | The UI spec covers the interface only. → R52 |
-| 1.7 | `REFERENCE_ANALYSIS.md` | MISSING | → R52 |
+| 1.3 | Examine settings and supported project, media and plug-in formats | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 3 (project files), 4 (media formats per FileIO plug-in), 5 (render formats) and 9 (settings pages). |
+| 1.4 | Identify installed video and audio plug-ins and their formats | DONE | (R52, R31) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6: the 7 OFX bundles (HitFilm Vegas Basic is FXHOME's, third party), the DirectX audio plug-ins, the legacy video plug-ins; `FEATURE_PLAN.md` corrected. |
+| 1.5 | Research integration points, SDKs, plug-in standards, interop | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6-8: OFX with VEGAS's extensions, VST through `sfvstwrap`/`sfvstserver.exe`, DirectX audio, the .NET script API, the FileIO SDK, external control drivers, AAF, EDL, XML. |
+| 1.6 | Detailed reference document | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md), with the UI spec for the interface. |
+| 1.7 | `REFERENCE_ANALYSIS.md` | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) |
 | 1.8 | Observe the installed app's real behaviour | PARTIAL | The UI spec measured the VP15 exe resources and pixels. `FEATURE_PLAN.md:1817-1827` lists 10 behaviours still to confirm in VEGAS. → R55 |
 
 ### 2.2 Section 2: repository
@@ -74,22 +74,22 @@ What matters most:
 |---|---|---|---|
 | 2.1 | Public GitHub repository | DONE | knivesbatz/milan-pro; `src/updater.rs:17` |
 | 2.2 | Distinctive name, checked | DONE | "Milan Pro". The name check is not recorded in docs (R53 notes it). |
-| 2.3 | Professional README | PARTIAL | `README.md` is 61 lines: no screenshots, no feature status table, no system requirements, no links to docs. → R53 |
-| 2.4 | Project overview and feature roadmap | PARTIAL | The README roadmap has 3 bullets. This file becomes the roadmap. → R53 |
+| 2.3 | Professional README | DONE | (R53) `README.md`: a harness screenshot, a feature status table for 0.8.0, system requirements, every document linked, the roadmap. |
+| 2.4 | Project overview and feature roadmap | DONE | (R53) README "Roadmap" lists the open batches and links section 5 of this file, which is the roadmap. |
 | 2.5 | Installation instructions | DONE | `README.md` "Install (Windows)" |
-| 2.6 | Developer documentation | PARTIAL | The README has a 3-line build section. Missing: tests (including `--ignored` ffmpeg tests), the screenshot harness (`MILAN_SCREENSHOT`, `MILAN_DEMO`), the release process. → R53 |
-| 2.7 | Architecture documentation | PARTIAL | `FEATURE_PLAN.md` section 1 is the engine design, but its header says "plan only". There is no `ARCHITECTURE.md`. → R53 |
-| 2.8 | Contribution guidelines | MISSING | No `CONTRIBUTING.md` → R54 |
+| 2.6 | Developer documentation | DONE | (R53) [`docs/DEVELOPING.md`](DEVELOPING.md): toolchain, FFmpeg, tests including `--ignored`, the harness variables, benches, licences, adding commands/dialogs/plug-ins, conventions, releases and versioning. |
+| 2.7 | Architecture documentation | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md): modules, threads, data flow, the plug-in host IPC, theming, reliability and file formats, the harness, the test strategy and decision records; `FEATURE_PLAN.md`'s header fixed. |
+| 2.8 | Contribution guidelines | DONE | (R54) [`CONTRIBUTING.md`](../CONTRIBUTING.md): reporting, build, batch rules, `shortcut:` convention, tests, branches and commits, what may go into the repository, the AE-format "no Adobe SDK material" rule. |
 | 2.9 | License | DONE | `LICENSE` (MIT) |
-| 2.10 | Issue templates | MISSING | No `.github/ISSUE_TEMPLATE/` → R54 |
-| 2.11 | Bug-report template | MISSING | → R54 |
-| 2.12 | Feature-request template | MISSING | → R54 |
+| 2.10 | Issue templates | DONE | (R54) `.github/ISSUE_TEMPLATE/`: `bug_report.yml`, `feature_request.yml`, `plugin_compat.yml`, `format_support.yml`, `config.yml`; `.github/PULL_REQUEST_TEMPLATE.md`. Rendering on GitHub to be checked by the user. |
+| 2.11 | Bug-report template | DONE | (R54) `.github/ISSUE_TEMPLATE/bug_report.yml` (version, Windows build, GPU, steps, expected/actual, media, diagnostic report). |
+| 2.12 | Feature-request template | DONE | (R54) `.github/ISSUE_TEMPLATE/feature_request.yml`. |
 | 2.13 | GitHub Actions CI | DONE | `.github/workflows/ci.yml` (build plus test on windows-latest) |
 | 2.14 | Automated build workflows | DONE | `ci.yml` uploads `milan-pro.exe` as an artifact |
 | 2.15 | Release workflows | DONE | `.github/workflows/release.yml` (Inno Setup, FFmpeg fetch, SHA-256, draft-then-publish) |
 | 2.16 | Version tagging | DONE | `release.yml` triggers on `v*` and checks that the tag matches `Cargo.toml` |
 | 2.17 | Organized source tree | DONE | `src/{engine,ui,app}`, `installer/`, `tools/vegas/`, `docs/` |
-| 2.18 | Permissive licence after a dependency licence check, third-party restrictions documented | PARTIAL | MIT is chosen. Only FFmpeg GPL is mentioned (`README.md`, `FFMPEG-SOURCE.txt`). There is no licence review of the 300+ crates, and no notes on x264/x265 GPL or codec patents. → R56 |
+| 2.18 | Permissive licence after a dependency licence check, third-party restrictions documented | DONE | (R56) [`docs/LICENSES.md`](LICENSES.md), generated by `tools/licenses.ps1` from `Cargo.lock` (474 crates, none copyleft-only, none unknown), with FFmpeg's GPL v3 position, codec patents, OpenFX, VST3, CLAP, ASIO, camera SDKs, fonts and Inno Setup; `THIRD-PARTY-NOTICES.txt` in the installer. |
 | 2.19 | Keep the repository public | DONE | |
 | 2.20 | Regular meaningful commits | DONE | `git log` shows one commit per batch |
 
@@ -99,14 +99,14 @@ What matters most:
 |---|---|---|---|
 | 3.1 | Rust for core functionality | DONE | 36k lines of Rust; FFmpeg only as child processes |
 | 3.2 | FFmpeg for decode, encode, filters | DONE | `src/engine/vdecode.rs`, `src/engine/mix.rs`, `src/engine/render.rs`, `src/proc.rs` |
-| 3.3 | GStreamer evaluated | MISSING | No written evaluation → R53 (decision record) |
+| 3.3 | GStreamer evaluated | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) 10.1: FFmpeg CLI against libav bindings and GStreamer. |
 | 3.4 | GPU-accelerated rendering and compositing | DONE | (R21a-c) `engine/gpu`: the compositor runs on the GPU through wgpu on Vulkan (`GpuCompositor`, a `composite::Compositor` beside `CpuCompositor`), for the preview and renders alike; draws, every blend mode, Track Motion, the video FX, transitions and generators in WGSL, bit-exact against the CPU on 3000 random plans and at three parameter sets per plug-in (the clock wipe within 1). A preview frame stays on the GPU (`Picture`, shown as an egui native texture); a render reads back. Preferences › Video › GPU acceleration of video processing: Automatic, Off or an adapter. |
 | 3.5 | Vulkan / Direct3D or another graphics API evaluated | DONE | (R21a) The UI paints through wgpu on Vulkan (eframe feature `wgpu`, the default; OpenGL where there is no Vulkan), and the compositor shares its device. Direct3D 12 was not taken: wgpu's dx12 backend would add gpu-allocator and its MIT/Apache tree, and VEGAS's own compositor runs on OpenCL/Vulkan-class hardware either way. Cargo feature `glow` keeps the OpenGL painter (the compositor then opens its own device). → R53 for the docs |
 | 3.6 | Hardware video decoding and encoding | DONE | (R22) `engine/hw.rs` capability table (timed d3d11va/cuda/qsv decodes, nvenc/qsv/amf/mf encodes, cached per FFmpeg and driver); Preferences › Video decode acceleration and encode device; hardware Render As templates that fall back to software with a note. |
-| 3.7 | Suitable GUI framework, evaluated | PARTIAL | eframe/egui 0.31 works, but the evaluation is not written down. → R53 |
+| 3.7 | Suitable GUI framework, evaluated | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) 10.2: egui against Qt, Slint and iced. |
 | 3.8 | Professional audio engine | PARTIAL | Streaming stereo mixer (`engine/mix.rs`), (R8a) with busses, assignable FX chains and sends mixed in dependency order (`AudioPlan::buses`, `Mixer::block`) and per-node peak/RMS meters (`mix::Meter`); (R9) on cpal (WASAPI shared) or WASAPI exclusive with an output device choice, buffer size and latency-compensated playhead (`audio.rs`, `wasapi.rs`). Missing: multichannel. → R10a |
 | 3.9 | OpenFX and VST hosting where compatible | DONE | OFX video (R31-R33c), VST3 and CLAP audio effects (R34a-b, R35) in the out-of-process host; VST2 not feasible (10.11), DX/DMO investigated and not pursued (`docs/compat/dx-audio.md`). |
-| 3.10 | Frameworks evaluated for performance, extensibility, maintainability | PARTIAL | `FEATURE_PLAN.md` section 0/1 records decisions but no comparison → R53 |
+| 3.10 | Frameworks evaluated for performance, extensibility, maintainability | DONE | (R53) [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) section 10: FFmpeg, GUI, glow/wgpu, rodio/cpal, JSON projects, out-of-process plug-ins. |
 
 ### 2.4 Section 4: interface
 
@@ -224,7 +224,7 @@ What matters most:
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
 | 7.1 | Comprehensive media backend | DONE | FFmpeg 9.0.2 full build bundled (`installer/`) |
-| 7.2 | Codec availability, hardware acceleration, licensing and distribution researched | MISSING | Not documented. Section 4.3 is the raw data. → R37, R56 |
+| 7.2 | Codec availability, hardware acceleration, licensing and distribution researched | PARTIAL | (R56) Licensing and distribution: [`docs/LICENSES.md`](LICENSES.md) (FFmpeg GPL v3 build, libx264/libx265, no libfdk-aac, codec patents). Hardware acceleration: R22. The per-format capability report remains. → R37 |
 | 7.3 | H.264 / AVC | PARTIAL | Decode and encode (libx264) work. Not covered by a format test. → R37 |
 | 7.4 | H.265 / HEVC | PARTIAL | Decode and encode (libx265) work. Not tested. → R37 |
 | 7.5 | AV1 | PARTIAL | Decodes. R11: renders with libsvtav1 ("AV1 (SVT)" template, MP4 or WebM), ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not covered by a format test. → R37 |
@@ -254,7 +254,7 @@ What matters most:
 | 7.29 | PCM | DONE | WAV preset, pcm_s16le in the ProRes MOV |
 | 7.30 | AC-3 | PARTIAL | Decodes. R11: "AC-3 audio" template and AC-3 in the MPEG-2 templates, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
 | 7.31 | E-AC-3 | PARTIAL | Decodes. R11: "E-AC-3 audio" template, ffprobe-checked by `render_templates_e2e`, `docs/FORMAT_SUPPORT.md`. Decode not tested. → R37 |
-| 7.32 | DTS where supportable | PARTIAL | Decodes (dca). The encoder is experimental and core-only; licensing is to be documented. → R37, R56 |
+| 7.32 | DTS where supportable | PARTIAL | Decodes (dca). The encoder is experimental and core-only and no template offers it; licensing is in [`docs/LICENSES.md`](LICENSES.md) (R56). → R37 |
 | 7.33 | Multichannel audio (formats) | MISSING | The mixer forces stereo (`mix.rs:68`, `-ac 2`); 5.1 sources are downmixed silently. → R10a |
 | 7.34 | MP4 | DONE | Import and render |
 | 7.35 | MOV | DONE | Import and render |
@@ -286,7 +286,7 @@ What matters most:
 | 7.61 | Multichannel audio (media) | PARTIAL | R3b: Stream ▸ plays any audio (or video) stream of a multi-stream file (`Clip.stream`, `-map 0:a:N` in `engine/mix.rs`, `0:v:N` in `engine/vdecode.rs`; streams counted at import, `media.rs`); Channels ▸ Both / Left Only / Right Only / Combine / Swap (`mix::map_channels`). Tests `invert_phase_and_channels`, `streams_are_counted_by_kind`, `ffmpeg_second_stream_and_peak` (ignored, ffmpeg). Missing: sources are still downmixed to stereo, and nothing offers the extra streams on import. → R10a, R10b |
 | 7.62 | Professional camera formats | PARTIAL | AVCHD, XAVC and MXF decode through FFmpeg; untested. No spanned-clip joining. (R17a) Media timecode is read: `timecode` tags, QuickTime `tmcd`, MXF, BWF `time_reference`. → R41 |
 | 7.63 | Format compatibility system; every supported format tested | MISSING | No capability probe, no test corpus, no format report. → R37 |
-| 7.64 | Limitations, external dependencies and licensing documented | MISSING | → R37, R56 |
+| 7.64 | Limitations, external dependencies and licensing documented | PARTIAL | (R56) Licensing and external dependencies: [`docs/LICENSES.md`](LICENSES.md). Format limitations remain. → R37 |
 | 7.65 | Never silently substitute or misinterpret an unsupported codec | PARTIAL | A probe failure is an error (`media.rs` tests). But a file whose codec FFprobe names and FFmpeg cannot decode only fails at preview time. HDR is misinterpreted (7.58). Extra audio streams can be picked with Stream ▸ (R3b) but are not offered on import, and extra channels are dropped silently. → R37, R40a, R10b |
 
 ### 2.8 Section 8: VEGAS project import
@@ -330,15 +330,15 @@ What matters most:
 
 | # | Requirement | Status | Evidence / what is missing |
 |---|---|---|---|
-| 10.1 | Inventory video effect plug-ins | PARTIAL | Raw inventory in section 4.2 of this file; not in a doc. → R52 |
-| 10.2 | Inventory audio effect plug-ins | PARTIAL | Section 4.2 (11 DX DLLs). → R52 |
-| 10.3 | Inventory transitions | PARTIAL | Section 4.2 (28 OFX transitions in Vfx1). → R52 |
-| 10.4 | Inventory generators | PARTIAL | Section 4.2 (6 generators). → R52 |
-| 10.5 | Third-party plug-in formats | PARTIAL | Section 4.2 (OFX: HitFilm; VST folders empty). → R52 |
-| 10.6 | Plug-in SDKs | MISSING | → R52 |
-| 10.7 | Documented host interfaces | MISSING | → R52 |
-| 10.8 | Plug-in dependencies | MISSING | The HitFilm bundle has its own resources and licence check; to be tested in R33c. → R52 |
-| 10.9 | Research the actual plug-in standards VEGAS 15 uses | PARTIAL | `FEATURE_PLAN.md:1812-1813` only → R52 |
+| 10.1 | Inventory video effect plug-ins | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1, and `docs/compat/ofx-vegas15.md` per plug-in. |
+| 10.2 | Inventory audio effect plug-ins | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 1.2 and 6.3, and `docs/compat/dx-audio.md`. |
+| 10.3 | Inventory transitions | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (the transitions bundle). |
+| 10.4 | Inventory generators | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (the generators). |
+| 10.5 | Third-party plug-in formats | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6.1-6.5 (OFX: HitFilm; VST folders empty). |
+| 10.6 | Plug-in SDKs | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 7 (the .NET script API, the FileIO SDK, the OFX SDK, external control). |
+| 10.7 | Documented host interfaces | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6 and 7. |
+| 10.8 | Plug-in dependencies | DONE | (R52, R33c) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (proDAD Mercalli for Stabilize, the HitFilm licence folder, VEGAS's private suites), tested in `docs/compat/ofx-vegas15.md`. |
+| 10.9 | Research the actual plug-in standards VEGAS 15 uses | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6; `FEATURE_PLAN.md:1813` corrected. |
 | 10.10 | OpenFX | MISSING | → R33a-c |
 | 10.11 | VST2 | NOT FEASIBLE | Steinberg stopped licensing the VST2 SDK (2018); new hosts cannot get a licence, and clean-room headers carry legal risk. Deliverable: stated in COMPATIBILITY.md with the VST3/CLAP alternative (R55). |
 | 10.12 | VST3 | DONE | (R34a-b) `engine/aplug`, `src/bin/milan-plugin-host/vst3.rs`: scan (IPluginFactory, moduleinfo.json cross-check), IComponent/IAudioProcessor at 48 kHz float with 1024-frame blocks, IEditController parameters as `ParamSpec`s with keyframes and automation, program lists, latency → PDC in the mixer, tail, IPlugView editor windows, `.vstpreset`. Tests `aplug::tests::*`. |
@@ -542,8 +542,8 @@ What matters most:
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
 | 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
 | 18.9 | Memory-safety-conscious design | DONE | `unsafe` only in `windows-sys` calls (`main.rs`, `proc.rs`) |
-| 18.10 | Documentation | PARTIAL | → R52-R56 |
-| 18.11 | Dependency licensing review | MISSING | → R56 |
+| 18.10 | Documentation | PARTIAL | (R52, R53, R54, R56 DONE) Reference analysis, architecture, developer guide, community files and licences are written. → R55 (compatibility matrix) |
+| 18.11 | Dependency licensing review | DONE | (R56) [`docs/LICENSES.md`](LICENSES.md); `tools/licenses.ps1 -Check` fails when it is stale. |
 | 18.12 | CI builds | DONE | |
 | 18.13 | Code formatting and linting | MISSING | No `rustfmt.toml`; rustfmt is not even installed locally; no clippy or fmt in CI. → R51 |
 | 18.14 | No placeholder implementations disguised as complete | DONE | R0: the unlit track meters and every greyed Project Properties combo say on hover that they are not available yet and which batch builds them. |
@@ -587,9 +587,9 @@ What matters most:
 | Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
-| Complete technical documentation | MISSING | R52-R56 |
+| Complete technical documentation | PARTIAL | R52, R53, R54, R56 done; R55 open |
 | Public compatibility matrix | MISSING | R55 |
-| Development roadmap | PARTIAL | this file; R53 |
+| Development roadmap | DONE | this file (section 5), linked from the README roadmap (R53) |
 | Repository stays buildable | DONE | |
 
 ---
@@ -629,7 +629,7 @@ The inventory as found before R0:
 | View | BusTracks, VideoBusTrack, MediaMarkers, NextWindow, PrevWindow | R8b (DONE), R7 (DONE), R18a (DONE), R13 (DONE) |
 | Docking | ToggleDocks, TopDock, BottomDock, RightDock, CollapseTrackList, MaximizeTimeline, LayoutVp14, LayoutAudio, LayoutColor, LayoutSource, LayoutTimelineTop | R13 (DONE) |
 | Windows | FocusTimeline, EditDetails, ProjectNotes, PluginManager, VideoScopes, SurroundPanner, MixingConsole, DeviceExplorer, LoudnessMeters, Dashboard, MotionTracking, TextToSpeech | R13 (DONE), R16a (DONE), R16b (DONE), R16c (DONE), R31, R10b, R8b (DONE), R59 |
-| Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53, R18a (DONE), R59 |
+| Misc | Help, WhatsThis, ContextMenu, RebuildPeaks, MidiTimecode, MidiClock, MidiTrigger | R53 (DONE), R18a (DONE), R59 |
 | Always on, shown checked but disabled (labelled "always on" by R0) | SnapMarkers, Waveforms, EventButtons, FadeLengths, EdgeFrames, TakeInfo | DONE |
 
 **Toolbar buttons already labelled before R0** (R0 added the batch to each tooltip; they stay until their feature lands):
@@ -771,7 +771,7 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
 - R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
 - R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
-- R53: Show Me How, Interactive Tutorials, Download User Manual (open the docs).
+- R53 (done): Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
 
 **Scope**
@@ -2140,6 +2140,8 @@ Each crate gets its own tests. `egui` types in the engine (`ColorImage`, `Color3
 
 ### R52: REFERENCE_ANALYSIS.md (M)
 
+**Status: DONE.** [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md): the installation (program folder and shared plug-ins), what the interface was measured from, project files, media formats per FileIO plug-in, render formats, plug-in standards, SDKs and integration points, interoperability (with R28/R29 now built), settings pages, the open behaviours, and section 11, which maps VEGAS's model (tracks, events, takes, envelopes, busses, FX chains, Pan/Crop, Track Motion, the project and render pipeline, windows and docking) onto Milan Pro's data model and engine, with the deliberate differences. Section 12 lists the corrections; `FEATURE_PLAN.md:1813` (HitFilm) is corrected. Written from files and documentation only: VEGAS was not launched, and nothing of it is reproduced.
+
 **Scope:** the reference document the brief asked for first. It covers:
 - the VEGAS Pro 15.0 build 177 install (section 4.1 here, expanded);
 - the relationship to the VEGAS 16 and VEGAS 23 references Milan Pro's layout follows;
@@ -2160,6 +2162,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 
 ### R53: ARCHITECTURE.md, developer guide, README, roadmap (M)
 
+**Status: DONE.** [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) (with the six decision records), [`docs/DEVELOPING.md`](DEVELOPING.md), the README refresh (screenshots from the harness in `docs/images/`, the 0.8.0 feature table, system requirements, the documentation index and the roadmap), and `FEATURE_PLAN.md`'s header. Help > Contents and Index opens the docs folder on GitHub and Help > Download User Manual the README (`dialogs::DOCS_URL`, `MANUAL_URL`); What's This?, Show Me How and Interactive Tutorials stay greyed with a final reason (hover text and the docs stand in for them) instead of a batch. Link check: `tests/doc_links.rs` resolves every relative link (inline, reference and HTML) of every Markdown file and runs with `cargo test`, so CI checks it. Not done: the "name check" note of row 2.2.
+
 **Scope**
 - `docs/ARCHITECTURE.md`: crates and modules, threads, data flow (plan → compose/mix → preview/render), the plug-in host, the updater, file formats, and decision records:
   - FFmpeg CLI versus libav bindings versus GStreamer;
@@ -2176,6 +2180,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 **Acceptance:** links resolve (a markdown link check in CI); Help > Contents works.
 
 ### R54: Community files and templates (S)
+
+**Status: DONE.** [`CONTRIBUTING.md`](../CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](../CODE_OF_CONDUCT.md) (Contributor Covenant 2.1, CC BY 4.0, attribution kept; reports go to the maintainers through the repository's private reporting form), the issue forms (`bug_report`, `feature_request`, `plugin_compat` in place of `plugin_compatibility`, `format_support`, `config.yml` with blank issues off and links to security reporting and the docs instead of Discussions, which the repository does not use), the pull request template, and [`CHANGELOG.md`](../CHANGELOG.md) from the 0.2.0-0.7.0 release notes and the 0.8.0 batches. `SECURITY.md` already covered reporting and the updater keys and is unchanged. The labels the forms name (`bug`, `enhancement`, `plug-in compatibility`, `format`) are applied only once they exist on the repository. Acceptance (GitHub renders the forms) is for the user to check on the repo page.
 
 **Scope**
 - `CONTRIBUTING.md` (build, branch and commit style, batch rules from FEATURE_PLAN, `shortcut:` convention, tests required).
@@ -2197,6 +2203,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 **Acceptance:** each matrix row has a status from the five categories; no "supported" row without a passing test reference.
 
 ### R56: Dependency and codec licensing review (S-M)
+
+**Status: DONE.** [`docs/LICENSES.md`](LICENSES.md) (named so, not `LICENSING.md`) and `THIRD-PARTY-NOTICES.txt` (not `THIRD_PARTY_LICENSES.txt`; with every crate's licence text, each distinct text once) are written by `tools/licenses.ps1` from `Cargo.lock` and the crates in the local Cargo registry (nothing downloaded; the hand-written notes are `tools/licenses-notes.md`). `cargo deny` is not in the toolchain, so the acceptance check is `tools/licenses.ps1 -Check`, which fails when either file is stale; `deny.toml` is R51's. Result: 474 crates, all under permissive licences; no GPL, LGPL-only, AGPL or unknown licence; `r-efi` offers LGPL-2.1 only as a third choice beside MIT and Apache-2.0. Not crates: FFmpeg 9.0.2 (GPL v3, separate processes, bundled with `FFMPEG-SOURCE.txt` as the source offer), the OpenFX header attribution (BSD-3), VST3 (`vst3` crate MIT/Apache; no Steinberg SDK code shipped; the SDK 3.8 MIT licence is still to be verified against Steinberg's own text), CLAP (MIT), the Contributor Covenant (CC BY 4.0), fonts (none shipped; egui's fallback fonts under OFL-1.1, UFL-1.0 and MIT), Inno Setup. `installer/milan-pro.iss` installs `THIRD-PARTY-NOTICES.txt` (checked with ISCC).
 
 **Scope**
 - `docs/LICENSING.md`: the `cargo deny` licence list (all crates; MIT/Apache/BSD/ISC/Zlib/Unicode/MPL), new crates from the batches (minisign-verify, vst3, clap-sys, quick-xml).

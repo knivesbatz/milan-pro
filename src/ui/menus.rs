@@ -185,7 +185,7 @@ impl CmdState {
             | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml | ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
-            | CustomizeKeyboard | CommandPalette => true,
+            | CustomizeKeyboard | CommandPalette | Help | UserManual => true,
             // Four docking areas and the Source / Timeline Top layouts.
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => true,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
@@ -422,7 +422,8 @@ impl Why {
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
         SurroundPanner => Later("R10b"),
-        Help | WhatsThis => Later("R53"),
+        // Shift+F1 context help: every control already says what it does (and why it is greyed) when hovered.
+        WhatsThis => Fixed("hover text does its job: every control says what it does, and why, when it is greyed"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
         SnapMarkers | Waveforms | EventButtons | FadeLengths | EdgeFrames | TakeInfo | EventHeaders => ALWAYS_ON,
         _ => return None,
@@ -1200,12 +1201,13 @@ pub const HELP: &[M] = &[
     C("What's &This?", WhatsThis),
     C("&Keyboard Shortcuts", KeyboardShortcuts),
     C("Unfinished &Features", UnfinishedFeatures),
-    X("&Show Me How...", Later("R53")),
+    // VEGAS's built-in interactive tutorials; the documentation (Help > Contents and Index) stands in for them.
+    X("&Show Me How...", Fixed("no interactive tutorials in Milan Pro: the documentation opens from Help > Contents and Index")),
     S,
     C("Check for &Updates...", CheckForUpdates),
     C("Create &Diagnostic Report...", DiagnosticReport),
     C("&Roll Back to Previous Version...", RollBack),
-    X("Download User Manual", Later("R53")),
+    C("Download User Manual", UserManual),
     S,
     C("About Milan Pro...", About),
 ];

@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in Milan Pro does not work as it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting. Please search the open issues first. Security problems go to SECURITY.md, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Milan Pro version
+      description: Help > About Milan Pro.
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: Settings > System > About, or `winver`.
+      placeholder: "Windows 11 24H2, build 26100.2314"
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: "NVIDIA GeForce RTX 3060, driver 566.36"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From starting Milan Pro or opening a project. Small steps are best.
+      placeholder: |
+        1. New project, 1080p 29.97
+        2. Import an .mp4 and drop it on a video track
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Error messages as text, and a screenshot if it helps.
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Media involved (if any)
+      description: Container, codec, resolution and frame rate, or the output of `ffprobe -hide_banner <file>`.
+      render: text
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic report
+      description: |
+        Help > Create Diagnostic Report makes a folder with system information, logs and crash reports. Zip it and drag it here.
+        Read it first: nothing is sent anywhere by itself, and Preferences > Update can leave file names and paths out of it.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the open issues and this is not a duplicate.
+          required: true
+        - label: It still happens in the latest release (Help > Check for Updates).

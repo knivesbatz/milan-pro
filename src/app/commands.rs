@@ -961,6 +961,9 @@ impl MeridianApp {
                 self.customize_bar = Some(dialogs::CustomizeToolbar::new(bar, bar.buttons(&self.prefs.toolbars)));
             }
             UnfinishedFeatures => self.unfinished_open = true,
+            // R53: the documentation lives with the source; Milan Pro ships no help file.
+            Help => dialogs::open_url(dialogs::DOCS_URL),
+            UserManual => dialogs::open_url(dialogs::MANUAL_URL),
             CommandPalette => self.palette.open_with(""),
             About => self.about = true,
             CheckForUpdates => self.updater.check(ctx, true, std::time::Duration::ZERO, self.prefs.update_channel),

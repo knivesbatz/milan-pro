@@ -690,7 +690,7 @@ pub(super) fn paint(p: &Painter, g: &Geo, rows: &[Row], heads: &[Head], project:
             if groove.span() < 20.0 {
                 continue;
             }
-            // Sunken 3D groove (CLASSIC_2006_SPEC.md §6).
+            // Sunken 3D groove (UI_SPEC.md §6).
             crate::ui::widgets::groove(&p, *groove, cy, &t.metal);
             let x = (groove.min + auto.map_or_else(|| s.pos(tr, &cx), |(k, _, v)| auto_pos(k, v)) * groove.span()).round();
             // An automation control's thumb takes its envelope's colour (VEGAS draws a distinct automation handle).
