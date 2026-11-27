@@ -390,6 +390,14 @@ impl MeridianApp {
         // R49: Normalize peak level, and the Display page's envelope, snap and icon colours.
         crate::edit::set_normalize_peak(prefs.normalize_peak_db);
         theme::set_user_colors(&cc.egui_ctx, prefs.user_colors());
+        // Options › Preferences › Display › Theme; the harness's MILAN_THEME=dark (or silver) overrides it.
+        let kind = match std::env::var("MILAN_THEME").ok().as_deref().map(str::to_ascii_lowercase).as_deref() {
+            Some("dark") => theme::ThemeKind::Dark,
+            Some("silver") => theme::ThemeKind::Silver,
+            _ => prefs.theme,
+        };
+        theme::set_kind(&cc.egui_ctx, kind);
+        prefs.theme = kind;
         // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
         // opens the chosen adapter on a background thread; without one the CPU composes.
         #[cfg(feature = "wgpu")]

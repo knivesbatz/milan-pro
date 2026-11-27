@@ -4,16 +4,16 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.11). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
+> Early development (v0.12). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
 
 <p align="center"><img src="docs/images/screenshot.png" width="860" alt="Milan Pro: Project Media, Video Preview, Master Bus and a five-track timeline"></p>
 <p align="center"><sub>Taken by the screenshot harness on its demo project.</sub></p>
 
 ## Features
 
-| Area | Status in 0.11 |
+| Area | Status in 0.12 |
 |---|---|
-| Interface | One designed look (silver chrome, navy LCD read-outs, an amber accent) in the idiom of the 2002-2006 media software, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette; sharp at 100-200 % display scaling (View > Interface Scale); preferences export and import |
+| Interface | One designed look (silver chrome, navy LCD read-outs, an amber accent) in the idiom of the 2002-2006 media software, in a Silver and a Dark theme, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette; sharp at 100-200 % display scaling (View > Interface Scale); preferences export and import |
 | Editing | Multitrack video and audio; move, trim, split, snapping and grid; ripple; slip, slide, roll and stretch; takes; groups; subclips; nested timelines; multicamera editing; Expanded Edit and edge trimming; markers, regions and command markers; adjustment tracks and events; undo/redo |
 | Effects and compositing | Video FX, transitions and generators (Titles & Text, Credit Roll, Test Pattern and more) with presets and keyframes; subtitles (SRT, WebVTT and ASS with its styles) as Titles & Text events, exported as SRT or WebVTT; the looks, lens tricks, temporal effects and transitions of 2001-2009 music videos ([below](#music-video-fx-2001-2009)) and FX Packages (saved FX chains applied in one step); Color Grading with `.cube` LUTs; Event Pan/Crop with Bezier masks; Track Motion in 2D and 3D; parent/child compositing and all VEGAS compositing modes; Video Scopes |
 | Media | Any format the bundled FFmpeg can read, checked against its capabilities: a codec it cannot decode imports offline with the reason, and Media Properties says what decodes, proxies and renders each file ([docs/FORMAT_SUPPORT.md](docs/FORMAT_SUPPORT.md) is the tested matrix); still image sequences as one clip, animated GIF/WebP, and PNG, JPEG, 16-bit TIFF, BMP, WebP, TGA, DPX, JPEG 2000, PSD, OpenEXR and Radiance HDR stills; HDR (PQ, HLG) sources detected and shown on the SDR timeline through a view transform shared by preview, proxies and renders; 32-bit floating point projects (VEGAS's pixel formats, linear compositing, ACES color spaces and view transforms) that keep 10-bit and float sources' precision and render 10-bit, HDR10 and HLG; camera cards (AVCHD, XDCAM, XAVC, P2, Canon XF, GoPro) with spanned recordings joined; MXF, ProRes, DNxHD/DNxHR and CineForm; Project Media with nested Custom Bins, Smart Bins, media tags and a search over names, paths, codecs, tags and frame sizes that stays quick at 10,000 items; File Format Properties with every stream field and tag; moved media relinked by a folder search; duplicate files caught on import |
@@ -35,7 +35,7 @@ An open-source nonlinear video editor written in Rust, with a workflow modeled o
 
 ## Interface
 
-Milan Pro's interface has one design language, shared with its 2002-2006 brand: brushed silver chrome with rounded corners and one top-left light for everything you press, drag or frame; deep navy LCD wells with light-blue text and segmented digits for every live read-out, list and tree; paper wells for typing; black wells for pictures; one selection blue and a single amber accent. Dialogs have slate captions, chrome tabs and section title tabs; every text meets WCAG AA contrast. It sits on VEGAS Pro's window layout, with VEGAS's menus, shortcuts and docking areas (Tahoma 8 pt keeps the layout as dense). Window layouts can be saved and recalled as in VEGAS. The design system is [docs/UI_SPEC.md](docs/UI_SPEC.md).
+Milan Pro's interface has one design language, shared with its 2002-2006 brand: brushed silver chrome with rounded corners and one top-left light for everything you press, drag or frame; deep navy LCD wells with light-blue text and segmented digits for every live read-out, list and tree; paper wells for typing; black wells for pictures; one selection blue and a single amber accent. Dialogs have slate captions, chrome tabs and section title tabs; every text meets WCAG AA contrast. Two themes share it: **Silver** (the default) and **Dark** (gunmetal chrome, near-black LCD wells with azure read-outs, a steel-grey selection), switched in Options › Preferences › Display › Theme without a restart. It sits on VEGAS Pro's window layout, with VEGAS's menus, shortcuts and docking areas (Tahoma 8 pt keeps the layout as dense). Window layouts can be saved and recalled as in VEGAS. The design system is [docs/UI_SPEC.md](docs/UI_SPEC.md).
 
 ## Music-video FX (2001-2009)
 
@@ -135,7 +135,7 @@ Requires Rust 1.85+ (edition 2024) on Windows. The binaries are written to `targ
 
 ## Roadmap
 
-The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.11.0:
+The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.12.0:
 
 - **Project:** a Cargo workspace split (R50), CI quality gates (R51).
 - **Plug-ins:** CLAP editor windows, OFX GPU render paths, and the rest of AE-format effect hosting beyond today's experimental 8-bit filters: float, transitions and SmartFX ([docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md)).

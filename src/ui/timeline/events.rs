@@ -4,7 +4,7 @@ use eframe::egui::*;
 use crate::audio::PEAKS_PER_SEC;
 use crate::edit;
 use crate::project::Clip;
-use crate::ui::icons::{Icon, paint_icon};
+use crate::ui::icons::Icon;
 use crate::ui::theme::Theme;
 
 pub(super) struct Ev<'a> {
@@ -383,13 +383,14 @@ fn paint_header(p: &Painter, t: &Theme, ev: &Ev, bar: Rect) {
     pi.add(mesh);
     pi.rect_filled(Rect::from_x_y_ranges(bar.x_range(), Rangef::new(bar.max.y - 1.0, bar.max.y)), 0.0, mul(ev.color, 0.6));
     for (icon, r) in &icons {
-        paint_icon(&pi, *r, *icon, None);
+        // The header is light in both token sets: its glyphs keep their light-surface colours.
+        crate::ui::icons::paint_icon_on_light(&pi, *r, *icon);
         fx_dot(&pi, t, ev, *icon, *r);
     }
     let name_w = bar.max.x - 2.0 - 18.0 * icons.len() as f32 - bar.min.x - 6.0;
     if name_w > 8.0 {
         // Black Tahoma on the light gradient.
-        let ink = t.text;
+        let ink = t.event_ink;
         paint_name(&pi, ev, pos2(bar.min.x + 4.0, bar.center().y), name_w, t.font(t.font.event_name), ink);
     }
 }

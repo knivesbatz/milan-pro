@@ -14,6 +14,8 @@ impl MeridianApp {
         if new.track_colors != self.prefs.track_colors {
             theme::set_palette(ctx, new.palette());
         }
+        // The theme applies at once (no restart).
+        theme::set_kind(ctx, new.theme);
         if new.record_input != self.prefs.record_input && self.rec_start.is_none() {
             (self.input, self.input_failed) = (None, false); // the meter reopens on the new input
         }

@@ -7,6 +7,8 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
+## 0.12.0
+
 ### Added
 - **Compatibility matrix:** `docs/COMPATIBILITY.md` lists every plug-in of the VEGAS Pro 15 install (OFX, DirectX audio,
   legacy video) and every plug-in Milan Pro has been tested with, each as Native equivalent, Standard interface,
@@ -15,6 +17,13 @@ the minor number for feature releases, the patch number for fixes.
   the ten VEGAS behaviours still to confirm in VEGAS (R55).
 - **Example VEGAS projects:** eleven example exports in `tests/vegas/` with expected results, imported by a test. They
   are written by hand to the export script's format, not exported from VEGAS (R55).
+- **Dark theme:** Options › Preferences › Display › Theme: Silver (the default) or Dark, applied on OK / Apply
+  without a restart, saved with the preferences and carried by Export / Import Preferences. Dark is the same design
+  system on a second token set (docs/UI_SPEC.md §2.9): gunmetal brushed chrome with thin light lips, near-black LCD
+  wells with azure read-outs and list text, dark fields with light ink, a steel-grey selection, azure lit toggles and
+  glyphs, the same amber. Icons draw their black ink light on dark chrome; event headers, event bodies, markers and
+  pictures keep their colours. Every text / background pair meets WCAG AA in both themes (the contrast test checks
+  both); Silver is unchanged. The harness takes `MILAN_THEME=dark`.
 
 ### Fixed
 - **VEGAS import:** a VEGAS project with a 5.1 master bus now opens with Milan Pro's 5.1 master instead of a stereo one
