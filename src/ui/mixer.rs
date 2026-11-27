@@ -650,11 +650,11 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     let p = ui.painter().clone();
     let all = regs.iter().flatten().fold(label, |a, r| a.union(*r));
     let selected = matches!(s, Strip::Track(tid) if sel.tracks.contains(tid));
-    // Blue-grey metal strips, as the track headers.
-    super::widgets::header_metal(&p, all, &t, selected);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(all.max.x, all.max.x + 1.0), all.y_range()), 0.0, t.track_separator);
+    // Each strip a chrome card (UI_SPEC.md §8.2 Mixing Console): a brushed face with a rounded rim, lit when the
+    // track is selected, its regions parted by grooves.
+    super::widgets::strip_card(&p, all.shrink2(vec2(1.0, 0.0)), selected);
     for r in regs.iter().flatten() {
-        p.hline(r.x_range(), r.max.y - 0.5, Stroke::new(1.0_f32, t.track_separator));
+        super::widgets::etched_h(&p, r.x_range().shrink(4.0), r.max.y - 2.0, &t.metal);
     }
     let small = t.font(t.font.meter + 1.0);
     let lv = level(ui.ctx(), s.key());
@@ -993,8 +993,10 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
         }
     }
 
-    // Label: colour bar and name; a click selects the track, a double-click renames.
-    p.rect_filled(Rect::from_x_y_ranges(label.x_range(), Rangef::new(label.min.y, label.min.y + 3.0)), 0.0, color);
+    // Label: an LCD name plate under the track's colour bar; a click selects the track, a double-click renames.
+    let plate = Rect::from_min_max(pos2(label.min.x + 4.0, label.min.y + 5.0), pos2(label.max.x - 4.0, label.max.y - 3.0));
+    super::widgets::lcd_well(&p, plate, true, false);
+    p.rect_filled(Rect::from_x_y_ranges(label.x_range().shrink(4.0), Rangef::new(label.min.y + 1.0, label.min.y + 4.0)), 1.0, color);
     let lr = ui.interact(label, id.with("label"), Sense::click());
     // R9: an input bus strip's label menu deletes it (one undo step).
     if project.timeline.audio.inputs.iter().any(|b| b.id == s.key()) {
@@ -1054,7 +1056,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     if editing {
         rename(ui, view, project, history, s, label);
     } else {
-        p.with_clip_rect(label).text(label.center() + vec2(0.0, 1.5), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.text_bright);
+        p.with_clip_rect(plate.shrink(2.0)).text(plate.center(), Align2::CENTER_CENTER, name, t.font(t.font.ui), t.lcd.text_hi);
     }
 }
 

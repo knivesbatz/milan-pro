@@ -147,8 +147,9 @@ fn dots_tex(ctx: &Context) -> TextureId {
     tid
 }
 
-/// Bar fill: the raised chrome gradient `hi` → `mid` (45 %) → `lo`, multiplied by `tint`, with the faint streak
-/// texture over it (bars only: UI_SPEC.md §5 Bar). Square: bars run edge to edge.
+/// Bar fill: glossy chrome (`Theme::gloss`: a bright upper half, a clear mid-line, a darker lower half with a
+/// bounce of light at the bottom), multiplied by `tint`, with the faint streak texture over it (bars only:
+/// UI_SPEC.md §5 Bar). Square: bars run edge to edge.
 pub fn metal_tinted(p: &Painter, r: Rect, m: &Metal, tint: Color32) {
     let r = px(r);
     if !r.is_positive() {
@@ -158,7 +159,8 @@ pub fn metal_tinted(p: &Painter, r: Rect, m: &Metal, tint: Color32) {
         let f = |a: u8, b: u8| ((a as u32 * b as u32 + 127) / 255) as u8;
         Color32::from_rgb(f(c.r(), tint.r()), f(c.g(), tint.g()), f(c.b(), tint.b()))
     };
-    grad(p, r, 0.0, &[(0.0, mul(m.hi)), (0.45, mul(m.mid)), (1.0, mul(m.lo))]);
+    let stops = theme::get().gloss_bar.stops(0.5).map(|(f, c)| (f, mul(c)));
+    grad(p, r, 0.0, &stops);
     if m.streak > 0.0 {
         let uv = Rect::from_min_max(Pos2::ZERO, pos2(r.width() / STREAK as f32, r.height() / STREAK as f32));
         p.image(streak_tex(p.ctx()), r, uv, Color32::WHITE.gamma_multiply(m.streak));
@@ -169,13 +171,34 @@ pub fn metal(p: &Painter, r: Rect, m: &Metal) {
     metal_tinted(p, r, m, Color32::WHITE);
 }
 
-/// A bar (menu row, toolbars, transport, status, ruler band): chrome fill with its `s0` lip on top and `s5` shade
-/// along the bottom.
+/// A bar (menu row, toolbars, transport, status, ruler band): glossy chrome with a 2 px light lip along the top
+/// and a 2 px dark edge along the bottom (UI_SPEC.md §4.1, thick bevels).
 pub fn metal_bar(p: &Painter, r: Rect, m: &Metal) {
     let r = px(r);
     metal(p, r, m);
+    let o = hair();
     hl(p, r.min.x, r.max.x, r.min.y, m.light);
-    hl(p, r.min.x, r.max.x, r.max.y - hair(), m.shadow);
+    hl(p, r.min.x, r.max.x, r.min.y + o, m.light.gamma_multiply(0.55));
+    hl(p, r.min.x, r.max.x, r.max.y - 2.0 * o, m.shadow);
+    hl(p, r.min.x, r.max.x, r.max.y - o, m.dark);
+}
+
+/// The thick rounded rim inside `r` (UI_SPEC.md §4.1): two rings, light on the upper half and dark on the lower half
+/// (swapped when `inverted`, a pressed face), each one hairline wide.
+fn rim(p: &Painter, r: Rect, radius: f32, light: [Color32; 2], dark: [Color32; 2], inverted: bool) {
+    let o = hair();
+    let mid = r.center().y.round();
+    let (top, bottom) = (r.with_max_y(mid).intersect(p.clip_rect()), r.with_min_y(mid).intersect(p.clip_rect()));
+    let (upper, lower) = if inverted { (dark, light) } else { (light, dark) };
+    for k in 0..2 {
+        let rr = r.shrink(o * (k + 1) as f32);
+        if !rr.is_positive() || rr.height() < 2.0 * o {
+            break;
+        }
+        let rad = (radius - o * (k + 1) as f32).max(0.0);
+        p.with_clip_rect(top).rect_stroke(rr, rad, Stroke::new(o, upper[k]), StrokeKind::Inside);
+        p.with_clip_rect(bottom).rect_stroke(rr, rad, Stroke::new(o, lower[k]), StrokeKind::Inside);
+    }
 }
 
 // ---- Bevels and recesses ----
@@ -237,8 +260,9 @@ pub enum Chrome {
     Active,
 }
 
-/// Chrome over `r` with corners of `radius` (UI_SPEC.md §4.1 bevel recipe): the state's gradient, a 1 px lip under
-/// the top (a dark inner top row when pressed), a 1 px shade above the bottom, the outline round it.
+/// Chrome over `r` with corners of `radius` (UI_SPEC.md §4.1 bevel recipe): the state's glossy gradient (bright
+/// upper half, a clear mid-line, darker lower half), a thick rounded rim (two light rings over the upper half, two
+/// dark rings over the lower; inverted when pressed) and the outline round it. Faces under 12 px get a thin rim.
 pub fn chrome(p: &Painter, r: Rect, radius: f32, state: Chrome) {
     let t = theme::get();
     let (s, sel) = (t.silver, t.sel);
@@ -247,21 +271,23 @@ pub fn chrome(p: &Painter, r: Rect, radius: f32, state: Chrome) {
         return;
     }
     let o = hair();
-    let (stops, outline): ([(f32, Color32); 3], Color32) = match state {
-        Chrome::Raised => ([(0.0, s.s1), (0.45, s.s2), (1.0, s.s3)], s.s6),
-        Chrome::Hover => ([(0.0, s.s0), (0.45, s.s1), (1.0, s.s2)], sel.lit_outline),
-        Chrome::Pressed => ([(0.0, s.s4), (0.55, s.s3), (1.0, s.s2)], s.s6),
-        Chrome::Active => ([(0.0, sel.lit_top), (0.5, mix(sel.lit_top, sel.lit_bottom, 0.55)), (1.0, sel.lit_bottom)], sel.lit_outline),
+    let (gloss, outline) = match state {
+        Chrome::Raised => (t.gloss, s.s6),
+        Chrome::Hover => (theme::Gloss { upper: s.s0, line: t.gloss.upper, low: t.gloss.line, bounce: t.gloss.upper, ..t.gloss }, sel.lit_outline),
+        Chrome::Pressed => (t.gloss_pressed, s.s6),
+        Chrome::Active => (t.gloss_lit, sel.lit_outline),
     };
-    grad(p, r, radius, &stops);
-    let inset = (radius * 0.7).max(o);
-    if r.height() > 4.0 * o {
-        if state == Chrome::Pressed {
-            hl(p, r.min.x + inset, r.max.x - inset, r.min.y + o, s.s5);
-        } else {
-            hl(p, r.min.x + inset, r.max.x - inset, r.min.y + o, s.s0.gamma_multiply(if state == Chrome::Active { 0.8 } else { 1.0 }));
-            hl(p, r.min.x + inset, r.max.x - inset, r.max.y - 2.0 * o, if state == Chrome::Active { sel.lit_outline.gamma_multiply(0.35) } else { s.s5.gamma_multiply(0.55) });
-        }
+    grad(p, r, radius, &gloss.stops(0.5));
+    let thin = r.height().min(r.width()) < 12.0;
+    let white = Color32::WHITE;
+    let (light, dark) = match state {
+        Chrome::Active => ([white.gamma_multiply(0.9), white.gamma_multiply(0.4)], [sel.lit_outline.gamma_multiply(0.55), sel.lit_outline.gamma_multiply(0.2)]),
+        _ => ([white, white.gamma_multiply(0.45)], [s.s5, s.s5.gamma_multiply(0.35)]),
+    };
+    if thin {
+        rim(p, r, radius, [light[0], Color32::TRANSPARENT], [dark[1], Color32::TRANSPARENT], state == Chrome::Pressed);
+    } else {
+        rim(p, r, radius, light, dark, state == Chrome::Pressed);
     }
     p.rect_stroke(r, radius, Stroke::new(o, outline), StrokeKind::Inside);
 }
@@ -363,33 +389,52 @@ pub fn groove(p: &Painter, x: Rangef, cy: f32, m: &Metal) {
 /// `groove` with the part left of `value_x` filled with the selection blue (the value fill).
 pub fn groove_value(p: &Painter, x: Rangef, cy: f32, value_x: Option<f32>, m: &Metal) {
     let t = theme::get();
-    let cy = cy.floor();
-    let r = px(Rect::from_x_y_ranges(x, Rangef::new(cy - 2.0, cy + 2.0)));
-    p.rect_filled(r, 2.0, t.silver.s4);
+    let cy = theme::snap(cy.floor());
+    let o = hair();
+    // A dark chrome slot (UI_SPEC.md §5 Slider): slate inside, a black inner shadow under its top, a light lip under
+    // its bottom on the chrome, the value part in the selection blue.
+    let r = px(Rect::from_x_y_ranges(x, Rangef::new(cy - 2.0 * o - 1.0, cy + 2.0 * o + 1.0)));
+    let rad = r.height() * 0.5;
+    p.rect_filled(r, rad, t.slate.lo);
     if let Some(vx) = value_x {
         let f = Rect::from_min_max(r.min, pos2(vx.clamp(r.min.x, r.max.x), r.max.y));
-        if f.width() >= 2.0 {
-            p.rect_filled(f, 2.0, t.sel.mid);
+        if f.width() >= r.height() {
+            grad(p, f, rad, &[(0.0, t.sel.top), (1.0, t.sel.bottom)]);
         }
     }
-    hl(p, r.min.x + 2.0, r.max.x - 2.0, r.max.y, m.light);
-    p.rect_stroke(r, 2.0, Stroke::new(hair(), m.shadow), StrokeKind::Inside);
+    hl(p, r.min.x + rad, r.max.x - rad, r.min.y + o, Color32::from_black_alpha(90));
+    hl(p, r.min.x + rad, r.max.x - rad, r.max.y, m.light);
+    p.rect_stroke(r, rad, Stroke::new(o, m.dark), StrokeKind::Inside);
 }
 
-/// Vertical slider track down `y` centred on `cx` (fader tracks).
+/// Vertical slider track down `y` centred on `cx` (fader tracks): the dark chrome slot standing up, its value part
+/// below `value_y` in the selection blue.
 pub fn groove_v(p: &Painter, cx: f32, y: Rangef, m: &Metal) {
+    groove_v_value(p, cx, y, None, m);
+}
+
+pub fn groove_v_value(p: &Painter, cx: f32, y: Rangef, value_y: Option<f32>, m: &Metal) {
     let t = theme::get();
-    let cx = cx.floor();
-    let r = px(Rect::from_x_y_ranges(Rangef::new(cx - 2.0, cx + 2.0), y));
-    p.rect_filled(r, 2.0, t.silver.s4);
-    vl(p, r.max.x, r.min.y + 2.0, r.max.y - 2.0, m.light);
-    p.rect_stroke(r, 2.0, Stroke::new(hair(), m.shadow), StrokeKind::Inside);
+    let cx = theme::snap(cx.floor());
+    let o = hair();
+    let r = px(Rect::from_x_y_ranges(Rangef::new(cx - 2.0 * o - 1.0, cx + 2.0 * o + 1.0), y));
+    let rad = r.width() * 0.5;
+    p.rect_filled(r, rad, t.slate.lo);
+    if let Some(vy) = value_y {
+        let f = Rect::from_min_max(pos2(r.min.x, vy.clamp(r.min.y, r.max.y)), r.max);
+        if f.height() >= r.width() {
+            grad(p, f, rad, &[(0.0, t.sel.top), (1.0, t.sel.bottom)]);
+        }
+    }
+    vl(p, r.min.x + o, r.min.y + rad, r.max.y - rad, Color32::from_black_alpha(90));
+    vl(p, r.max.x, r.min.y + rad, r.max.y - rad, m.light);
+    p.rect_stroke(r, rad, Stroke::new(o, m.dark), StrokeKind::Inside);
 }
 
 /// Slider knob centred in `r`: a lozenge of raised chrome at least 15 × 9 (pill-shaped, wider than tall) with a dark
 /// centre notch; `tint` (automation) colours the notch and the knob faintly.
 pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
-    let k = px(Rect::from_center_size(r.center(), vec2(r.width().max(15.0), r.height().min(11.0).max(9.0))));
+    let k = px(Rect::from_center_size(r.center(), vec2(r.width().max(17.0), r.height().min(11.0).max(9.0))));
     chrome(p, k, k.height() * 0.5, Chrome::Raised);
     if let Some(t) = tint {
         p.rect_filled(k.shrink(2.0), k.height() * 0.5 - 2.0, t.gamma_multiply(0.22));
@@ -500,7 +545,30 @@ pub fn frame_edge(p: &Painter, r: Rect, rad: f32, outer: Color32) {
         }
     }
     p.add(mesh);
-    p.rect_stroke(r, rad, Stroke::new(hair(), t.silver.s6), StrokeKind::Inside);
+    // The panel's chrome rim: a light ring over its upper half and a dark one over its lower half, inside the
+    // outline (the content starts 2 px in).
+    rim(p, r, rad, [Color32::WHITE, Color32::TRANSPARENT], [t.silver.s5, Color32::TRANSPARENT], false);
+    p.rect_stroke(r, rad, Stroke::new(hair(), t.slate.lo), StrokeKind::Inside);
+}
+
+/// A grooved title band with a pill title tab (UI_SPEC.md §5 Panel frame), as the period skins frame a panel: twin
+/// grooves along `band` from its left end to a 16 px chrome pill holding `title` at its right end. Nothing when the
+/// band is too short for the pill and 24 px of groove.
+pub fn title_band(p: &Painter, band: Rect, title: &str) {
+    let t = theme::get();
+    let font = t.bold(t.font.ui);
+    let tw = p.layout_no_wrap(title.to_owned(), font.clone(), t.ink.text).size().x + 18.0;
+    if band.width() < tw + 24.0 {
+        return;
+    }
+    let cy = theme::snap(band.center().y.round());
+    let pill = px(Rect::from_min_size(pos2(band.max.x - tw, cy - 8.0), vec2(tw, 16.0)));
+    let m = &t.metal;
+    let x = Rangef::new(band.min.x, pill.min.x - 6.0);
+    etched_h(p, x, cy - 3.0, m);
+    etched_h(p, x, cy + 1.0, m);
+    chrome(p, pill, 8.0, Chrome::Raised);
+    p.text(pill.center(), Align2::CENTER_CENTER, title, font, t.ink.text);
 }
 
 /// A tab over `r` (UI_SPEC.md §5 Dock tabs): chrome with `r_ctl` corners away from the content and square ones at
@@ -599,29 +667,29 @@ pub fn lcd_width(text: &str, h: f32) -> f32 {
     text.chars().map(|c| lcd_advance(c, h)).sum()
 }
 
-/// `text` as seven-segment LCD digits `h` px tall, slanted 8 %, anchored by `align` at `at`: lit segments in `lit`,
-/// the unlit ones of each digit in `ghost` (as a real LCD shows them). `:` `;` `.` `,` are dots; other characters fall
-/// back to Tahoma Bold. Returns the painted rect.
+/// `text` as seven-segment LCD digits `h` px tall, slanted 8 %, anchored by `align` at `at` (UI_SPEC.md §3): solid
+/// bevelled segments (anti-aliased hexagons, a lighter core over the lit colour) with a soft glow round them, the
+/// unlit ones of each digit in `ghost` (as a real LCD shows them). `:` `;` `.` `,` are round dots; other characters
+/// fall back to Tahoma Bold. Returns the painted rect.
 pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit: Color32, ghost: Color32) -> Rect {
     let t = theme::get();
     let w = lcd_width(text, h);
     let r = align.anchor_size(at, vec2(w, h));
-    let th = (h * 0.18).max(2.0);
+    let th = (h * 0.19).max(2.0);
     let slant = 0.08;
     // x shifts right as y goes up.
     let sk = |pt: Pos2| pos2(pt.x + (r.max.y - pt.y) * slant, pt.y);
-    let mut x = r.min.x;
-    let mut lit_mesh = Mesh::default();
-    let mut ghost_mesh = Mesh::default();
-    let quad = |m: &mut Mesh, pts: [Pos2; 6], c: Color32| {
-        let base = m.vertices.len() as u32;
-        for q in pts {
-            m.colored_vertex(sk(q), c);
-        }
-        for (a, b, cc) in [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 5)] {
-            m.add_triangle(base + a, base + b, base + cc);
-        }
+    let edge = mix(lit, t.lcd.text, 0.7);
+    let glow = t.lcd.text.gamma_multiply(0.16);
+    let mut ghosts: Vec<Shape> = Vec::new();
+    let mut glows: Vec<Shape> = Vec::new();
+    let mut lits: Vec<Shape> = Vec::new();
+    let poly = |pts: [Pos2; 6], c: Color32, grow: f32| {
+        let mid = pts.iter().fold(Vec2::ZERO, |a, q| a + q.to_vec2()) / 6.0;
+        let pts: Vec<Pos2> = pts.iter().map(|q| sk(*q + (q.to_vec2() - mid).normalized() * grow)).collect();
+        Shape::convex_polygon(pts, c, Stroke::NONE)
     };
+    let mut x = r.min.x;
     for ch in text.chars() {
         let adv = lcd_advance(ch, h);
         if let Some(bits) = segments(ch) {
@@ -630,7 +698,7 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
             let (y0, ym, y1) = (r.min.y, r.min.y + h * 0.5, r.max.y);
             let g = th * 0.5;
             // Each segment runs between the centre lines of its neighbours, less a hairline gap, with pointed ends.
-            let gap = (h * 0.025).max(0.5);
+            let gap = (h * 0.018).max(0.4);
             let hseg = |y: f32| {
                 let (xa, xb) = (x0 + g + gap, x1 - g - gap);
                 [pos2(xa, y), pos2(xa + g, y - g), pos2(xb - g, y - g), pos2(xb, y), pos2(xb - g, y + g), pos2(xa + g, y + g)]
@@ -650,30 +718,37 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
             ];
             for (k, s) in segs.into_iter().enumerate() {
                 if bits & (1 << k) != 0 {
-                    quad(&mut lit_mesh, s, lit);
+                    glows.push(poly(s, glow, (h * 0.07).max(1.2)));
+                    lits.push(poly(s, edge, 0.0));
+                    lits.push(poly(s, lit, -(th * 0.18).max(0.5)));
                 } else {
-                    quad(&mut ghost_mesh, s, ghost);
+                    ghosts.push(poly(s, ghost, 0.0));
                 }
             }
         } else if matches!(ch, ':' | ';' | '.' | ',') {
-            let d = th.max(2.0);
-            let cx = x + adv * 0.5 - d * 0.5;
-            let dot = |y: f32| sk(pos2(cx, y));
-            let mut put = |y: f32| lit_mesh.add_colored_rect(Rect::from_min_size(dot(y), vec2(d, d)), lit);
+            let d = th * 0.62;
+            let cx = x + adv * 0.5;
+            let mut put = |y: f32| {
+                let c = sk(pos2(cx, y));
+                glows.push(Shape::circle_filled(c, d + (h * 0.07).max(1.2), glow));
+                lits.push(Shape::circle_filled(c, d, lit));
+            };
             if matches!(ch, ':' | ';') {
-                put(r.min.y + h * 0.28 - d * 0.5);
+                put(r.min.y + h * 0.3);
             }
-            put(r.max.y - h * 0.22 - d * 0.5);
+            put(r.max.y - h * 0.2);
             if matches!(ch, ';' | ',') {
-                lit_mesh.add_colored_rect(Rect::from_min_size(dot(r.max.y - h * 0.22 + d * 0.5), vec2(d * 0.6, d)), lit);
+                let c = sk(pos2(cx - d * 0.5, r.max.y - h * 0.2 + d * 1.6));
+                lits.push(Shape::circle_filled(c, d * 0.55, lit));
             }
         } else if ch != ' ' {
             p.text(pos2(x + adv * 0.5, r.center().y), Align2::CENTER_CENTER, ch, t.bold((h * 0.8).round()), lit);
         }
         x += adv;
     }
-    p.add(ghost_mesh);
-    p.add(lit_mesh);
+    p.extend(ghosts);
+    p.extend(glows);
+    p.extend(lits);
     r
 }
 
@@ -749,12 +824,30 @@ pub fn arrow(p: &Painter, r: Rect, dir: (f32, f32), ink: Color32) {
     p.add(Shape::convex_polygon(pts, ink, Stroke::NONE));
 }
 
+/// A Mixing Console strip's card: a brushed chrome face (`s1` → `s3`; lit when selected) with `r_frame` corners,
+/// the thick rim and the outline.
+pub fn strip_card(p: &Painter, r: Rect, selected: bool) {
+    let t = theme::get();
+    let r = px(r);
+    let rad = t.m.r_frame as f32;
+    let (s, g) = (t.silver, t.gloss_lit);
+    let stops = if selected { [(0.0, g.top), (0.4, g.upper), (1.0, g.low)] } else { [(0.0, s.s1), (0.35, s.s2), (1.0, s.s3)] };
+    grad(p, r, rad, &stops);
+    rim(p, r, rad, [Color32::WHITE, Color32::WHITE.gamma_multiply(0.4)], [s.s5, s.s5.gamma_multiply(0.35)], false);
+    p.rect_stroke(r, rad, Stroke::new(hair(), s.s6), StrokeKind::Inside);
+}
+
 /// A track header's card (UI_SPEC.md §5 Track headers): raised chrome, lit when the track is selected.
 pub fn header_metal(p: &Painter, r: Rect, t: &Theme, selected: bool) {
     let r = px(r);
-    let (s, sel) = (t.silver, t.sel);
-    let stops = if selected { [(0.0, sel.lit_top), (0.5, mix(sel.lit_top, sel.lit_bottom, 0.5)), (1.0, sel.lit_bottom)] } else { [(0.0, s.s1), (0.45, s.s2), (1.0, s.s3)] };
-    grad(p, r, 0.0, &stops);
+    // A softer gloss than a button's (the card is 56 px tall): bright upper half, a mid-line, a darker lower half.
+    let g = if selected { t.gloss_lit } else { t.gloss };
+    let soft = |c: Color32| mix(c, Color32::WHITE, 0.3);
+    grad(p, r, 0.0, &[(0.0, g.top), (0.47, soft(g.upper)), (0.53, soft(g.line)), (1.0, soft(g.low))]);
+    let o = hair();
+    hl(p, r.min.x, r.max.x, r.min.y + o, Color32::WHITE.gamma_multiply(0.6));
+    vl(p, r.min.x, r.min.y, r.max.y, Color32::WHITE.gamma_multiply(0.8));
+    vl(p, r.max.x - o, r.min.y, r.max.y, t.silver.s5);
 }
 
 // ---- Controls painted over egui's (UI_SPEC.md §5) ----

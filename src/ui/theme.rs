@@ -70,6 +70,28 @@ pub struct Sel {
     pub lit_outline: Color32,
 }
 
+/// Glossy chrome (UI_SPEC.md §2.1): a bright upper half, a clear mid-line, a darker lower half with a faint bounce
+/// of light at the very bottom.
+#[derive(Clone, Copy, Debug)]
+pub struct Gloss {
+    pub top: Color32,
+    /// Just above the mid-line.
+    pub upper: Color32,
+    /// Just under the mid-line.
+    pub line: Color32,
+    /// Darkest, near the bottom.
+    pub low: Color32,
+    /// The bottom row's reflected light.
+    pub bounce: Color32,
+}
+
+impl Gloss {
+    /// The gradient stops of this gloss over a face, the mid-line at `mid` (0..1).
+    pub fn stops(&self, mid: f32) -> [(f32, Color32); 5] {
+        [(0.0, self.top), (mid - 0.02, self.upper), (mid + 0.02, self.line), (0.86, self.low), (1.0, self.bounce)]
+    }
+}
+
 /// The one accent (UI_SPEC.md §2.5).
 #[derive(Clone, Copy, Debug)]
 pub struct Amber {
@@ -216,6 +238,12 @@ pub struct Theme {
     pub lcd: Lcd,
     pub sel: Sel,
     pub amber: Amber,
+    /// Raised chrome, lit (toggle on) chrome, and pressed chrome.
+    pub gloss: Gloss,
+    /// Bars (menu row, toolbars, transport, status): one step deeper than a button's, so buttons stand out on them.
+    pub gloss_bar: Gloss,
+    pub gloss_lit: Gloss,
+    pub gloss_pressed: Gloss,
     pub ink: Ink,
 
     // Menus
@@ -488,6 +516,10 @@ impl Theme {
             lit_outline: hex(0x2F5CC1),
         };
         let amber = Amber { base: hex(0xFFA424), hi: hex(0xFFDC90), lo: hex(0xD86000), text: hex(0xFFB43C) };
+        let gloss = Gloss { top: hex(0xFFFFFF), upper: hex(0xE2E7EE), line: hex(0xC2C9D4), low: hex(0x9EA8B8), bounce: hex(0xB3BCC9) };
+        let gloss_bar = Gloss { top: hex(0xF4F6FA), upper: hex(0xD6DCE5), line: hex(0xB3BBC8), low: hex(0x949FB1), bounce: hex(0xA9B2C1) };
+        let gloss_lit = Gloss { top: hex(0xF4F8FF), upper: hex(0xD5E4FF), line: hex(0xAFC9F4), low: hex(0x8DAEE8), bounce: hex(0xA4C0EF) };
+        let gloss_pressed = Gloss { top: hex(0x9EA8B8), upper: hex(0xAFB8C6), line: hex(0xBFC6D1), low: hex(0xD3D8E0), bounce: hex(0xC6CCD6) };
         let ink = Ink {
             text: hex(0x0F1C3A),
             label: hex(0x2E3A55),
@@ -522,6 +554,10 @@ impl Theme {
             lcd,
             sel,
             amber,
+            gloss,
+            gloss_bar,
+            gloss_lit,
+            gloss_pressed,
             ink,
 
             menu_text: black,
@@ -1098,6 +1134,16 @@ mod tests {
             ("marker number on its tag", t.marker_text, t.marker_flag),
             ("warning text on chrome bottom", t.warning_text, s.s3),
             ("blue text (tags) on chrome bottom", ink.glyph, s.s3),
+            ("ink on gloss low", ink.text, t.gloss.low),
+            ("ink on bar gloss low", ink.text, t.gloss_bar.low),
+            ("ink on streaked bar gloss low", ink.text, darker(t.gloss_bar.low, streak)),
+            ("button label on bar gloss low", ink.button, t.gloss_bar.low),
+            ("button label on gloss low", ink.button, t.gloss.low),
+            ("button label on gloss line", ink.button, t.gloss.line),
+            ("ink on lit gloss low", ink.text, t.gloss_lit.low),
+            ("ink on pressed gloss top", ink.text, t.gloss_pressed.top),
+            ("label on gloss low", ink.label, t.gloss.low),
+            ("disabled on gloss line", ink.disabled, t.gloss.line),
             ("region number on its tag", t.region_text, t.region_flag),
         ];
         let fails: Vec<String> = pairs

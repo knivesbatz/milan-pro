@@ -216,7 +216,7 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     let status_h = if view.show_status { line_h + 8.0 } else { 0.0 };
     let stats_h = if view.show_stats { line_h + 4.0 } else { 0.0 };
     let status_h = status_h + stats_h;
-    let transport_h = if view.show_transport { 28.0 } else { 0.0 };
+    let transport_h = if view.show_transport { 30.0 } else { 0.0 };
     let video = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - status_h - transport_h));
 
     let s = &project.settings;
@@ -324,8 +324,8 @@ pub fn draw_preview(ui: &mut Ui, project: &mut Project, history: &mut History, p
     if view.show_transport {
         // Centred: every command but Record, then ⋯ (VEGAS 23, light2026 overrides spec §5.8's five).
         let cmds: &[Cmd] = &Cmd::ALL[1..];
-        let n = cmds.len() as f32 + 1.0;
-        let tr = Rect::from_center_size(pos2(rect.center().x, video.max.y + transport_h * 0.5), vec2(n * t.m.button_pitch, t.m.button));
+        let w = cmds.iter().map(|c| super::toolbar::pitch(c.icon())).sum::<f32>() + t.m.button_pitch;
+        let tr = Rect::from_center_size(pos2(rect.center().x, video.max.y + transport_h * 0.5), vec2(w, t.m.button));
         let mut row = ui.new_child(UiBuilder::new().max_rect(tr).layout(Layout::left_to_right(Align::Center)));
         row.spacing_mut().item_spacing.x = 0.0;
         for &c in cmds {

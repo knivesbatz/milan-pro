@@ -1151,6 +1151,8 @@ pub fn draw_timeline(
         }
     }
     scroll::paint(&painter, &g, content, project, *scroll_y);
+    // The timeline is a framed chrome panel on the slate, as the dock windows (UI_SPEC.md §5 Panel frame).
+    super::widgets::frame_edge(&painter, rect, t.m.r_frame as f32, t.frame);
     if bus_h > 0.0 {
         bus::show(ui, &g, project, history, opts.hidden_envs, &bus_rows, bus_h);
     }

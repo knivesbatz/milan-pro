@@ -1009,6 +1009,10 @@ impl Dock {
         let mut body_ui = ui.new_child(UiBuilder::new().id_salt(("dock_body", panel)).max_rect(body).layout(eframe::egui::Layout::top_down(Align::Min)));
         body_ui.set_clip_rect(body.intersect(ui.clip_rect()));
         content(panel, &mut bar_ui, &mut body_ui);
+        // The rest of the toolbar row is the window's grooved title band with its name in a pill (UI_SPEC.md §5).
+        let used = bar_ui.min_rect().max.x;
+        let band = Rect::from_min_max(pos2(used + 10.0, bar.min.y), pos2(bar.max.x - 6.0, bar.max.y));
+        super::widgets::title_band(&p.with_clip_rect(bar.intersect(ui.clip_rect())), band, panel.title());
         strip
     }
 
