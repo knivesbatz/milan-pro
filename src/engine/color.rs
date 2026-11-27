@@ -6,7 +6,7 @@
 //! light with that white at 1.0, converted to Rec.709 primaries, and its highlights above 50 % are rolled off with the
 //! Möbius curve up to the signal peak (the mastering display's maximum luminance when the file says, else 1000 cd/m²);
 //! Project Properties › Color management can clip them instead, or turn the transform off. BT.2020 SDR sources are
-//! converted to Rec.709 without a tone map. OpenEXR (linear) gets the sRGB transfer (R40b brings a float pipeline);
+//! converted to Rec.709 without a tone map. OpenEXR (linear) gets the sRGB transfer in an 8-bit project (R40b: a float project keeps it in float, `engine/wide`);
 //! Radiance HDR is tone-mapped like PQ.
 use crate::project::{ColorManagement, Hdr, MediaItem};
 
@@ -78,7 +78,7 @@ pub fn view_transform(m: &MediaItem, cm: ColorManagement) -> String {
         }
         Some(Hdr::Sdr2020) => "zscale=p=bt709:t=bt709:m=bt709:r=pc,format=gbrp,".to_string(),
         None if m.codec.as_deref() == Some("hdr") => format!("format=gbrpf32le,{},zscale=tin=linear:pin=bt709:t=iec61966-2-1:p=bt709:r=pc,format=gbrp,", tonemap(peak(m), cm)),
-        // R38: linear EXR shown with a simple sRGB transfer (values above 1.0 clip) until R40b's float pipeline.
+        // R38: linear EXR shown with a simple sRGB transfer (values above 1.0 clip) in an 8-bit project; R40b's float pipeline keeps it linear.
         None if linear(m) => "format=gbrpf32le,zscale=tin=linear:pin=bt709:t=iec61966-2-1:p=bt709:r=pc,format=gbrp,".to_string(),
         None => String::new(),
     }

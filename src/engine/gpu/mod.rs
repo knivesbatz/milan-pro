@@ -32,6 +32,9 @@ use crate::project::Composite;
 
 pub mod fx;
 pub mod mvfx;
+pub mod wide;
+
+pub use wide::WideOut;
 
 /// Preferences › Video › GPU acceleration: this value turns it off ("" is automatic, anything else an adapter's name).
 pub const OFF: &str = "Off";
@@ -44,7 +47,7 @@ const POOL_BYTES: usize = 256 << 20;
 
 /// R21c: the format a composed frame is kept in on the GPU (`GpuCompositor::set_intermediate`). The passes compose in
 /// 8-bit either way today; `Rgba16Float` holds the result in linear light with 16-bit float channels, the format
-/// R40b's float pipeline composes in. The preview samples both; a readback converts both to the 8-bit picture.
+/// R21c's float hook. The preview samples both; a readback converts both to the 8-bit picture. (R40b composes float frames in textures of its own, `wide.rs`.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Intermediate {
     #[default]
@@ -86,7 +89,7 @@ impl Output {
         [t.w as usize, t.h as usize]
     }
 
-    #[cfg_attr(not(test), allow(dead_code))] // R40b composes in float: the preview asks then
+    #[cfg_attr(not(test), allow(dead_code))] // the 8-bit frames' intermediate (R40b's float frames are `WideOut`s)
     pub fn format(&self) -> Intermediate {
         self.tex.as_ref().expect("an output until dropped").format
     }
@@ -174,6 +177,11 @@ pub struct GpuCompositor {
     fx: fx::Pipes,
     /// MVFX: the music-video FX and transitions' kernels.
     mv: mvfx::Pipes,
+    /// R40b: the float compositor's passes, its textures kept for reuse, and its unbound source.
+    wide: wide::Pipes,
+    wide_ok: bool,
+    wpool: Mutex<Vec<wide::WTex>>,
+    wnone: wide::WTex,
     /// Bound where a pass reads no source / no rows.
     none: Tex,
     no_rows: wgpu::Buffer,
@@ -287,6 +295,12 @@ impl GpuCompositor {
         let (draw, blend, fade) = (pipe(&shader, "fs_draw"), pipe(&shader, "fs_blend"), pipe(&shader, "fs_fade"));
         let fx = fx::Pipes::new(&device, &layout, math, &pipe_to);
         let mv = mvfx::Pipes::new(&device, math, &pipe_to);
+        // R40b: the float passes in an error scope of their own: should they not build on a driver, only float frames
+        // go to the CPU.
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let wide = wide::Pipes::new(&device);
+        let wide_ok = block_on(device.pop_error_scope()).inspect(|e| log::warn!("wgpu: the float compositor's passes did not build: {e}")).is_none();
+        let wnone = wide::none(&device);
         let none = new_tex(&device, 1, 1, false);
         // Cleared once, so no frame's submission has to zero it.
         {
@@ -316,6 +330,10 @@ impl GpuCompositor {
             fade,
             fx,
             mv,
+            wide,
+            wide_ok,
+            wpool: Mutex::new(Vec::new()),
+            wnone,
             none,
             no_rows,
             max,
@@ -327,7 +345,7 @@ impl GpuCompositor {
     }
 
     /// R21c: the format composed frames are kept in (`Intermediate`), for the frames composed from now on.
-    #[cfg_attr(not(test), allow(dead_code))] // R40b's Project Properties pixel format sets it
+    #[cfg_attr(not(test), allow(dead_code))] // tests: R40b composes float in `wide.rs` instead
     pub fn set_intermediate(&self, f: Intermediate) {
         self.intermediate.store(f as u8, Relaxed);
     }
@@ -464,6 +482,10 @@ impl Compositor for GpuCompositor {
         });
         let out = out.filter(|_| !self.broken())?;
         Some(Picture::on_gpu(Output { g: self.me.clone(), tex: Some(out) }))
+    }
+
+    fn compose_wide(&self, fp: &FramePlan, src: &mut dyn Sources, w: usize, h: usize, bilinear: bool, k: usize, wk: &Arc<crate::engine::wide::Working>) -> Option<Picture> {
+        self.compose_wide_gpu(fp, src, w, h, bilinear, k, wk)
     }
 }
 
@@ -1588,6 +1610,19 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
                     std::hint::black_box(pic.image());
                 });
                 println!("BENCH compose kind={kind} compositor={name} layers=4 ms={t:.2} ms_readback={tr:.2}");
+                // R40b: the same in a 32-bit floating point (full range, linear) project: each picture into the working
+                // space, composed in float; read back as a render takes it (in float).
+                let mut ps = crate::project::ProjectSettings::default();
+                ps.pixel.set_format(crate::project::pixel::PixelFormat::FloatFull);
+                let wk = Arc::new(crate::engine::wide::Working::of(&ps).expect("float"));
+                let compose_wide = |src: &mut Noise| c.compose_wide(&fp, src, size.0 as usize, size.1 as usize, true, k, &wk).unwrap_or_else(|| composite::CpuCompositor.compose_wide(&fp, src, size.0 as usize, size.1 as usize, true, k, &wk).expect("composed"));
+                let t = ms(&mut || {
+                    std::hint::black_box(compose_wide(&mut src));
+                });
+                let tr = ms(&mut || {
+                    std::hint::black_box(compose_wide(&mut src).wide_image());
+                });
+                println!("BENCH compose_float kind={kind} compositor={name} layers=4 ms={t:.2} ms_readback={tr:.2}");
             }
         }
     }

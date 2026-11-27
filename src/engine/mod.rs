@@ -50,6 +50,7 @@ pub mod transition;
 pub mod vdecode;
 pub mod velocity;
 pub mod vfx;
+pub mod wide;
 mod worker;
 
 use eframe::egui;

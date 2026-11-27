@@ -920,11 +920,99 @@ fn with_host(binary: &Path, f: impl FnOnce(&mut Conn) -> Result<Reply, client::F
     }
 }
 
+/// A picture that travels to a plug-in host: Milan's 8-bit pictures, and (R40b) a float project's.
+trait Frame {
+    fn dims(&self) -> [usize; 2];
+    fn put_rows(&self, depth: Depth, out: &mut [u8]);
+    fn take_rows(&mut self, out: &[u8], depth: Depth);
+}
+
+impl Frame for ColorImage {
+    fn dims(&self) -> [usize; 2] {
+        self.size
+    }
+
+    fn put_rows(&self, depth: Depth, out: &mut [u8]) {
+        put(self, depth, out)
+    }
+
+    fn take_rows(&mut self, out: &[u8], depth: Depth) {
+        take(out, depth, self)
+    }
+}
+
+/// R40b: a float picture goes to the plug-in as it is at its float depths (values outside 0..1 kept), clamped at 8
+/// and 16 bits.
+impl Frame for crate::engine::wide::WImage {
+    fn dims(&self) -> [usize; 2] {
+        self.size
+    }
+
+    fn put_rows(&self, depth: Depth, out: &mut [u8]) {
+        let [w, h] = self.size;
+        let b = bpp(depth);
+        for (row, dst) in out[..w * h * b].chunks_exact_mut(w * b).enumerate() {
+            let src = &self.px[(h - 1 - row) * w..][..w];
+            for (d, v) in dst.chunks_exact_mut(b / 4).zip(src.iter().flatten()) {
+                match depth {
+                    Depth::Byte => d[0] = (v.clamp(0.0, 1.0) * 255.0).round() as u8,
+                    Depth::Short => d.copy_from_slice(&((v.clamp(0.0, 1.0) * 65535.0).round() as u16).to_le_bytes()),
+                    Depth::Half => d.copy_from_slice(&f32_to_half(*v).to_le_bytes()),
+                    Depth::Float => d.copy_from_slice(&v.to_le_bytes()),
+                }
+            }
+        }
+    }
+
+    fn take_rows(&mut self, out: &[u8], depth: Depth) {
+        let [w, h] = self.size;
+        let b = bpp(depth) / 4;
+        for (y, dst) in self.px.chunks_exact_mut(w).enumerate() {
+            let src = &out[(h - 1 - y) * w * b * 4..][..w * b * 4];
+            for (p, s) in dst.iter_mut().zip(src.chunks_exact(b * 4)) {
+                *p = std::array::from_fn(|i| {
+                    let c = &s[i * b..i * b + b];
+                    match depth {
+                        Depth::Byte => c[0] as f32 / 255.0,
+                        Depth::Short => u16::from_le_bytes([c[0], c[1]]) as f32 / 65535.0,
+                        Depth::Half => half_to_f32(u16::from_le_bytes([c[0], c[1]])),
+                        Depth::Float => f32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                    }
+                });
+                p[3] = p[3].clamp(0.0, 1.0);
+            }
+        }
+    }
+}
+
+/// R40b: OFX effect `e` on a float picture, at the plug-in's depth (float when it takes it).
+pub fn apply_wide(img: &mut crate::engine::wide::WImage, e: &FxEval) {
+    let Some(p) = runnable(e, PluginKind::VideoFx, img.size) else { return };
+    if let Err(why) = render(&p, request(&p, e, img.size), img, None, true) {
+        fail(&p, why);
+    }
+}
+
+/// R40b: `transition` on float pictures.
+pub fn transition_wide(e: &FxEval, a: &crate::engine::wide::WImage, b: &crate::engine::wide::WImage, x: f32) -> Option<crate::engine::wide::WImage> {
+    let p = runnable(e, PluginKind::Transition, a.size).filter(|_| a.size == b.size)?;
+    let mut r = request(&p, e, a.size);
+    r.params.push(("Transition".into(), PVal::N(vec![x.clamp(0.0, 1.0) as f64])));
+    let mut out = a.clone();
+    match render(&p, r, &mut out, Some(b), true) {
+        Ok(()) => Some(out),
+        Err(why) => {
+            fail(&p, why);
+            None
+        }
+    }
+}
+
 /// One frame through `p`'s host: `img` is the first input when `source` (a filter's Source, a transition's
 /// SourceFrom), `second` a transition's SourceTo; the output replaces `img`.
-fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&ColorImage>, source: bool) -> Result<(), String> {
+fn render<F: Frame>(p: &Plugin, mut r: Render, img: &mut F, second: Option<&F>, source: bool) -> Result<(), String> {
     let depth = r.depth;
-    let n = img.size[0] * img.size[1] * bpp(depth);
+    let n = img.dims()[0] * img.dims()[1] * bpp(depth);
     r.inputs = source as u32 + second.is_some() as u32;
     let out = r.inputs as usize * n;
     let instance = r.instance.clone();
@@ -937,15 +1025,15 @@ fn render(p: &Plugin, mut r: Render, img: &mut ColorImage, second: Option<&Color
         }
         let shm = conn.shm.as_mut().expect("made");
         if source {
-            put(img, depth, &mut shm.bytes()[..n]);
+            img.put_rows(depth, &mut shm.bytes()[..n]);
         }
         if let Some(b) = second {
-            put(b, depth, &mut shm.bytes()[n..2 * n]);
+            b.put_rows(depth, &mut shm.bytes()[n..2 * n]);
         }
         (r.shm, r.shm_size, r.out) = (shm.name.clone(), shm.size, out as u64);
         let reply = conn.request(&Req::Render(r), Some(client::render_timeout()))?;
         if matches!(reply, Reply::Rendered(_)) {
-            take(&conn.shm.as_mut().expect("made").bytes()[out..out + n], depth, img);
+            img.take_rows(&conn.shm.as_mut().expect("made").bytes()[out..out + n], depth);
         }
         Ok(reply)
     })?;

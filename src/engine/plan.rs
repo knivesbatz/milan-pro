@@ -48,6 +48,9 @@ pub struct MediaRef {
     pub pre: String,
     /// R38: input options before `-i` (an image sequence's `-f image2 -start_number N -framerate R`).
     pub input: Vec<String>,
+    /// R40b: in a 32-bit floating point project, how the source decodes (8, 16 bits or float) and comes into the
+    /// working space (`wide::Working::source`); None in an 8-bit project.
+    pub wide: Option<Arc<crate::engine::wide::Input>>,
 }
 
 impl MediaRef {
@@ -77,6 +80,8 @@ pub struct VideoPlan {
     pub alpha: bool,
     /// R33b: the project's pixel aspect ratio (OFX plug-ins are told it).
     pub par: f64,
+    /// R40b: the working space of a 32-bit floating point project (None: 8-bit).
+    pub working: Option<Arc<crate::engine::wide::Working>>,
 }
 
 impl VideoPlan {
@@ -342,8 +347,25 @@ fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSett
     // R40a: an HDR or wide-gamut source reaches the Rec.709 timeline through the view transform; R38: a linear still
     // through its transfer. The scaler's matrix is left to the transform's RGB output then.
     let pre = if generator.is_some() { String::new() } else { crate::engine::color::view_transform(m, s.color_management) };
+    let matrix8 = if pre.is_empty() { matrix(m) } else { None };
+    let mut proxy = crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten();
+    // R40b: a float project decodes 10-bit and wider sources at 16 bits (or in float) and brings each into its working
+    // space; such a source is another picture of the file, under an id of its own (its own decoders and cache).
+    let (id, pre, matrix, wide) = match crate::engine::wide::Working::of(s).filter(|_| generator.is_none()) {
+        Some(wk) => {
+            let (input, pre_w, matrix_w) = wk.source(m, &pre, matrix8);
+            let same = input.depth == crate::engine::wide::Depth::B8 && pre_w == pre && matrix_w == matrix8;
+            let id: Arc<str> = if same { m.id.as_str().into() } else { format!("{}@{:?}{}", m.id, input.depth, if wk.hdr_in { "a" } else { "" }).into() };
+            // A proxy is SDR as the 8-bit transform made it: not for a source that comes in as HDR scene light.
+            if wk.hdr_in && m.hdr().is_some() {
+                proxy = None;
+            }
+            (id, pre_w, matrix_w, Some(Arc::new(input)))
+        }
+        None => (m.id.as_str().into(), pre, matrix8, None),
+    };
     Some(MediaRef {
-        id: m.id.as_str().into(),
+        id,
         path,
         w,
         h,
@@ -351,16 +373,17 @@ fn media_ref(m: &MediaItem, project: (u32, u32), s: &crate::project::ProjectSett
         fps: m.frame_rate.unwrap_or(0.0),
         still: m.media_type == MediaType::Image || generator.is_some(),
         has_alpha: m.has_alpha || generator.is_some(),
-        matrix: if pre.is_empty() { matrix(m) } else { None },
+        matrix,
         codec: m.codec.clone(),
         deint: if m.interlaced && s.adjust_media { s.deinterlace.filter() } else { "" },
-        proxy: crate::proxy::is_video(m).then(|| crate::proxy::ready(&m.path)).flatten(),
+        proxy,
         grid: 0.0,
         offset: m.file_time(0.0),
         stream: 0,
         flow: false,
         pre,
         input,
+        wide,
     })
 }
 
@@ -479,6 +502,7 @@ pub fn compile_in(p: &Project, stack: &[PathBuf]) -> VideoPlan {
         end: crate::render::content_end(p),
         alpha: false,
         par: if s.par > 0.0 { s.par } else { 1.0 },
+        working: crate::engine::wide::Working::of(s).map(Arc::new),
     }
 }
 
@@ -827,6 +851,12 @@ pub fn frame_key(p: &VideoPlan, n: i64) -> u64 {
 /// `fp`'s key (frame `n`'s plan) folded with those of its sub-frames.
 pub fn key_with_subs(p: &VideoPlan, n: i64, fp: &FramePlan) -> u64 {
     let mut fk = fp.key();
+    // R40b: a float project's working space and view are part of the picture (an 8-bit key is as before).
+    if let Some(wk) = &p.working {
+        let mut hs = DefaultHasher::new();
+        (fk, format!("{wk:?}")).hash(&mut hs);
+        fk = hs.finish();
+    }
     for s in &fp.samples {
         let mut hs = DefaultHasher::new();
         (fk, frame_plan_at(p, n, s.0).key()).hash(&mut hs);

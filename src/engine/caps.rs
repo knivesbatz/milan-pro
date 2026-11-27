@@ -352,7 +352,7 @@ const MS: &str = "Microsoft format; FFmpeg's own implementation, LGPL";
 pub static CORPUS: &[Row] = &[
     // Containers and video codecs.
     row("h264_420_8.mp4", "1920x1080", "30000/1001", Some("h264"), Some("aac"), "stereo", &["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"], "H.264 8-bit 4:2:0, 29.97p", MPEG),
-    row("h264_422_10.mov", "1920x1080", "25", Some("h264"), Some("pcm_s16le"), "stereo", &["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s16le"], "H.264 10-bit 4:2:2 (shown 8-bit until R40b)", MPEG),
+    row("h264_422_10.mov", "1920x1080", "25", Some("h264"), Some("pcm_s16le"), "stereo", &["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv422p10le", "-c:a", "pcm_s16le"], "H.264 10-bit 4:2:2 (16-bit in a 32-bit floating point project)", MPEG),
     row("hevc_420_8.mp4", "1280x720", "50", Some("hevc"), Some("aac"), "stereo", &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p", "-c:a", "aac"], "HEVC 8-bit, 50p", MPEG),
     row("hevc_420_10_uhd.mp4", "3840x2160", "25", Some("hevc"), Some("aac"), "stereo", &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p10le", "-c:a", "aac"], "HEVC Main 10, 3840x2160 (hardware decode when it measures faster; auto proxy)", MPEG),
     row("av1.mp4", "640x360", "24000/1001", Some("av1"), Some("aac"), "stereo", &["-c:v", "libsvtav1", "-preset", "12", "-pix_fmt", "yuv420p", "-c:a", "aac"], "AV1 (SVT), 23.976p", "AOMedia royalty-free; SVT-AV1 BSD"),
