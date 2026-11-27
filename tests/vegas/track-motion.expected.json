@@ -1,0 +1,29 @@
+{
+ "about": "Track Motion (half size, moved right and up, turned 90 degrees), 2D Shadow and Glow on, a compositing parent with Parent Motion and a child track in Add mode at half level.",
+ "equals": {
+  "/timeline/video_tracks/0/motion/keys/1/t": 2,
+  "/timeline/video_tracks/0/motion/keys/1/curve": "Linear",
+  "/timeline/video_tracks/0/motion/keys/1/v/x": 0.25,
+  "/timeline/video_tracks/0/motion/keys/1/v/y": -0.25,
+  "/timeline/video_tracks/0/motion/keys/1/v/w": 0.5,
+  "/timeline/video_tracks/0/motion/keys/1/v/h": 0.5,
+  "/timeline/video_tracks/0/motion/keys/1/v/rot": -90,
+  "/timeline/video_tracks/0/shadow/on": true,
+  "/timeline/video_tracks/0/glow/on": true,
+  "/timeline/video_tracks/0/composite": "SourceAlpha",
+  "/timeline/video_tracks/1/parent_mode": "Multiply",
+  "/timeline/video_tracks/1/parent_motion/keys/1/curve": "Slow",
+  "/timeline/video_tracks/1/parent_motion/keys/1/v/x": -0.1,
+  "/timeline/video_tracks/1/parent_motion/keys/1/v/y": -0.1,
+  "/timeline/video_tracks/2/child": true,
+  "/timeline/video_tracks/2/composite": "Add",
+  "/timeline/video_tracks/2/volume": 0.5
+ },
+ "len": {
+  "/timeline/video_tracks/0/motion/keys": 2,
+  "/timeline/video_tracks/0/glow/keys/keys": 1,
+  "/timeline/video_tracks/1/parent_motion/keys": 2
+ },
+ "warnings": [],
+ "warning_count": 0
+}

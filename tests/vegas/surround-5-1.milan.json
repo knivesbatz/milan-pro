@@ -1,0 +1,120 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Surround 5.1",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 24,
+  "bus_mode": "Surround"
+ },
+ "tracks": [
+  {
+   "kind": "audio",
+   "volume": 1,
+   "pan": 0,
+   "name": "Front",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 10,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\front.wav",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "audio",
+   "volume": 1,
+   "pan": 0.5,
+   "name": "Rear",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 10,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\rear.wav",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [],
+ "master_fx": [
+  {
+   "id": "",
+   "name": "Wave Hammer Surround",
+   "bypass": false,
+   "preset": "",
+   "params": []
+  }
+ ],
+ "media_fx": [],
+ "unsupported": []
+}

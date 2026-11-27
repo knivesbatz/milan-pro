@@ -1,0 +1,38 @@
+{
+ "about": "Every VEGAS audio FX name vegas_map knows, as track FX (one bypassed), an event FX with a preset, and master bus FX; Resonant Filter and Pitch Shift have no stand-in and are left out with a warning.",
+ "equals": {
+  "/timeline/audio_tracks/0/fx/0/enabled": true,
+  "/timeline/audio_tracks/0/fx/1/enabled": false
+ },
+ "plugins": {
+  "/timeline/audio_tracks/0/fx": [
+   "milan.afx.eq",
+   "milan.afx.compressor",
+   "milan.afx.gate",
+   "milan.afx.gate",
+   "milan.afx.eq",
+   "milan.afx.eq",
+   "milan.afx.eq",
+   "milan.afx.reverb",
+   "milan.afx.delay",
+   "milan.afx.delay",
+   "milan.afx.limiter",
+   "milan.afx.compressor",
+   "milan.afx.eq",
+   "milan.afx.delay",
+   "milan.afx.reverb",
+   "milan.afx.gate"
+  ],
+  "/timeline/audio_tracks/0/clips/0/fx": [
+   "milan.afx.reverb"
+  ],
+  "/timeline/master/audio_fx": [
+   "milan.afx.limiter"
+  ]
+ },
+ "warnings": [
+  "audio FX VEGAS Resonant Filter is not available in Milan Pro and was left out",
+  "audio FX VEGAS Pitch Shift is not available in Milan Pro and was left out"
+ ],
+ "warning_count": 2
+}

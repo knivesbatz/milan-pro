@@ -1,0 +1,215 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Audio FX",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 16,
+  "bus_mode": "Stereo"
+ },
+ "tracks": [
+  {
+   "kind": "audio",
+   "volume": 1,
+   "pan": 0,
+   "name": "Music",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [
+    {
+     "id": "",
+     "name": "VEGAS Track EQ",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Track Compressor",
+     "bypass": true,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Track Noise Gate",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Noise Gate",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Graphic EQ",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Paragraphic EQ",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Parametric EQ",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Reverb",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Simple Delay",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Multi-Tap Delay",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "Wave Hammer Surround",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS ExpressFX Dynamics",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS ExpressFX Equalization",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS ExpressFX Delay",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS ExpressFX Reverb",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS ExpressFX Noise Gate",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    },
+    {
+     "id": "",
+     "name": "VEGAS Resonant Filter",
+     "bypass": false,
+     "preset": "",
+     "params": []
+    }
+   ],
+   "events": [
+    {
+     "start": 0,
+     "length": 30,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\song.wav",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [
+      {
+       "id": "",
+       "name": "Sony Reverb",
+       "bypass": false,
+       "preset": "Large Hall",
+       "params": []
+      }
+     ],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [],
+ "master_fx": [
+  {
+   "id": "",
+   "name": "VEGAS Wave Hammer",
+   "bypass": false,
+   "preset": "",
+   "params": []
+  },
+  {
+   "id": "",
+   "name": "VEGAS Pitch Shift",
+   "bypass": false,
+   "preset": "",
+   "params": []
+  }
+ ],
+ "media_fx": [],
+ "unsupported": []
+}

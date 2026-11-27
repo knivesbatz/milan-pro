@@ -1,0 +1,31 @@
+{
+ "about": "Pan/Crop keyframes: full frame, a 2x zoom on the centre, and a horizontal mirror held; an event with only the full-frame key keeps no keys; the script's note about Stretch to fill frame is passed on.",
+ "equals": {
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/0/t": 0,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/0/curve": "Smooth",
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/0/v/w": 1,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/0/v/h": 1,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/t": 2,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/curve": "Linear",
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/v/w": 0.5,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/v/h": 0.5,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/v/cx": 0.5,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/v/cy": 0.5,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/1/v/rot": 0,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/t": 3,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/curve": "Hold",
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/v/w": -1,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/v/h": 1,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/v/cx": 0.5,
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys/2/v/rot": 0,
+  "/timeline/video_tracks/0/clips/1/in_point": 4
+ },
+ "len": {
+  "/timeline/video_tracks/0/clips/0/pan_crop/keys": 3,
+  "/timeline/video_tracks/0/clips/1/pan_crop/keys": 0
+ },
+ "warnings": [
+  "Pan/Crop Stretch to fill frame"
+ ],
+ "warning_count": 1
+}

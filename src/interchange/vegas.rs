@@ -669,8 +669,12 @@ pub fn to_project(e: &VegasExport, probed: &HashMap<String, Result<MediaItem, St
         bit_depth: if [8, 16, 24, 32].contains(&pr.bit_depth) { pr.bit_depth as u8 } else { d.bit_depth },
         ..d
     };
-    if !pr.bus_mode.is_empty() && pr.bus_mode != "Stereo" {
-        warnings.push(format!("Master bus mode {}: Milan Pro's master bus is stereo (R10a)", pr.bus_mode));
+    // VEGAS 15's `AudioBusMode` has Stereo and Surround (5.1); R10a gave Milan a 5.1 master. "Surround51" is accepted
+    // as an earlier fixture spelled it.
+    match pr.bus_mode.as_str() {
+        "" | "Stereo" => {}
+        "Surround" | "Surround51" => p.settings.layout = BusMode::Surround51,
+        m => warnings.push(format!("Master bus mode {m} is not known; the master bus is stereo")),
     }
     // R40b: VEGAS's 32-bit floating point formats (video levels or full range) as Milan Pro's.
     {
@@ -1170,7 +1174,8 @@ mod tests {
         let (p, w) = to_project(&e, &probed());
         let s = &p.settings;
         assert_eq!((s.field_order, s.par, s.render_quality, s.motion_blur, s.deinterlace, s.bit_depth), (FieldOrder::Upper, 1.0926, crate::decode::Quality::Good, BlurType::Pyramid, Deinterlace::Interpolate, 24));
-        assert!(w.iter().any(|x| x.starts_with("Master bus mode Surround51")), "{w:?}");
+        // R55: VEGAS's 5.1 master becomes Milan's (R10a), without a warning.
+        assert!(s.layout == BusMode::Surround51 && !w.iter().any(|x| x.starts_with("Master bus mode")), "{w:?}");
         let v = &p.timeline.video_tracks[0];
         // Track Motion: the full-frame key and a half-size key down and to the right (VEGAS's y is up), turned 10 degrees.
         let m = &v.motion.keys;

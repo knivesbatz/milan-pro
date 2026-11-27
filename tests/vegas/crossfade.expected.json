@@ -1,0 +1,18 @@
+{
+ "about": "A video crossfade with VEGAS's Dissolve on the incoming event's fade in, and an audio crossfade with curves.",
+ "equals": {
+  "/timeline/video_tracks/0/clips/0/fade_out": 1,
+  "/timeline/video_tracks/0/clips/0/transition": null,
+  "/timeline/video_tracks/0/clips/1/position": 4,
+  "/timeline/video_tracks/0/clips/1/in_point": 20,
+  "/timeline/video_tracks/0/clips/1/fade_in": 1,
+  "/timeline/video_tracks/0/clips/1/transition/plugin": "milan.tr.dissolve",
+  "/timeline/audio_tracks/0/clips/0/fade_out": 1,
+  "/timeline/audio_tracks/0/clips/0/fade_out_curve": "Slow",
+  "/timeline/audio_tracks/0/clips/1/position": 4,
+  "/timeline/audio_tracks/0/clips/1/fade_in": 1,
+  "/timeline/audio_tracks/0/clips/1/fade_in_curve": "Fast"
+ },
+ "warnings": [],
+ "warning_count": 0
+}

@@ -1,0 +1,1942 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Video FX",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 16,
+  "bus_mode": "Stereo"
+ },
+ "tracks": [
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Filters",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 10,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [
+      {
+       "id": "{Svfx:com.sonycreativesoftware:gaussianblur}",
+       "name": "VEGAS Gaussian Blur",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "HorizontalRange",
+         "type": "Double",
+         "v": 0.06,
+         "keys": [
+          {
+           "t": 0,
+           "v": 0.06,
+           "curve": "Linear"
+          },
+          {
+           "t": 2,
+           "v": 0,
+           "curve": "Hold"
+          }
+         ]
+        },
+        {
+         "name": "VerticalRange",
+         "type": "Double",
+         "v": 0.01,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:brightnessandcontrast}",
+       "name": "VEGAS Brightness and Contrast",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Brightness",
+         "type": "Double",
+         "v": 0.1,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:colorcorrector}",
+       "name": "VEGAS Color Corrector",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Saturation",
+         "type": "Double",
+         "v": 1.2,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:levels}",
+       "name": "VEGAS Levels",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Gamma",
+         "type": "Double",
+         "v": 1.5,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:hsladjust}",
+       "name": "VEGAS HSL Adjust",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "AddToHue",
+         "type": "Double",
+         "v": 0.5,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:chromakeyer}",
+       "name": "VEGAS Chroma Keyer",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "color",
+         "type": "RGBA",
+         "v": [
+          0,
+          1,
+          0,
+          1
+         ],
+         "keys": []
+        },
+        {
+         "name": "BlurAmount",
+         "type": "Double",
+         "v": 0.5,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:sharpen}",
+       "name": "VEGAS Sharpen",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Amount",
+         "type": "Double",
+         "v": 0.5,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:unsharpmask}",
+       "name": "VEGAS Unsharp Mask",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:sepia}",
+       "name": "VEGAS Sepia",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:invert}",
+       "name": "VEGAS Invert",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:blackandwhite}",
+       "name": "VEGAS Black and White",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:mirror}",
+       "name": "VEGAS Mirror",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Angle",
+         "type": "Double",
+         "v": -90,
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:border}",
+       "name": "VEGAS Border",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:vignette}",
+       "name": "VEGAS Vignette",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:crop}",
+       "name": "VEGAS Crop",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "XScale",
+         "type": "Double",
+         "v": 0.5,
+         "keys": []
+        },
+        {
+         "name": "YScale",
+         "type": "Double",
+         "v": 0.5,
+         "keys": []
+        },
+        {
+         "name": "Location",
+         "type": "Double2D",
+         "v": [
+          0.5,
+          0.5
+         ],
+         "keys": []
+        }
+       ]
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:cookiecutter}",
+       "name": "VEGAS Cookie Cutter",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:lutfilter}",
+       "name": "VEGAS LUT Filter",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:glow}",
+       "name": "VEGAS Glow",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:filmeffects}",
+       "name": "VEGAS Film Effects",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:filmgrain}",
+       "name": "VEGAS Film Grain",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:spherize}",
+       "name": "VEGAS Spherize",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:pinchpunch}",
+       "name": "VEGAS Pinch/Punch",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:radialblur}",
+       "name": "VEGAS Radial Blur",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:linearblur}",
+       "name": "VEGAS Linear Blur",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:tvsimulator}",
+       "name": "VEGAS TV Simulator",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:threshold}",
+       "name": "VEGAS Threshold",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:newsprint}",
+       "name": "VEGAS Newsprint",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:addnoise}",
+       "name": "VEGAS Add Noise",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:pixelate}",
+       "name": "VEGAS Pixelate",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:gradientmap}",
+       "name": "VEGAS Gradient Map",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:lightrays}",
+       "name": "VEGAS Light Rays",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:softcontrastvelvetmatter}",
+       "name": "VEGAS Soft Contrast",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:starburstvelvetmatter}",
+       "name": "VEGAS Starburst",
+       "bypass": false,
+       "preset": "",
+       "params": []
+      },
+      {
+       "id": "{Svfx:com.sonycreativesoftware:radialpixelate}",
+       "name": "VEGAS Radial Pixelate",
+       "bypass": false,
+       "preset": "",
+       "params": [
+        {
+         "name": "Amount",
+         "type": "Double",
+         "v": 0.3,
+         "keys": []
+        }
+       ]
+      }
+     ],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Transitions",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 3,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:dissolve}",
+      "name": "VEGAS Dissolve",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 6,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:linearwipe}",
+      "name": "VEGAS Linear Wipe",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 9,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:clockwipe}",
+      "name": "VEGAS Clock Wipe",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 12,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:iris}",
+      "name": "VEGAS Iris",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 15,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:push}",
+      "name": "VEGAS Push",
+      "bypass": false,
+      "preset": "",
+      "params": [
+       {
+        "name": "Direction",
+        "type": "Choice",
+        "v": 3,
+        "keys": []
+       }
+      ]
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 18,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:slide}",
+      "name": "VEGAS Slide",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 21,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:zoom}",
+      "name": "VEGAS Zoom",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 24,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:flash}",
+      "name": "VEGAS Flash",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 27,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:crosseffect}",
+      "name": "VEGAS Cross Effect",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 30,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:pagepeel}",
+      "name": "VEGAS Page Peel",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 33,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:pageroll}",
+      "name": "VEGAS Page Roll",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 36,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:barndoor}",
+      "name": "VEGAS Barn Door",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 39,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:venetianblinds}",
+      "name": "VEGAS Venetian Blinds",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 42,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:spiral}",
+      "name": "VEGAS Spiral",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 45,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:squeeze}",
+      "name": "VEGAS Squeeze",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 48,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:starwipe}",
+      "name": "VEGAS Star Wipe",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 51,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:portals}",
+      "name": "VEGAS Portals",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 54,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 1,
+     "fade_out": 1,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": {
+      "id": "{Svfx:com.sonycreativesoftware:pageloop}",
+      "name": "VEGAS Page Loop",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     },
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Generators",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:solidcolor}",
+      "name": "VEGAS Solid Color",
+      "bypass": false,
+      "preset": "Red",
+      "params": [
+       {
+        "name": "Color",
+        "type": "RGBA",
+        "v": [
+         1,
+         0,
+         0,
+         1
+        ],
+        "keys": []
+       }
+      ]
+     }
+    },
+    {
+     "start": 2,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:colorgradient}",
+      "name": "VEGAS Color Gradient",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     }
+    },
+    {
+     "start": 4,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:checkerboard}",
+      "name": "VEGAS Checkerboard",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     }
+    },
+    {
+     "start": 6,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:noisetexture}",
+      "name": "VEGAS Noise Texture",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     }
+    },
+    {
+     "start": 8,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:testpattern}",
+      "name": "VEGAS Test Pattern",
+      "bypass": false,
+      "preset": "",
+      "params": []
+     }
+    },
+    {
+     "start": 10,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": {
+      "id": "{Svfx:com.sonycreativesoftware:titlesandtext}",
+      "name": "VEGAS Titles & Text",
+      "bypass": false,
+      "preset": "",
+      "params": [
+       {
+        "name": "Text",
+        "type": "String",
+        "v": "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0\\fnil Arial;}}\\pard\\f0\\fs48 FX\\par}",
+        "keys": []
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [
+  {
+   "id": "{Svfx:com.sonycreativesoftware:brightnessandcontrast}",
+   "name": "VEGAS Brightness and Contrast",
+   "bypass": true,
+   "preset": "",
+   "params": [
+    {
+     "name": "Contrast",
+     "type": "Double",
+     "v": 0.2,
+     "keys": []
+    }
+   ]
+  }
+ ],
+ "master_fx": [],
+ "media_fx": [
+  {
+   "path": "C:\\Media\\b.mp4",
+   "fx": [
+    {
+     "id": "{Svfx:com.sonycreativesoftware:invert}",
+     "name": "VEGAS Invert",
+     "bypass": false,
+     "preset": "",
+     "params": [
+      {
+       "name": "BlendAmount",
+       "type": "Double",
+       "v": 0.75,
+       "keys": []
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "unsupported": []
+}

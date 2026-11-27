@@ -1,0 +1,34 @@
+{
+ "about": "Track envelopes (Composite Level, Fade to Color, Volume in dB, Pan, Mute as switches) and an event Velocity envelope; VEGAS's Transition Progress envelope is reported, not imported.",
+ "equals": {
+  "/timeline/video_tracks/0/envelopes/0/kind": "CompositeLevel",
+  "/timeline/video_tracks/0/envelopes/0/points/keys/1/v": 0.5,
+  "/timeline/video_tracks/0/envelopes/0/points/keys/1/t": 2,
+  "/timeline/video_tracks/0/envelopes/0/points/keys/1/curve": "Smooth",
+  "/timeline/video_tracks/0/envelopes/1/kind": "FadeToColor",
+  "/timeline/video_tracks/0/envelopes/1/points/keys/1/v": -0.5,
+  "/timeline/video_tracks/0/clips/0/envelopes/0/kind": "Velocity",
+  "/timeline/video_tracks/0/clips/0/envelopes/0/points/keys/1/v": 2,
+  "/timeline/video_tracks/0/clips/0/envelopes/0/points/keys/1/curve": "Hold",
+  "/timeline/audio_tracks/0/envelopes/0/kind": "Volume",
+  "/timeline/audio_tracks/0/envelopes/0/points/keys/0/v": 0,
+  "/timeline/audio_tracks/0/envelopes/0/points/keys/1/v": -6.0206,
+  "/timeline/audio_tracks/0/envelopes/0/points/keys/1/curve": "Smooth",
+  "/timeline/audio_tracks/0/envelopes/1/kind": "Pan",
+  "/timeline/audio_tracks/0/envelopes/1/points/keys/1/v": -0.5,
+  "/timeline/audio_tracks/0/envelopes/2/kind": "Mute",
+  "/timeline/audio_tracks/0/envelopes/2/points/keys/0/v": 1,
+  "/timeline/audio_tracks/0/envelopes/2/points/keys/1/v": 0,
+  "/timeline/audio_tracks/0/envelopes/2/points/keys/0/curve": "Hold",
+  "/timeline/audio_tracks/0/envelopes/2/points/keys/1/curve": "Hold"
+ },
+ "len": {
+  "/timeline/video_tracks/0/envelopes": 2,
+  "/timeline/audio_tracks/0/envelopes": 3,
+  "/timeline/video_tracks/0/clips/0/envelopes": 1
+ },
+ "warnings": [
+  "the TransitionProgress envelope was not imported"
+ ],
+ "warning_count": 1
+}

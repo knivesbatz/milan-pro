@@ -1,0 +1,25 @@
+{
+ "about": "Markers (0.5 s and 10.01 s land on the nearest 25 fps frames, 0.52 s and 10 s), a region, a region with a negative length, and the time selection.",
+ "equals": {
+  "/timeline/markers/0/position": 0.52,
+  "/timeline/markers/0/name": "Intro",
+  "/timeline/markers/1/position": 10,
+  "/timeline/markers/1/name": "Cue",
+  "/timeline/regions/0/start": 2,
+  "/timeline/regions/0/end": 5,
+  "/timeline/regions/0/name": "Verse",
+  "/timeline/regions/1/start": 10,
+  "/timeline/regions/1/end": 12,
+  "/timeline/regions/1/name": "Backwards",
+  "/timeline/loop_region": [
+   1,
+   4
+  ]
+ },
+ "len": {
+  "/timeline/markers": 2,
+  "/timeline/regions": 2
+ },
+ "warnings": [],
+ "warning_count": 0
+}
