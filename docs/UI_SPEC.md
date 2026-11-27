@@ -149,6 +149,48 @@ streak texture's darkest pixel) by `theme::tests::contrast_aa`:
 | `ink` (marker / region numbers) | `marker_flag` / `region_flag` | ≥ 4.5 (white failed on both) |
 | `warning_text` / `ink.glyph` (tags) | `s3` | ≥ 4.5 |
 
+The test runs over both token sets (Silver and Dark, §2.9), each against the darkest and the lightest streak pixel
+of a bar, and the gloss stops of buttons, bars and lit toggles.
+
+### 2.9 Dark (`Theme::dark`, `ThemeKind::Dark`)
+
+A second token set, chosen in **Options › Preferences › Display › Theme: Silver / Dark** (saved in the
+preferences, exported and imported with them, applied on OK / Apply without a restart; older preferences load as
+Silver; `MILAN_THEME=dark` in the harness). Same metrics, typography, recipes and domain colours; window layouts are
+the same in both. The idiom: dark gunmetal brushed chrome with thin light lips, near-black LCD wells with azure
+read-outs and list text, dark fields with light ink, a steel-grey selection, azure lit toggles and glyphs, grey
+lozenge knobs in dark slots, the same amber.
+
+| Token | Silver | Dark |
+|---|---|---|
+| `s0` … `s6` | `#FFFFFF #F3F5F8 #DDE1E7 #C4CAD3 #A6AEBB #7A8494 #4A5468` | `#5A6069 #3A3E45 #33363C #2A2D32 #202226 #121315 #08090A` |
+| `slate` hi / lo / frame / ridge / text | `#5B6C8E #34425E #36425C #7D8DAA/#1E2840 #F3F5F8` | `#3C4048 #23262B #16181B #50555E/#0A0B0C #E8EAEE` |
+| `lcd` deep / well / hover / rule / ghost / outline | `#00225F #1C3D7D #24488C #3A5A9A #0E3477 #0B1F4F` | `#06090D #0A0F15 #142030 #1E2B3A #0E1824 #000000` |
+| `lcd` text / text_hi / text_dim / digits | `#A8C8FF #E6F0FF #8DB0EE #DCEBFF` | `#46A8FF #D2E8FF #3A8FDB #5BB8FF` (azure) |
+| `sel` top / bottom / mid / lip / text | `#3A68CE #2450B4 #2F5CC1 #7FA2E8 #FFFFFF` | `#4C5463 #394050 #434A58 #6A7384 #FFFFFF` (steel grey) |
+| `lit` top / bottom / outline | `#E3EDFF #9DBDF2 #2F5CC1` | `#2A609F #1E4F8C #46A8FF` |
+| `ink` text / label / button / glyph / disabled | `#0F1C3A #2E3A55 #0C2A78 #1A49B8 #485266` | `#E4E7EC #B9C0CA #DCE6F4 #5CB4FF #A6ACB6` |
+| `paper` / `paper.disabled` | `#FBFCFE #E8EBF0` | `#16191D #24272C` |
+| `gloss` (top, upper, line, low, bounce) | `#FFFFFF #E2E7EE #C2C9D4 #9EA8B8 #B3BCC9` | `#5C626C #4A4F58 #383C43 #2C2F35 #33373E` |
+| `gloss_bar` | `#F4F6FA #D6DCE5 #B3BBC8 #949FB1 #A9B2C1` | `#484C54 #393C43 #2C2F35 #222428 #2A2D32` |
+| `gloss_lit` | `#F4F8FF #D5E4FF #AFC9F4 #8DAEE8 #A4C0EF` | `#2A609F #22568F #1A477C #163E6E #1B4578` |
+| `gloss_pressed` | `#9EA8B8 #AFB8C6 #BFC6D1 #D3D8E0 #C6CCD6` | `#222428 #2A2D32 #33363C #3E424A #383C43` |
+| `gloss_knob` (slider and fader knobs) | `gloss` | `#F0F2F5 #CDD1D7 #A3A9B2 #7E848D #8E949D` (light grey lozenges) |
+| `bevel` lip / lip_soft / soften / field_edge | white / white 45 % / white / `#7A8494` | white 28 % / white 10 % / `#3A3E45` / `#7A818C` |
+| `amber` | `#FFA424 #FFDC90 #D86000 #FFB43C` | the same |
+| lanes / empty lanes / grid | `#2B3550 #222A40 #3D4A68` | `#1D2025 #16181B #2E323A` |
+| accent (loop selection line, hyperlinks) | `sel.mid` | `#3C9CFF` (azure) |
+| `warning_text` | `#A00000` | `#FF8A7A` |
+| workspace (Pan/Crop, Track Motion) bg / grid / frame | `#ECECEC #C8C8C8 #505050` | `#2B2E33 #3C4048 #9AA1AB` |
+| keyframe lanes / alt / selected row | `s2` / `#D2D7DE` / `lit.top` | `s2` / `#2E3136` / `#2B4A70` |
+| icon ink (`icon`) | `#0A0A0A` | `#E6E8EC` |
+
+On Dark the icons' black ink (glyph strokes, letters, pointers; palette entries darker than `#505050`) is drawn
+light (`#E0E0E0`), the fills keep their colours and their dark outline. Glyphs on the event header gradient and the
+event names keep the light-surface colours (`icons::paint_icon_on_light`, `event_ink #0F1C3A`): the header is the
+track colour lit toward white in both sets. Event bodies, waveforms, envelopes, markers, regions, loop flags, the
+playhead, meter LEDs and pictures (black wells) do not change.
+
 ---
 
 ## 3. Typography

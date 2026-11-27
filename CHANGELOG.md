@@ -7,6 +7,15 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
+### Added
+- **Dark theme:** Options › Preferences › Display › Theme: Silver (the default) or Dark, applied on OK / Apply
+  without a restart, saved with the preferences and carried by Export / Import Preferences. Dark is the same design
+  system on a second token set (docs/UI_SPEC.md §2.9): gunmetal brushed chrome with thin light lips, near-black LCD
+  wells with azure read-outs and list text, dark fields with light ink, a steel-grey selection, azure lit toggles and
+  glyphs, the same amber. Icons draw their black ink light on dark chrome; event headers, event bodies, markers and
+  pictures keep their colours. Every text / background pair meets WCAG AA in both themes (the contrast test checks
+  both); Silver is unchanged. The harness takes `MILAN_THEME=dark`.
+
 ### Changed
 - **A designed look:** the interface is redrawn on one design system shared with the brand (docs/UI_SPEC.md):
   brushed silver chrome with rounded corners and one top-left light (bars, buttons, tabs, knobs), deep navy LCD
