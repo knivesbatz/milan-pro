@@ -65,16 +65,15 @@ darker.
 
 | Token | Hex | Use |
 |---|---|---|
-| `lcd.deep` | `#00225F` | LCD wells: time displays, meters, read-outs, status panes, tooltips' body is `lcd.tip` [I] |
+| `lcd.deep` | `#00225F` | LCD wells: time displays, meters, read-outs, the status bar's read-out panes [I] |
 | `lcd.well` | `#1C3D7D` | List and tree wells (Project Media, Explorer, chooser lists, Plug-In Manager, command palette) [I] |
 | `lcd.hover` | `#24488C` | Hovered list row [I] |
 | `lcd.rule` | `#3A5A9A` | Tree lines, list grid rules, the LCD dot grid (at 35 %) [I] |
 | `lcd.ghost` | `#0E3477` | Unlit segments of the segmented digits [I] |
 | `lcd.outline` | `#0B1F4F` | 1 px outline round a well [B stroke navy] |
-| `lcd.tip` | `#0A2A6A` | Tooltip body [I] |
 | `lcd.text` | `#A8C8FF` | Text on any navy well [I] |
-| `lcd.text_hi` | `#E6F0FF` | Emphasised LCD text, tooltip text, list text of the focused item [I] |
-| `lcd.text_dim` | `#8DB0EE` | Secondary text, **only on `lcd.deep`** (units, labels inside a read-out) [I] |
+| `lcd.text_hi` | `#E6F0FF` | Emphasised LCD text (the preview's read-outs, the open nested timeline) [I] |
+| `lcd.text_dim` | `#8DB0EE` | Secondary text in a well: units, group names, disabled rows [I] |
 | `lcd.digits` | `#DCEBFF` | Lit segments of the big time digits [I] |
 
 ### 2.4 Selection and lit states
@@ -82,17 +81,17 @@ darker.
 | Token | Hex | Use |
 |---|---|---|
 | `sel.top` / `sel.bottom` | `#3A68CE` / `#2450B4` | Selection gradient: list rows, menu highlight, selected tree label, progress fill, ON pills [B flange] |
-| `sel.mid` | `#2F5CC1` | The flat selection (egui-drawn highlights, text selection) |
+| `sel.mid` | `#2F5CC1` | The flat selection (egui-drawn highlights, text selection), slider value fill |
 | `sel.lip` | `#7FA2E8` | 1 px light line along the top of a selection bar |
 | `sel.text` | `#FFFFFF` | Text on the selection |
-| `lit.top` / `lit.bottom` | `#E3EDFF` / `#9DBDF2` | A toggle that is on (toolbar tools, M / S / fx, Sync Cursor, selected tile frame): sky-blue chrome with navy ink [I] |
+| `lit.top` / `lit.bottom` | `#E3EDFF` / `#9DBDF2` | A toggle that is on (toolbar tools, M / S / fx, Sync Cursor, selected tile frame), the hovered menu-bar item and menu row: sky-blue chrome with navy ink [I] |
 | `lit.outline` | `#2F5CC1` | Outline of lit chrome and the keyboard-focus ring |
 
 ### 2.5 Amber accent
 
 | Token | Hex | Use |
 |---|---|---|
-| `amber` | `#FFA424` | The active dock tab's lamp, record-armed lamps, LCD warnings (dropped frames, reduced quality) [B wedge] |
+| `amber` | `#FFA424` | The active dock tab's lamp, favourite stars, LCD warnings (the preview size, failed plug-ins) [B wedge] |
 | `amber.hi` / `amber.lo` | `#FFDC90` / `#D86000` | Lamp gradient [B] |
 | `amber.text` | `#FFB43C` | Amber text on navy (warnings in a read-out) [B] |
 
@@ -106,7 +105,7 @@ Amber is never a fill behind text and never more than one lamp per region.
 | `ink.label` | `#2E3A55` | Secondary labels on silver (track header slider names, group captions) |
 | `ink.button` | `#0C2A78` | Push button and pill labels on silver [B outline navy] |
 | `ink.glyph` | `#1A49B8` | Monochrome glyphs we draw on silver: ▾ ▴ ◂ ▸, ×, ?, check marks, radio dots [B flange dark] |
-| `ink.disabled` | `#4C566B` | Disabled text on silver and paper (still ≥ 4.5:1: VEGAS-dense dialogs are read while disabled) |
+| `ink.disabled` | `#485266` | Disabled text on silver and paper (still ≥ 4.5:1: VEGAS-dense dialogs are read while disabled) |
 | `paper` | `#FBFCFE` | Fields and dialog option lists |
 | `paper.disabled` | `#E8EBF0` | A disabled field |
 
@@ -134,11 +133,12 @@ streak texture's darkest pixel) by `theme::tests::contrast_aa`:
 | `lcd.text` | `lcd.well` / `lcd.hover` / `lcd.deep` | 6.2 / 5.2 / 8.9 |
 | `lcd.text_dim` | `lcd.deep` | 6.9 |
 | `lcd.digits` | `lcd.deep` | 12.5 |
-| `lcd.text_hi` | `lcd.tip` | 11.8 |
+| `lcd.text_hi` | `lcd.well` | 9.7 |
 | `amber.text` | `lcd.well` | 5.9 |
 | `sel.text` | `sel.top` / `sel.bottom` | 5.2 / 7.3 |
 | `ink` | `lit.top` / `lit.bottom` | 14.3 / 8.8 |
-| white event / marker text | their tags | as `VEGAS_UI_SPEC.md` (domain colours) |
+| `ink` (marker / region numbers) | `marker_flag` / `region_flag` | ≥ 4.5 (white failed on both) |
+| `warning_text` / `ink.glyph` (tags) | `s3` | ≥ 4.5 |
 
 ---
 
@@ -172,7 +172,7 @@ streak texture's darkest pixel) by `theme::tests::contrast_aa`:
 **Bevel recipe** (`widgets::chrome`): 1 px `s6` outline (anti-aliased, rounded), inside it 1 px `s0` lip along the
 top (and left on tall shapes) and 1 px `s5` shade along the bottom. **Recess recipe** (`widgets::well`): 1 px
 outline (`s5` on silver; `lcd.outline` round a navy well), a 2 px inner shadow at the top (black 30 % then 12 %),
-a 1 px `s0` lower lip outside the bottom edge on silver.
+a 1 px lower lip inside the bottom edge (`s0` at 80 % on silver, white at 6 % in a navy well).
 
 ### 4.2 Spacing and sizes
 
@@ -210,13 +210,13 @@ Band positions at 1920×1080: menu 0-20, toolbar 23-49, dock 52-586, splitter 58
 | Component | Recipe |
 |---|---|
 | **Chrome fill** `chrome_fill` | Rounded vertical gradient mesh (exact piecewise-linear, any radius) + optional streaks (bars only). |
-| **Bar** `metal_bar` / `metal` | Raised chrome without rounding (menu row, toolbars, transport, status, dock toolbars): `s1`→`s2`→`s3`, `s0` top line, `s5` bottom line, streak texture at 25 % (±2 %). |
-| **Panel frame** `panel_frame` | `s2` body, 1 px `s6` outline with `r_frame` outer corners, a 1 px `s0` lip inside the top/left. Dock groups, dialog bodies, tool windows. |
+| **Bar** `metal_bar` / `metal` | Raised chrome without rounding (menu row, toolbars, transport, status, dock toolbars): `s1`→`s2` (45 %)→`s4`, the deeper sweep of a long bar, `s0` top line, `s5` bottom line, streak texture at 25 % (±2 %). |
+| **Panel frame** (`dialogs::page`, dock groups via `frame_edge`) | `s2` body, 1 px `s6` outline with `r_frame` outer corners, a 1 px `s0` lip inside the top/left. Dock groups, dialog bodies, tool windows. |
 | **Section title tab** `section_tab` | A pill 16 px tall set into the top edge of a group: raised chrome, `ink` Tahoma Bold label, and a groove (`s5` over `s0`) running from the pill to the group's right edge. Dialog groups (`dialogs::group`), FX window sections. |
 | **LCD well** `lcd_well` | `lcd.deep` (read-outs) or `lcd.well` (lists) with the recess recipe in navy: `lcd.outline` outline, `r_ctl`, inner top shadow, a faint 2 px dot grid in `lcd.rule` at 35 % on read-outs (never under list text). |
 | **Push button** `classic_push` | Raised chrome, `r_ctl`, label `ink.button`. Hover: gradient lifted toward `s1` and the outline turns `lit.outline`. Pressed: inverted gradient, label 1 px down-right. Default: a 2 px `lit.outline` ring inside the outline, bold label. Disabled: flat `s2`, outline `s4`, label `ink.disabled`. |
 | **Toolbar / icon button** `chrome_button` | As the push button at 22 px with `r_small`; always raised (the VEGAS 5-7 convention). **Active** (a tool, a toggle that is on) = lit chrome (`lit.top`→`lit.bottom`, `lit.outline`). |
-| **Toggle pill** `pill` | Pill-shaped chrome with an `ink.button` label; on = `sel.top`→`sel.bottom` with a white label and `sel.lip` (the lit "ON" pill). Chooser category chips, keyframe controller toggles. |
+| **Toggle pill** `pill_paint` | Pill-shaped chrome with an `ink.button` label; on = `sel.top`→`sel.bottom` with a white label and `sel.lip` (the lit "ON" pill). The chooser category chips (Video FX, Transitions, Media Generators). |
 | **Transport button** `transport_button` | Round chrome (`h/2`), the same bevel, the transport glyph centred; Active (loop, play while playing) = lit. |
 | **Slider** `slider`, `groove` + `thumb` | Track: a 4 px recessed pill in `s4` with a `s5` top edge and `s0` bottom lip; the part left of the knob filled `sel.mid` (value fill). Knob: a 15 × 9 lozenge of raised chrome with a 1 px dark centre notch; automation tints the notch with the envelope colour. |
 | **Fader** `groove_v` + `fader_thumb` | The same, vertical, knob 21 × 11 with a notch across. |
@@ -224,14 +224,14 @@ Band positions at 1920×1080: menu 0-20, toolbar 23-49, dock 52-586, splitter 58
 | **List / tree in a well** `scroll_pane`, `tree_row`, `list_row` | `lcd.well`; rows 20 px, text `lcd.text`; hover `lcd.hover`; ⊞/⊟ in `lcd.text` outline boxes; tree lines dotted `lcd.rule`; column headers are a chrome bar of raised segments with `ink` labels and an `ink.glyph` sort arrow. |
 | **Selection** `selection_bar` | `sel.top`→`sel.bottom`, `sel.lip` top line, `sel.text`; on a full row in lists, the label only in trees; menus use `sel.mid`. |
 | **Menu bar** (`menus.rs`) | Bar recipe; item hover = lit pill (`r_ctl`); open item = selection pill with white label. |
-| **Menus** (`chrome::menu_style`) | `s1` body, 1 px `s6` outline, `r_ctl`, 3 px margin; hover row `sel.mid` with white text; separator = groove; disabled `ink.disabled`. |
+| **Menus** (`chrome::menu_style`) | `s1` body, 1 px `s6` outline, `r_ctl`, 3 px margin, an `s0` lip; hover row lit (`lit.bottom`, `lit.outline`, `r_small`) with its ink unchanged; check marks `ink.glyph`; separator = groove; disabled `ink.disabled`. |
 | **Toolbars** | Bar recipe, a 3-dot grip at the left end, separators as grooves (`s5` + `s0`). |
 | **Dock tabs** (`dock.rs::classic_tab`) | Strip = `s4` recess. Tabs = chrome with `r_ctl` on the corners away from the content; inactive tabs one step darker (`s2`→`s4`) and 2 px shorter; the active one joins the content, bold `ink` label, and an **amber lamp** (2 px `amber` line, 1 px `amber.hi` over it) along its outer edge. |
-| **Dialogs** (`dialogs/mod.rs`) | `slate.frame` 1 px outline with `r_frame` corners; caption = slate gradient 20 px with the bold `slate.text` title between two grooved ridges; caption buttons = 16 × 14 chrome with `ink.glyph` ? and ×. Body = panel frame. Tabs (`tabs`) = the dock-tab recipe standing on the page (no lamp; active label bold). Button row = push buttons, 75 × 23, the default one ringed. |
+| **Dialogs** (`dialogs/mod.rs`) | `slate.frame` 1 px outline with `r_frame` corners; caption = slate gradient 20 px with the bold `slate.text` title between two grooved ridges; caption buttons = 16 × 14 chrome with `ink.glyph` ? and ×. Body = a brushed-panel sweep `s1` → `s2` (30 %) → `s3` with an `s0` lip under the caption (no streaks: text sits on it). Tabs (`tabs`) = the dock-tab recipe standing on the page (no lamp; active label bold). Button row = push buttons, 75 × 23, the default one ringed. |
 | **Track headers** (`timeline/tracks.rs`) | Raised chrome card per track (`s1`→`s3`, selected = `lit.top`→`lit.bottom`), 2 px slate rule between tracks, M / S / fx / arm as 18 × 18 chrome buttons (lit when on; the armed lamp amber). |
 | **Timeline ruler** (`timeline/ruler.rs`) | Bar recipe for the band; ticks and numbers `ink`; marker / region / loop tags keep their domain colours. Time display = a big LCD well with segmented digits. |
 | **Meters** (`master_bus`, `mixer`) | `lcd.deep` LCD well, LED segments (2 px on a 3 px pitch) green / yellow / red, peak line `lcd.text_hi`; labels `ink` on silver beside the well, `lcd.text_dim` inside it. |
-| **Tooltips** | `lcd.tip` body, 1 px `lcd.rule` outline, `r_ctl`, `lcd.text_hi` text. |
+| **Tooltips** | The popup recipe of the menus: `s1` body, `s6` outline, `r_ctl`, `ink` text (egui draws tooltips with the popup visuals). |
 | **Check box** `check_box` | 13 × 13 `paper` with the recess recipe and `r_small`; check = 2 px `ink.glyph` anti-aliased tick; disabled `paper.disabled` and an `ink.disabled` tick. |
 | **Radio** `radio_mark` | `paper` disc, `s5` outline, top inner shadow; on = 5 px `sel` gradient dot with a white glint. |
 | **Combo** `combo_frame` | `paper` field with the recess recipe; a chrome arrow button inside the right end (corners `r_ctl` on the right) with an `ink.glyph` ▾; pressed while open. |
@@ -239,7 +239,9 @@ Band positions at 1920×1080: menu 0-20, toolbar 23-49, dock 52-586, splitter 58
 | **Edit** `edit` | `paper` field, recess recipe, `r_ctl`; focus = `lit.outline` ring. |
 | **Progress** `progress_blocks` | A recessed `lcd.deep` pill, the done part a `sel` gradient pill with `sel.lip`; the label white (AA on both). The splash's bar is the same recipe. |
 | **Thumbnails / preset tiles** `tile`, `thumb_well` | Raised chrome tile, `r_frame`; the picture in a black well with a 1 px `s5` rim; caption `ink` on silver. Hover: lifted gradient; selected: lit chrome with a 2 px `lit.outline` ring. |
-| **Splitters** `dotted_splitter` | `slate.frame` base with a 3-dot chrome grip centred along it. |
+| **Splitters** `dotted_splitter` | `slate.frame` base with a 3-dot chrome grip centred along it; a pane split inside a panel (`pane_split`) is panel silver with the same dimples. |
+| **Frame edge** `frame_edge` | Rounds a square-painted region (a dock group): the corners outside an `r_frame` arc filled with the slate behind, then the `s6` outline. |
+| **Scale** | Every line of chrome is `widgets::hair()` = R48's `theme::one()` (a whole physical pixel) and rects go through `px` (R48's snapped edges), so the recipes stay crisp at 125, 150 and 200 %. |
 
 ---
 
@@ -275,8 +277,9 @@ chrome and on paper, all light, so their dark outline reads everywhere):
 
 ### 8.1 Main window
 
-* Menu row, main toolbar, transport bar and status bar: the bar recipe. The status panes and the transport's time
-  read-outs are small LCD wells (`lcd.deep`, `lcd.text`).
+* Menu row, main toolbar, transport bar and status bar: the bar recipe. The status bar's read-out panes and the
+  transport's time read-outs are small LCD wells (`lcd.deep`, `lcd.text`); the status message pane, a message rather
+  than a read-out, is an `s3` recess with `ink` text.
 * Gutters and splitters: `slate.frame` with the 3-dot grip.
 * Dock groups: panel frame round toolbar + body + tab strip; the toolbar is a bar, the body `s2`.
 

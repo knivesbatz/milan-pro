@@ -7,6 +7,17 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
+### Changed
+- **A designed look:** the interface is redrawn on one design system shared with the brand (docs/UI_SPEC.md):
+  brushed silver chrome with rounded corners and one top-left light (bars, buttons, tabs, knobs), deep navy LCD
+  wells with light-blue text for every live read-out, list and tree (seven-segment digits for the time display,
+  the Trimmer and the keyframe time), paper wells for typing, black wells for video and thumbnails, the selection
+  blue of the brand's reel and one amber accent (the active dock tab's lamp, favourites, LCD warnings). Dialogs get
+  slate captions with grooved ridges, chrome tabs and section title tabs; menus light their rows; transport buttons
+  are round; sliders have lozenge knobs and a value fill; chooser categories are toggle pills. Layout, windows,
+  menus and shortcuts are unchanged; every text / background pair meets WCAG AA (a test checks them), and the
+  painters keep R48's whole-pixel edges at 125-200 %.
+
 ## 0.10.0
 
 ### Added
