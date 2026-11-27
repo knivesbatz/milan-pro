@@ -895,7 +895,7 @@ const AUDIO_HEADER_MID: &[M] = &[
 fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[String], i: usize) {
     let tr = &project.timeline.audio_tracks[i];
     let ids = if sel.contains(&tr.id) { sel.to_vec() } else { vec![tr.id.clone()] };
-    let (cur, pt, mon) = (tr.out.clone(), tr.pan_type, tr.monitor);
+    let (cur, pt, mon, lay) = (tr.out.clone(), tr.pan_type, tr.monitor, tr.layout);
     // R9: Input ▸ Input Monitoring Off / On / Auto (the record input is the one in Preferences › Audio Device).
     let mut monitor = None;
     sub(ui, "I&nput", true, |ui| {
@@ -931,11 +931,28 @@ fn routing(ui: &mut Ui, project: &mut Project, history: &mut History, sel: &[Str
             }
         }
     });
-    if to.is_none() && ptype.is_none() {
+    // R10b: the Surround Panner (it places a stereo track in a 5.1 / 7.1 project; a 5.1 / 7.1 track goes channel for
+    // channel).
+    if entry(ui, "Surround Pa&nner...", "", true, Mark::None) {
+        crate::ui::open_tool(ui.ctx(), crate::ui::ToolWin::Surround(project.timeline.audio_tracks[i].id.clone()));
+    }
+    // R10a: Channel Layout ▸ (Stereo, as VEGAS's tracks; a 5.1 / 7.1 track decodes its media to that layout).
+    let mut layout = None;
+    sub(ui, "Channel &Layout", true, |ui| {
+        for l in AudioLayout::ALL {
+            if entry(ui, l.name(), "", true, Mark::Radio(lay == l)) {
+                layout = Some(l);
+            }
+        }
+    });
+    if to.is_none() && ptype.is_none() && layout.is_none() {
         return;
     }
     let before = project.clone();
-    if to.is_some_and(|o| edit::set_track_out(project, &ids, &o)) || ptype.is_some_and(|t| edit::set_pan_type(project, &ids, t)) {
+    if to.is_some_and(|o| edit::set_track_out(project, &ids, &o))
+        || ptype.is_some_and(|t| edit::set_pan_type(project, &ids, t))
+        || layout.is_some_and(|l| edit::set_track_layout(project, &ids, l))
+    {
         history.push(before);
     }
 }

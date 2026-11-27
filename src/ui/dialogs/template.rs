@@ -4,7 +4,7 @@ use eframe::egui::*;
 use crate::ui::widgets;
 use crate::decode::Quality;
 use crate::project::{FieldOrder, PARS, ProjectSettings};
-use crate::render::{ACODECS, AudioEnc, BUILTIN, CONTAINERS, Rate, Template, VCODECS, VideoEnc, acodec, container, vcodec};
+use crate::render::{ACODECS, AudioEnc, BUILTIN, CONTAINERS, Rate, Template, VCODECS, VideoEnc, acodec, container, max_channels, vcodec};
 
 /// Frame sizes offered besides the project's and a custom one.
 const SIZES: [(u32, u32); 8] = [(3840, 2160), (2560, 1440), (1920, 1080), (1280, 720), (1080, 1920), (1080, 1080), (720, 480), (720, 576)];
@@ -326,6 +326,14 @@ fn audio_page(ui: &mut Ui, d: &mut Template, s: &ProjectSettings) {
     super::row(ui, "Channels:", 120.0, true, |ui| {
         widgets::radio_value(ui, &mut a.channels, 2, "Stereo");
         widgets::radio_value(ui, &mut a.channels, 1, "Mono");
+        // R10a: the surround layouts the codec takes.
+        let max = max_channels(k.enc);
+        if max >= 6 {
+            widgets::radio_value(ui, &mut a.channels, 6, "5.1 Surround");
+        }
+        if max >= 8 {
+            widgets::radio_value(ui, &mut a.channels, 8, "7.1 Surround");
+        }
     });
     if !k.kbps.is_empty() {
         super::row(ui, "Bit rate (kbps):", 120.0, true, |ui| {

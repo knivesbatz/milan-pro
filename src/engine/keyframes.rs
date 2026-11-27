@@ -152,7 +152,9 @@ impl EnvKind {
     /// The value of an envelope with no points.
     pub fn neutral(self) -> f32 {
         match self {
-            EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress | EnvKind::MotionBlur | EnvKind::Supersampling => 0.0,
+            EnvKind::Volume | EnvKind::Pan | EnvKind::FadeToColor | EnvKind::TransitionProgress | EnvKind::MotionBlur | EnvKind::Supersampling | EnvKind::SurroundX => 0.0,
+            // R10a: the front of the room.
+            EnvKind::SurroundY => 1.0,
             EnvKind::Mute | EnvKind::CompositeLevel | EnvKind::Opacity | EnvKind::Velocity | EnvKind::Unknown => 1.0,
             // The middle of the parameter's range.
             EnvKind::FxParam => 0.5,

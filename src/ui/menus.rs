@@ -139,6 +139,14 @@ pub struct CmdState {
     /// Stream ▸: the focus event's stream, and how many of its kind its media has.
     pub stream: u32,
     pub streams: u32,
+    /// R10b: Channels ▸ of a multichannel source: the focus audio event's pair, its media's stereo pairs (0 for mono
+    /// and stereo media) and audio streams.
+    pub pair: Option<u32>,
+    pub pairs: u32,
+    pub audio_streams: u32,
+    /// R39: a video track holds Titles & Text events (Export › Subtitles); the project has a named region.
+    pub subtitle_tracks: bool,
+    pub named_regions: bool,
     /// Options › Quickfade Audio Edits.
     pub quickfade: bool,
     /// Options › Audio Follows Video Velocity (the project's).
@@ -259,6 +267,8 @@ impl CmdState {
             SetChannels(_) => self.audio_clip,
             PitchUp | PitchDown | PitchCentUp | PitchCentDown | PitchOctUp | PitchOctDown => self.audio_clip,
             SetStream(n) => self.clip && n < self.streams,
+            SetPair(_) => self.audio_clip && self.pairs > 1,
+            AddStreamTracks => self.audio_clip && self.audio_streams > 1,
             Quickfade | AudioFollowsVelocity | VideoBusTrack | InsertAudioBus | InsertAssignableFx | InsertInputBus => true,
             RemoveAssignableFx => self.assignable_fx,
             BusTracks | DimMaster | AudioProperties | OutputMeters | VerticalMeters | MeterWidth(_) => true,
@@ -286,6 +296,12 @@ impl CmdState {
             InsertAdjustmentEvent => self.video_track_focus,
             InsertAudioTransition => self.audio_clip || self.audio_track_focus,
             InsertTime | ResizeGenerated => true,
+            // R10b: on the focus audio track, or the first.
+            SurroundPanner => self.any_tracks,
+            // R39.
+            InsertSubtitles => true,
+            InsertSubtitlesRegions => self.named_regions,
+            ExportSubtitles => self.subtitle_tracks,
             Window(_) | ShowWindow(_) => true,
             _ => false,
         }
@@ -321,6 +337,7 @@ impl CmdState {
             SetResample(r) => self.resample == r,
             SetChannels(ch) => self.channels == ch,
             SetStream(n) => self.stream == n,
+            SetPair(p) => self.pair == p,
             Quickfade => self.quickfade,
             AudioFollowsVelocity => self.audio_follows_velocity,
             VideoBusTrack => self.video_bus,
@@ -420,7 +437,6 @@ impl Why {
 /// Why `c` is greyed out whatever is selected; None for commands that work (they may still need a selection).
 pub fn unfinished(c: Command) -> Option<Why> {
     Some(match c {
-        SurroundPanner => Later("R10b"),
         // Shift+F1 context help: every control already says what it does (and why it is greyed) when hovered.
         WhatsThis => Fixed("hover text does its job: every control says what it does, and why, when it is greyed"),
         DeviceExplorer | Dashboard | MotionTracking | TextToSpeech | MidiTimecode | MidiClock | MidiTrigger => NotPlanned("R59"),
@@ -522,7 +538,7 @@ pub fn cmd(ui: &mut Ui, label: &str, c: Command) {
     let radio = matches!(
         c,
         PreviewQuality(_) | NormalTool | Tool(_) | RippleMode(_) | MeterWidth(_) | LayoutUser(_) | LayoutDefault | LayoutAudio
-            | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_)
+            | LayoutColor | LayoutSource | LayoutTimelineTop | SetGrid(_) | SetRuler(_) | SetResample(_) | SetChannels(_) | SetStream(_) | SetPair(_)
             | Loudness(super::loudness::LoudCmd::Mode(_) | super::loudness::LoudCmd::Range(_) | super::loudness::LoudCmd::Wide(_))
     );
     let mark = match st.checked(c) {
@@ -580,6 +596,8 @@ pub enum M {
     UserLayouts,
     /// Stream ▸: a radio per stream of the focus event's media (Stream 1, Stream 2...).
     Streams,
+    /// R10b: Channels ▸ of a multichannel source: a radio per stereo pair and the downmix.
+    Pairs,
 }
 
 use M::*;
@@ -619,6 +637,16 @@ fn show_item(ui: &mut Ui, item: &M) {
                 cmd(ui, &format!("Stream &{}", n + 1), SetStream(n));
             }
         }
+        Pairs => {
+            let n = state(ui.ctx()).pairs;
+            if n > 1 {
+                sep(ui);
+                for k in 0..n {
+                    cmd(ui, &format!("Channels &{} and {}", 2 * k + 1, 2 * k + 2), SetPair(Some(k)));
+                }
+                cmd(ui, "All Channels (Do&wnmix)", SetPair(None));
+            }
+        }
     }
 }
 
@@ -634,9 +662,11 @@ const IMPORT: &[M] = &[
     C("&EDL Text File (*.txt, *.edl)...", ImportEdl),
     C("&OpenTimelineIO (*.otio)...", ImportOtio),
     X("&Broadcast Wave Format...", NotPlanned("R57")),
-    X("&Closed Captioning...", Later("R39")),
+    X("&Closed Captioning...", CAPTIONS),
 ];
 
+/// R39: CEA-608/708 is not supported.
+const CAPTIONS: Why = Fixed("not supported: FFmpeg has no CEA-608/708 encoder and reads captions only from a video stream's side data, which the decode does not keep; use Insert › Subtitles from File");
 
 const EXPORT: &[M] = &[
     C("&Milan Pro Project Archive...", ArchiveProject),
@@ -646,6 +676,8 @@ const EXPORT: &[M] = &[
     C("Final Cut Pro &X (*.fcpxml)...", ExportFcpxml),
     C("&EDL Text File (*.txt, *.edl)...", ExportEdl),
     C("&OpenTimelineIO (*.otio)...", ExportOtio),
+    S,
+    C("&Subtitles (*.srt, *.vtt)...", ExportSubtitles),
 ];
 
 pub const FILE: &[M] = &[
@@ -803,9 +835,10 @@ pub const CHANNELS: &[M] = &[
     C("&Right Only", SetChannels(ChannelMap::RightOnly)),
     C("&Combine", SetChannels(ChannelMap::Combine)),
     C("&Swap", SetChannels(ChannelMap::Swap)),
+    Pairs,
 ];
 
-pub const STREAM: &[M] = &[Streams];
+pub const STREAM: &[M] = &[Streams, S, C("Add All Streams as &Tracks", AddStreamTracks)];
 
 pub const EDIT: &[M] = &[
     C("&Undo", Undo),
@@ -968,8 +1001,8 @@ pub const INSERT: &[M] = &[
     C("Adjustment Event", InsertAdjustmentEvent),
     C("&Generated Media...", ShowWindow(Panel::MediaGenerators)), // opens, never closes, and has no check
     C("&Slideshow...", InsertSlideshow),
-    X("Insert Subtitles from Files...", Later("R39")),
-    X("Insert Subtitles from Regions...", Later("R39")),
+    C("S&ubtitles from File...", InsertSubtitles),
+    C("Subtitles from Re&gions", InsertSubtitlesRegions),
     S,
     C("Audio Tra&nsition...", InsertAudioTransition),
     S,
@@ -1266,7 +1299,7 @@ pub fn greyed(items: &[M], out: &mut Vec<(String, Why)>) {
                 greyed(items, out);
                 None
             }
-            S | Recent | UserLayouts | Streams => None,
+            S | Recent | UserLayouts | Streams | Pairs => None,
         };
         if let Some((l, w)) = row {
             let l = keymap::mnemonic(l).0;
@@ -1996,6 +2029,10 @@ mod tests {
             multicam_track: true,
             multicam: true,
             rollback: true,
+            audio_streams: 3,
+            pairs: 3,
+            subtitle_tracks: true,
+            named_regions: true,
             recent: vec!["p.mnle".into(); 10],
             layouts: std::array::from_fn(|_| Some("L".into())),
             ..Default::default()

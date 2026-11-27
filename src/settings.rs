@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use crate::history::History;
-use crate::project::{Project, ProjectSettings};
+use crate::project::{AudioQuality, BusMode, Project, ProjectSettings};
 use crate::ui::dialogs;
 use crate::ui::dock::Layout;
 use crate::ui::menus::{Later, NotPlanned, Why};
@@ -782,7 +782,16 @@ fn summary_tab(ui: &mut Ui, d: &mut ProjectSettings) {
 
 /// `buses`: Number of stereo busses (R8a). Fewer removes the last ones: what went to them goes to the master.
 fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
-    dialogs::row(ui, "Master bus mode:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_bus", "Stereo", 200.0, Later("R10a")));
+    // R10a: Stereo or 5.1 Surround (VEGAS); 7.1 Surround is Milan Pro's. Busses and the master take the layout's channels.
+    dialogs::row(ui, "Master bus mode:", 150.0, true, |ui| {
+        widgets::combo(ui, "pa_bus", 200.0, d.layout.name(), |ui| {
+            for m in BusMode::ALL {
+                ui.selectable_value(&mut d.layout, m, m.name());
+            }
+        })
+        .response
+        .on_hover_text("5.1 and 7.1 place each audio track by its surround pan (the Surround Panner); playback monitors the stereo fold-down");
+    });
     dialogs::row(ui, "Number of stereo busses:", 150.0, true, |ui| {
         widgets::spin(ui, buses, 1.0, |d| d.range(0..=crate::project::AudioSettings::MAX_BUSES))
     });
@@ -803,7 +812,16 @@ fn audio_tab(ui: &mut Ui, d: &mut ProjectSettings, buses: &mut usize) {
             }
         });
     });
-    dialogs::row(ui, "Resample and stretch quality:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pa_q", "Good", 200.0, Later("R10a")));
+    // R10a: the varispeed resampler's kernel (Preview 16 taps, Good 32, Best 64).
+    dialogs::row(ui, "Resample and stretch quality:", 150.0, true, |ui| {
+        widgets::combo(ui, "pa_q", 200.0, d.resample_quality.name(), |ui| {
+            for q in AudioQuality::ALL {
+                ui.selectable_value(&mut d.resample_quality, q, q.name());
+            }
+        })
+        .response
+        .on_hover_text("How finely varispeed audio (Velocity, J / L shuttle) is resampled: Best is the cleanest, Preview the lightest");
+    });
 }
 
 #[cfg(test)]

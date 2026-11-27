@@ -59,6 +59,8 @@ impl MeridianApp {
             || self.command_props.is_some()
             || self.slideshow.is_some()
             || self.seq_ask.is_some()
+            || self.subs_import.is_some()
+            || self.subs_export.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
             || self.archive.is_some()
@@ -145,6 +147,11 @@ impl MeridianApp {
             channels: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map(|c| c.channels).unwrap_or_default(),
             stream: clip.map_or(0, |c| c.stream),
             streams: clip.and_then(|c| edit::media_of(&self.project, c)).map_or(1, |m| m.streams(self.selected_clip.as_ref().is_some_and(|r| r.is_video))),
+            pair: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| c.pair),
+            pairs: self.focus_clip(false).and_then(|id| self.project.clip(&id)).map_or(0, |c| edit::channel_pairs(&self.project, c)),
+            subtitle_tracks: !crate::interchange::subtitles::text_tracks(&self.project).is_empty(),
+            named_regions: self.project.timeline.regions.iter().any(|r| r.end > r.start && !r.name.trim().is_empty()),
+            audio_streams: self.focus_clip(false).and_then(|id| self.project.clip(&id)).and_then(|c| edit::media_of(&self.project, c)).map_or(0, |m| m.audio_streams),
             quickfade: self.prefs.quickfade,
             audio_follows_velocity: tl.audio_follows_velocity,
             assignable_fx: !tl.audio.fx.is_empty(),
@@ -366,6 +373,49 @@ impl MeridianApp {
     /// R18b: Insert › Slideshow (Create: the pictures are imported, then laid out as one undo step) and Insert › Audio
     /// Transition (OK: the cut, crossfade or edge at the cursor on each audio track with a selected event, else each
     /// selected audio track; one undo step).
+    /// R39: Insert › Subtitles from File (Insert: the cues as Titles & Text events, one undo step) and File › Export ›
+    /// Subtitles (Export...: a file name, then the track's events as SRT or WebVTT).
+    fn show_subtitles(&mut self, ctx: &egui::Context) {
+        use crate::interchange::subtitles;
+        let s = self.project.settings.clone();
+        let tracks: Vec<String> = self.project.timeline.video_tracks.iter().enumerate().map(|(i, t)| if t.name.is_empty() { format!("Track {}", i + 1) } else { format!("Track {}: {}", i + 1, t.name) }).collect();
+        if let Some(ok) = self.subs_import.as_mut().and_then(|d| d.show(ctx, &tracks, |t| s.ruler_time(t))) {
+            if let Some(d) = self.subs_import.take().filter(|_| ok) {
+                if let Some(Ok(subs)) = &d.subs {
+                    let at = if d.at_cursor { self.project.timeline.cursor_position } else { 0.0 };
+                    let mut n = 0;
+                    let mut err = None;
+                    self.edit(|p| match subtitles::insert(p, subs, d.target(), at, d.styles) {
+                        Ok(ids) => {
+                            n = ids.len();
+                            true
+                        }
+                        Err(e) => {
+                            err = Some(e);
+                            false
+                        }
+                    });
+                    self.message = Some(err.unwrap_or_else(|| format!("Inserted {n} subtitles as Titles & Text events")));
+                }
+            }
+        }
+        let offered = subtitles::text_tracks(&self.project);
+        if let Some(ok) = self.subs_export.as_mut().and_then(|d| d.show(ctx, &offered)) {
+            if let Some(d) = self.subs_export.take().filter(|_| ok) {
+                let Some(&(track, _)) = offered.get(d.track) else { return };
+                let name = format!("{}.{}", self.project.name, d.format.ext());
+                let filter = if d.format == subtitles::Format::Vtt { ("WebVTT", "vtt") } else { ("SubRip", "srt") };
+                if let Some(path) = rfd::FileDialog::new().add_filter(filter.0, &[filter.1]).set_file_name(name).save_file() {
+                    let cues = subtitles::cues_of(&self.project, track, (0.0, f64::INFINITY));
+                    self.message = Some(match std::fs::write(&path, subtitles::write(&cues, d.format)) {
+                        Ok(()) => format!("Exported {} subtitles to {}", cues.len(), path.display()),
+                        Err(e) => format!("Cannot write {}: {e}", path.display()),
+                    });
+                }
+            }
+        }
+    }
+
     fn show_r18b(&mut self, ctx: &egui::Context) {
         let s = self.project.settings.clone();
         if let Some(ok) = self.slideshow.as_mut().and_then(|d| d.show(ctx, |x| s.parse_ruler_len(x), |x| s.parse_ruler_time(x).is_some())) {
@@ -952,6 +1002,22 @@ impl MeridianApp {
             }
             // R30
             ArchiveProject => self.archive = Some(dialogs::ArchiveDlg::new(&self.project)),
+            // R39.
+            InsertSubtitles => {
+                if let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt", "ass", "ssa"]).pick_file() {
+                    self.subs_import = Some(dialogs::SubtitleImport::new(Some(path)));
+                }
+            }
+            InsertSubtitlesRegions => {
+                let subs = crate::interchange::subtitles::regions(&self.project);
+                let mut n = 0;
+                self.edit(|p| {
+                    n = crate::interchange::subtitles::insert(p, &subs, crate::interchange::subtitles::Target::NewTrack, 0.0, false).map_or(0, |ids| ids.len());
+                    n > 0
+                });
+                self.message = Some(format!("Inserted {n} subtitles from the regions"));
+            }
+            ExportSubtitles => self.subs_export = Some(dialogs::SubtitleExport::new()),
             ImportMediaFromProject => {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Milan Pro Project", &["mnle"]).pick_file() {
                     self.media_from = Some(dialogs::MediaFromProject::new(path));
@@ -1153,6 +1219,21 @@ impl MeridianApp {
                     _ => edit::loop_clips(p, &ids),
                 });
             }
+            SetPair(p) => {
+                let ids = self.sel.clips.clone();
+                self.edit(|pr| edit::set_pair(pr, &ids, p));
+            }
+            AddStreamTracks => {
+                let Some(id) = self.focus_clip(false) else { return };
+                let mut n = 0;
+                self.edit(|p| {
+                    n = edit::add_stream_tracks(p, &id).len();
+                    n > 0
+                });
+                if n > 0 {
+                    self.message = Some(format!("Added {n} audio track{} with the event's other streams", if n == 1 { "" } else { "s" }));
+                }
+            }
             EventSwitch(_) | SetResample(_) | SetChannels(_) | SetStream(_) => {
                 let ids = self.sel.clips.clone();
                 // Stream ▸ lists the focus event's streams, for the selected events of its kind.
@@ -1232,6 +1313,11 @@ impl MeridianApp {
                 }
             }
             EventProperties => self.event_props = self.sel.clips.last().and_then(|id| dialogs::EventProps::open(&self.project, id)),
+            // R10b: View › Window › Surround Panner, on the focus audio track (the first one without a focus).
+            SurroundPanner => {
+                let i = self.focus_of(false).unwrap_or(0);
+                self.surround = self.project.timeline.audio_tracks.get(i).and_then(|t| ui::SurroundWin::open(&self.project, &t.id));
+            }
             RenameEvent => {
                 if let Some(id) = self.sel.clips.last() {
                     ui::rename_event(ctx, id);
@@ -2162,9 +2248,10 @@ impl MeridianApp {
         self.take_chooser = None;
         self.default_track = None;
         (self.slideshow, self.audio_transition) = (None, None);
+        (self.subs_import, self.subs_export) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
-        (self.pan_crop, self.track_motion, self.fx_win) = (None, None, None);
+        (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
         self.message = None;
@@ -2359,6 +2446,7 @@ impl MeridianApp {
             }
         }
         self.show_r18b(ctx);
+        self.show_subtitles(ctx);
         dialogs::shortcuts_window(ctx, &mut self.shortcuts_open);
         dialogs::unfinished_window(ctx, &mut self.unfinished_open);
         self.show_palette(ctx);
@@ -2376,6 +2464,9 @@ impl MeridianApp {
         }
         if self.track_motion.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
             self.track_motion = None;
+        }
+        if self.surround.as_mut().is_some_and(|w| !w.show(ctx, &mut self.project, &mut self.history)) {
+            self.surround = None;
         }
         if let Some(w) = &mut self.fx_win {
             let (open, msg) = w.show(ctx, &mut self.project, &mut self.history, &mut self.user_presets);
@@ -2890,6 +2981,36 @@ impl MeridianApp {
                 }
                 self.project.modified = false; // the harness closes without a save prompt
             }
+            // R10b review: a 5.1 project, the first track a stereo track panned to the front left in the Surround
+            // Panner (keyed from the front left to the rear right), the second a 5.1 track; the Mixing Console lit
+            // with per-channel levels ("mixer-51"), or the Surround Panner open ("surround").
+            "mixer-51" | "surround" => {
+                use crate::project::{AudioLayout, BusMode, SurroundPan};
+                self.project.settings.layout = BusMode::Surround51;
+                let fps = self.project.settings.frame_rate;
+                if let Some(t) = self.project.timeline.audio_tracks.first_mut() {
+                    t.surround = SurroundPan { x: -0.7, y: 0.6, ..Default::default() };
+                    let sp = t.surround;
+                    ui::key_pan(&mut t.envelopes, &sp, 4.0, (0.8, -0.7), fps);
+                }
+                if let Some(t) = self.project.timeline.audio_tracks.get_mut(1) {
+                    t.layout = AudioLayout::Surround51;
+                }
+                self.project.timeline.cursor_position = 1.5;
+                self.exec(ctx, InsertAudioBus);
+                let tl = &self.project.timeline;
+                let ids: Vec<String> = tl.audio_tracks.iter().map(|t| t.id.clone()).chain(tl.audio.buses.iter().map(|b| b.id.clone())).chain([ui::MASTER_LEVEL.to_string()]).collect();
+                for (k, id) in ids.iter().enumerate() {
+                    let d = -4.0 - 4.0 * k as f32;
+                    ui::show_levels(ctx, id, &[d, d - 2.0, d - 6.0, d - 18.0, d - 9.0, d - 11.0]);
+                }
+                if what == "mixer-51" {
+                    self.dock.open(crate::ui::dock::Panel::MixingConsole);
+                } else if let Some(id) = self.project.timeline.audio_tracks.first().map(|t| t.id.clone()) {
+                    self.surround = ui::SurroundWin::open(&self.project, &id);
+                }
+                self.project.modified = false; // the harness closes without a save prompt
+            }
             "mixer" | "bus-tracks" => {
                 // R8b: two busses (Bus A with a Volume envelope ramp) and an assignable FX chain, the first track
                 // sending to Bus A; the Mixing Console open, or the Audio Bus Tracks shown.
@@ -3025,6 +3146,12 @@ impl MeridianApp {
                 }
                 self.project.timeline.cursor_position = 3.0;
                 self.project.modified = false; // the harness closes without a save prompt
+            }
+            // R39 review: Insert Subtitles from File on an ASS file written beside the demo media.
+            "subtitles" => {
+                let path = crate::demo::media_dir().join("Milan Demo subtitles.ass");
+                let _ = std::fs::write(&path, crate::interchange::subtitles::DEMO_ASS);
+                self.subs_import = Some(dialogs::SubtitleImport::new(Some(path)));
             }
             "slideshow" => {
                 self.exec(ctx, InsertSlideshow);

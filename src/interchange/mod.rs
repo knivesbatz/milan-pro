@@ -6,12 +6,14 @@
 //! - `otio`: OpenTimelineIO, lossless for Milan's own files through `metadata["milan"]` (R28);
 //! - `edl`: CMX 3600 EDLs and VEGAS's EDL text table (R28), through the shared `cutlist`;
 //! - `xmeml`, `fcpxml`: FCP7 XML (Premiere, Resolve) and FCPXML 1.10 (R29), through `cutlist` and the `xml` tree.
+//! - `subtitles`: SRT, WebVTT and ASS as Titles & Text events, and back to SRT / WebVTT (R39).
 //! `Format` tells the files apart and `import` / `export` route them. `docs/INTERCHANGE.md` says what each route carries.
 pub mod archive;
 pub mod cutlist;
 pub mod edl;
 pub mod fcpxml;
 pub mod otio;
+pub mod subtitles;
 pub mod vegas;
 pub mod vegas_export;
 pub mod vegas_map;

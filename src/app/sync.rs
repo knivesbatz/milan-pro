@@ -27,7 +27,7 @@ fn media<'a>(p: &'a Project, c: &Clip) -> Option<&'a MediaItem> {
 fn sound(p: &Project, c: &Clip) -> Option<sync::Event> {
     let m = media(p, c).filter(|m| m.sample_rate.is_some() && m.generator.is_none() && !m.nested && !c.reverse)?;
     let stream = c.stream.min(m.streams(false) - 1);
-    let src = ASrc { path: m.path.clone(), pos: 0.0, dur: c.duration, in_point: m.file_time(c.in_point), rate: c.rate.max(1e-3), reverse: false, stream, pitch: 0.0, nested: None };
+    let src = ASrc { path: m.path.clone(), pos: 0.0, dur: c.duration, in_point: m.file_time(c.in_point), rate: c.rate.max(1e-3), reverse: false, stream, pitch: 0.0, nested: None, pair: None, ch: 2 };
     Some(sync::Event { src, pos: c.position, len: c.duration })
 }
 

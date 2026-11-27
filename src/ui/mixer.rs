@@ -40,28 +40,47 @@ pub fn db(v: f32) -> f32 {
 }
 
 /// What one meter shows, per channel: the bar (dB, falling back), the 2 s peak hold, the highest peak since the last
-/// reset (the readout), the latched clip lamp and the VU level (linear RMS through the VU ballistics).
+/// reset (the readout), the latched clip lamp and the VU level (linear RMS through the VU ballistics). R10b: `ch`
+/// channels (2, or a 5.1 / 7.1 node's 6 / 8 in channel order: the Mixing Console draws them all).
 #[derive(Clone, Copy, Debug)]
 pub struct MeterView {
-    pub level: [f32; 2],
-    pub hold: [(f32, f64); 2],
-    pub max: [f32; 2],
-    pub clip: [bool; 2],
-    pub vu: [f32; 2],
+    pub level: [f32; MAXCH],
+    pub hold: [(f32, f64); MAXCH],
+    pub max: [f32; MAXCH],
+    pub clip: [bool; MAXCH],
+    pub vu: [f32; MAXCH],
+    pub ch: usize,
 }
+
+/// R10b: the most channels a meter shows (7.1).
+pub const MAXCH: usize = crate::engine::surround::MAX;
 
 impl Default for MeterView {
     fn default() -> Self {
-        Self { level: [-f32::INFINITY; 2], hold: [(-f32::INFINITY, 0.0); 2], max: [-f32::INFINITY; 2], clip: [false; 2], vu: [0.0; 2] }
+        Self { level: [-f32::INFINITY; MAXCH], hold: [(-f32::INFINITY, 0.0); MAXCH], max: [-f32::INFINITY; MAXCH], clip: [false; MAXCH], vu: [0.0; MAXCH], ch: 2 }
     }
 }
 
 impl MeterView {
     /// Fold in the peaks played since the last frame (`dt` seconds ago) and the RMS of the last 50 ms.
     pub fn feed(&mut self, peaks: [f32; 2], rms: [f32; 2], now: f64, dt: f32) {
+        self.feed_n(&peaks, &rms, now, dt);
+    }
+
+    /// R10b: `feed` for `peaks.len()` channels (2, 6 or 8): the meter takes that width.
+    pub fn feed_n(&mut self, peaks: &[f32], rms: &[f32], now: f64, dt: f32) {
         let k = 1.0 - (-dt / VU_TAU).exp();
-        for c in 0..2 {
-            let d = db(peaks[c]);
+        let n = peaks.len().clamp(1, MAXCH);
+        // A wider meter takes the new width at once; back to stereo once stereo sound arrives (silence keeps it).
+        if n != self.ch && (n > 2 || peaks.iter().any(|p| *p > 0.0)) {
+            *self = MeterView { ch: n, ..MeterView::default() };
+        }
+        // (A silent stereo feed of a wider meter lets all its channels fall.)
+        let n = self.ch.max(n);
+        let (peaks, rms) = (|c: usize| peaks.get(c).copied().unwrap_or(0.0), |c: usize| rms.get(c).copied().unwrap_or(0.0));
+        for c in 0..n {
+            let (pk, rm) = (peaks(c), rms(c));
+            let d = db(pk);
             self.level[c] = d.max(self.level[c] - FALL_DB_PER_S * dt);
             let (h, at) = self.hold[c];
             self.hold[c] = if d >= h {
@@ -72,15 +91,15 @@ impl MeterView {
                 (h, at)
             };
             self.max[c] = self.max[c].max(d);
-            self.clip[c] |= peaks[c] >= 1.0;
-            self.vu[c] += (rms[c] - self.vu[c]) * k;
+            self.clip[c] |= pk >= 1.0;
+            self.vu[c] += (rm - self.vu[c]) * k;
         }
     }
 
     /// Click on the readouts or a well: the readouts and clip lamps start again.
     pub fn reset(&mut self) {
-        self.max = [-f32::INFINITY; 2];
-        self.clip = [false; 2];
+        self.max = [-f32::INFINITY; MAXCH];
+        self.clip = [false; MAXCH];
     }
 
     pub fn active(&self) -> bool {
@@ -95,6 +114,35 @@ impl MeterView {
     /// The peak readout of channel `c`: "-4.3", or "-Inf." before any sound.
     pub fn readout(&self, c: usize) -> String {
         peak_text(self.max[c])
+    }
+
+    /// One readout for all channels (a track header's): the highest peak.
+    pub fn peak_text(&self) -> String {
+        peak_text(self.max[..self.ch.max(2)].iter().fold(-f32::INFINITY, |a, b| a.max(*b)))
+    }
+
+    /// R10b: the left and right of a stereo view of it (a 5.1 / 7.1 meter: the highest of its left-side and of its
+    /// right-side channels; the centre and LFE count on both), for the two-bar meters of the track headers.
+    pub fn stereo(&self) -> MeterView {
+        if self.ch <= 2 {
+            return *self;
+        }
+        let mut v = MeterView::default();
+        for c in 0..self.ch {
+            let sides: &[usize] = match c {
+                0 | 4 | 6 => &[0],
+                1 | 5 | 7 => &[1],
+                _ => &[0, 1],
+            };
+            for &s in sides {
+                v.level[s] = v.level[s].max(self.level[c]);
+                v.hold[s] = if self.hold[c].0 > v.hold[s].0 { self.hold[c] } else { v.hold[s] };
+                v.max[s] = v.max[s].max(self.max[c]);
+                v.clip[s] |= self.clip[c];
+                v.vu[s] = v.vu[s].max(self.vu[c]);
+            }
+        }
+        v
     }
 }
 
@@ -126,6 +174,14 @@ pub fn feed_levels(ctx: &Context, meters: &Meters, inputs: &Meters, master: &Mas
         }
         lv.entry(MASTER.to_string()).or_default();
         for (id, v) in lv.iter_mut() {
+            // R10b: a 5.1 / 7.1 project's master is metered by the mix thread, every channel (`mix::MASTER_METER`).
+            let wide = if id == MASTER { meters.get(crate::engine::mix::MASTER_METER) } else { meters.get(id) };
+            if let Some(m) = wide.filter(|m| m.channels() > 2) {
+                let n = m.channels();
+                let r = if live { m.rms_all() } else { [0.0; MAXCH] };
+                v.feed_n(&m.take_peaks_all()[..n], &r[..n], now, dt);
+                continue;
+            }
             let (p, r) = match (id.as_str(), meters.get(id), inputs.get(id)) {
                 (MASTER, ..) => (master.take_peaks(), rms(master.rms())),
                 (_, Some(m), _) => (m.take_peaks(), rms(m.rms())),
@@ -151,10 +207,22 @@ pub fn level(ctx: &Context, id: &str) -> MeterView {
 pub fn show_level(ctx: &Context, id: &str, db: [f32; 2]) {
     ctx.data_mut(|d| {
         let v = d.get_temp_mut_or_default::<Levels>(levels_id()).0.entry(id.to_string()).or_default();
-        let lin = db.map(|x| 10f32.powf(x / 20.0));
-        (v.level, v.max, v.vu, v.clip) = (db, db, lin, lin.map(|x| x >= 1.0));
-        v.hold = db.map(|x| (x, f64::INFINITY)); // held for good
+        show_levels_on(v, &db);
     });
+}
+
+/// R10b (screenshot harness): meter `id` shows `db` peaks on as many channels.
+pub fn show_levels(ctx: &Context, id: &str, db: &[f32]) {
+    ctx.data_mut(|d| show_levels_on(d.get_temp_mut_or_default::<Levels>(levels_id()).0.entry(id.to_string()).or_default(), db));
+}
+
+fn show_levels_on(v: &mut MeterView, db: &[f32]) {
+    v.ch = db.len().clamp(1, MAXCH);
+    for (c, &x) in db.iter().enumerate().take(MAXCH) {
+        let lin = 10f32.powf(x / 20.0);
+        (v.level[c], v.max[c], v.vu[c], v.clip[c]) = (x, x, lin, lin >= 1.0);
+        v.hold[c] = (x, f64::INFINITY); // held for good
+    }
 }
 
 pub fn reset_level(ctx: &Context, id: &str) {
@@ -166,13 +234,19 @@ pub fn reset_level(ctx: &Context, id: &str) {
 }
 
 /// The two channel bars of `lv` in `well` (split in two with a 1 px gap): the level, the peak hold line and the clip
-/// lamps. The caller paints the empty well.
+/// lamps. The caller paints the empty well. A 5.1 / 7.1 meter shows its stereo view (`MeterView::stereo`).
 pub fn paint_levels(p: &Painter, well: Rect, lv: &MeterView) {
+    paint_channels(p, well, &lv.stereo(), 2);
+}
+
+/// R10b: `n` channel bars of `lv` side by side in `well`, 1 px apart (two: split in two, as before).
+pub fn paint_channels(p: &Painter, well: Rect, lv: &MeterView, n: usize) {
     let t = theme::get();
     let to_y = |d: f32| well.min.y + well.height() * (-d / RANGE_DB).clamp(0.0, 1.0);
-    let half = ((well.width() - 1.0) * 0.5).floor().max(1.0);
-    for c in 0..2 {
-        let x0 = well.min.x + c as f32 * (well.width() - half);
+    let n = n.clamp(1, MAXCH);
+    let half = if n == 2 { ((well.width() - 1.0) * 0.5).floor().max(1.0) } else { ((well.width() - (n - 1) as f32) / n as f32).floor().max(1.0) };
+    for c in 0..n {
+        let x0 = if n == 2 { well.min.x + c as f32 * (well.width() - half) } else { well.min.x + c as f32 * (half + 1.0) };
         let bar = Rect::from_x_y_ranges(Rangef::new(x0, x0 + half), well.y_range());
         if lv.level[c] > -RANGE_DB {
             super::master_bus::paint_bar(p, bar, to_y(lv.level[c].min(0.0)), &to_y);
@@ -750,7 +824,7 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     // VU meters (VU ballistics, 0 VU = -20 dBFS).
     if let Some(r) = regs[VU_R] {
         let well = Rect::from_min_max(pos2(r.center().x - 9.0, r.min.y + 6.0), pos2(r.center().x + 9.0, r.max.y - 6.0));
-        paint_vu(&p, well, &lv);
+        paint_vu(&p, well, &lv.stereo());
         if r.width() > 70.0 {
             let to_y = |v: f32| well.max.y - well.height() * ((v - VU_RANGE.0) / (VU_RANGE.1 - VU_RANGE.0));
             for v in [3.0, 0.0, -3.0, -7.0, -10.0, -20.0] {
@@ -764,14 +838,34 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
     if let Some(r) = regs[METERS_R] {
         let font = t.font(t.font.meter);
         let read = Rect::from_min_max(r.min + vec2(2.0, 2.0), pos2(r.max.x - 2.0, r.min.y + 14.0));
-        for ch in 0..2 {
-            let at = if ch == 0 { read.left_center() + vec2(2.0, 0.0) } else { read.right_center() - vec2(2.0, 0.0) };
-            p.text(at, if ch == 0 { Align2::LEFT_CENTER } else { Align2::RIGHT_CENTER }, lv.readout(ch), font.clone(), if lv.clip[ch] { t.meter_red } else { t.text });
+        // R10b: a 5.1 / 7.1 node meters every channel, named under its bar, under one readout (the highest peak).
+        let n = lv.ch.max(2);
+        if n > 2 {
+            let clip = lv.clip[..n].iter().any(|c| *c);
+            p.text(read.center(), Align2::CENTER_CENTER, lv.peak_text(), font.clone(), if clip { t.meter_red } else { t.text });
+        } else {
+            for ch in 0..2 {
+                let at = if ch == 0 { read.left_center() + vec2(2.0, 0.0) } else { read.right_center() - vec2(2.0, 0.0) };
+                p.text(at, if ch == 0 { Align2::LEFT_CENTER } else { Align2::RIGHT_CENTER }, lv.readout(ch), font.clone(), if lv.clip[ch] { t.meter_red } else { t.text });
+            }
         }
-        let well = Rect::from_min_max(pos2(r.center().x - 9.0, read.max.y + 3.0), pos2(r.center().x + 9.0, r.max.y - 4.0));
+        let half_w = if n > 2 { (n as f32 * 8.0 - 1.0) * 0.5 } else { 9.0 };
+        let bottom = if n > 2 { r.max.y - 16.0 } else { r.max.y - 4.0 };
+        let well = Rect::from_min_max(pos2((r.center().x - half_w).round(), read.max.y + 3.0), pos2((r.center().x + half_w).round(), bottom));
         if well.height() > 10.0 {
             paint_well(&p, well);
-            paint_levels(&p, well, &lv);
+            if n > 2 {
+                paint_channels(&p, well, &lv, n);
+                let names = BusMode::of_channels(n).unwrap_or(BusMode::Surround51).channel_names();
+                // Every other name a row lower, so each has two bars' width.
+                for (c, name) in names.iter().enumerate() {
+                    let x = well.min.x + c as f32 * 8.0 + 3.5;
+                    let y = well.max.y + 2.0 + if c % 2 == 0 { 0.0 } else { 6.5 };
+                    p.text(pos2(x, y), Align2::CENTER_TOP, *name, t.font(t.font.meter - 1.0), t.meter_label);
+                }
+            } else {
+                paint_levels(&p, well, &lv);
+            }
             if r.width() > 70.0 {
                 for d in (6..60).step_by(6) {
                     let y = well.min.y + well.height() * d as f32 / RANGE_DB;
@@ -912,6 +1006,36 @@ fn strip(ui: &mut Ui, view: &mut ConsoleView, project: &mut Project, history: &m
                 history.push(before);
             }
             return;
+        }
+    }
+    // R10a: a track's or bus's label menu sets its Channel Layout (a bus may follow the master bus mode).
+    let is_bus = project.timeline.audio.buses.iter().any(|b| b.id == s.key());
+    let track_layout = project.timeline.audio_tracks.iter().find(|x| x.id == s.key()).map(|x| x.layout);
+    if is_bus || track_layout.is_some() {
+        let cur = project.timeline.audio.bus(s.key()).map_or(track_layout, |b| b.layout);
+        let mut pick: Option<Option<AudioLayout>> = None;
+        menus::context(&lr, |ui| {
+            menus::sub(ui, "Channel &Layout", true, |ui| {
+                if is_bus && entry(ui, "Same as Master", "", true, Mark::Radio(cur.is_none())) {
+                    pick = Some(None);
+                }
+                for l in AudioLayout::ALL {
+                    if entry(ui, l.name(), "", true, Mark::Radio(cur == Some(l))) {
+                        pick = Some(Some(l));
+                    }
+                }
+            });
+        });
+        if let Some(l) = pick {
+            let before = project.clone();
+            let done = match (is_bus, l) {
+                (true, l) => edit::set_bus_layout(project, s.key(), l),
+                (false, Some(l)) => edit::set_track_layout(project, &[s.key().to_string()], l),
+                (false, None) => false,
+            };
+            if done {
+                history.push(before);
+            }
         }
     }
     if lr.clicked() {

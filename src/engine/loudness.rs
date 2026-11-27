@@ -1,8 +1,9 @@
 //! R16c: loudness metering after ITU-R BS.1770-4 and EBU R 128: K-weighting, momentary (400 ms) and short-term (3 s)
 //! loudness every 100 ms (EBU Tech 3341), integrated loudness over 400 ms gating blocks with 75 % overlap, the absolute
 //! (-70 LUFS) and relative (-10 LU) gates, loudness range (EBU Tech 3342) and true peak by 4x oversampling with the
-//! BS.1770-4 Annex 2 filter. Stereo, both channels weighted 1. Pure: the Loudness Meters window runs it on its own
+//! BS.1770-4 Annex 2 filter. Stereo, both channels weighted 1; R10a: 5.1 / 7.1 with BS.1770's weights. Pure: the Loudness Meters window runs it on its own
 //! thread from the master output's tap, and a loudness log runs it on a render's mix.
+use crate::engine::surround::MAX;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -144,6 +145,8 @@ pub struct Readings {
     pub integrated: f64,
     pub range: f64,
     pub true_peak: [f64; 2],
+    /// R10a: the true peak over every channel of the layout, dBTP.
+    pub true_peak_all: f64,
     pub max_momentary: f64,
     pub max_short: f64,
     pub min_momentary: f64,
@@ -153,14 +156,18 @@ pub struct Readings {
 impl Default for Readings {
     fn default() -> Self {
         let n = f64::NEG_INFINITY;
-        Self { momentary: n, short_term: n, integrated: n, range: 0.0, true_peak: [n; 2], max_momentary: n, max_short: n, min_momentary: f64::INFINITY, min_short: f64::INFINITY }
+        Self { momentary: n, short_term: n, integrated: n, range: 0.0, true_peak: [n; 2], true_peak_all: n, max_momentary: n, max_short: n, min_momentary: f64::INFINITY, min_short: f64::INFINITY }
     }
 }
 
-/// A stereo loudness meter at one sample rate.
+/// A loudness meter at one sample rate: stereo, or (R10a) a 5.1 / 7.1 layout with BS.1770's channel weights
+/// (`surround::loudness_weights`).
 #[derive(Clone, Debug)]
 pub struct Meter {
-    k: [[Biquad; 2]; 2],
+    /// Channels measured, their weights and the K-weighting per channel.
+    ch: usize,
+    weights: [f64; MAX],
+    k: [[Biquad; 2]; MAX],
     /// Frames per 100 ms sub-block; the current one's channel-summed square sum and frame count.
     step: usize,
     acc: f64,
@@ -171,22 +178,31 @@ pub struct Meter {
     /// Every 400 ms gating block's and every full 3 s window's mean square, one per sub-block.
     blocks: Vec<f64>,
     shorts: Vec<f64>,
-    tp: [TruePeak; 2],
-    blocking: Option<[(DcBlock, TruePeak); 2]>,
-    /// The true peak per channel since the reset, and over both since `take_window_peak` (linear).
-    peak: [f64; 2],
+    tp: [TruePeak; MAX],
+    blocking: Option<[(DcBlock, TruePeak); MAX]>,
+    /// The true peak per channel since the reset, and over all since `take_window_peak` (linear).
+    peak: [f64; MAX],
     window_peak: f64,
     max: [f64; 2],
     min: [f64; 2],
 }
 
 impl Meter {
-    /// A meter at `rate`; `blocking`: Options › Loudness Meters › True Peak Blocking Filter.
+    /// A stereo meter at `rate`; `blocking`: Options › Loudness Meters › True Peak Blocking Filter.
+    #[cfg(test)]
     pub fn new(rate: u32, blocking: bool) -> Self {
+        Self::with_channels(rate, blocking, 2)
+    }
+
+    /// R10a: a meter over `ch` interleaved channels (2, 6 or 8), weighted as BS.1770-4 weights the layout.
+    pub fn with_channels(rate: u32, blocking: bool, ch: usize) -> Self {
+        let ch = ch.clamp(1, MAX);
         let k = k_weighting(rate);
         let dc = DcBlock { r: 1.0 - 2.0 * std::f64::consts::PI * 10.0 / rate.max(1) as f64, ..Default::default() };
         Self {
-            k: [k, k],
+            ch,
+            weights: crate::engine::surround::loudness_weights(ch),
+            k: [k; MAX],
             step: (rate as usize).div_ceil(10).max(1),
             acc: 0.0,
             n: 0,
@@ -195,23 +211,35 @@ impl Meter {
             blocks: Vec::new(),
             shorts: Vec::new(),
             tp: Default::default(),
-            blocking: blocking.then(|| [(dc, TruePeak::default()); 2]),
-            peak: [0.0; 2],
+            blocking: blocking.then(|| [(dc, TruePeak::default()); MAX]),
+            peak: [0.0; MAX],
             window_peak: 0.0,
             max: [f64::NEG_INFINITY; 2],
             min: [f64::INFINITY; 2],
         }
     }
 
-    /// Take interleaved stereo frames.
-    pub fn feed(&mut self, stereo: &[f32]) {
-        for f in stereo.chunks_exact(2) {
-            for c in 0..2 {
+    /// Channels measured.
+    pub fn channels(&self) -> usize {
+        self.ch
+    }
+
+    /// Take interleaved stereo frames (a stereo meter; a surround meter takes its layout's frames).
+    pub fn feed(&mut self, frames: &[f32]) {
+        self.feed_frames(frames, self.ch);
+    }
+
+    /// R10a: take frames of `stride` interleaved samples, measuring the meter's channels (the rest are left alone).
+    pub fn feed_frames(&mut self, frames: &[f32], stride: usize) {
+        let stride = stride.max(1);
+        for f in frames.chunks_exact(stride) {
+            for c in 0..self.ch.min(stride) {
                 // A NaN from a misbehaving plug-in must not poison everything measured after it.
                 let x = if f[c].is_finite() { f[c] as f64 } else { 0.0 };
                 let [a, b] = &mut self.k[c];
                 let y = b.run(a.run(x));
-                self.acc += y * y;
+                // (x 1 is exact: a stereo meter sums as it did before R10a.)
+                self.acc += self.weights[c] * (y * y);
                 let mut p = self.tp[c].run(x);
                 if let Some(bl) = &mut self.blocking {
                     // The larger of the filtered and the unfiltered signal's peaks (VEGAS's wording).
@@ -279,12 +307,12 @@ impl Meter {
 
     /// Options › Loudness Meters › Reset Clip: the true peaks start again.
     pub fn reset_peaks(&mut self) {
-        (self.peak, self.window_peak) = ([0.0; 2], 0.0);
+        (self.peak, self.window_peak) = ([0.0; MAX], 0.0);
     }
 
-    /// True peak per channel since the reset, dBTP.
+    /// True peak of the first two channels since the reset, dBTP (a surround meter: the left and right fronts).
     pub fn true_peak(&self) -> [f64; 2] {
-        self.peak.map(|p| 20.0 * p.log10())
+        [self.peak[0], self.peak[1]].map(|p| 20.0 * p.log10())
     }
 
     /// The true peak of both channels since the last call, dBTP.
@@ -299,6 +327,7 @@ impl Meter {
             integrated: self.integrated(),
             range: self.range(),
             true_peak: self.true_peak(),
+            true_peak_all: self.peak[..self.ch].iter().fold(0.0f64, |m, p| m.max(*p)).log10() * 20.0,
             max_momentary: self.max[0],
             max_short: self.max[1],
             min_momentary: self.min[0],
@@ -328,16 +357,22 @@ pub struct Log {
 }
 
 impl Log {
+    #[cfg(test)]
     pub fn new(rate: u32) -> Self {
-        Self { meter: Meter::new(rate, false), rate, frames: 0, rows: Vec::new() }
+        Self::with_channels(rate, 2)
     }
 
-    pub fn feed(&mut self, mut stereo: &[f32]) {
-        let sec = self.rate.max(1) as usize;
-        while !stereo.is_empty() {
-            let n = (sec - self.frames).min(stereo.len() / 2);
-            self.meter.feed(&stereo[..2 * n]);
-            (stereo, self.frames) = (&stereo[2 * n..], self.frames + n);
+    /// R10a: a log over `ch`-channel frames.
+    pub fn with_channels(rate: u32, ch: usize) -> Self {
+        Self { meter: Meter::with_channels(rate, false, ch), rate, frames: 0, rows: Vec::new() }
+    }
+
+    pub fn feed(&mut self, mut frames: &[f32]) {
+        let (sec, ch) = (self.rate.max(1) as usize, self.meter.channels());
+        while !frames.is_empty() {
+            let n = (sec - self.frames).min(frames.len() / ch);
+            self.meter.feed(&frames[..ch * n]);
+            (frames, self.frames) = (&frames[ch * n..], self.frames + n);
             if self.frames == sec {
                 self.row();
             }

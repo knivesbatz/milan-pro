@@ -31,6 +31,15 @@ the minor number for feature releases, the patch number for fixes.
 - **Camera cards:** File > Import > Camera Card Folder (or a dropped folder) imports AVCHD, XDCAM, XAVC, P2, Canon XF
   and GoPro clips, joins spanned recordings into one clip and seeks transport streams exactly; camera, reel and
   timecode in Media Properties; an MXF DNxHD render template; camera RAW formats import offline with the reason (R41).
+- **Multichannel audio:** mono, stereo, 5.1 and 7.1 tracks and busses (Track > Channel Layout), a Stereo, 5.1 or
+  7.1 master bus (Project Properties > Audio, monitored as its stereo fold-down), Resample and stretch quality, and
+  5.1 / 7.1 renders (WAV, FLAC, AAC, AC-3, E-AC-3); loudness measured with the BS.1770 channel weights (R10a).
+- **Surround Panner** (View > Window) with keyframes, a surround pan control in the track headers, per-channel
+  meters in the Mixing Console, Channels > pair selection for multichannel streams, Stream > Add All Streams as
+  Tracks, and a note on dropping media with several audio streams (R10b).
+- **Subtitles:** Insert > Subtitles from File (SRT, WebVTT, ASS with its styles) and from Regions as Titles & Text
+  events, File > Export > Subtitles (SRT, WebVTT), and Render As burning them in, writing them beside the render or
+  as a soft stream (MP4, MOV, MKV, WebM). CEA-608/708 closed captions are not feasible with the bundled FFmpeg (R39).
 
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro

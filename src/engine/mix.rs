@@ -1,10 +1,14 @@
 //! Audio mixer: the audio plan mixed block by block from persistent ffmpeg PCM streams (stereo f32 at RATE).
 //! `run` is the "milan-mix" thread body for playback; it loops inside the mixer, so a loop wrap is seamless.
+//! R10a: tracks are stereo (a multichannel source is read as one of its stereo pairs or its BS.775 downmix); in a
+//! 5.1 / 7.1 project (`AudioPlan::layout`) each track's output is placed by its surround pan (`surround::pan_matrix`),
+//! the busses and the master carry the layout's interleaved channels, bus and master FX run per stereo pair, and
+//! playback folds the master down to stereo for the device after metering it. A stereo project mixes exactly as before.
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -15,7 +19,11 @@ use crate::engine::keyframes::{db_to_gain, ramp};
 use crate::engine::nested::NestedMix;
 use crate::engine::plan::{ASrc, AudioPlan, Varispeed, fade};
 use crate::engine::resample::Resampler;
-use crate::project::{ChannelMap, Curve, Envelope};
+use crate::engine::surround::{self, MAX};
+use crate::project::{ChannelMap, Curve, Envelope, SurroundPan};
+
+/// R10a: the master's meter in `Meters` (a surround project's playback feeds it; stereo meters the device output).
+pub const MASTER_METER: &str = "master";
 
 /// Frames per mixed block (about 21 ms).
 pub const BLOCK: usize = 1024;
@@ -67,10 +75,17 @@ fn src_time(src: &ASrc, at: i64) -> f64 {
 
 /// ffmpeg arguments (after `-nostdin`) streaming `src` from `at` frames into its event, in timeline order.
 /// Forward, it reads on to the media end, so a trim or a split keeps the decoder. Reversed, the span still to play
-/// is read and turned round (`areverse` holds it all in memory). A `mono` source goes to both sides at unity, as a
-/// mono recording does (`-ac 2` would put it 3 dB down).
+/// is read and turned round (`areverse` holds it all in memory). A mono source (`channels` 1) goes to both sides at
+/// unity, as a mono recording does (`-ac 2` would put it 3 dB down). R10a: a multichannel source plays the stereo
+/// pair Channels ▸ chose (`pan=stereo|c0=c2k|c1=c2k+1`), or every channel folded down by `-ac 2` (FFmpeg's matrix is
+/// ITU-R BS.775 for float samples, the one `surround::downmix` uses). A 5.1 / 7.1 track's decoder (`src.ch` 6 or 8)
+/// converts the media to that layout with `-ac` (channel for channel when it already is; stereo fills the front pair,
+/// mono the centre, as FFmpeg upmixes).
 // shortcut: areverse buffers the whole span (about 23 MB per stereo minute); render a reversed temp file past ~10 min.
-pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
+pub fn args(src: &ASrc, at: i64, channels: Option<usize>) -> Vec<String> {
+    let wide = src.ch > 2;
+    let mono = channels == Some(1) && !wide;
+    let pair = src.pair.filter(|_| !wide && channels.is_some_and(|c| c > 2)).map(|k| (2 * k as usize).min(channels.unwrap_or(2) - 1));
     let mut a: Vec<String> = ["-v", "error", "-ss"].map(String::from).to_vec();
     if src.reverse {
         let len = (src.dur - at as f64 / RATE as f64).max(0.0) * src.rate;
@@ -80,7 +95,9 @@ pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
     }
     a.extend(["-i".into(), src.path.to_string_lossy().into_owned()]);
     a.extend(["-vn".into(), "-map".into(), format!("0:a:{}", src.stream)]);
-    if !mono {
+    if wide {
+        a.extend(["-ac".into(), src.ch.to_string()]);
+    } else if !mono && pair.is_none() {
         a.extend(["-ac", "2"].map(String::from));
     }
     a.extend(["-ar".into(), RATE.to_string()]);
@@ -90,6 +107,9 @@ pub fn args(src: &ASrc, at: i64, mono: bool) -> Vec<String> {
     }
     if mono {
         af.insert(0, "pan=stereo|c0=c0|c1=c0".into());
+    } else if let Some(k) = pair {
+        let last = channels.unwrap_or(2) - 1;
+        af.insert(0, format!("pan=stereo|c0=c{k}|c1=c{}", (k + 1).min(last)));
     }
     if !af.is_empty() {
         a.extend(["-af".into(), af.join(",")]);
@@ -220,7 +240,7 @@ impl VLive {
     /// Read on until `frames` frames are held or the decoder ends. Waits for the decoder only when `wait` (a session's
     /// first block, a render: then until `stop`); otherwise frames not read yet play as silence.
     fn fill(&mut self, frames: usize, wait: bool, stop: Option<&AtomicBool>) -> Option<String> {
-        while !self.ended && self.buf.len() < frames * 2 {
+        while !self.ended && self.buf.len() < frames * self.key.ch.max(2) as usize {
             let got = if !wait {
                 self.s.rx.try_recv().map_err(|e| if e == TryRecvError::Empty { RecvTimeoutError::Timeout } else { RecvTimeoutError::Disconnected })
             } else if let Some(stop) = stop {
@@ -258,7 +278,7 @@ fn samples(bytes: &[u8]) -> Vec<f32> {
 }
 
 /// Channel count of `path`'s audio stream `stream`, probed once per file version.
-fn channels(path: &Path, stream: u32) -> Option<usize> {
+pub fn channels(path: &Path, stream: u32) -> Option<usize> {
     type Probed = HashMap<(PathBuf, u32, Option<SystemTime>), Option<usize>>;
     static CACHE: OnceLock<Mutex<Probed>> = OnceLock::new();
     let key = (path.to_path_buf(), stream, std::fs::metadata(path).and_then(|m| m.modified()).ok());
@@ -327,7 +347,7 @@ pub fn peak(src: &ASrc, len: f64, ch: ChannelMap) -> Result<f32, String> {
         }
         return Ok(peak);
     }
-    let mut a = args(src, 0, channels(&src.path, src.stream) == Some(1));
+    let mut a = args(src, 0, channels(&src.path, src.stream));
     a.splice(4..4, ["-t".to_string(), format!("{len:.6}")]); // after "-ss <in point>"
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(a).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -351,7 +371,7 @@ fn spawn(src: &ASrc, at: i64) -> Result<Stream, String> {
         return spawn_nested(src, n, at);
     }
     let src = src.clone();
-    Ok(run_ffmpeg(move || args(&src, at, channels(&src.path, src.stream) == Some(1)), None))
+    Ok(run_ffmpeg(move || args(&src, at, channels(&src.path, src.stream)), None))
 }
 
 /// What writes an ffmpeg's stdin (R6a: a nested timeline's mix), on a thread of its own.
@@ -421,11 +441,12 @@ pub(crate) fn mix_nested(n: &NestedMix, t0: f64, len: f64, stop: &Arc<AtomicBool
     m.warm(plan, f, (f + RATE as i64).min(f1));
     let mut err = String::new();
     while f < f1 && !stop.load(Relaxed) {
-        // Whole blocks from `t0`, so the same start always mixes the same blocks.
+        // Whole blocks from `t0`, so the same start always mixes the same blocks. R10a: a surround child is folded
+        // down to stereo, as its own stereo render would be.
         let k = (f1 - f).min((BLOCK * 12) as i64) as usize;
         let mut pcm = vec![0.0f32; k * 2];
         for (i, b) in pcm.chunks_mut(BLOCK * 2).enumerate() {
-            m.block(plan, f + (i * BLOCK) as i64, b);
+            block_stereo(&mut m, plan, f + (i * BLOCK) as i64, b);
         }
         if let Some(e) = m.error.take().filter(|_| err.is_empty()) {
             err = e;
@@ -454,9 +475,20 @@ fn spawn_nested(src: &ASrc, n: &Arc<NestedMix>, at: i64) -> Result<Stream, Strin
     let len = len.max(0.0);
     let (stop, n) = (Arc::new(AtomicBool::new(false)), n.clone());
     let st = stop.clone();
+    // R10a: a 5.1 / 7.1 track spreads the nested mix (stereo) to its layout.
+    let ch = src.ch.max(2) as usize;
     let mut s = if src.rate == 1.0 && src.pitch == 0.0 && !src.reverse {
         let (tx, rx) = mpsc::sync_channel(8);
-        let err = std::thread::spawn(move || mix_nested(&n, t0, len, &st, |pcm| tx.send(pcm).is_ok()));
+        let err = std::thread::spawn(move || {
+            mix_nested(&n, t0, len, &st, |pcm| {
+                if ch == 2 {
+                    return tx.send(pcm).is_ok();
+                }
+                let mut wide = Vec::new();
+                surround::convert(&pcm, 2, ch, &mut wide);
+                tx.send(wide).is_ok()
+            })
+        });
         let mut s = Stream::from_rx(rx);
         s.err = Some(err);
         s
@@ -468,6 +500,9 @@ fn spawn_nested(src: &ASrc, n: &Arc<NestedMix>, at: i64) -> Result<Stream, Strin
         let r = RATE.to_string();
         let mut a: Vec<String> = ["-v", "error", "-f", "f32le", "-ar", &r, "-ac", "2", "-i", "pipe:0", "-ar", &r].map(String::from).to_vec();
         a.extend(["-af".into(), af.join(",")]);
+        if ch > 2 {
+            a.extend(["-ac".into(), ch.to_string()]);
+        }
         a.extend(["-f", "f32le", "-"].map(String::from));
         let feed: Feed = Box::new(move |mut stdin| {
             use std::io::Write;
@@ -506,6 +541,8 @@ impl Live {
             && self.src.stream == src.stream
             && self.src.rate == src.rate
             && self.src.pitch == src.pitch
+            && self.src.pair == src.pair
+            && self.src.ch == src.ch
             && (self.t - src_time(src, at)).abs() <= src.rate / RATE as f64 + 1e-9
     }
 }
@@ -517,20 +554,42 @@ pub const METER_WINDOW: usize = RATE as usize / 20;
 
 /// R8a: a track's or bus's level meter, written by the mix thread and read by the UI: the peak |sample| since it was last
 /// taken, and the RMS over the last 50 ms, per channel (f32 bits). Post-fader: what the node sends on to its output.
-#[derive(Debug, Default)]
+/// R10a: `channels` wide (2, or the layout's 6 / 8 in a surround project).
+#[derive(Debug)]
 pub struct Meter {
-    peak: [AtomicU32; 2],
-    rms: [AtomicU32; 2],
+    peak: [AtomicU32; MAX],
+    rms: [AtomicU32; MAX],
+    channels: AtomicUsize,
+}
+
+impl Default for Meter {
+    fn default() -> Self {
+        Self { peak: Default::default(), rms: Default::default(), channels: AtomicUsize::new(2) }
+    }
 }
 
 impl Meter {
-    /// The peaks since the last call (reading resets them).
+    /// The peaks of the first two channels since the last call (reading resets them).
     pub fn take_peaks(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
     }
 
     pub fn rms(&self) -> [f32; 2] {
         [0, 1].map(|c| f32::from_bits(self.rms[c].load(Relaxed)))
+    }
+
+    /// R10a: channels the meter was last fed with.
+    pub fn channels(&self) -> usize {
+        self.channels.load(Relaxed).clamp(1, MAX)
+    }
+
+    /// R10a: every channel's peak since the last call (reading resets them), and every channel's RMS.
+    pub fn take_peaks_all(&self) -> [f32; MAX] {
+        std::array::from_fn(|c| f32::from_bits(self.peak[c].swap(0, Relaxed)))
+    }
+
+    pub fn rms_all(&self) -> [f32; MAX] {
+        std::array::from_fn(|c| f32::from_bits(self.rms[c].load(Relaxed)))
     }
 
     /// R9: a block's peak and RMS from the input monitor (lock-free, for the real-time output callback).
@@ -549,14 +608,21 @@ pub type Meters = HashMap<String, Arc<Meter>>;
 /// One block's peak and sum of squares per channel, of what a node sends on.
 #[derive(Default, Clone, Copy)]
 struct Level {
-    peak: [f32; 2],
-    sq: [f32; 2],
+    peak: [f32; MAX],
+    sq: [f32; MAX],
 }
 
 impl Level {
     fn add(&mut self, l: f32, r: f32) {
         (self.peak[0], self.peak[1]) = (self.peak[0].max(l.abs()), self.peak[1].max(r.abs()));
         (self.sq[0], self.sq[1]) = (self.sq[0] + l * l, self.sq[1] + r * r);
+    }
+
+    /// R10a: one channel's sample.
+    #[inline]
+    fn add_ch(&mut self, c: usize, v: f32) {
+        self.peak[c] = self.peak[c].max(v.abs());
+        self.sq[c] += v * v;
     }
 }
 
@@ -590,7 +656,7 @@ pub struct Mixer {
     bus_buf: Vec<Vec<f32>>,
     send_last: HashMap<(String, String), f32>,
     /// R8a: each metered node's last 50 ms (frames, sum of squares per channel) and the block that last fed it.
-    rms: HashMap<String, (u64, VecDeque<(usize, [f32; 2])>)>,
+    rms: HashMap<String, (u64, VecDeque<(usize, [f32; MAX])>)>,
     /// R17b: the source each track with multicamera standby takes played last in the last block, and a scratch buffer
     /// the standby takes are read into.
     heard: HashMap<String, (PathBuf, u32)>,
@@ -600,6 +666,13 @@ pub struct Mixer {
     lines: HashMap<String, Line>,
     scratch: Vec<f32>,
     last_end: Option<i64>,
+    /// R10a: in a surround project the master FX run per stereo pair (a chain each); the pair scratch buffer; the
+    /// stems of "Enable multichannel mapping" (`AudioPlan::stems`: the busses that go to the master, kept apart); a
+    /// stereo scratch for folding the master down.
+    master_fx_n: Vec<Chain>,
+    fxbuf: Vec<f32>,
+    stems: Vec<Vec<f32>>,
+    pub(crate) fold: Vec<f32>,
 }
 
 /// R34a: plug-in delay compensation for one plan. Every path from an event to the master is delayed so that all of
@@ -684,7 +757,8 @@ impl Lat {
     }
 }
 
-/// A stereo delay line of a fixed length (interleaved); it starts silent and again when its length changes.
+/// A delay line of a fixed length (interleaved frames, R10a: of any width); it starts silent and again when its
+/// length or width changes.
 #[derive(Default)]
 struct Line {
     buf: Vec<f32>,
@@ -692,25 +766,128 @@ struct Line {
     used: u64,
 }
 
-/// `src` delayed by `d` frames through the line `key` (made when needed), in `scratch`; `src` itself when `d` is 0.
-fn delayed<'a>(lines: &mut HashMap<String, Line>, key: &str, d: usize, round: u64, src: &'a [f32], scratch: &'a mut Vec<f32>) -> &'a [f32] {
+/// `src` (frames `ch` wide) delayed by `d` frames through the line `key` (made when needed), in `scratch`; `src`
+/// itself when `d` is 0.
+#[allow(clippy::too_many_arguments)]
+fn delayed<'a>(lines: &mut HashMap<String, Line>, key: &str, d: usize, round: u64, src: &'a [f32], scratch: &'a mut Vec<f32>, ch: usize) -> &'a [f32] {
     if d == 0 {
         return src;
     }
     let line = lines.entry(key.to_string()).or_default();
-    if line.buf.len() != 2 * d {
-        (line.buf, line.w) = (vec![0.0; 2 * d], 0);
+    if line.buf.len() != ch * d {
+        (line.buf, line.w) = (vec![0.0; ch * d], 0);
     }
     line.used = round;
     scratch.clear();
     scratch.extend_from_slice(src);
-    for fr in scratch.chunks_exact_mut(2) {
-        let old = [line.buf[line.w], line.buf[line.w + 1]];
-        (line.buf[line.w], line.buf[line.w + 1]) = (fr[0], fr[1]);
-        fr.copy_from_slice(&old);
-        line.w = (line.w + 2) % line.buf.len();
+    for fr in scratch.chunks_exact_mut(ch) {
+        for (c, x) in fr.iter_mut().enumerate() {
+            std::mem::swap(&mut line.buf[line.w + c], x);
+        }
+        line.w = (line.w + ch) % line.buf.len();
     }
     scratch
+}
+
+/// R10a: `fx` over every stereo pair of `buf` (frames `ch` wide) through the chains keyed `<id>#<pair>` (taken from
+/// `old`, put in `new`); a stereo buffer through the chain keyed `id`, as before.
+#[allow(clippy::too_many_arguments)]
+fn run_wide(old: &mut HashMap<String, Chain>, new: &mut HashMap<String, Chain>, id: &str, fx: &[crate::project::Fx], t: f64, buf: &mut [f32], ch: usize, scratch: &mut Vec<f32>) {
+    if ch == 2 {
+        let mut chain = old.remove(id).unwrap_or_default();
+        chain.run(fx, t, buf);
+        new.insert(id.to_string(), chain);
+        return;
+    }
+    for pair in 0..ch / 2 {
+        let key = format!("{id}#{pair}");
+        let mut chain = old.remove(&key).unwrap_or_default();
+        run_pair(&mut chain, fx, pair, t, buf, ch, scratch);
+        new.insert(key, chain);
+    }
+}
+
+/// R10a: the left-right side of channel `c` of a surround frame: -1 left, 1 right, 0 the centre and LFE.
+#[inline]
+fn side(c: usize) -> i8 {
+    match c {
+        surround::FL | surround::BL | surround::SL => -1,
+        surround::FR | surround::BR | surround::SR => 1,
+        _ => 0,
+    }
+}
+
+/// R10a: the Balance 0 dB gain of side `s` at pan `p`.
+#[inline]
+fn balance(s: i8, p: f32) -> f32 {
+    match s {
+        -1 => (1.0 - p).min(1.0),
+        1 => (1.0 + p).min(1.0),
+        _ => 1.0,
+    }
+}
+
+/// R10a: frames of `sch` channels added into frames of `dch` channels (converted by `surround::convert` when they
+/// differ), each frame times `g(i)` and Balance 0 dB at pan `p(i)` by the destination channel's side (a stereo
+/// destination: channel 0 left, 1 right). Fed to `lv`.
+#[allow(clippy::too_many_arguments)]
+fn route(src: &[f32], sch: usize, dst: &mut [f32], dch: usize, conv: &mut Vec<f32>, g: impl Fn(usize) -> f32, p: impl Fn(usize) -> f32, lv: &mut Level) {
+    let src: &[f32] = if sch == dch {
+        src
+    } else {
+        surround::convert(src, sch, dch, conv);
+        conv
+    };
+    for (i, (o, x)) in dst.chunks_exact_mut(dch).zip(src.chunks_exact(dch)).enumerate() {
+        let (g, p) = (g(i), p(i).clamp(-1.0, 1.0));
+        for (c, (o, x)) in o.iter_mut().zip(x).enumerate() {
+            let s = if dch == 2 { [-1, 1][c] } else { side(c) };
+            let v = x * g * balance(s, p);
+            *o += v;
+            lv.add_ch(c, v);
+        }
+    }
+}
+
+/// R10a: run `fx` over stereo pair `pair` (channels 2·pair and 2·pair + 1) of the `ch`-channel interleaved `buf` through
+/// `chain`, de-interleaved into `scratch`. Only the first pair runs external (VST3 / CLAP) plug-ins: they are stereo
+/// instances keyed by the FX id, so the other pairs run the built-in plug-ins of the chain alone.
+// shortcut: a bus or master dynamics plug-in is not linked across the pairs in a surround project.
+fn run_pair(chain: &mut Chain, fx: &[crate::project::Fx], pair: usize, t: f64, buf: &mut [f32], ch: usize, scratch: &mut Vec<f32>) {
+    let n = buf.len() / ch.max(1);
+    scratch.clear();
+    scratch.reserve(n * 2);
+    for f in buf.chunks_exact(ch) {
+        scratch.extend_from_slice(&f[2 * pair..2 * pair + 2]);
+    }
+    let own: Vec<crate::project::Fx>;
+    let run: &[crate::project::Fx] = if pair == 0 || !fx.iter().any(|f| crate::engine::aplug::is_ext(&f.plugin)) {
+        fx
+    } else {
+        own = fx.iter().filter(|f| !crate::engine::aplug::is_ext(&f.plugin)).cloned().collect();
+        &own
+    };
+    chain.run(run, t, scratch);
+    for (f, s) in buf.chunks_exact_mut(ch).zip(scratch.chunks_exact(2)) {
+        f[2 * pair..2 * pair + 2].copy_from_slice(s);
+    }
+}
+
+/// R10a: a block of `plan` at `f0` folded down to stereo in `out` (mixed straight into it in a stereo project).
+pub fn block_stereo(m: &mut Mixer, plan: &AudioPlan, f0: i64, out: &mut [f32]) {
+    let ch = plan.layout.channels();
+    if ch == 2 {
+        return m.block(plan, f0, out);
+    }
+    let n = out.len() / 2;
+    let mut wide = std::mem::take(&mut m.fold);
+    wide.clear();
+    wide.resize(n * ch, 0.0);
+    m.block(plan, f0, &mut wide);
+    for (o, f) in out.chunks_exact_mut(2).zip(wide.chunks_exact(ch)) {
+        o.copy_from_slice(&surround::downmix_frame(f));
+    }
+    m.fold = wide;
 }
 
 /// A volume envelope's linear gain at `t0` and `t1` (unity without one).
@@ -754,11 +931,21 @@ impl Mixer {
             lines: HashMap::new(),
             scratch: Vec::new(),
             last_end: None,
+            master_fx_n: Vec::new(),
+            fxbuf: Vec::new(),
+            stems: Vec::new(),
+            fold: Vec::new(),
         }
     }
 
-    /// R8a: feed node `id`'s meter (if the plan has one) with a block of `frames` frames.
-    fn meter(&mut self, plan: &AudioPlan, id: &str, frames: usize, lv: Level) {
+    /// R10a: the stems of the last block (`AudioPlan::stems`): one interleaved stereo buffer per bus of the plan, in
+    /// plan order, holding what busses that go to the master sent (the others are silent).
+    pub fn stems(&self) -> &[Vec<f32>] {
+        &self.stems
+    }
+
+    /// R8a: feed node `id`'s meter (if the plan has one) with a block of `frames` frames; R10a: `ch` channels of it.
+    fn meter(&mut self, plan: &AudioPlan, id: &str, frames: usize, lv: Level, ch: usize) {
         let Some(m) = plan.meters.as_ref().and_then(|m| m.get(id)) else { return };
         if !self.rms.contains_key(id) {
             self.rms.insert(id.to_string(), (0, VecDeque::new()));
@@ -770,10 +957,37 @@ impl Mixer {
         while w.len() > 1 && n - w[0].0 >= METER_WINDOW {
             n -= w.pop_front().map_or(0, |e| e.0);
         }
-        let sq = w.iter().fold([0.0f32; 2], |a, e| [a[0] + e.1[0], a[1] + e.1[1]]);
-        for c in 0..2 {
+        let ch = ch.clamp(1, MAX);
+        let sq = w.iter().fold([0.0f32; MAX], |a, e| std::array::from_fn(|c| a[c] + e.1[c]));
+        m.channels.store(ch, Relaxed);
+        for c in 0..ch {
             m.peak[c].fetch_max(lv.peak[c].to_bits(), Relaxed);
             m.rms[c].store((sq[c] / n.max(1) as f32).sqrt().to_bits(), Relaxed);
+        }
+    }
+
+    /// R10a: playback in a surround project: meter the master's channels (after the master fader, as the device tap
+    /// does for stereo) and hand them to the Loudness Meters' ring.
+    pub fn tap_master(&mut self, plan: &AudioPlan, buf: &[f32], ch: usize) {
+        let g = plan.master.as_ref().map_or([1.0; 2], |m| [m.gain(0), m.gain(1)]);
+        let n = buf.len() / ch.max(1);
+        let gains: [f32; MAX] = std::array::from_fn(|c| match c {
+            surround::FL | surround::BL | surround::SL => g[0],
+            surround::FR | surround::BR | surround::SR => g[1],
+            _ => (g[0] + g[1]) * 0.5,
+        });
+        let mut lv = Level::default();
+        self.fold.clear();
+        for f in buf.chunks_exact(ch) {
+            for (c, x) in f.iter().enumerate() {
+                let v = x * gains[c];
+                lv.add_ch(c, v);
+                self.fold.push(v);
+            }
+        }
+        self.meter(plan, MASTER_METER, n, lv, ch);
+        if let Some(ring) = &plan.loud {
+            ring.push_frames(&self.fold, ch);
         }
     }
 
@@ -830,7 +1044,7 @@ impl Mixer {
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for w in times.windows(2) {
             if let Some(s) = v.at(w[0]) {
-                let d = Resampler::reach((w[1] - w[0]) * r) as f64 / r;
+                let d = self.rs.reach((w[1] - w[0]) * r) as f64 / r;
                 (lo, hi) = (lo.min(s - d), hi.max(s + d));
             }
         }
@@ -843,11 +1057,17 @@ impl Mixer {
             self.error.get_or_insert(err);
         }
         let l = &self.vstreams[&e.id];
-        for (o, w) in out.chunks_exact_mut(2).zip(times.windows(2)) {
+        // R10a: a 5.1 / 7.1 track's frames are wider.
+        let ch = e.src.ch.max(2) as usize;
+        for (o, w) in out.chunks_exact_mut(ch).zip(times.windows(2)) {
             let speed = (w[1] - w[0]) * r;
             if let Some(s) = v.at(w[0]).filter(|_| speed.abs() >= MIN_SPEED) {
-                let [a, b] = self.rs.read(&l.buf, (s - l.s0) * r, speed);
-                (o[0], o[1]) = (a, b);
+                if ch == 2 {
+                    let [a, b] = self.rs.read(&l.buf, (s - l.s0) * r, speed);
+                    (o[0], o[1]) = (a, b);
+                } else {
+                    self.rs.read_n(&l.buf, ch, (s - l.s0) * r, speed, o);
+                }
             }
         }
     }
@@ -869,11 +1089,14 @@ impl Mixer {
             if let Some(err) = l.s.read(&mut sb, false, None) {
                 self.error.get_or_insert(err);
             }
-            let n = ((qf * r) as usize).min(pcm.len() / 2);
+            let w = src.ch.max(2) as usize;
+            let n = ((qf * r) as usize).min(pcm.len() / w);
             if fresh && a > ps && n > 0 && was.is_some_and(|(p, s)| *p == src.path && *s == src.stream) {
-                for (i, (o, x)) in pcm.chunks_exact_mut(2).zip(sb.chunks_exact(2)).take(n).enumerate() {
+                for (i, (o, x)) in pcm.chunks_exact_mut(w).zip(sb.chunks_exact(w)).take(n).enumerate() {
                     let g = i as f32 / n as f32;
-                    (o[0], o[1]) = (x[0] + (o[0] - x[0]) * g, x[1] + (o[1] - x[1]) * g);
+                    for (o, x) in o.iter_mut().zip(x) {
+                        *o = x + (*o - x) * g;
+                    }
                 }
             }
         }
@@ -917,12 +1140,16 @@ impl Mixer {
     /// Pan (its Pan Type) into its output, and its sends (pre-volume: after the track FX); then each bus (R8a), in
     /// order, its FX, envelopes, Volume and Pan into its output; then the master FX. Event FX stop at the event's end;
     /// track and bus FX run on past it, so their tails are heard.
+    /// R10a: `out` holds `plan.layout.channels()` interleaved channels per frame.
     pub fn block(&mut self, plan: &AudioPlan, f0: i64, out: &mut [f32]) {
         // R34a: plug-in delay compensation. The plan's paths are delayed to the longest latency, and the mix runs that
         // far ahead of the timeline. A block that does not follow the last one (the first, a seek) first pre-rolls the
         // frames before it, so the plug-ins and the delay lines hold the right past when it starts.
         let lat = Lat::of(plan, !plan.bypass_fx);
-        let n = out.len() / 2;
+        if self.rs.taps() != plan.taps {
+            self.rs = Resampler::new(plan.taps);
+        }
+        let n = out.len() / plan.layout.channels();
         if lat.total > 0 && n > 0 && self.last_end != Some(f0) {
             let mut scratch = vec![0.0; out.len()];
             let blocks = lat.total.div_ceil(n).min(8) as i64;
@@ -943,7 +1170,9 @@ impl Mixer {
         self.round += 1;
         self.pass += 1;
         out.fill(0.0);
-        let n = out.len() / 2;
+        // R10a: the layout's channels in `out` and the bus buffers; tracks and events stay stereo.
+        let ch = plan.layout.channels();
+        let n = out.len() / ch;
         let (f1, r) = (f0 + n as i64, RATE as f64);
         let (mut track, mut pcm) = (std::mem::take(&mut self.track), std::mem::take(&mut self.pcm));
         let stop = self.render.clone();
@@ -960,14 +1189,24 @@ impl Mixer {
         let (mut lines, mut scratch) = (std::mem::take(&mut self.lines), std::mem::take(&mut self.scratch));
         let mut bus_buf = std::mem::take(&mut self.bus_buf);
         bus_buf.resize_with(plan.buses.len(), Vec::new);
-        for b in &mut bus_buf {
+        for (b, ab) in bus_buf.iter_mut().zip(&plan.buses) {
             b.clear();
-            b.resize(out.len(), 0.0);
+            b.resize(n * ab.ch.max(2), 0.0);
+        }
+        // R10a: the stems of "Enable multichannel mapping" (stereo projects only).
+        let stems = plan.stems && ch == 2;
+        self.stems.resize_with(if stems { plan.buses.len() } else { 0 }, Vec::new);
+        for st in &mut self.stems {
+            st.clear();
+            st.resize(out.len(), 0.0);
         }
         let mut bus_heard = vec![false; plan.buses.len()];
+        let mut conv = Vec::new();
         for tr in &plan.tracks {
+            // R10a: the track's width (2, or a 5.1 / 7.1 track's 6 / 8).
+            let tw = tr.ch.max(2);
             track.clear();
-            track.resize(out.len(), 0.0);
+            track.resize(n * tw, 0.0);
             let mut heard = false;
             // A fader moved since the last block glides to its new value (a step is a click).
             let (vol0, pan0) = tr_last.remove(&tr.id).unwrap_or((tr.volume, tr.pan));
@@ -980,7 +1219,7 @@ impl Mixer {
                 }
                 heard = true;
                 pcm.clear();
-                pcm.resize((b - a) as usize * 2, 0.0);
+                pcm.resize((b - a) as usize * tw, 0.0);
                 let wait = self.wait;
                 if let Some(v) = &e.vel {
                     self.varispeed(e, v, a - ps, b - ps, &mut pcm, wait, stop.as_deref());
@@ -994,23 +1233,29 @@ impl Mixer {
                     }
                     let l = self.stream(src, pa - qs);
                     (l.next, l.t) = (pb - qs, l.t + (pb - pa) as f64 * src.rate / r);
-                    if let Some(err) = l.s.read(&mut pcm[(pa - a) as usize * 2..(pb - a) as usize * 2], wait, stop.as_deref()) {
+                    if let Some(err) = l.s.read(&mut pcm[(pa - a) as usize * tw..(pb - a) as usize * tw], wait, stop.as_deref()) {
                         self.error.get_or_insert(err);
                     }
                 }
                 if plan.standby && e.vel.is_none() {
                     self.standby(e, &tr.id, (a, b, ps), heard_old.get(&tr.id), !ev_last.contains_key(&e.id), plan.quickfade, &mut pcm);
                 }
-                map_channels(&mut pcm, e.channels, e.invert);
+                if tw == 2 {
+                    map_channels(&mut pcm, e.channels, e.invert);
+                    // R10a: a mono track hears the mean of both sides on both.
+                    if tr.mono {
+                        map_channels(&mut pcm, ChannelMap::Combine, false);
+                    }
+                } else if e.invert {
+                    pcm.iter_mut().for_each(|v| *v = -*v);
+                }
                 if fx_on && !e.fx.is_empty() {
-                    let mut ch = ev_old.remove(&e.id).unwrap_or_default();
-                    ch.run(&e.fx, (a - ps) as f64 / r, &mut pcm);
-                    self.ev_fx.insert(e.id.clone(), ch);
+                    run_wide(&mut ev_old, &mut self.ev_fx, &e.id, &e.fx, (a - ps) as f64 / r, &mut pcm, tw, &mut self.fxbuf);
                 }
                 // R34a: this event's FX are shorter than another's on the track: delayed to meet them.
                 let d = lat.event(&e.id);
                 if d > 0 {
-                    delayed(&mut lines, &e.id, d, self.round, &pcm, &mut scratch);
+                    delayed(&mut lines, &e.id, d, self.round, &pcm, &mut scratch, tw);
                     std::mem::swap(&mut pcm, &mut scratch);
                 }
                 let (la, lb) = ((a - ps) as f64 / r, (b - ps) as f64 / r);
@@ -1032,7 +1277,7 @@ impl Mixer {
                     }
                     None => (true, true),
                 };
-                for (i, (o, x)) in track[(a - f0) as usize * 2..].chunks_exact_mut(2).zip(pcm.chunks_exact(2)).enumerate() {
+                for (i, (o, x)) in track[(a - f0) as usize * tw..].chunks_exact_mut(tw).zip(pcm.chunks_exact(tw)).enumerate() {
                     let local = (a - ps + i as i64) as f64 / r;
                     let s = i as f32 / len;
                     let mut g = (g0 + (e.gain - g0) * s) * (v0 + (v1 - v0) * s);
@@ -1050,7 +1295,18 @@ impl Mixer {
                     if e.src.dur - local < qf && e.fade_out <= 0.0 && qf_out {
                         g *= fade(Curve::Linear, (e.src.dur - local).max(0.0), qf);
                     }
-                    if shaped {
+                    if tw > 2 {
+                        // R10a: a 5.1 / 7.1 event; its Pan envelope is a left-right balance over the room.
+                        let p = if shaped {
+                            g *= (m0 + (m1 - m0) * s).clamp(0.0, 1.0);
+                            (p0 + (p1 - p0) * s).clamp(-1.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        for (c, (o, x)) in o.iter_mut().zip(x).enumerate() {
+                            *o += x * g * balance(side(c), p);
+                        }
+                    } else if shaped {
                         g *= (m0 + (m1 - m0) * s).clamp(0.0, 1.0);
                         let p = (p0 + (p1 - p0) * s).clamp(-1.0, 1.0);
                         o[0] += x[0] * g * (1.0 - p).min(1.0);
@@ -1063,9 +1319,7 @@ impl Mixer {
             }
             let (t0, t1) = (f0 as f64 / r, f1 as f64 / r);
             if fx_on && !tr.fx.is_empty() {
-                let mut ch = tr_old.remove(&tr.id).unwrap_or_default();
-                ch.run(&tr.fx, t0, &mut track);
-                self.tr_fx.insert(tr.id.clone(), ch);
+                run_wide(&mut tr_old, &mut self.tr_fx, &tr.id, &tr.fx, t0, &mut track, tw, &mut self.fxbuf);
             } else if !heard {
                 continue;
             }
@@ -1080,6 +1334,8 @@ impl Mixer {
                 lerp(vol0, tr.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0)
             };
             let mut lv = Level::default();
+            // R10a: the width of what the track goes into (a bus's layout, or the master's).
+            let dch = tr.out.map_or(ch, |b| plan.buses[b].ch);
             if !tr.muted {
                 let dest: &mut [f32] = match tr.out {
                     Some(b) => {
@@ -1089,22 +1345,59 @@ impl Mixer {
                     None => &mut *out,
                 };
                 // R34a: delayed so this path takes as long as the longest one.
-                let main_src = delayed(&mut lines, &tr.id, lat.track(&tr.id), self.round, &track, &mut scratch);
-                for (i, (o, x)) in dest.chunks_exact_mut(2).zip(main_src.chunks_exact(2)).enumerate() {
-                    let s = i as f32 / n as f32;
-                    let lerp = |a: f32, b: f32| a + (b - a) * s;
-                    let g = fader(i) * inv;
-                    // Pan trims the pan envelope (VEGAS), by the track's Pan Type.
-                    let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
-                    let m = tr.pan_type.matrix(p);
-                    let (l, r) = (x[0] * g, x[1] * g);
-                    let (a, b) = (l * m[0][0] + r * m[0][1], l * m[1][0] + r * m[1][1]);
-                    o[0] += a;
-                    o[1] += b;
-                    lv.add(a, b);
+                let main_src = delayed(&mut lines, &tr.id, lat.track(&tr.id), self.round, &track, &mut scratch, tw);
+                if tw > 2 {
+                    // R10a: a 5.1 / 7.1 track goes channel for channel (converted to another layout), its Pan and Pan
+                    // envelope a left-right balance.
+                    let pan = |i: usize| {
+                        let s = i as f32 / n as f32;
+                        pan0 + (tr.pan - pan0) * s + p0 + (p1 - p0) * s
+                    };
+                    route(main_src, tw, dest, dch, &mut conv, |i| fader(i) * inv, pan, &mut lv);
+                } else if dch == 2 {
+                    for (i, (o, x)) in dest.chunks_exact_mut(2).zip(main_src.chunks_exact(2)).enumerate() {
+                        let s = i as f32 / n as f32;
+                        let lerp = |a: f32, b: f32| a + (b - a) * s;
+                        let g = fader(i) * inv;
+                        // Pan trims the pan envelope (VEGAS), by the track's Pan Type.
+                        let p = (lerp(pan0, tr.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
+                        let m = tr.pan_type.matrix(p);
+                        let (l, r) = (x[0] * g, x[1] * g);
+                        let (a, b) = (l * m[0][0] + r * m[0][1], l * m[1][0] + r * m[1][1]);
+                        o[0] += a;
+                        o[1] += b;
+                        lv.add(a, b);
+                    }
+                } else {
+                    // R10a: into the room by the surround pan (its keyframes ramped across the block; the Pan slider and
+                    // envelope trim its left-right position), by the track's Pan Type.
+                    let sp = tr.surround.unwrap_or_default();
+                    let (x0, x1) = tr.x_env.as_ref().map_or((sp.x, sp.x), |e| ramp(e, t0, t1));
+                    let (y0, y1) = tr.y_env.as_ref().map_or((sp.y, sp.y), |e| ramp(e, t0, t1));
+                    let mut last: Option<((f32, f32, f32), [[f32; MAX]; 2])> = None;
+                    for (i, (o, x)) in dest.chunks_exact_mut(dch).zip(main_src.chunks_exact(2)).enumerate() {
+                        let s = i as f32 / n as f32;
+                        let lerp = |a: f32, b: f32| a + (b - a) * s;
+                        let g = fader(i) * inv;
+                        let key = (lerp(x0, x1), lerp(y0, y1), lerp(pan0, tr.pan) + lerp(p0, p1));
+                        let m = match last {
+                            Some((k, m)) if k == key => m,
+                            _ => {
+                                let m = surround::pan_matrix(tr.pan_type, &SurroundPan { x: key.0, y: key.1, ..sp }, key.2, dch);
+                                last = Some((key, m));
+                                m
+                            }
+                        };
+                        let (l, r) = (x[0] * g, x[1] * g);
+                        for (c, o) in o.iter_mut().enumerate() {
+                            let v = l * m[0][c] + r * m[1][c];
+                            *o += v;
+                            lv.add_ch(c, v);
+                        }
+                    }
                 }
             }
-            self.meter(plan, &tr.id, n, lv);
+            self.meter(plan, &tr.id, n, lv, dch);
             // Sends: centre-panned by the track's Pan Type (VEGAS without Link to Main Track Pan); pre-volume sends are
             // pre-mute too, post-volume ones follow the fader and the mute.
             let centre = tr.pan_type.matrix(0.0);
@@ -1114,13 +1407,31 @@ impl Mixer {
                 let d = lat.send(&key);
                 self.send_last.insert(key, snd.level);
                 bus_heard[snd.to] = true;
-                let send_src = delayed(&mut lines, &format!("{}>{}", tr.id, snd.id), d, self.round, &track, &mut scratch);
-                for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(2).zip(send_src.chunks_exact(2)).enumerate() {
-                    let s = i as f32 / n as f32;
-                    let g = (l0 + (snd.level - l0) * s) * inv * if snd.pre { 1.0 } else { fader(i) };
-                    let (l, r) = (x[0] * g, x[1] * g);
-                    o[0] += l * centre[0][0] + r * centre[0][1];
-                    o[1] += l * centre[1][0] + r * centre[1][1];
+                let send_src = delayed(&mut lines, &format!("{}>{}", tr.id, snd.id), d, self.round, &track, &mut scratch, tw);
+                let sch = plan.buses[snd.to].ch;
+                if tw > 2 {
+                    // R10a: a 5.1 / 7.1 track's send, channel for channel.
+                    let g = |i: usize| (l0 + (snd.level - l0) * (i as f32 / n as f32)) * inv * if snd.pre { 1.0 } else { fader(i) };
+                    route(send_src, tw, &mut bus_buf[snd.to], sch, &mut conv, g, |_| 0.0, &mut Level::default());
+                } else if sch == 2 {
+                    for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(2).zip(send_src.chunks_exact(2)).enumerate() {
+                        let s = i as f32 / n as f32;
+                        let g = (l0 + (snd.level - l0) * s) * inv * if snd.pre { 1.0 } else { fader(i) };
+                        let (l, r) = (x[0] * g, x[1] * g);
+                        o[0] += l * centre[0][0] + r * centre[0][1];
+                        o[1] += l * centre[1][0] + r * centre[1][1];
+                    }
+                } else {
+                    // R10a: placed where the track's pan point is, left-right centred.
+                    let m = surround::pan_matrix(tr.pan_type, &tr.surround.unwrap_or_default(), 0.0, sch);
+                    for (i, (o, x)) in bus_buf[snd.to].chunks_exact_mut(sch).zip(send_src.chunks_exact(2)).enumerate() {
+                        let s = i as f32 / n as f32;
+                        let g = (l0 + (snd.level - l0) * s) * inv * if snd.pre { 1.0 } else { fader(i) };
+                        let (l, r) = (x[0] * g, x[1] * g);
+                        for (c, o) in o.iter_mut().enumerate() {
+                            *o += l * m[0][c] + r * m[1][c];
+                        }
+                    }
                 }
             }
         }
@@ -1129,13 +1440,18 @@ impl Mixer {
         for (k, b) in plan.buses.iter().enumerate() {
             let (head, tail) = bus_buf.split_at_mut(k + 1);
             let input = &mut head[k];
+            // R10a: the bus's width, and its destination's.
+            let bw = b.ch.max(2);
             if fx_on && !b.fx.is_empty() {
-                let mut ch = bus_old.remove(&b.id).unwrap_or_default();
-                ch.run(&b.fx, t0, input);
-                self.bus_fx.insert(b.id.clone(), ch);
+                // R10a: a 5.1 / 7.1 bus runs its FX per stereo pair, a chain each (keyed "<bus>#<pair>").
+                run_wide(&mut bus_old, &mut self.bus_fx, &b.id, &b.fx, t0, input, bw, &mut self.fxbuf);
             } else if !bus_heard[k] {
                 continue;
             }
+            if b.mono {
+                map_channels(input, ChannelMap::Combine, false);
+            }
+            let dch = b.out.map_or(ch, |o| plan.buses[o].ch.max(2));
             let (vol0, pan0) = tr_last.remove(&b.id).unwrap_or((b.volume, b.pan));
             self.tr_last.insert(b.id.clone(), (b.volume, b.pan));
             let (v0, v1) = env_gain(&b.vol_env, t0, t1);
@@ -1146,20 +1462,31 @@ impl Mixer {
                     bus_heard[o] = true;
                     &mut tail[o - k - 1]
                 }
+                // R10a: a stem of its own instead of the master when multichannel mapping asks.
+                None if stems => &mut self.stems[k],
                 None => &mut *out,
             };
             let mut lv = Level::default();
-            for (i, (o, x)) in dest.chunks_exact_mut(2).zip(input.chunks_exact(2)).enumerate() {
-                let s = i as f32 / n as f32;
-                let lerp = |a: f32, b: f32| a + (b - a) * s;
-                let g = lerp(vol0, b.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
-                let p = (lerp(pan0, b.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
-                let (l, r) = (x[0] * g * (1.0 - p).min(1.0), x[1] * g * (1.0 + p).min(1.0));
-                o[0] += l;
-                o[1] += r;
-                lv.add(l, r);
+            if bw == 2 && dch == 2 {
+                for (i, (o, x)) in dest.chunks_exact_mut(2).zip(input.chunks_exact(2)).enumerate() {
+                    let s = i as f32 / n as f32;
+                    let lerp = |a: f32, b: f32| a + (b - a) * s;
+                    let g = lerp(vol0, b.volume) * lerp(v0, v1) * lerp(m0, m1).clamp(0.0, 1.0);
+                    let p = (lerp(pan0, b.pan) + lerp(p0, p1)).clamp(-1.0, 1.0);
+                    let (l, r) = (x[0] * g * (1.0 - p).min(1.0), x[1] * g * (1.0 + p).min(1.0));
+                    o[0] += l;
+                    o[1] += r;
+                    lv.add(l, r);
+                }
+            } else {
+                // R10a: the bus's Pan is a left-right balance over the room (Balance 0 dB); the centre and LFE keep
+                // their level. Another layout is converted on the way (`surround::convert`).
+                let lerp = |i: usize, a: f32, b: f32| a + (b - a) * (i as f32 / n as f32);
+                let g = |i: usize| lerp(i, vol0, b.volume) * lerp(i, v0, v1) * lerp(i, m0, m1).clamp(0.0, 1.0);
+                let p = |i: usize| lerp(i, pan0, b.pan) + lerp(i, p0, p1);
+                route(input, bw, dest, dch, &mut conv, g, p, &mut lv);
             }
-            self.meter(plan, &b.id, n, lv);
+            self.meter(plan, &b.id, n, lv, dch);
         }
         // A meter nothing fed this block falls to silence.
         let round = self.round;
@@ -1176,7 +1503,15 @@ impl Mixer {
         }
         self.bus_buf = bus_buf;
         if fx_on {
-            self.master_fx.run(&plan.master_fx, f0 as f64 / r, out);
+            if ch == 2 {
+                self.master_fx.run(&plan.master_fx, f0 as f64 / r, out);
+            } else {
+                // R10a: the master FX per stereo pair.
+                self.master_fx_n.resize_with(ch / 2, Chain::default);
+                for (pair, chain) in self.master_fx_n.iter_mut().enumerate() {
+                    run_pair(chain, &plan.master_fx, pair, f0 as f64 / r, out, ch, &mut self.fxbuf);
+                }
+            }
         }
         // (`round` was shadowed above: the lines used in this block carry the incremented round.)
         lines.retain(|_, l| l.used == self.round);
@@ -1237,8 +1572,14 @@ impl Metronome {
     /// Adds the clicks sounding in the stereo block `out` that starts at timeline frame `f0`: a decaying sine burst,
     /// 1.5 kHz on a measure's first beat, 1 kHz on the others.
     // shortcut: a synthesized click; VEGAS's Preferences › Audio metronome sound files and level are not offered.
+    #[cfg(test)]
     pub fn add(&self, f0: i64, out: &mut [f32]) {
-        let n = (out.len() / 2) as i64;
+        self.add_to(f0, out, 2);
+    }
+
+    /// R10a: the clicks on the front pair of a block of `ch` interleaved channels.
+    pub fn add_to(&self, f0: i64, out: &mut [f32], ch: usize) {
+        let n = (out.len() / ch) as i64;
         let per = self.beat * RATE as f64;
         if per < 1.0 {
             return;
@@ -1250,7 +1591,7 @@ impl Metronome {
             for f in at.max(f0)..(at + Self::LEN).min(f0 + n) {
                 let s = (f - at) as f32;
                 let v = amp * (std::f32::consts::TAU * hz * s / RATE as f32).sin() * (1.0 - s / Self::LEN as f32);
-                let i = ((f - f0) * 2) as usize;
+                let i = (f - f0) as usize * ch;
                 out[i] += v;
                 out[i + 1] += v;
             }
@@ -1276,14 +1617,28 @@ pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option
     // The first block's decoders all start now, in parallel.
     mixer.warm(&slot.lock().unwrap().clone(), from, (from + ahead).min(lp_end));
     let mut f = from;
+    let mut reset = true;
     // A stopped session opens no more decoders.
     while !quit.load(Relaxed) {
         let plan = slot.lock().unwrap().clone();
         let (f0, n) = next_block(f, lp);
-        let mut buf = vec![0.0; n * 2];
+        // R10a: mixed at the layout's width, metered, then folded down for the device.
+        let ch = plan.layout.channels();
+        let mut buf = vec![0.0; n * ch];
         mixer.block(&plan, f0, &mut buf);
         if let Some(m) = &plan.metronome {
-            m.add(f0, &mut buf);
+            m.add_to(f0, &mut buf, ch);
+        }
+        if ch > 2 {
+            if std::mem::take(&mut reset) {
+                if let Some(ring) = &plan.loud {
+                    ring.push_frames(&vec![f32::NAN; ch], ch); // a new session: the loudness meters start again
+                }
+            }
+            mixer.tap_master(&plan, &buf, ch);
+            let mut st = Vec::with_capacity(n * 2);
+            surround::downmix(&buf, ch, &mut st);
+            buf = st;
         }
         // Later decoders that are not ready play silence instead of holding the device queue.
         mixer.wait = false;
@@ -1309,7 +1664,7 @@ pub fn run(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, lp: Option
 /// timeline is mixed a chunk at a time before what was heard, each chunk's decoders opened afresh. Playback only: no
 /// loop, and it ends backwards at 0.
 fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &AtomicU64, tx: &SyncSender<Block>, quit: &AtomicBool, mut on_error: impl FnMut(String)) {
-    let mut rs = Resampler::default();
+    let mut rs = Resampler::new(slot.lock().unwrap().taps);
     // Mixed timeline frames lo .. lo + held.len() / 2.
     let (mut lo, mut held) = (from, Vec::<f32>::new());
     let mut t = from as f64;
@@ -1317,7 +1672,7 @@ fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &Ato
         let r = f64::from_bits(rate.load(Relaxed));
         let plan = slot.lock().unwrap().clone();
         let end = t + BLOCK as f64 * r;
-        let reach = Resampler::reach(r) as i64;
+        let reach = rs.reach(r) as i64;
         let (need_lo, need_hi) = (t.min(end).floor() as i64 - reach, t.max(end).ceil() as i64 + reach + 1);
         let hi = lo + (held.len() / 2) as i64;
         if held.is_empty() || need_hi <= lo || need_lo >= hi {
@@ -1329,7 +1684,7 @@ fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &Ato
         while lo + ((held.len() / 2) as i64) < need_hi {
             let (f, at) = (lo + (held.len() / 2) as i64, held.len());
             held.resize(at + BLOCK * 2, 0.0);
-            mixer.block(&plan, f, &mut held[at..]);
+            block_stereo(&mut mixer, &plan, f, &mut held[at..]);
             mixer.wait = false;
         }
         if r > 0.0 {
@@ -1344,7 +1699,7 @@ fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &Ato
             let mut c = vec![0.0; chunk * 2];
             mixer.wait = true;
             for (i, b) in c.chunks_mut(BLOCK * 2).enumerate() {
-                mixer.block(&plan, f + (i * BLOCK) as i64, b);
+                block_stereo(&mut mixer, &plan, f + (i * BLOCK) as i64, b);
             }
             held.splice(0..0, c);
             lo = f;
@@ -1378,7 +1733,7 @@ fn shuttle(slot: &Mutex<Arc<AudioPlan>>, mut mixer: Mixer, from: i64, rate: &Ato
 pub(crate) mod tests {
     use super::*;
     use crate::engine::plan::{QUICKFADE, compile_audio};
-    use crate::project::{Clip, Curve, EnvKind, Keyframe, Keyframes, MediaItem, MediaType, Project};
+    use crate::project::{Clip, Curve, EnvKind, Keyframe, Keyframes, MediaItem, MediaType, Out, PanType, Project};
     use std::sync::atomic::AtomicUsize;
     use std::time::Instant;
 
@@ -1438,13 +1793,13 @@ pub(crate) mod tests {
         let mut lines = HashMap::new();
         let mut scratch = Vec::new();
         let src: Vec<f32> = (0..16).map(|k| k as f32).collect();
-        let d1 = delayed(&mut lines, "a", 3, 1, &src, &mut scratch).to_vec();
+        let d1 = delayed(&mut lines, "a", 3, 1, &src, &mut scratch, 2).to_vec();
         assert_eq!(&d1[..8], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
         assert_eq!(&d1[6..], &src[..10]);
-        let d2 = delayed(&mut lines, "a", 3, 2, &src, &mut scratch).to_vec();
+        let d2 = delayed(&mut lines, "a", 3, 2, &src, &mut scratch, 2).to_vec();
         assert_eq!(&d2[..6], &src[10..]);
-        assert!(std::ptr::eq(delayed(&mut lines, "a", 0, 3, &src, &mut scratch), src.as_slice()));
-        let d3 = delayed(&mut lines, "a", 1, 4, &src, &mut scratch).to_vec();
+        assert!(std::ptr::eq(delayed(&mut lines, "a", 0, 3, &src, &mut scratch, 2), src.as_slice()));
+        let d3 = delayed(&mut lines, "a", 1, 4, &src, &mut scratch, 2).to_vec();
         assert_eq!(&d3[..4], [0.0, 0.0, 0.0, 1.0], "a new length starts silent");
     }
 
@@ -2326,21 +2681,21 @@ pub(crate) mod tests {
 
     #[test]
     fn decoder_argv() {
-        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None };
+        let src = ASrc { path: r"C:\a b.wav".into(), pos: 5.0, dur: 4.0, in_point: 2.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None, pair: None, ch: 2 };
         assert_eq!(
-            args(&src, frame(1.0), false).join(" "),
+            args(&src, frame(1.0), None).join(" "),
             r"-v error -ss 3.000000 -i C:\a b.wav -vn -map 0:a:0 -ac 2 -ar 48000 -f f32le -"
         );
         // Rate 2, reversed, 1 s in: the source span still to play is 2 .. 2 + 3 s x 2, read backwards at double speed.
-        let a = args(&ASrc { rate: 2.0, reverse: true, ..src.clone() }, frame(1.0), false);
+        let a = args(&ASrc { rate: 2.0, reverse: true, ..src.clone() }, frame(1.0), None);
         assert_eq!(a[2..6], ["-ss", "2.000000", "-t", "6.000000"]);
         assert!(a.windows(2).any(|w| w == ["-af", "areverse,atempo=2"]));
         // R4b: an octave up is a resample to 96 kHz read as 48 kHz, put back to length (at 1.5x: atempo 0.75).
-        let a = args(&ASrc { pitch: 1200.0, rate: 1.5, ..src.clone() }, 0, false);
+        let a = args(&ASrc { pitch: 1200.0, rate: 1.5, ..src.clone() }, 0, None);
         assert!(a.windows(2).any(|w| w == ["-af", "aresample=48000,asetrate=96000,aresample=48000,atempo=0.75"]), "{a:?}");
         // Mono goes to both sides at unity.
         assert_eq!(
-            args(&src, 0, true).join(" "),
+            args(&src, 0, Some(1)).join(" "),
             r"-v error -ss 2.000000 -i C:\a b.wav -vn -map 0:a:0 -ar 48000 -af pan=stereo|c0=c0|c1=c0 -f f32le -"
         );
     }
@@ -2394,7 +2749,7 @@ pub(crate) mod tests {
             path
         };
         let mono = make("mono.wav", "aevalsrc=0.5:s=48000:d=1", &["-c:a", "pcm_s16le"]);
-        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None };
+        let src = |path: &Path, dur| ASrc { path: path.to_path_buf(), pos: 0.0, dur, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None, pair: None, ch: 2 };
         let mut s = spawn(&src(&mono, 1.0), 0).unwrap();
         let mut out = vec![0.0; 2 * 4800];
         assert_eq!(s.read(&mut out, true, None), None);
@@ -2432,7 +2787,7 @@ pub(crate) mod tests {
         assert!(ok);
         let m = crate::media::probe_media(&path).unwrap();
         assert_eq!(m.audio_streams, 2);
-        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream, pitch: 0.0, nested: None };
+        let src = |stream| ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream, pitch: 0.0, nested: None, pair: None, ch: 2 };
         for (stream, want) in [(0, [0.2, 0.2]), (1, [0.6, 0.3])] {
             let mut s = spawn(&src(stream), 0).unwrap();
             let mut out = vec![0.0; 2 * 4800];
@@ -2462,7 +2817,7 @@ pub(crate) mod tests {
             .success();
         assert!(ok);
         for (pitch, want) in [(1200.0, 2000.0), (-1200.0, 500.0)] {
-            let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch, nested: None };
+            let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 0.0, rate: 1.0, reverse: false, stream: 0, pitch, nested: None, pair: None, ch: 2 };
             let mut s = spawn(&src, 0).unwrap();
             let mut out = vec![0.0; 2 * 72_000];
             assert_eq!(s.read(&mut out, true, None), None);
@@ -2490,7 +2845,7 @@ pub(crate) mod tests {
             .unwrap()
             .success();
         assert!(ok);
-        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0, pitch: 0.0, nested: None };
+        let src = ASrc { path: path.clone(), pos: 0.0, dur: 1.0, in_point: 1.0, rate: 2.0, reverse: true, stream: 0, pitch: 0.0, nested: None, pair: None, ch: 2 };
         let mut s = spawn(&src, 0).unwrap();
         let mut out = vec![0.0; 2 * 48_000];
         assert_eq!(s.read(&mut out, true, None), None);
@@ -2509,6 +2864,163 @@ pub(crate) mod tests {
 
     /// R18a acceptance: at 120 BPM the metronome clicks on every beat, 24000 samples apart at 48 kHz, accented on the
     /// measure's first; mixing in blocks gives the same samples as one pass; a render plan has no metronome.
+    /// R10a: a stereo project mixes bit for bit as it did before the multichannel engine. The hash is of the f32 bit
+    /// patterns of the blocks the fake decoder mixes through busses, sends, FX, envelopes, fades and a pan type; it was
+    /// taken on the engine as R8c-R34a left it, and must never change for a stereo project.
+    #[test]
+    fn stereo_mix_is_bit_identical_to_the_pre_r10a_engine() {
+        let mut p = with_fx();
+        crate::edit::set_bus_count(&mut p, 2);
+        let a = p.timeline.audio.buses[0].id.clone();
+        let b = p.timeline.audio.buses[1].id.clone();
+        {
+            let tl = &mut p.timeline;
+            tl.audio.buses[0].volume = 0.5;
+            tl.audio.buses[0].pan = 0.3;
+            tl.audio.buses[1].out = Out::Bus(a.clone());
+            let t0 = &mut tl.audio_tracks[0];
+            (t0.out, t0.pan_type, t0.volume, t0.pan) = (Out::Bus(b.clone()), PanType::ConstantPower, 0.8, -0.4);
+            crate::edit::set_send(t0, &a, 0.6, true);
+            t0.envelopes.push(Envelope { kind: EnvKind::Volume, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.0, curve: Curve::Linear }, Keyframe { t: 1.0, v: -12.0, curve: Curve::Linear }] } });
+            t0.envelopes.push(Envelope { kind: EnvKind::Pan, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: -1.0, curve: Curve::Linear }, Keyframe { t: 1.0, v: 1.0, curve: Curve::Linear }] } });
+            let t1 = &mut tl.audio_tracks[1];
+            (t1.pan_type, t1.invert) = (PanType::AddChannels, true);
+            let c = &mut t1.clips[0];
+            (c.fade_in, c.fade_out, c.gain_db, c.channels) = (0.3, 0.2, -3.0, ChannelMap::Swap);
+            c.envelopes.push(Envelope { kind: EnvKind::Pan, points: Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.5, curve: Curve::Linear }] } });
+        }
+        let mut plan = compile_audio(&p);
+        plan.quickfade = QUICKFADE;
+        let mut m = fake(|k| ((k % 211) as f32 / 211.0 - 0.5) * (k as f32 * 0.013).sin());
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut out = vec![0.0f32; 2 * BLOCK];
+        for f0 in [0i64, BLOCK as i64, 2 * BLOCK as i64, 47_000, 48_024, 9 * 48_000 + 900] {
+            m.block(&plan, f0, &mut out);
+            for v in &out {
+                for byte in v.to_bits().to_le_bytes() {
+                    hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        assert_eq!(hash, GOLDEN_STEREO_HASH, "the stereo mix changed: {hash:#x}");
+    }
+
+    /// R10a: a decoder that plays sine `HZ[c]` on channel c of whatever width the event decodes at.
+    const HZ: [f64; 8] = [300.0, 500.0, 700.0, 1100.0, 1300.0, 1700.0, 1900.0, 2300.0];
+
+    fn sines() -> Mixer {
+        Mixer::new(Box::new(|src: &ASrc, at| {
+            let total = frame(src.pos + src.dur) - frame(src.pos);
+            let (tx, rx) = mpsc::sync_channel(1 << 16);
+            let w = src.ch.max(2) as usize;
+            let pcm: Vec<f32> = (at..total).flat_map(|k| (0..w).map(move |c| (0.25 * (std::f64::consts::TAU * HZ[c] * k as f64 / RATE as f64).sin()) as f32)).collect();
+            for c in pcm.chunks(600 * w) {
+                tx.send(c.to_vec()).unwrap();
+            }
+            Ok(Stream::from_rx(rx))
+        }))
+    }
+
+    /// Goertzel amplitude of `hz` on channel `c` of `buf` (frames `ch` wide).
+    pub(crate) fn goertzel(buf: &[f32], ch: usize, c: usize, hz: f64) -> f64 {
+        let n = buf.len() / ch;
+        let w = std::f64::consts::TAU * hz / RATE as f64;
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for f in buf.chunks_exact(ch) {
+            let s0 = f[c] as f64 + 2.0 * w.cos() * s1 - s2;
+            (s2, s1) = (s1, s0);
+        }
+        (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2).max(0.0).sqrt() * 2.0 / n as f64
+    }
+
+    /// One 5.1 / 7.1 track of the 10 s event at unity in a project of master bus mode `mode`.
+    fn wide_track(mode: crate::project::BusMode, layout: crate::project::AudioLayout) -> Project {
+        let mut p = solo_track();
+        p.settings.layout = mode;
+        p.timeline.audio_tracks[0].layout = layout;
+        p
+    }
+
+    /// R10a acceptance: a 5.1 source on a 5.1 track in a 5.1 project plays each channel to its position (six sines,
+    /// each found at 0.25 on its own channel and nowhere else); in a stereo project it is folded down by BS.775; in a
+    /// 7.1 project the sides stay silent.
+    #[test]
+    fn a_5_1_source_plays_each_channel_to_its_position() {
+        use crate::project::{AudioLayout, BusMode};
+        let frames = 9600;
+        let p = wide_track(BusMode::Surround51, AudioLayout::Surround51);
+        let plan = compile_audio(&p);
+        assert_eq!((plan.tracks[0].ch, plan.tracks[0].events[0].src.ch), (6, 6));
+        let mut out = vec![0.0f32; frames * 6];
+        sines().block(&plan, 0, &mut out);
+        for c in 0..6 {
+            for (k, hz) in HZ[..6].iter().enumerate() {
+                let a = goertzel(&out, 6, c, *hz);
+                let want = if k == c { 0.25 } else { 0.0 };
+                assert!((a - want).abs() < 2e-3, "channel {c} at {hz} Hz: {a}");
+            }
+        }
+        // Stereo master: L = FL + 0.707 C + 0.707 Ls (LFE dropped), as `surround::downmix_frame`.
+        let p = wide_track(BusMode::Stereo, AudioLayout::Surround51);
+        let mut st = vec![0.0f32; frames * 2];
+        sines().block(&compile_audio(&p), 0, &mut st);
+        let mut want = Vec::new();
+        surround::downmix(&out, 6, &mut want);
+        assert!(st.iter().zip(&want).all(|(a, b)| (a - b).abs() < 1e-6));
+        // 7.1 master: channel for channel, the sides silent.
+        let p = wide_track(BusMode::Surround71, AudioLayout::Surround51);
+        let mut wide = vec![0.0f32; frames * 8];
+        sines().block(&compile_audio(&p), 0, &mut wide);
+        for f in 0..frames {
+            assert_eq!(&wide[f * 8..f * 8 + 6], &out[f * 6..f * 6 + 6]);
+            assert_eq!(&wide[f * 8 + 6..f * 8 + 8], &[0.0, 0.0]);
+        }
+    }
+
+    /// R10a: a 5.1 track's Pan is a left-right balance (the centre and LFE keep their level), a mono track hears the
+    /// mean of both sides on both, a stereo bus in a 5.1 project fills the front pair, and a stereo track in a 5.1
+    /// project at the front-left pan point feeds the front-left speaker alone.
+    #[test]
+    fn track_and_bus_layouts_route_by_width() {
+        use crate::project::{AudioLayout, BusMode, SurroundPan};
+        let frames = 4800;
+        let mut p = wide_track(BusMode::Surround51, AudioLayout::Surround51);
+        p.timeline.audio_tracks[0].pan = 1.0;
+        let mut out = vec![0.0f32; frames * 6];
+        sines().block(&compile_audio(&p), 0, &mut out);
+        let amp = |out: &[f32], ch, c| goertzel(out, ch, c, HZ[c]);
+        assert!(amp(&out, 6, 0) < 1e-3 && amp(&out, 6, 4) < 1e-3, "the left side is silent at pan 1");
+        for c in [1, 2, 3, 5] {
+            assert!((amp(&out, 6, c) - 0.25).abs() < 2e-3, "channel {c}");
+        }
+        // Mono track: both sides carry (l + r) / 2.
+        let mut p = wide_track(BusMode::Stereo, AudioLayout::Mono);
+        p.timeline.audio_tracks[0].layout = AudioLayout::Mono;
+        let mut st = vec![0.0f32; frames * 2];
+        sines().block(&compile_audio(&p), 0, &mut st);
+        assert!(st.chunks_exact(2).all(|f| f[0] == f[1]));
+        assert!((goertzel(&st, 2, 0, HZ[0]) - 0.125).abs() < 2e-3 && (goertzel(&st, 2, 0, HZ[1]) - 0.125).abs() < 2e-3);
+        // A stereo bus in a 5.1 project: the track pans into the stereo bus, the bus fills the master's front pair.
+        let mut p = wide_track(BusMode::Surround51, AudioLayout::Stereo);
+        crate::edit::set_bus_count(&mut p, 1);
+        p.timeline.audio.buses[0].layout = Some(AudioLayout::Stereo);
+        p.timeline.audio_tracks[0].out = Out::Bus(p.timeline.audio.buses[0].id.clone());
+        let plan = compile_audio(&p);
+        assert_eq!((plan.buses[0].ch, plan.tracks[0].ch), (2, 2));
+        sines().block(&plan, 0, &mut out);
+        assert!((amp(&out, 6, 0) - 0.25).abs() < 2e-3 && (amp(&out, 6, 1) - 0.25).abs() < 2e-3);
+        assert!((2..6).all(|c| out.chunks_exact(6).all(|f| f[c] == 0.0)));
+        // A stereo track straight into the 5.1 master at the front-left pan point: FL alone.
+        let mut p = wide_track(BusMode::Surround51, AudioLayout::Stereo);
+        p.timeline.audio_tracks[0].surround = SurroundPan { x: -1.0, y: 1.0, ..Default::default() };
+        sines().block(&compile_audio(&p), 0, &mut out);
+        assert!((amp(&out, 6, 0) - 0.25).abs() < 2e-3);
+        assert!((1..6).all(|c| out.chunks_exact(6).all(|f| f[c].abs() < 1e-6)), "only FL");
+    }
+
+    /// Taken on the engine before R10a (see `stereo_mix_is_bit_identical_to_the_pre_r10a_engine`).
+    const GOLDEN_STEREO_HASH: u64 = 0xee8f_4818_5d64_cf93;
+
     #[test]
     fn metronome_clicks_land_on_beats_at_120_bpm() {
         let m = Metronome::of(&crate::project::ProjectSettings::default());

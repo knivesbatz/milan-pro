@@ -257,7 +257,7 @@ pub struct Event {
 /// `len` seconds of `src`'s sound from `from` seconds into its event, mixed to mono at RATE, handed to `each` in chunks.
 /// Err when it cannot be read, or "cancelled" once `stop` is set.
 fn read(src: &ASrc, from: f64, len: f64, stop: &AtomicBool, mut each: impl FnMut(&[f32])) -> Result<(), String> {
-    let mut a = crate::engine::mix::args(src, (from * RATE as f64).round() as i64, false);
+    let mut a = crate::engine::mix::args(src, (from * RATE as f64).round() as i64, None);
     a.splice(4..4, ["-t".to_string(), format!("{:.6}", len * src.rate)]); // after "-ss <time>": source seconds
     let mut cmd = crate::proc::ffmpeg();
     cmd.args(a).stdout(Stdio::piped()).stderr(Stdio::null());
@@ -638,7 +638,7 @@ mod tests {
         let pa = write("a.wav", &a);
         let pb = write("b.wav", &a[shift..]);
         let ev = |path: &std::path::Path, pos: f64, len: f64, in_point: f64| Event {
-            src: ASrc { path: path.to_path_buf(), pos: 0.0, dur: len, in_point, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None },
+            src: ASrc { path: path.to_path_buf(), pos: 0.0, dur: len, in_point, rate: 1.0, reverse: false, stream: 0, pitch: 0.0, nested: None, pair: None, ch: 2 },
             pos,
             len,
         };
