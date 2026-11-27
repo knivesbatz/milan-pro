@@ -9,7 +9,7 @@ use crate::history::History;
 use crate::project::{AudioQuality, BusMode, Project, ProjectSettings};
 use crate::ui::dialogs;
 use crate::ui::dock::Layout;
-use crate::ui::menus::{Later, NotPlanned, Why};
+use crate::ui::menus::{Fixed, Later, NotPlanned, Why};
 
 /// Per-user app preferences. Unknown or missing fields fall back to defaults.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -650,21 +650,16 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
     });
     dialogs::row(ui, "Stereoscopic 3D mode:", 120.0, false, |ui| dialogs::fixed_combo(ui, "pp_s3d", "Off", 240.0, NotPlanned("R59")));
     ui.separator();
-    let mut grid: Vec<(&str, &str, Why)> = vec![
-        ("Pixel format:", "8-bit", Later("R40b")),
-        ("Compositing gamma:", "2.222 (Video)", Later("R40b")),
-        ("ACES version:", "1.0", Later("R40b")),
-        ("ACES color space:", "Default (ACES2065-1)", Later("R40b")),
-    ];
-    grid.insert(1, ("HDR Mode:", "Off", Later("R40b")));
-    grid.push(("Look modification transform:", "Off", Later("R40b")));
-    for (k, (label, value, why)) in grid.into_iter().enumerate() {
-        dialogs::row(ui, label, 175.0, false, |ui| dialogs::fixed_combo(ui, &format!("pp_g{k}"), value, 200.0, why));
-    }
-    // R40a: VEGAS's View transform row is Color management here: how HDR (PQ, HLG) and BT.2020 sources reach the
-    // 8-bit Rec.709 timeline (tone-mapped by default; the preview, proxies and renders all go through it).
-    dialogs::row(ui, "Color management:", 175.0, true, |ui| {
+    pixel_rows(ui, d);
+    // R40a: how HDR (PQ, HLG) and BT.2020 sources reach a Rec.709 working space (tone-mapped by default; the preview,
+    // proxies and renders all go through it). R40b: an ACES view transform takes them in as HDR scene light instead.
+    let aces = d.pixel.aces();
+    dialogs::row(ui, "Color management:", 175.0, !aces, |ui| {
         use crate::project::ColorManagement;
+        if aces {
+            dialogs::fixed_combo(ui, "pp_cm", "HDR kept (view transform)", 200.0, Fixed("with an ACES view transform, HDR and wide-gamut sources come in as scene light and the view transform maps them to the display"));
+            return;
+        }
         widgets::combo(ui, "pp_cm", 200.0, d.color_management.name(), |ui| {
             for c in ColorManagement::ALL {
                 ui.selectable_value(&mut d.color_management, c, c.name());
@@ -732,6 +727,106 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
         });
         widgets::checkbox(ui, &mut false, "Start all new projects with these settings").on_disabled_hover_text(Later("R49").text());
     });
+}
+
+/// R40b: Pixel format, HDR Mode, Compositing gamma, ACES version, ACES color space, View transform and Look
+/// modification transform, as VEGAS 18-23 lay them out; a row a format does not use is greyed with the reason.
+fn pixel_rows(ui: &mut Ui, d: &mut ProjectSettings) {
+    use crate::project::pixel::{AcesSpace, AcesVersion, Gamma, HdrMode, PixelFormat, ViewTransform};
+    let px = &mut d.pixel;
+    let full = px.format == PixelFormat::FloatFull;
+    const FULL: Why = Fixed("only in 32-bit floating point (full range), as in VEGAS");
+    dialogs::row(ui, "Pixel format:", 175.0, true, |ui| {
+        let mut f = px.format;
+        widgets::combo(ui, "pp_pixfmt", 200.0, f.name(), |ui| {
+            for o in PixelFormat::ALL {
+                ui.selectable_value(&mut f, o, o.name());
+            }
+        })
+        .response
+        .on_hover_text("32-bit floating point composites without rounding to 8 bits: 10-bit and wider sources keep their precision to a 10-bit render. Full range adds linear compositing, ACES view transforms and HDR.");
+        px.set_format(f);
+    });
+    dialogs::row(ui, "HDR Mode:", 175.0, true, |ui| {
+        let mut m = px.hdr();
+        widgets::combo(ui, "pp_hdr", 200.0, m.name(), |ui| {
+            for o in HdrMode::ALL {
+                ui.selectable_value(&mut m, o, o.name());
+            }
+        })
+        .response
+        .on_hover_text("HDR10 or HLG: 32-bit floating point (full range), linear compositing and the Rec.2020 view transform; render with an HDR10 or HLG template.");
+        if m != px.hdr() {
+            px.set_hdr(m);
+        }
+    });
+    let gamma_why = if !px.float() {
+        Some(Fixed("an 8-bit project composites the pixels as video codes them (2.222)"))
+    } else if px.aces() {
+        Some(Fixed("the ACES color space sets it: ACES2065-1 and ACEScg are linear, ACEScc and ACEScct logarithmic"))
+    } else {
+        None
+    };
+    dialogs::row(ui, "Compositing gamma:", 175.0, gamma_why.is_none(), |ui| match gamma_why {
+        Some(why) => dialogs::fixed_combo(ui, "pp_gamma", if px.aces() && matches!(px.aces_space, AcesSpace::AcesCc | AcesSpace::AcesCct) { "Log (ACES)" } else { px.gamma.name() }, 200.0, why),
+        None => {
+            widgets::combo(ui, "pp_gamma", 200.0, px.gamma.name(), |ui| {
+                for g in Gamma::ALL {
+                    ui.selectable_value(&mut px.gamma, g, g.name());
+                }
+            });
+        }
+    });
+    dialogs::row(ui, "ACES version:", 175.0, full, |ui| {
+        if !full {
+            return dialogs::fixed_combo(ui, "pp_acesv", px.aces_version.name(), 200.0, FULL);
+        }
+        widgets::combo(ui, "pp_acesv", 200.0, px.aces_version.name(), |ui| {
+            for v in AcesVersion::ALL {
+                ui.selectable_value(&mut px.aces_version, v, v.name());
+            }
+        })
+        .response
+        .on_hover_text("1.0 and 1.1 share the transforms Milan Pro applies: the AP0 and AP1 primaries, ACEScc and ACEScct.");
+    });
+    dialogs::row(ui, "ACES color space:", 175.0, full, |ui| {
+        if !full {
+            return dialogs::fixed_combo(ui, "pp_acescs", px.aces_space.name(), 200.0, FULL);
+        }
+        widgets::combo(ui, "pp_acescs", 200.0, px.aces_space.name(), |ui| {
+            for s in AcesSpace::ALL {
+                ui.selectable_value(&mut px.aces_space, s, s.name());
+            }
+        })
+        .response
+        .on_hover_text("The working space while an ACES view transform is on.");
+    });
+    dialogs::row(ui, "View transform:", 175.0, full, |ui| {
+        if !full {
+            return dialogs::fixed_combo(ui, "pp_view", "Off", 200.0, FULL);
+        }
+        widgets::combo(ui, "pp_view", 200.0, px.view.name(), |ui| {
+            for v in ViewTransform::ALL {
+                ui.selectable_value(&mut px.view, v, v.name());
+            }
+        })
+        .response
+        .on_hover_text("How the picture reaches the display and the render. The ACES transforms are Milan Pro's own fits (OpenColorIO is not available); bake an exact one into a .cube LUT and choose Custom LUT.");
+    });
+    if full && px.view == ViewTransform::Lut {
+        dialogs::row(ui, "View LUT (.cube):", 175.0, true, |ui| {
+            let mut path = px.view_lut.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+            if widgets::edit(ui, egui::TextEdit::singleline(&mut path).desired_width(150.0)).changed() {
+                px.view_lut = (!path.trim().is_empty()).then(|| PathBuf::from(path.trim()));
+            }
+            if widgets::push_button(ui, "Browse...").clicked() {
+                if let Some(p) = rfd::FileDialog::new().add_filter("Cube LUT", &["cube"]).pick_file() {
+                    px.view_lut = Some(p);
+                }
+            }
+        });
+    }
+    dialogs::row(ui, "Look modification transform:", 175.0, false, |ui| dialogs::fixed_combo(ui, "pp_lmt", "Off", 200.0, Fixed("a look goes on the Video Output FX: Color Grading's look LUT")));
 }
 
 /// Project Properties › Resample mode, as VEGAS 23 names it.
