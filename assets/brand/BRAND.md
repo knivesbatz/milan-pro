@@ -123,7 +123,7 @@ Bold Italic.
 | `milan-pro-256.png`, `milan-pro-512.png` | The mark for docs, stores, the window icon and the in-app logo |
 | `milan-pro.svg` | Vector approximation of the mark |
 | `wordmark-800.png` | Wordmark with descriptor, transparent |
-| `splash-520x320.png` | Startup splash and the Classic 2006 Start dialog |
+| `splash-520x320.png` | Startup splash and the Start dialog |
 | `about-banner-480x120.png` | Help > About banner |
 | `readme-banner-960x260.png` | README header |
 | `installer/wizard-WxH.png` | Inno Setup WizardImageFile at 100/125/150/175/200% DPI |
