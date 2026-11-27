@@ -420,7 +420,18 @@ impl Input {
         let mut px = vec![[0.0f32; 4]; n];
         let bytes: &[u8] = bytemuck::cast_slice(&img.pixels);
         let simple = self.tf == Tf::Code;
-        let video_lut = (self.tf == Tf::Video && self.m.is_none() && self.enc == Enc::Linear).then(video16);
+        // A transfer that works per channel on integer codes is a table (256 or 65536 entries), then the matrix and
+        // the working encoding: no `powf` per sample for 8 and 16-bit sources.
+        let table = lin_table(self.tf, self.depth);
+        let finish = |lin: [f32; 3]| -> [f32; 3] {
+            let lin = self.m.map_or(lin, |m| mul(m, lin));
+            match self.enc {
+                Enc::Linear => lin,
+                Enc::Video => lin.map(lin_to_video),
+                Enc::Cc => lin.map(lin_to_cc),
+                Enc::Cct => lin.map(lin_to_cct),
+            }
+        };
         let k = crate::engine::composite::stripes();
         par_chunks(&mut px, w.max(1), k, |y, row| {
             for (x, o) in row.iter_mut().enumerate() {
@@ -429,17 +440,23 @@ impl Input {
                     Depth::B8 => {
                         let p = &bytes[i * 4..i * 4 + 4];
                         let a = p[3] as f32 / 255.0;
+                        if let Some(t) = table.filter(|_| p[3] == 255 || !premultiplied) {
+                            let c = finish([t[p[0] as usize], t[p[1] as usize], t[p[2] as usize]]);
+                            *o = [c[0] * a, c[1] * a, c[2] * a, a];
+                            continue;
+                        }
                         let un = |v: u8| if premultiplied && p[3] < 255 { if p[3] == 0 { 0.0 } else { v as f32 / p[3] as f32 } } else { v as f32 / 255.0 };
                         ([un(p[0]), un(p[1]), un(p[2])], a)
                     }
                     Depth::W16 => {
                         let q = |j: usize| u16::from_le_bytes([bytes[i * 8 + j * 2], bytes[i * 8 + j * 2 + 1]]);
-                        if let Some(lut) = video_lut {
-                            let a = q(3) as f32 / 65535.0;
-                            *o = [lut[q(0) as usize] * a, lut[q(1) as usize] * a, lut[q(2) as usize] * a, a];
+                        let a = q(3) as f32 / 65535.0;
+                        if let Some(t) = table {
+                            let c = finish([t[q(0) as usize], t[q(1) as usize], t[q(2) as usize]]);
+                            *o = [c[0] * a, c[1] * a, c[2] * a, a];
                             continue;
                         }
-                        ([q(0), q(1), q(2)].map(|v| v as f32 / 65535.0), q(3) as f32 / 65535.0)
+                        ([q(0), q(1), q(2)].map(|v| v as f32 / 65535.0), a)
                     }
                     Depth::F32 => {
                         let f = |j: usize| f32::from_le_bytes(bytes[i * 16 + j * 4..i * 16 + j * 4 + 4].try_into().expect("4 bytes"));
@@ -454,12 +471,23 @@ impl Input {
     }
 }
 
-/// 16-bit video codes -> linear light.
-fn video16() -> &'static [f32] {
-    static T: OnceLock<Vec<f32>> = OnceLock::new();
-    T.get_or_init(|| (0..65536).map(|i| video_to_lin(i as f32 / 65535.0)).collect())
+/// The linear light of every integer code of a per-channel transfer at `depth` (None: not one, or float).
+fn lin_table(tf: Tf, depth: Depth) -> Option<&'static [f32]> {
+    static V8: OnceLock<Vec<f32>> = OnceLock::new();
+    static V16: OnceLock<Vec<f32>> = OnceLock::new();
+    static L8: OnceLock<Vec<f32>> = OnceLock::new();
+    static L16: OnceLock<Vec<f32>> = OnceLock::new();
+    static P16: OnceLock<Vec<f32>> = OnceLock::new();
+    let make = |n: usize, f: fn(f32) -> f32| (0..n).map(|i| f(i as f32 / (n - 1) as f32)).collect::<Vec<f32>>();
+    Some(match (tf, depth) {
+        (Tf::Video, Depth::B8) => V8.get_or_init(|| make(256, video_to_lin)),
+        (Tf::Video, Depth::W16) => V16.get_or_init(|| make(65536, video_to_lin)),
+        (Tf::Linear, Depth::B8) => L8.get_or_init(|| make(256, |v| v)),
+        (Tf::Linear, Depth::W16) => L16.get_or_init(|| make(65536, |v| v)),
+        (Tf::Pq, Depth::W16) => P16.get_or_init(|| make(65536, |v| pq_eotf(v) / REF_WHITE)),
+        _ => return None,
+    })
 }
-
 /// Run `f(y, row)` over the rows (`w` wide) of `px`, on up to `k` threads.
 pub(crate) fn par_chunks<T: Send>(px: &mut [T], w: usize, k: usize, f: impl Fn(usize, &mut [T]) + Sync) {
     let rows = px.len() / w.max(1);
