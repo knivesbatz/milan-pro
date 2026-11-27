@@ -386,8 +386,8 @@ pub static CORPUS: &[Row] = &[
     row("vorbis.ogg", "", "", None, Some("vorbis"), "stereo", &["-c:a", "libvorbis"], "Ogg Vorbis", "royalty-free (Xiph); libvorbis BSD"),
     row("opus.opus", "", "", None, Some("opus"), "stereo", &["-c:a", "libopus"], "Opus", "royalty-free (IETF); libopus BSD"),
     row("wma.wma", "", "", None, Some("wmav2"), "stereo", &["-c:a", "wmav2"], "Windows Media Audio 2 in ASF (decode only in the templates)", MS),
-    row("ac3_51.ac3", "", "", None, Some("ac3"), "5.1", &["-c:a", "ac3"], "AC-3 5.1 (downmixed to stereo until R10a)", DOLBY),
-    row("eac3_71.eac3", "", "", None, Some("eac3"), "7.1", &["-c:a", "eac3"], "E-AC-3 7.1 (downmixed to stereo until R10a)", DOLBY),
+    row("ac3_51.ac3", "", "", None, Some("ac3"), "5.1", &["-c:a", "ac3"], "AC-3 5.1 (all six channels on a 5.1 track, folded down on a stereo one)", DOLBY),
+    row("eac3_71.eac3", "", "", None, Some("eac3"), "7.1", &["-c:a", "eac3"], "E-AC-3 7.1 (all eight channels on a 7.1 track, folded down on a stereo one)", DOLBY),
     row("dts_51.dts", "", "", None, Some("dts"), "5.1", &["-c:a", "dca", "-strict", "-2"], "DTS 5.1 (decode only: the encoder is experimental, core only)", DTS_L),
 ];
 
