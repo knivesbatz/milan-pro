@@ -63,6 +63,7 @@ impl MeridianApp {
             || self.subs_export.is_some()
             || self.audio_transition.is_some()
             || self.rel.modal()
+            || self.lib.modal()
             || self.archive.is_some()
             || self.media_from.is_some()
             || self.prerender.is_some()
@@ -2219,6 +2220,8 @@ impl MeridianApp {
             let missing: Vec<String> = self.project.media_pool.iter().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()).map(|m| m.path.display().to_string()).collect();
             if !missing.is_empty() {
                 self.message = Some(format!("Media offline: {}", missing.join("; ")));
+                // R45b: VEGAS's "Media offline" dialog: search a folder, browse, or leave offline.
+                self.open_missing_media(true);
             }
         }
         if std::mem::take(&mut self.props_after_new) && action == MenuAction::New {
@@ -2251,6 +2254,7 @@ impl MeridianApp {
         (self.subs_import, self.subs_export) = (None, None);
         self.remove_fx = None;
         self.recorded = None;
+        self.lib = Default::default();
         (self.pan_crop, self.track_motion, self.fx_win, self.surround) = (None, None, None, None);
         (self.paste_repeat, self.paste_attrs, self.cursor_preview, self.sel_history) = (None, None, None, Default::default());
         self.playing = false;
@@ -2339,6 +2343,7 @@ impl MeridianApp {
         }
         self.show_update(ctx);
         self.show_reliability(ctx);
+        self.show_library(ctx);
         self.show_render_dialogs(ctx);
         if self.about {
             self.about = !dialogs::about(ctx);
@@ -2990,6 +2995,58 @@ impl MeridianApp {
             "props-audio" => self.settings.open_tab(&self.project, 1),
             "props-summary" => self.settings.open_tab(&self.project, 3),
             // R16a: two notes (left unmodified: the harness never marks the project changed) in Project Notes.
+            // R45a review: Project Media with tags, custom bins (one nested) and smart bins, on a custom bin ("media-bins"),
+            // a tag ("media-tags"), a smart bin ("media-smart") or with Search Media Bins open ("media-search").
+            "media-bins" | "media-tags" | "media-smart" | "media-search" => {
+                let ids: Vec<String> = self.project.media_pool.iter().map(|m| m.id.clone()).collect();
+                let id = |k: usize| ids.get(k).cloned().into_iter().collect::<Vec<_>>();
+                crate::library::set_tags(&mut self.project, &[id(0), id(1)].concat(), &["interview".into(), "day 1".into()]);
+                crate::library::set_tags(&mut self.project, &id(2), &["b roll".into()]);
+                crate::library::set_tags(&mut self.project, &id(3), &["music".into()]);
+                let selects = crate::library::new_bin(&mut self.project, "Selects", None);
+                crate::library::add_to_bin(&mut self.project, &selects, &[id(0), id(2), id(4)].concat());
+                let day = crate::library::new_bin(&mut self.project, "Day 1", Some(&selects));
+                crate::library::add_to_bin(&mut self.project, &day, &[id(0), id(1)].concat());
+                let b = crate::library::new_bin(&mut self.project, "B Roll", None);
+                crate::library::add_to_bin(&mut self.project, &b, &id(2));
+                crate::library::new_smart_bin(&mut self.project, "Unused video", "type:video is:unused");
+                crate::library::new_smart_bin(&mut self.project, "HD and up", "res>=1920x1080");
+                let pick = match what.as_str() {
+                    "media-tags" => "Tagged: interview",
+                    "media-smart" => "Smart: HD and up",
+                    _ => "Selects",
+                };
+                self.media_view.harness_select(&self.project, pick);
+                if what == "media-search" {
+                    self.media_view.harness_search("tag:interview res>=1920x1080 -is:offline");
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                self.project.modified = false;
+            }
+            // R45b review: File Format Properties of the demo's first video (probed at once for the screenshot).
+            "file-props" => {
+                if let Some(m) = self.project.media_pool.iter().find(|m| m.media_type == crate::project::MediaType::Video) {
+                    self.lib.file_props = Some(dialogs::FileProps::new_now(&m.name, &m.path));
+                }
+            }
+            // R45b review: two demo files "moved" (their paths point into a folder that does not exist, nothing is moved
+            // on disk): offline on the timeline and in Project Media, and the Media Offline dialog after a folder search of
+            // the demo media ("missing-media"), or the timeline alone ("offline-events").
+            "missing-media" | "offline-events" => {
+                let dir = crate::demo::media_dir();
+                for m in self.project.media_pool.iter_mut().filter(|m| m.media_type != crate::project::MediaType::Audio).take(2) {
+                    m.path = dir.join("moved-away").join(m.path.file_name().unwrap_or_default());
+                    m.missing = true;
+                }
+                self.dock.open(crate::ui::dock::Panel::ProjectMedia);
+                if what == "missing-media" {
+                    self.lib.missing = dialogs::MissingMedia::new(&self.project);
+                    if let Some(d) = &mut self.lib.missing {
+                        d.search_now(&dir);
+                    }
+                }
+                self.project.modified = false;
+            }
             "notes" => {
                 use crate::project::Note;
                 self.project.notes = vec![Note { at: 1.0, text: "Tighten the cut into the title".into(), resolved: false }, Note { at: 4.5, text: "Music level checked".into(), resolved: true }];

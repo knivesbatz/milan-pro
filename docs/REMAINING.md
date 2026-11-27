@@ -120,7 +120,7 @@ What matters most:
 | 4.6 | Audio mixer | DONE | (R8b) Master Bus window (`ui/master_bus.rs`) with working Properties, Downmix, Dim and Mixing Console buttons; the Mixing Console window (`ui/mixer.rs`: strips for audio tracks, (R9) input busses, busses, assignable FX chains and the master, with Insert FX, Sends, I/O (input and output), VU Meters, Peak Meters and Faders regions); live meters in the track headers. |
 | 4.7 | Effects and transitions browser | DONE | `ui/choosers.rs` (search, categories, presets, animated transition thumbnails) |
 | 4.8 | Video effects controls | DONE | `ui/fx_window.rs`, `ui/color_grading.rs`, `ui/keyframes.rs` |
-| 4.9 | Media properties | PARTIAL | `ui/properties.rs` shows the basics. "File Format Properties..." is greyed (`media_panel.rs:374`) and there is no full stream/metadata view. → R45b |
+| 4.9 | Media properties | DONE | `ui/properties.rs` shows the basics; R45b: File Format Properties... lists every ffprobe format, stream, chapter and program field and tag in a tree, with Copy as Text (`ui/dialogs/file_props.rs`). |
 | 4.10 | Transport controls | DONE | `ui/transport.rs` |
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named as VEGAS 23 names it) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. (R40a) Color management (`ProjectSettings.color_management`) replaces the view transform row. (R10a) Master bus mode (Stereo / 5.1 Surround / 7.1 Surround) and Resample and stretch quality are editable. Still greyed, each naming its batch: pixel format, gamma, ACES, HDR (R40b). → R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), the Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. (R10a) Enable multichannel mapping and the 5.1 / 7.1 templates. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
@@ -448,19 +448,19 @@ What matters most:
 |---|---|---|---|
 | 14.1 | Media browser | DONE | `ui/explorer.rs`. Its preview buttons are inert with labels (`explorer.rs:168-171`) → R57 |
 | 14.2 | Project media bin | DONE | `ui/media_panel.rs` |
-| 14.3 | Folder organization | MISSING | "Custom Bins" has no bins; "Smart Bins" shows nothing (`media_panel.rs:104, 390`). → R45a |
-| 14.4 | Tags | MISSING | The "Tagged Media" node is empty (`media_panel.rs:104`); `MediaItem` has no tags. → R45a |
-| 14.5 | Search | PARTIAL | Name substring only (`media_panel.rs:106`). → R45a |
-| 14.6 | Metadata inspection | PARTIAL | Basic fields only (`project.rs:146`). → R45b |
+| 14.3 | Folder organization | DONE | R45a: Custom Bins (nested; drag media or bins onto a bin; an item in several bins; Remove from Current Bin) and Smart Bins (saved queries) in `Project::bins` (`library.rs`), with VEGAS's bin tree menu (Create New Bin, Save as Bin, Save as Smart Bin, Delete, Rename, Edit Search). Undoable. |
+| 14.4 | Tags | DONE | R45a: `MediaItem::tags`, edited with the item menu's Media Tags...; Tagged Media lists every tag with its count; the list background's Media Tags shows them under the tiles; a Tags column in Details. |
+| 14.5 | Search | DONE | R45a: the search field takes a query over name, path, codec, tags and frame size, with `type:`, `codec:`, `tag:`, `res>=`, `fps:`, `length<`, `is:used/unused/offline` and `-` (`library::Query`); Search Media Bins... builds one from criteria rows. |
+| 14.6 | Metadata inspection | DONE | R45b: File Format Properties (see 4.9). |
 | 14.7 | Thumbnail generation | DONE | |
 | 14.8 | Waveform generation | DONE | |
 | 14.9 | Proxy generation | DONE | `proxy.rs` |
-| 14.10 | Relinking missing media | PARTIAL | Per-item "Replace..." (`media_panel.rs:276`), and automatic search relative to the project and next to it (`project.rs:432-439`). No batch relink or folder search. → R45b |
-| 14.11 | Duplicate media detection | PARTIAL | Same path only (`media.rs:85-102`). No content check. → R45b |
-| 14.12 | Media properties | PARTIAL | See 4.9 → R45b |
-| 14.13 | Import progress | PARTIAL | Probing runs in the background, but no count or progress is shown (only proxies use the status-bar progress, `status.rs:11`). → R45b |
-| 14.14 | Background media analysis | PARTIAL | Probe, thumbnails and peaks only. No loudness, scene or duplicate analysis. → R45b, R57 |
-| 14.15 | Large libraries without slowing the editor | PARTIAL | Untested. The media view rebuilds its lists each frame; there is no virtualised list for 10k items. → R45a |
+| 14.10 | Relinking missing media | DONE | Per-item Replace..., the automatic search relative to the project and next to it on Open, and R45b's Media Offline dialog: Search Folder... (recursive, by name and size), per-item Browse..., Relink all found as one undo step, or Leave Offline (`ui/dialogs/missing_media.rs`, `library::{find_in_folder, relink}`). |
+| 14.11 | Duplicate media detection | DONE | Same path, and R45b: on Import Media the worker compares each new file with the pool by size, then SHA-256 of its size and first and last 4 MB (`library::fingerprint`); a match asks "Use Existing / Add Anyway". |
+| 14.12 | Media properties | DONE | See 4.9 |
+| 14.13 | Import progress | DONE | R45b: "Importing 3 of 40" in the status bar with Cancel (the files read so far are added), for imports and drops (`media::Progress`). |
+| 14.14 | Background media analysis | PARTIAL | Probe, thumbnails, peaks and (R45b) the duplicate fingerprint on the import worker. No loudness or scene analysis. → R57 |
+| 14.15 | Large libraries without slowing the editor | DONE | R45a: the shown items are evaluated only when the history, pool, node or search change, and the list, details and thumbnail views draw only the rows on screen. Bench `large_library_frame_time_stays_under_4ms` (10,000 items). |
 | 14.16 | Drag-and-drop importing | DONE | From Windows, Explorer and Project Media (`app/drop.rs`) |
 
 ### 2.15 Section 14: reliability
@@ -474,8 +474,8 @@ What matters most:
 | 15.5 | Undo/redo history | DONE | `history.rs`, history list on the Undo split button |
 | 15.6 | Non-destructive editing | DONE | |
 | 15.7 | Project versioning | DONE | R42: File › Save Version (Ctrl+Alt+S, as VEGAS 23) saves `name_01.mnle`, `name_02.mnle`, ... beside the file with an optional note (`Project.version_note`) and goes on editing in the new file (`dialogs/save_version.rs`) |
-| 15.8 | Missing-media detection | PARTIAL | A status-bar message on Open (`commands.rs:1108-1112`). Offline events are not marked on the timeline. → R45b |
-| 15.9 | Media relinking | PARTIAL | See 14.10 → R45b |
+| 15.8 | Missing-media detection | DONE | On Open a missing file marks its item offline (`MediaItem::missing`, never stored), the status bar says so and the Media Offline dialog opens; offline events are drawn hatched with "Media Offline", offline tiles likewise with a red "!". |
+| 15.9 | Media relinking | DONE | See 14.10 |
 | 15.10 | Corrupt project detection | DONE | R42: a file that does not parse offers its `.mnle.bak` and latest autosave, opened as an unsaved copy (`project::CorruptOffer`, `dialogs::corrupt_window`); one that parses goes through `project/validate.rs` (duplicate or unknown ids, NaN/negative/infinite times, duplicate takes, bad settings): repaired where safe, every finding listed in the Open Project report, nothing written until the user saves |
 | 15.11 | Error logging | DONE | R44: `src/logger.rs`, Milan Pro's own file logger behind the `log` crate: `%LOCALAPPDATA%\MilanPro\logs\milan-<date>.log`, 2 MB × 5 files, level in Preferences › Update; every former stderr print logs (grep test `logger::tests::no_eprintln_left_in_the_tree`); updater, autosave, render-queue, plug-in and open/save events are logged |
 | 15.12 | Diagnostic reports | DONE | R44: Help › Create Diagnostic Report writes `%LOCALAPPDATA%\MilanPro\diagnostics\report-<time>\` with `system.txt` (Windows build, CPU, memory, GPUs and drivers through DXGI, displays), `ffmpeg.txt` (`-version`, `-hwaccels`), `prefs.json`, the logs and the crash files (`src/diagnostics.rs`, `dialogs/diagnostics.rs`); a panic writes `crashes\crash-<time>.txt` (version, backtrace, project summary, last 500 log lines) and a native crash a minidump beside it (`SetUnhandledExceptionFilter` → `MiniDumpWriteDump`); the next start offers Open crash report / Report on GitHub (the issue page with the version prefilled; nothing uploaded) |
@@ -2068,6 +2068,8 @@ No product code unless the research finds a stable, documented structure. If it 
 
 ### R45a: Bins, tags, smart bins, metadata search, large libraries (M-L)
 
+**Status: DONE.** `src/library.rs` holds the bins (`Project::bins`, `#[serde(default)]`: old projects load unchanged, no format bump), the tag helpers and the query language; `ui/media_panel.rs` draws them. Bins nest and are moved by dragging one bin onto another (or onto Custom Bins); media are dragged from the item views onto a bin. Smart bins are saved queries, shown with a magnifier, edited with Edit Search. Search Media Bins... (item, background and tree menus) turns criteria rows (field, operator, value) into the query text; Search puts it in the search field, Save as Smart Bin keeps it. Tags are edited in a small Media Tags dialog (VEGAS edits them in the tile strip; Milan Pro's tiles are drawn, not widgets). Removing media takes it out of every bin. The bin operations are functions in `library.rs` rather than `edit.rs` (they touch `Project::bins` and tags only). Harness: `MILAN_DIALOG=media-bins`, `media-tags`, `media-smart`, `media-search`. Tests: `library::tests::{the_query_parser_reads_fields_ops_quotes_and_negation, queries_evaluate_over_every_field, bin_moves_are_undoable, tags_are_set_and_counted, old_projects_load_without_bins_or_tags}`, `media_panel::tests::{search_rows_round_trip_through_the_query, large_library_frame_time_stays_under_4ms}` (10,000 items: each view's frame under 4 ms in release; search, smart-bin and tag evaluation over 5,000 and 10,000 items under 40 ms (about 12, 2.4 and 1.4 ms at 10,000 here); prints `BENCH` lines).
+
 **Scope**
 - Custom bins: nested folders; drag items into bins; an item in several bins.
 - Tags: `MediaItem.tags`, a tag editor, and the Tagged Media node lists tags.
@@ -2080,6 +2082,8 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** the query parser and evaluation; bin moves are undoable; with 10k synthetic items the media panel frame time stays under 4 ms (bench).
 
 ### R45b: Metadata inspector, duplicates, relink, offline marking, import progress (M-L)
+
+**Status: DONE.** Built as designed below, except: the duplicate check runs for Import Media (and File › Import), not for files dropped straight onto the timeline, whose probes start while they hover; Clean Project Media is VEGAS's Remove All Unused Media (toolbar, and now the list background menu), which also takes the media out of their bins. `MediaItem::file_size` (`#[serde(default)]`) is recorded on import so the folder search can tell a moved file from another of the same name; media imported earlier is matched by name. An item is offline when `MediaItem::offline()`: never probed, an unsupported codec, or `missing` (found again on every Open and by Project Media › Find Missing Media). The status bar's import counter covers Import Media and drops; Cancel keeps what was read. Harness: `MILAN_DIALOG=missing-media` (two demo paths pointed at a folder that does not exist, then a folder search of the demo media; nothing on disk moves), `offline-events`, `file-props`. Tests: `library::tests::{the_hash_is_stable_across_copies_and_sees_the_last_byte, relink_by_folder_finds_a_moved_file_of_the_same_size}`, `timeline::events::tests::offline_events_render_with_the_marker`, `library::tests::moved_media_opens_offline_and_relinks_by_folder` (five files moved within the temp folder after a save: the project opens with each offline, one folder search relinks every item, same-named files told apart by size), `media::tests::the_import_counter_reaches_n_of_n`, `dialogs::file_props::tests::every_field_and_tag_is_listed`.
 
 **Scope**
 - File Format Properties: every ffprobe format and stream field and tag in a tree; copy as text.

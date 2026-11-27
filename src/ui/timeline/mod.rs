@@ -1073,6 +1073,7 @@ pub fn draw_timeline(
                 loop_len: media.and_then(|m| edit::loop_len(clip, m)),
                 offset: media.map_or(0.0, |m| m.file_time(0.0)),
                 empty: clip.media_id.is_none() && !clip.adjustment,
+                offline: media.is_some_and(|m| m.generator.is_none() && m.offline()),
                 marks: media.filter(|m| opts.media_markers && !m.markers.is_empty()).map_or(Vec::new(), |m| events::media_marks(clip, m)),
                 labels: opts.marker_labels,
             };

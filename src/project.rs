@@ -31,6 +31,9 @@ pub struct Project {
     /// R16a: View › Window › Project Notes (VEGAS 23). Not in the undo history (`history::restore` keeps the live ones).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// R45a: Project Media's Custom Bins and Smart Bins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bins: Vec<crate::library::Bin>,
     #[serde(skip)]
     pub modified: bool,
 }
@@ -1286,6 +1289,17 @@ pub struct MediaItem {
     /// decoder for ("unsupported codec <name>"). Never decoded as something else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsupported: Option<String>,
+    /// R45a: Media Tags (Project Media's Tagged Media node, searches and smart bins).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// R45b: the file's size in bytes when it was imported, so Missing Media's folder search can tell a moved file
+    /// from another of the same name; None for media imported before R45b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
+    /// R45b: the file was not found when the project was opened (or at the last Missing Media check): offline until
+    /// relinked. Found again on every open, never stored.
+    #[serde(skip)]
+    pub missing: bool,
 }
 
 /// R38: a numbered still image sequence (`shot_0001.png`, `shot_0002.png`, ...) as ffmpeg's image2 demuxer reads it.
@@ -1375,6 +1389,11 @@ impl MediaItem {
     /// file whose codec the bundled FFmpeg cannot decode (`unsupported`).
     pub fn is_offline(&self) -> bool {
         self.unsupported.is_some() || (self.generator.is_none() && self.width.is_none() && self.sample_rate.is_none())
+    }
+
+    /// R45b: offline for any reason: never probed, an unsupported codec, or (`missing`) its file is gone.
+    pub fn offline(&self) -> bool {
+        self.missing || self.is_offline()
     }
 
     /// R40a: the picture's dynamic range and gamut as tagged: PQ or HLG (HDR), BT.2020 SDR, or plain SDR (None).
@@ -1696,6 +1715,7 @@ impl Project {
             timeline: Timeline::new(),
             media_pool: Vec::new(),
             notes: Vec::new(),
+            bins: Vec::new(),
             modified: false,
         }
     }
@@ -1756,8 +1776,9 @@ impl Project {
         if let Some(dir) = path.parent().map(std::path::absolute).and_then(Result::ok) {
             for m in project.media_pool.iter_mut().filter(|m| !m.path.as_os_str().is_empty() && !m.path.exists()) {
                 let found = [m.rel_path.as_ref().map(|r| dir.join(r)), m.path.file_name().map(|f| dir.join(f))].into_iter().flatten().find(|p| p.exists());
-                if let Some(p) = found {
-                    m.path = p;
+                match found {
+                    Some(p) => m.path = p,
+                    None => m.missing = m.generator.is_none(),
                 }
             }
         }

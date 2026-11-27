@@ -80,6 +80,10 @@ pub enum WinAction {
     CreateProxy(Vec<crate::project::MediaItem>),
     /// R6b: Project Media › Edit Source Project: open this nested timeline (Open Parent Timeline returns).
     OpenNested(PathBuf),
+    /// R45b: Project Media › File Format Properties of this media (id).
+    FileProps(String),
+    /// R45b: Project Media › Find Missing Media.
+    MissingMedia,
 }
 
 /// A Pan/Crop (event id), Track Motion (track id) or FX window asked for by a timeline button, a drop or a menu; the
