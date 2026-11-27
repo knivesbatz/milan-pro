@@ -7,18 +7,7 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
-### Changed
-- **A designed look:** the interface is redrawn on one design system shared with the brand (docs/UI_SPEC.md):
-  brushed silver chrome with rounded corners and one top-left light (bars, buttons, tabs, knobs), deep navy LCD
-  wells with light-blue text for every live read-out, list and tree (seven-segment digits for the time display,
-  the Trimmer and the keyframe time), paper wells for typing, black wells for video and thumbnails, the selection
-  blue of the brand's reel and one amber accent (the active dock tab's lamp, favourites, LCD warnings). Dialogs get
-  slate captions with grooved ridges, chrome tabs and section title tabs; menus light their rows; transport buttons
-  are round; sliders have lozenge knobs and a value fill; chooser categories are toggle pills. Layout, windows,
-  menus and shortcuts are unchanged; every text / background pair meets WCAG AA (a test checks them), and the
-  painters keep R48's whole-pixel edges at 125-200 %.
-
-## 0.10.0
+## 0.11.0
 
 ### Added
 - **Bins, tags and smart bins:** Project Media's Custom Bins (nested; drag media or bins onto a bin; an item can
@@ -44,6 +33,34 @@ the minor number for feature releases, the patch number for fixes.
 - **Master bus envelopes:** a Master bus track (View > Audio Bus Tracks) with Volume and Mute envelopes, played and
   rendered alike, and the Master Bus window's Automation Settings badge (Off, Read, Write (Touch), Write (Latch)); with
   automation controls shown, the master faders write the Volume envelope (R10c).
+- **High bit depth and HDR:** Project Properties > Video's Pixel format (8-bit, 32-bit floating point video levels
+  or full range), HDR Mode (HDR10, HLG), Compositing gamma (2.222, 1.000), ACES version, ACES color space
+  (ACES2065-1, ACEScg, ACEScc, ACEScct) and View transform (sRGB, Rec.709, Rec.2020 PQ and HLG 1000 nits, or a .cube
+  LUT) as VEGAS has them. A float project decodes 10-bit and wider sources at 16 bits (OpenEXR and float TIFF in
+  float, highlights above 1.0 kept), composes in float on the CPU or the GPU (`Rgba16Float`), runs its colour FX,
+  Color Grading, Gaussian Blur, masks, dissolves and OFX plug-ins in float, and renders 16 bits to the encoder: a
+  10-bit source comes back within one code value from a 10-bit render. New templates: MP4 HEVC Main10, HEVC HDR10
+  (PQ, with mastering display and content light level metadata), HEVC HLG, ProRes 4444 XQ and ProRes 4444 XQ HDR10;
+  an HDR project's preview is tone-mapped to SDR. 8-bit projects compose and render bit for bit as before (R40b).
+
+### Changed
+- **A designed look:** the interface is redrawn on one design system shared with the brand (docs/UI_SPEC.md):
+  brushed silver chrome with rounded corners and one top-left light (bars, buttons, tabs, knobs), deep navy LCD
+  wells with light-blue text for every live read-out, list and tree (seven-segment digits for the time display,
+  the Trimmer and the keyframe time), paper wells for typing, black wells for video and thumbnails, the selection
+  blue of the brand's reel and one amber accent (the active dock tab's lamp, favourites, LCD warnings). Dialogs get
+  slate captions with grooved ridges, chrome tabs and section title tabs; menus light their rows; transport buttons
+  are round; sliders have lozenge knobs and a value fill; chooser categories are toggle pills. Layout, windows,
+  menus and shortcuts are unchanged; every text / background pair meets WCAG AA (a test checks them), and the
+  painters keep R48's whole-pixel edges at 125-200 %. A second pass made the chrome glossy and thick-rimmed: framed
+  dock panels with a pill title tab, 26 px round transport buttons, raised rounded toolbar buttons, chrome slider slots
+  with lozenge knobs, solid glowing LCD digits and Mixing Console strips as chrome cards with LCD name plates.
+- A paused, idle window no longer repaints at the display's refresh rate (up to 144 times a second): the title was
+  sent to Windows every frame (R48).
+
+## 0.10.0
+
+### Added
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
   with screenshots, a feature table, system requirements and the roadmap (R53).
@@ -64,15 +81,6 @@ the minor number for feature releases, the patch number for fixes.
 - **HDR detection:** PQ and HLG sources are detected (transfer, primaries, bit depth, HDR10 metadata) and shown on the
   SDR timeline through a view transform that the preview, proxies and renders share, chosen in Project Properties >
   Color management; BT.2020 SDR is converted to Rec.709; an "HDR" badge in Project Media (R40a).
-- **High bit depth and HDR:** Project Properties > Video's Pixel format (8-bit, 32-bit floating point video levels
-  or full range), HDR Mode (HDR10, HLG), Compositing gamma (2.222, 1.000), ACES version, ACES color space
-  (ACES2065-1, ACEScg, ACEScc, ACEScct) and View transform (sRGB, Rec.709, Rec.2020 PQ and HLG 1000 nits, or a .cube
-  LUT) as VEGAS has them. A float project decodes 10-bit and wider sources at 16 bits (OpenEXR and float TIFF in
-  float, highlights above 1.0 kept), composes in float on the CPU or the GPU (`Rgba16Float`), runs its colour FX,
-  Color Grading, Gaussian Blur, masks, dissolves and OFX plug-ins in float, and renders 16 bits to the encoder: a
-  10-bit source comes back within one code value from a 10-bit render. New templates: MP4 HEVC Main10, HEVC HDR10
-  (PQ, with mastering display and content light level metadata), HEVC HLG, ProRes 4444 XQ and ProRes 4444 XQ HDR10;
-  an HDR project's preview is tone-mapped to SDR. 8-bit projects compose and render bit for bit as before (R40b).
 - **Camera cards:** File > Import > Camera Card Folder (or a dropped folder) imports AVCHD, XDCAM, XAVC, P2, Canon XF
   and GoPro clips, joins spanned recordings into one clip and seeks transport streams exactly; camera, reel and
   timecode in Media Properties; an MXF DNxHD render template; camera RAW formats import offline with the reason (R41).
@@ -105,10 +113,6 @@ the minor number for feature releases, the patch number for fixes.
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro
   answers them with hover text and the documentation instead (R53).
-
-### Fixed
-- A paused, idle window no longer repaints at the display's refresh rate (up to 144 times a second): the title was
-  sent to Windows every frame (R48).
 
 ## 0.9.0
 

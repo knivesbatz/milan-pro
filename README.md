@@ -4,14 +4,14 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.10). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
+> Early development (v0.11). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
 
 <p align="center"><img src="docs/images/screenshot.png" width="860" alt="Milan Pro: Project Media, Video Preview, Master Bus and a five-track timeline"></p>
 <p align="center"><sub>Taken by the screenshot harness on its demo project.</sub></p>
 
 ## Features
 
-| Area | Status in 0.10 |
+| Area | Status in 0.11 |
 |---|---|
 | Interface | One designed look (silver chrome, navy LCD read-outs, an amber accent) in the idiom of the 2002-2006 media software, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette; sharp at 100-200 % display scaling (View > Interface Scale); preferences export and import |
 | Editing | Multitrack video and audio; move, trim, split, snapping and grid; ripple; slip, slide, roll and stretch; takes; groups; subclips; nested timelines; multicamera editing; Expanded Edit and edge trimming; markers, regions and command markers; adjustment tracks and events; undo/redo |
@@ -135,7 +135,7 @@ Requires Rust 1.85+ (edition 2024) on Windows. The binaries are written to `targ
 
 ## Roadmap
 
-The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.10.0:
+The full list, with scope and acceptance tests per batch, is section 5 of [docs/REMAINING.md](docs/REMAINING.md). Still open after 0.11.0:
 
 - **Project:** a Cargo workspace split (R50), CI quality gates (R51), the public compatibility matrix and example VEGAS projects (R55).
 - **Plug-ins:** CLAP editor windows, OFX GPU render paths, and the rest of AE-format effect hosting beyond today's experimental 8-bit filters: float, transitions and SmartFX ([docs/AE_PREMIERE_PLUGINS.md](docs/AE_PREMIERE_PLUGINS.md)).
