@@ -1,27 +1,119 @@
-//! The look: colour tokens, metrics and font sizes (docs/UI_SPEC.md), mapped onto egui::Visuals. Drawing code reads
-//! `theme::get()` and never hard-codes colours.
+//! The look: the design system's colour tokens, metrics and font sizes (docs/UI_SPEC.md §2-§4), mapped onto
+//! egui::Visuals. Drawing code reads `theme::get()` and never hard-codes colours.
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, TextStyle, Visuals};
 use std::sync::{LazyLock, RwLock};
 
-/// Brushed-metal and 3D-bevel colours (UI_SPEC.md §2).
+/// The silver ramp (UI_SPEC.md §2.1): the brand's aluminium, darkened in steps.
+#[derive(Clone, Copy, Debug)]
+pub struct Silver {
+    /// Specular lip inside the top of raised chrome.
+    pub s0: Color32,
+    /// Chrome top; menu and tooltip body.
+    pub s1: Color32,
+    /// Chrome middle; panel body.
+    pub s2: Color32,
+    /// Chrome bottom.
+    pub s3: Color32,
+    /// Recess: slider and scroll tracks, inactive tabs, tab strips.
+    pub s4: Color32,
+    /// Shadow edge, grooves.
+    pub s5: Color32,
+    /// Outline round every control and panel.
+    pub s6: Color32,
+}
+
+/// Window frames and captions (UI_SPEC.md §2.2).
+#[derive(Clone, Copy, Debug)]
+pub struct Slate {
+    pub hi: Color32,
+    pub lo: Color32,
+    /// Gutters, splitters and the outer frame of dialogs.
+    pub frame: Color32,
+    /// The grooved ridges beside a caption's title: light over dark.
+    pub ridge: (Color32, Color32),
+    pub text: Color32,
+}
+
+/// The navy LCD (UI_SPEC.md §2.3): read-outs, meters, lists and trees.
+#[derive(Clone, Copy, Debug)]
+pub struct Lcd {
+    /// Read-out wells (time, meters, status panes).
+    pub deep: Color32,
+    /// List and tree wells.
+    pub well: Color32,
+    pub hover: Color32,
+    /// Tree lines, grid rules, the dot grid.
+    pub rule: Color32,
+    /// Unlit segments.
+    pub ghost: Color32,
+    pub outline: Color32,
+    pub text: Color32,
+    pub text_hi: Color32,
+    /// Secondary text, only on `deep`.
+    pub text_dim: Color32,
+    pub digits: Color32,
+}
+
+/// Selection gradient and the lit (toggle on) chrome (UI_SPEC.md §2.4).
+#[derive(Clone, Copy, Debug)]
+pub struct Sel {
+    pub top: Color32,
+    pub bottom: Color32,
+    /// The flat selection (egui-drawn highlights).
+    pub mid: Color32,
+    /// Light line along the top of a selection bar.
+    pub lip: Color32,
+    pub text: Color32,
+    pub lit_top: Color32,
+    pub lit_bottom: Color32,
+    /// Outline of lit chrome; the focus ring.
+    pub lit_outline: Color32,
+}
+
+/// The one accent (UI_SPEC.md §2.5).
+#[derive(Clone, Copy, Debug)]
+pub struct Amber {
+    pub base: Color32,
+    pub hi: Color32,
+    pub lo: Color32,
+    /// Amber text on navy.
+    pub text: Color32,
+}
+
+/// Text and fields (UI_SPEC.md §2.6).
+#[derive(Clone, Copy, Debug)]
+pub struct Ink {
+    /// Text on silver and paper.
+    pub text: Color32,
+    pub label: Color32,
+    /// Push button and pill labels.
+    pub button: Color32,
+    /// Monochrome glyphs drawn on silver (arrows, ×, check marks).
+    pub glyph: Color32,
+    pub disabled: Color32,
+    pub paper: Color32,
+    pub paper_disabled: Color32,
+}
+
+/// The chrome palette every bevel painter takes (`Theme::metal`, the silver ramp under the names of its roles).
 #[derive(Clone, Copy, Debug)]
 pub struct Metal {
-    /// Vertical gradient of every bar: top, middle (45 %), bottom.
+    /// Vertical gradient of raised chrome: top, middle (45 %), bottom.
     pub hi: Color32,
     pub mid: Color32,
     pub lo: Color32,
-    /// Classic 3D edges: outer light / inner face on the top-left, inner shadow / outer dark on the bottom-right.
+    /// Lip (top-left of raised), face, shade (bottom-right of raised) and outline.
     pub light: Color32,
     pub face: Color32,
     pub shadow: Color32,
     pub dark: Color32,
     /// Opacity of the brushed streak texture over the gradient (0 = plain gradient).
     pub streak: f32,
-    /// Blue-grey tint of the track headers (gradient multiplied by it).
+    /// Tint of the track headers (gradient multiplied by it).
     pub header_tint: Color32,
-    /// Specular line under a raised button's top edge.
+    /// Specular lip under a raised control's top edge.
     pub specular: Color32,
-    /// Fill of a pressed-in (active) button, over the sunken face.
+    /// Flat fill of a pressed or lit control where no gradient is drawn.
     pub pressed: Color32,
 }
 
@@ -82,7 +174,14 @@ pub struct Metrics {
     pub button_pitch: f32,
     pub icon: f32,
     pub icon_stroke: f32,
+    /// Corner radius of egui's widgets: `r_ctl`.
     pub widget_radius: u8,
+    /// Outer corners of windows, dock groups and preset tiles.
+    pub r_frame: u8,
+    /// Buttons, tabs, wells, fields, menus.
+    pub r_ctl: u8,
+    /// Check boxes, small icon buttons.
+    pub r_small: u8,
     pub popup_row_h: f32,
     pub popup_gutter: f32,
 }
@@ -110,6 +209,14 @@ pub struct FontSizes {
 pub struct Theme {
     pub m: Metrics,
     pub font: FontSizes,
+
+    // The design system's tokens (UI_SPEC.md §2); the named roles below are drawn from them.
+    pub silver: Silver,
+    pub slate: Slate,
+    pub lcd: Lcd,
+    pub sel: Sel,
+    pub amber: Amber,
+    pub ink: Ink,
 
     // Menus
     pub menu_text: Color32,
@@ -240,6 +347,8 @@ pub struct Theme {
     pub warning_text: Color32,
     pub preview_bg: Color32,
     pub preview_frame: Color32,
+    /// Colour-critical wells (wheels, curves, scopes): neutral, never navy (UI_SPEC.md §1).
+    pub neutral_well: Color32,
 
     /// Default track colour palette, assigned to tracks in order, then repeating.
     pub track_colors: [Color32; 8],
@@ -273,24 +382,10 @@ impl Theme {
         FontId::new(size, self.family())
     }
 
-    /// The Windows-classic 3D palette of a `#D4D0C8` property sheet (UI_SPEC.md §2.5): the dialogs, their
-    /// controls and the floating-window frames paint their bevels with it, through the same `widgets` painters as
-    /// the metal bars. Flat (no streaks, no specular).
+    /// The chrome palette inside dialogs: the same silver as the dock windows (one look), without the streaks (the
+    /// streak texture is for bars only).
     pub fn dialog_metal(&self) -> Metal {
-        let d = self.dialog();
-        Metal {
-            hi: d.body,
-            mid: d.body,
-            lo: d.body,
-            light: hex(0xFFFFFF),
-            face: d.body,
-            shadow: hex(0x808080),
-            dark: hex(0x404040),
-            streak: 0.0,
-            header_tint: hex(0xFFFFFF),
-            specular: Color32::TRANSPARENT,
-            pressed: self.metal.pressed,
-        }
+        Metal { streak: 0.0, ..self.metal }
     }
 
     pub fn bold(&self, size: f32) -> FontId {
@@ -300,8 +395,8 @@ impl Theme {
         FontId::new(size, FontFamily::Name(super::fonts::TAHOMA_BOLD.into()))
     }
 
-    /// UI_SPEC.md: 2005–2007 NLE chrome (Vegas 6/7 proportions and track headers, Windows 2000/XP classic controls and
-    /// menus, brushed-steel bars) on the VEGAS 23 layout. Native title bar, in-window menu row.
+    /// UI_SPEC.md: the silver chrome, navy LCD and amber design system on the VEGAS 23 layout. Native title bar,
+    /// in-window menu row.
     pub fn new() -> Self {
         let m = Metrics {
             menu_bar_h: 20.0,
@@ -334,7 +429,10 @@ impl Theme {
             button_pitch: 23.0,
             icon: 16.0,
             icon_stroke: 1.0,
-            widget_radius: 0,
+            widget_radius: 3,
+            r_frame: 5,
+            r_ctl: 3,
+            r_small: 2,
             popup_row_h: 19.0,
             popup_gutter: 24.0,
         };
@@ -354,93 +452,146 @@ impl Theme {
             status: 11.0,
             meter: 8.0,
         };
-        let metal = Metal {
-            hi: hex(0xE4E6E9),
-            mid: hex(0xB9BDC3),
-            lo: hex(0x8F949B),
-            light: hex(0xFFFFFF),
-            face: hex(0xD4D6DA),
-            shadow: hex(0x6E737A),
-            dark: hex(0x2E3136),
-            streak: 1.0,
-            header_tint: hex(0xC4D0DC),
-            specular: hexa(0xFFFFFF, 0.55),
-            pressed: hexa(0x00AEEF, 0.35),
+        // UI_SPEC.md §2: the tokens.
+        let silver = Silver {
+            s0: hex(0xFFFFFF),
+            s1: hex(0xF3F5F8),
+            s2: hex(0xDDE1E7),
+            s3: hex(0xC4CAD3),
+            s4: hex(0xA6AEBB),
+            s5: hex(0x7A8494),
+            s6: hex(0x4A5468),
         };
-        let (black, white, grey, dim) = (hex(0x000000), hex(0xFFFFFF), hex(0x808080), hex(0x5C6168));
-        let accent = hex(0x0096E0);
+        let slate = Slate { hi: hex(0x5B6C8E), lo: hex(0x34425E), frame: hex(0x36425C), ridge: (hex(0x7D8DAA), hex(0x1E2840)), text: hex(0xF3F5F8) };
+        let lcd = Lcd {
+            deep: hex(0x00225F),
+            well: hex(0x1C3D7D),
+            hover: hex(0x24488C),
+            rule: hex(0x3A5A9A),
+            ghost: hex(0x0E3477),
+            outline: hex(0x0B1F4F),
+            text: hex(0xA8C8FF),
+            text_hi: hex(0xE6F0FF),
+            text_dim: hex(0x8DB0EE),
+            digits: hex(0xDCEBFF),
+        };
+        let sel = Sel {
+            top: hex(0x3A68CE),
+            bottom: hex(0x2450B4),
+            mid: hex(0x2F5CC1),
+            lip: hex(0x7FA2E8),
+            text: hex(0xFFFFFF),
+            lit_top: hex(0xE3EDFF),
+            lit_bottom: hex(0x9DBDF2),
+            lit_outline: hex(0x2F5CC1),
+        };
+        let amber = Amber { base: hex(0xFFA424), hi: hex(0xFFDC90), lo: hex(0xD86000), text: hex(0xFFB43C) };
+        let ink = Ink {
+            text: hex(0x0F1C3A),
+            label: hex(0x2E3A55),
+            button: hex(0x0C2A78),
+            glyph: hex(0x1A49B8),
+            disabled: hex(0x4C566B),
+            paper: hex(0xFBFCFE),
+            paper_disabled: hex(0xE8EBF0),
+        };
+        // Bars run from `s1` to the recess silver `s4`: the reference's deep top-to-bottom sweep.
+        let metal = Metal {
+            hi: silver.s1,
+            mid: silver.s2,
+            lo: silver.s4,
+            light: silver.s0,
+            face: silver.s2,
+            shadow: silver.s5,
+            dark: silver.s6,
+            // Faint: at most ±2 % luminance, on bars only (UI_SPEC.md §1: text never on texture).
+            streak: 0.25,
+            header_tint: hex(0xFFFFFF),
+            specular: silver.s0,
+            pressed: sel.lit_bottom,
+        };
+        let (black, white, grey, dim) = (ink.text, hex(0xFFFFFF), ink.disabled, ink.label);
+        let accent = sel.mid;
         Self {
             m,
             font,
+            silver,
+            slate,
+            lcd,
+            sel,
+            amber,
+            ink,
 
             menu_text: black,
-            // Windows XP (Luna) menus: white, 3D grey border, #316AC5 highlight bar.
-            menu_popup_bg: white,
-            menu_popup_border: grey,
-            menu_popup_hover: hex(0x316AC5),
+            // Menus: silver popups with an outline and the selection blue.
+            menu_popup_bg: silver.s1,
+            menu_popup_border: silver.s6,
+            menu_popup_hover: sel.mid,
             menu_popup_text: black,
             menu_popup_text_disabled: grey,
 
-            frame: hex(0x5C6168),
+            frame: slate.frame,
             toolbar_bg: metal.mid,
             line_dark: metal.shadow,
-            panel_bg: hex(0xC9CCD1),
-            band_bg: hex(0xAEB3BA),
-            lane_bg: hex(0x3C4047),
-            empty_lane_bg: hex(0x2F3339),
+            panel_bg: silver.s2,
+            band_bg: silver.s3,
+            // Blue-slate lanes: the navy family, desaturated so the pastel events keep their colour (§2.7).
+            lane_bg: hex(0x2B3550),
+            empty_lane_bg: hex(0x222A40),
 
-            tab_text: hex(0x2B2E33),
+            tab_text: ink.label,
             tab_text_active: black,
             tab_text_hover: black,
 
             text: black,
-            text_secondary: hex(0x1E2226),
-            text_label: hex(0x2B2E33),
+            text_secondary: ink.label,
+            text_label: ink.label,
             text_value: black,
             text_bright: white,
             text_dim: dim,
             text_disabled: grey,
             icon: hex(0x0A0A0A),
             icon_disabled: grey,
-            input_bg: white,
+            input_bg: ink.paper,
             input_placeholder: grey,
-            tooltip_bg: hex(0xFFFFE1),
+            tooltip_bg: silver.s1,
             tooltip_text: black,
-            tooltip_border: black,
+            tooltip_border: silver.s6,
 
-            button_active_bg: hex(0x9CD3F0),
+            button_active_bg: sel.lit_bottom,
             button_hover_bg: metal.hi,
             accent,
 
-            track_header_bg: hex(0x9AA6B3),
+            track_header_bg: silver.s2,
             track_header_top: metal.light,
-            track_separator: hex(0x4A4E55),
-            track_separator_2: hex(0x7A7F86),
+            track_separator: slate.frame,
+            track_separator_2: silver.s5,
             strip_divider: metal.dark,
 
-            // Black LCD well with cyan digits (Vegas 5–7 time display).
-            time_display_bg: hex(0x14181E),
-            time_display_text: hex(0x5CE0FF),
+            // The navy LCD with segmented digits.
+            time_display_bg: lcd.deep,
+            time_display_text: lcd.digits,
             ruler_text: black,
             ruler_major_tick: black,
-            ruler_minor_tick: hex(0x3C4047),
-            grid_line: hex(0x50555C),
-            scroll_track: hex(0xA9AEB5),
-            scroll_arrow: black,
+            ruler_minor_tick: silver.s6,
+            grid_line: hex(0x3D4A68),
+            scroll_track: silver.s4,
+            scroll_arrow: ink.glyph,
 
             loop_sel_line: accent,
             loop_flag: hex(0xFFD800),
             loop_flag_shade: hex(0xB09400),
             loop_bar_on: accent,
             selection_overlay: hexa(0x00AEEF, 0.18),
-            length_tag_bg: white,
+            length_tag_bg: silver.s1,
             length_tag_text: black,
             marker_flag: hex(0xE08A2A),
-            marker_text: white,
+            // Ink on the tags: white fails AA on the orange and green (UI_SPEC.md §2.8).
+            marker_text: black,
             region_flag: hex(0x3C9A50),
             region_flag_hi: hex(0x6FBF80),
             region_edge: hex(0x2E7A40),
-            region_text: white,
+            region_text: black,
             region_line: hex(0x3C9A50),
 
             playhead_line: hex(0x00C8FF),
@@ -471,12 +622,12 @@ impl Theme {
             workspace_bg: hex(0xECECEC),
             workspace_grid: hex(0xC8C8C8),
             workspace_frame: hex(0x505050),
-            kf_ruler: hex(0xAEB3BA),
-            kf_lane: hex(0xC9CCD1),
-            kf_lane_alt: hex(0xBEC2C7),
-            kf_row_sel: hex(0xB4CFE4),
+            kf_ruler: silver.s3,
+            kf_lane: silver.s2,
+            kf_lane_alt: hex(0xD2D7DE),
+            kf_row_sel: sel.lit_top,
 
-            meter_bg: hex(0x14181E),
+            meter_bg: lcd.deep,
             meter_green: hex(0x00E020),
             meter_yellow: hex(0xF0E000),
             meter_red: hex(0xFF2020),
@@ -486,8 +637,10 @@ impl Theme {
             fader_thumb_bar: metal.dark,
 
             warning_text: hex(0xA00000),
-            preview_bg: hex(0x3C4047),
-            preview_frame: black,
+            // Video sits on black (UI_SPEC.md §1: neutral for pictures).
+            preview_bg: hex(0x000000),
+            preview_frame: hex(0x000000),
+            neutral_well: hex(0x1C1C1E),
 
             // Vegas 6 event pastels [I]: steel blue, rose, sage, sand, lavender, teal, clay, blue-grey.
             track_colors: [
@@ -504,12 +657,13 @@ impl Theme {
         }
     }
 
-    /// The tokens mapped onto egui::Visuals.
+    /// The tokens mapped onto egui::Visuals: silver faces, paper fields, `r_ctl` corners, the selection blue; popups
+    /// and tooltips on `s1` with an `s6` outline (UI_SPEC.md §5).
     pub fn visuals(&self) -> Visuals {
         let mut v = Visuals::light();
         v.override_text_color = Some(self.text);
         v.panel_fill = self.panel_bg;
-        v.window_fill = self.panel_bg;
+        v.window_fill = self.silver.s1;
         v.faint_bg_color = self.band_bg;
         v.extreme_bg_color = self.input_bg;
         v.code_bg_color = self.input_bg;
@@ -518,41 +672,42 @@ impl Theme {
         v.hyperlink_color = self.accent;
         v.window_shadow = Shadow::NONE;
         v.popup_shadow = Shadow::NONE;
-        let r = CornerRadius::same(self.m.widget_radius);
-        v.window_corner_radius = CornerRadius::ZERO;
+        let r = CornerRadius::same(self.m.r_ctl);
+        v.window_corner_radius = CornerRadius::same(self.m.r_frame);
         v.menu_corner_radius = r;
-        v.selection.bg_fill = self.accent;
+        v.selection.bg_fill = self.sel.mid;
 
+        let (s, ink) = (&self.silver, &self.ink);
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = self.panel_bg;
         w.noninteractive.weak_bg_fill = self.panel_bg;
-        // Windows-classic controls: 3D grey faces with a shadow outline, black ink, a blue selection.
-        let m = &self.metal;
-        w.noninteractive.bg_stroke = Stroke::new(1.0_f32, m.shadow);
-        w.noninteractive.fg_stroke = Stroke::new(1.0_f32, self.text);
-        w.inactive.bg_fill = m.face;
-        w.inactive.weak_bg_fill = m.face;
-        w.inactive.bg_stroke = Stroke::new(1.0_f32, m.shadow);
-        w.inactive.fg_stroke = Stroke::new(1.0_f32, self.text);
-        w.hovered.bg_fill = m.hi;
-        w.hovered.weak_bg_fill = m.hi;
-        w.hovered.bg_stroke = Stroke::new(1.0_f32, m.shadow);
-        w.hovered.fg_stroke = Stroke::new(1.0_f32, self.text);
-        w.active.bg_fill = self.button_active_bg;
-        w.active.weak_bg_fill = self.button_active_bg;
-        w.active.bg_stroke = Stroke::NONE;
-        w.active.fg_stroke = Stroke::new(1.0_f32, self.text);
-        w.open.bg_fill = self.button_hover_bg;
-        w.open.weak_bg_fill = self.button_hover_bg;
-        w.open.bg_stroke = Stroke::new(1.0_f32, m.shadow);
-        w.open.fg_stroke = Stroke::new(1.0_f32, self.text);
-        for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-            s.corner_radius = r;
-            s.expansion = 0.0;
+        // Silver faces with an outline, navy ink, paper fields (`bg_fill`: check boxes, slider rails).
+        w.noninteractive.bg_stroke = Stroke::new(1.0_f32, s.s5);
+        w.noninteractive.fg_stroke = Stroke::new(1.0_f32, ink.text);
+        w.inactive.bg_fill = ink.paper;
+        w.inactive.weak_bg_fill = s.s2;
+        w.inactive.bg_stroke = Stroke::new(1.0_f32, s.s5);
+        w.inactive.fg_stroke = Stroke::new(1.0_f32, ink.text);
+        w.hovered.bg_fill = ink.paper;
+        w.hovered.weak_bg_fill = s.s1;
+        w.hovered.bg_stroke = Stroke::new(1.0_f32, self.sel.lit_outline);
+        w.hovered.fg_stroke = Stroke::new(1.0_f32, ink.text);
+        w.active.bg_fill = ink.paper;
+        w.active.weak_bg_fill = self.sel.lit_bottom;
+        w.active.bg_stroke = Stroke::new(1.0_f32, self.sel.lit_outline);
+        w.active.fg_stroke = Stroke::new(1.0_f32, ink.text);
+        w.open.bg_fill = ink.paper;
+        w.open.weak_bg_fill = self.sel.lit_top;
+        w.open.bg_stroke = Stroke::new(1.0_f32, self.sel.lit_outline);
+        w.open.fg_stroke = Stroke::new(1.0_f32, ink.text);
+        for st in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+            st.corner_radius = r;
+            st.expansion = 0.0;
         }
         w.noninteractive.corner_radius = CornerRadius::ZERO;
-        v.selection.stroke = Stroke::new(1.0_f32, self.text_bright);
-        v.window_stroke = Stroke::new(1.0_f32, m.shadow);
+        v.selection.stroke = Stroke::new(1.0_f32, self.sel.text);
+        v.window_stroke = Stroke::new(1.0_f32, s.s6);
+        v.text_cursor.stroke = Stroke::new(1.0_f32, ink.text);
         v
     }
 
@@ -577,7 +732,7 @@ impl Theme {
             sp.menu_margin = egui::Margin::same(2);
             sp.scroll.bar_width = 16.0;
             sp.scroll.floating = false;
-            // A grey 3D-face handle on the white rail.
+            // An `s5` handle on the rail (UI_SPEC.md §5 scrollbar).
             sp.scroll.foreground_color = false;
         });
     }
@@ -598,7 +753,7 @@ const SNAP: SnapColors = SnapColors {
     grid: hex(0xF4FFEE),
 };
 
-/// Modal dialog colours: a Windows 2000/XP-classic property sheet.
+/// Dialog colours: the design system's panel, paper, ink and caption tokens under the dialog roles.
 #[derive(Clone, Copy, Debug)]
 pub struct DialogColors {
     pub body: Color32,
@@ -616,31 +771,31 @@ pub struct DialogColors {
     pub etch: (Color32, Color32),
     pub accent: Color32,
     pub accent_text: Color32,
-    /// Caption bar gradient (left → right) and its text: the Windows 2000 active caption.
+    /// Caption bar gradient (top → bottom) and its text: the slate caption.
     pub caption: (Color32, Color32),
     pub caption_text: Color32,
 }
 
 impl Theme {
     pub fn dialog(&self) -> DialogColors {
-        // #D4D0C8 face, white fields, #808080 / white etched rules.
+        let (s, ink) = (&self.silver, &self.ink);
         DialogColors {
-            body: hex(0xD4D0C8),
-            page: hex(0xD4D0C8),
-            field: hex(0xFFFFFF),
-            field_border: hex(0x808080),
-            border: hex(0x808080),
-            text: hex(0x000000),
-            text_disabled: hex(0x808080),
-            button: hex(0xD4D0C8),
-            button_border: hex(0x404040),
-            button_hover: hex(0xE4E2DC),
-            button_hover_border: hex(0x000000),
-            etch: (hex(0x808080), hex(0xFFFFFF)),
-            accent: hex(0x316AC5),
-            accent_text: hex(0xFFFFFF),
-            caption: (hex(0x0A246A), hex(0xA6CAF0)),
-            caption_text: hex(0xFFFFFF),
+            body: s.s2,
+            page: s.s2,
+            field: ink.paper,
+            field_border: s.s5,
+            border: s.s6,
+            text: ink.text,
+            text_disabled: ink.disabled,
+            button: s.s2,
+            button_border: s.s6,
+            button_hover: s.s1,
+            button_hover_border: self.sel.lit_outline,
+            etch: (s.s5, s.s0),
+            accent: self.sel.mid,
+            accent_text: self.sel.text,
+            caption: (self.slate.hi, self.slate.lo),
+            caption_text: self.slate.text,
         }
     }
 }
@@ -673,13 +828,101 @@ pub fn apply(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
-    /// Native title bar, in-window menu, Tahoma 8 pt, nothing rounded, brushed metal, XP menus.
+    /// Native title bar, in-window menu, Tahoma 8 pt, the one radius family, faint streaks, silver menus with the
+    /// selection blue, navy ink (UI_SPEC.md §2-§4).
     #[test]
     fn spec_values() {
         let c = Theme::new();
         assert!(c.m.menu_bar_h > 0.0, "in-window menu row");
-        assert_eq!((c.font.ui, c.m.icon_stroke, c.m.widget_radius, c.metal.streak), (11.0, 1.0, 0, 1.0));
-        assert_eq!((c.menu_popup_bg, c.menu_popup_hover, c.text), (hex(0xFFFFFF), hex(0x316AC5), hex(0x000000)));
+        assert_eq!((c.font.ui, c.m.icon_stroke, c.m.widget_radius, c.metal.streak), (11.0, 1.0, 3, 0.25));
+        assert_eq!((c.m.r_frame, c.m.r_ctl, c.m.r_small), (5, 3, 2));
+        assert_eq!((c.menu_popup_bg, c.menu_popup_hover, c.text), (hex(0xF3F5F8), hex(0x2F5CC1), hex(0x0F1C3A)));
+        assert_eq!((c.lcd.deep, c.lcd.well, c.amber.base), (hex(0x00225F), hex(0x1C3D7D), hex(0xFFA424)));
+        // One silver: the dialogs paint with the dock windows' palette.
+        assert_eq!((c.dialog().page, c.dialog_metal().face), (c.panel_bg, c.metal.face));
         assert!(!c.visuals().dark_mode);
+    }
+
+    /// WCAG 2.1 relative luminance of an sRGB colour.
+    fn luminance(c: Color32) -> f64 {
+        let lin = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// `c` darkened by `f` (0..1): the streak texture's darkest pixel over a bar.
+    fn darker(c: Color32, f: f32) -> Color32 {
+        let k = |v: u8| (v as f32 * (1.0 - f)).round() as u8;
+        Color32::from_rgb(k(c.r()), k(c.g()), k(c.b()))
+    }
+
+    /// UI_SPEC.md §2.8: every text / background pair of the design system meets WCAG AA for normal text (4.5:1),
+    /// on the worst stop of each background a label can sit on.
+    #[test]
+    fn contrast_aa() {
+        let t = Theme::new();
+        let (s, l, sel, ink, d) = (t.silver, t.lcd, t.sel, t.ink, t.dialog());
+        // The streak texture over a bar: at most 18/255 per unit, at `streak` opacity, darker.
+        let streak = 18.0 / 255.0 * t.metal.streak;
+        let pairs = [
+            ("ink on chrome bottom", ink.text, s.s3),
+            ("ink on streaked bar bottom", ink.text, darker(t.metal.lo, streak)),
+            ("ink on recess", ink.text, s.s4),
+            ("ink on panel", ink.text, s.s2),
+            ("ink on paper", ink.text, ink.paper),
+            ("label on chrome bottom", ink.label, s.s3),
+            ("button label on chrome bottom", ink.button, s.s3),
+            ("button label on lit chrome", ink.button, sel.lit_bottom),
+            ("ink on lit chrome top", ink.text, sel.lit_top),
+            ("ink on lit chrome bottom", ink.text, sel.lit_bottom),
+            ("disabled on chrome bottom", ink.disabled, s.s3),
+            ("disabled on panel", ink.disabled, s.s2),
+            ("disabled on disabled field", ink.disabled, ink.paper_disabled),
+            ("placeholder on paper", t.input_placeholder, ink.paper),
+            ("caption on caption top", t.slate.text, t.slate.hi),
+            ("caption on caption bottom", t.slate.text, t.slate.lo),
+            ("lcd text on list well", l.text, l.well),
+            ("lcd text on hovered row", l.text, l.hover),
+            ("lcd text on read-out well", l.text, l.deep),
+            ("lcd dim text on read-out well", l.text_dim, l.deep),
+            ("lcd digits on read-out well", l.digits, l.deep),
+            ("lcd bright text on list well", l.text_hi, l.well),
+            ("amber text on list well", t.amber.text, l.well),
+            ("amber text on read-out well", t.amber.text, l.deep),
+            ("selection text on selection top", sel.text, sel.top),
+            ("selection text on selection bottom", sel.text, sel.bottom),
+            ("selection text on flat selection", sel.text, sel.mid),
+            ("menu text on menu", t.menu_popup_text, t.menu_popup_bg),
+            ("menu disabled on menu", t.menu_popup_text_disabled, t.menu_popup_bg),
+            ("tooltip", t.tooltip_text, t.tooltip_bg),
+            ("dialog text on page", d.text, d.page),
+            ("dialog disabled on page", d.text_disabled, d.page),
+            ("dialog text on field", d.text, d.field),
+            ("progress label on its groove", sel.text, l.deep),
+            ("tab label on inactive tab", t.tab_text, s.s4),
+            ("ruler text on band", t.ruler_text, s.s3),
+            ("meter label on silver", t.meter_label, s.s3),
+            ("track value on header", t.text_value, s.s3),
+            ("white text on lanes", t.text_bright, t.lane_bg),
+            ("marker number on its tag", t.marker_text, t.marker_flag),
+            ("warning text on chrome bottom", t.warning_text, s.s3),
+            ("region number on its tag", t.region_text, t.region_flag),
+        ];
+        let fails: Vec<String> = pairs
+            .iter()
+            .map(|&(name, fg, bg)| (name, contrast(fg, bg)))
+            .filter(|&(_, r)| r < 4.5)
+            .map(|(name, r)| format!("{name}: {r:.2}"))
+            .collect();
+        assert!(fails.is_empty(), "below WCAG AA 4.5:1: {fails:?}");
+        // The streaks stay faint: ±2 % at most.
+        assert!(streak <= 0.02, "{streak}");
     }
 }

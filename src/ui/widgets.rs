@@ -1,15 +1,103 @@
-//! Small painted widgets shared by the dock windows: tree rows, list rows and headers, the 5 px pane splitter,
-//! search fields and preview tiles; and the brushed-metal / 3D-bevel painters every bar uses (UI_SPEC.md §2, §4).
+//! The design system's painters (UI_SPEC.md §4-§5): chrome, recesses, LCD wells, segmented digits, selection bars,
+//! pills and section tabs, the controls painted over egui's, and the shared dock-window pieces (tree rows, list rows
+//! and headers, the pane splitter, search fields and preset tiles). Every surface draws through these.
 use eframe::egui::*;
 use super::icons::{Icon, paint_icon};
 use super::theme::{self, Metal, Theme};
 
-// ---- Metal and bevels ----
+// ---- Primitives ----
+
+/// One line of chrome (an outline, a lip, a shade) in points. The single place a display scale applies to the look:
+/// R48's whole-physical-pixel width (`theme::one()`) goes here.
+pub fn hair() -> f32 {
+    1.0
+}
+
+/// `a` → `b` by `f` in gamma space (as the period skins blended).
+fn mix(a: Color32, b: Color32, f: f32) -> Color32 {
+    let f = f.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * f).round() as u8;
+    Color32::from_rgba_premultiplied(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()), l(a.a(), b.a()))
+}
+
+/// The colour of vertical gradient `stops` ((position 0..1, colour), ascending) at `f`.
+fn sample(stops: &[(f32, Color32)], f: f32) -> Color32 {
+    let Some(&(p0, c0)) = stops.first() else { return Color32::TRANSPARENT };
+    if f <= p0 {
+        return c0;
+    }
+    for w in stops.windows(2) {
+        let ((a, ca), (b, cb)) = (w[0], w[1]);
+        if f <= b {
+            return mix(ca, cb, if b > a { (f - a) / (b - a) } else { 1.0 });
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+/// A vertical gradient filling `r` with corners of `radius`: horizontal strips whose ends follow the corner arcs, one
+/// row per gradient stop and per arc step, so the gradient is exact (piecewise linear) at any radius. The outline drawn
+/// over it anti-aliases the corners.
+pub fn grad(p: &Painter, r: Rect, radius: f32, stops: &[(f32, Color32)]) {
+    if !r.is_positive() || stops.is_empty() {
+        return;
+    }
+    let rad = radius.min(r.width() * 0.5).min(r.height() * 0.5).max(0.0);
+    let h = r.height();
+    let steps = if rad >= 1.0 { (rad.ceil() as usize).clamp(2, 6) } else { 0 };
+    let mut ys: Vec<f32> = Vec::with_capacity(2 * steps + stops.len() + 4);
+    ys.extend([r.min.y, r.max.y]);
+    for i in 0..=steps {
+        let k = i as f32 / steps.max(1) as f32;
+        ys.extend([r.min.y + rad * k, r.max.y - rad * k]);
+    }
+    ys.extend(stops.iter().map(|(f, _)| r.min.y + f.clamp(0.0, 1.0) * h));
+    ys.sort_by(f32::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    let inset = |y: f32| {
+        let dy = (r.min.y + rad - y).max(y - (r.max.y - rad)).max(0.0);
+        if rad > 0.0 { rad - (rad * rad - dy * dy).max(0.0).sqrt() } else { 0.0 }
+    };
+    let mut mesh = Mesh::default();
+    for (i, &y) in ys.iter().enumerate() {
+        let c = sample(stops, (y - r.min.y) / h);
+        let d = inset(y);
+        mesh.colored_vertex(pos2(r.min.x + d, y), c);
+        mesh.colored_vertex(pos2(r.max.x - d, y), c);
+        if i > 0 {
+            let k = (2 * i) as u32;
+            mesh.add_triangle(k - 2, k - 1, k);
+            mesh.add_triangle(k - 1, k + 1, k);
+        }
+    }
+    p.add(mesh);
+}
+
+/// A 1 px horizontal line from `x0` to `x1` at `y` (its top edge).
+fn hl(p: &Painter, x0: f32, x1: f32, y: f32, c: Color32) {
+    if x1 > x0 {
+        p.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + hair())), 0.0, c);
+    }
+}
+
+/// A 1 px vertical line from `y0` to `y1` at `x` (its left edge).
+fn vl(p: &Painter, x: f32, y0: f32, y1: f32, c: Color32) {
+    if y1 > y0 {
+        p.rect_filled(Rect::from_min_max(pos2(x, y0), pos2(x + hair(), y1)), 0.0, c);
+    }
+}
+
+/// The radius a control of this size takes: `r_small` under 20 px, `r_ctl` above.
+pub fn ctl_radius(r: Rect, t: &Theme) -> f32 {
+    if r.width().min(r.height()) < 20.0 { t.m.r_small as f32 } else { t.m.r_ctl as f32 }
+}
+
+// ---- Metal bars ----
 
 /// Side of the brushed streak texture; it repeats over every bar.
 const STREAK: usize = 64;
 
-/// The brushed-steel streak texture, made once per context (a 64×64 tile of lighter and darker horizontal streaks,
+/// The brushed streak texture, made once per context (a 64×64 tile of lighter and darker horizontal streaks,
 /// `TextureWrapMode::Repeat`), drawn over the gradient with its UVs scaled to the bar: no per-frame allocation.
 fn streak_tex(ctx: &Context) -> TextureId {
     let id = Id::new("milan_metal_streaks");
@@ -25,7 +113,7 @@ fn streak_tex(ctx: &Context) -> TextureId {
     };
     let mut pixels = vec![Color32::TRANSPARENT; STREAK * STREAK];
     // Each row is one fine streak: its own brightness (smoothed with the row above, so no two adjacent rows jump),
-    // roughened only slightly along it; at most ~7 % lighter or darker than the gradient.
+    // roughened only slightly along it; at most 18/255 lighter or darker at full opacity (`Metal::streak` scales it).
     let mut prev = 0.0_f32;
     for y in 0..STREAK {
         let row = (rnd() * 2.0 - 1.0) * 0.6 + prev * 0.4;
@@ -44,8 +132,23 @@ fn streak_tex(ctx: &Context) -> TextureId {
     tid
 }
 
-/// Brushed-metal fill: vertical gradient `hi` → `mid` (45 %) → `lo`, multiplied by `tint`, with the streak texture
-/// over it. Two triangles' worth of mesh and one textured quad.
+/// The LCD dot grid: a 2×2 tile with one lit dot (`lcd.rule`), repeated over a read-out well.
+fn dots_tex(ctx: &Context) -> TextureId {
+    let id = Id::new("milan_lcd_dots");
+    if let Some(h) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
+        return h.id();
+    }
+    let c = theme::get().lcd.rule;
+    let pixels = vec![c, Color32::TRANSPARENT, Color32::TRANSPARENT, Color32::TRANSPARENT];
+    let opts = TextureOptions { magnification: TextureFilter::Nearest, minification: TextureFilter::Nearest, wrap_mode: TextureWrapMode::Repeat, mipmap_mode: None };
+    let handle = ctx.load_texture("milan_lcd_dots", ColorImage { size: [2, 2], pixels }, opts);
+    let tid = handle.id();
+    ctx.data_mut(|d| d.insert_temp(id, handle));
+    tid
+}
+
+/// Bar fill: the raised chrome gradient `hi` → `mid` (45 %) → `lo`, multiplied by `tint`, with the faint streak
+/// texture over it (bars only: UI_SPEC.md §5 Bar). Square: bars run edge to edge.
 pub fn metal_tinted(p: &Painter, r: Rect, m: &Metal, tint: Color32) {
     let r = px(r);
     if !r.is_positive() {
@@ -55,17 +158,7 @@ pub fn metal_tinted(p: &Painter, r: Rect, m: &Metal, tint: Color32) {
         let f = |a: u8, b: u8| ((a as u32 * b as u32 + 127) / 255) as u8;
         Color32::from_rgb(f(c.r(), tint.r()), f(c.g(), tint.g()), f(c.b(), tint.b()))
     };
-    let mut mesh = Mesh::default();
-    let mid_y = (r.min.y + r.height() * 0.45).round();
-    for (y, c) in [(r.min.y, mul(m.hi)), (mid_y, mul(m.mid)), (r.max.y, mul(m.lo))] {
-        mesh.colored_vertex(pos2(r.min.x, y), c);
-        mesh.colored_vertex(pos2(r.max.x, y), c);
-    }
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    mesh.add_triangle(2, 3, 4);
-    mesh.add_triangle(3, 5, 4);
-    p.add(mesh);
+    grad(p, r, 0.0, &[(0.0, mul(m.hi)), (0.45, mul(m.mid)), (1.0, mul(m.lo))]);
     if m.streak > 0.0 {
         let uv = Rect::from_min_max(Pos2::ZERO, pos2(r.width() / STREAK as f32, r.height() / STREAK as f32));
         p.image(streak_tex(p.ctx()), r, uv, Color32::WHITE.gamma_multiply(m.streak));
@@ -76,171 +169,240 @@ pub fn metal(p: &Painter, r: Rect, m: &Metal) {
     metal_tinted(p, r, m, Color32::WHITE);
 }
 
-/// A metal band with its light top row and dark bottom row (toolbars, transport, status bar, ruler band).
+/// A bar (menu row, toolbars, transport, status, ruler band): chrome fill with its `s0` lip on top and `s5` shade
+/// along the bottom.
 pub fn metal_bar(p: &Painter, r: Rect, m: &Metal) {
     let r = px(r);
     metal(p, r, m);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + 1.0)), 0.0, m.light);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, m.shadow);
+    hl(p, r.min.x, r.max.x, r.min.y, m.light);
+    hl(p, r.min.x, r.max.x, r.max.y - hair(), m.shadow);
 }
 
-/// Classic 2 px 3D edge inside `r`: raised = light/face on the top-left, shadow/dark on the bottom-right; sunken
-/// swaps them (Windows 2000 button / field edges).
+// ---- Bevels and recesses ----
+
+/// A square 2 px edge inside `r` (UI_SPEC.md §4.1): raised = `s0` lip on the top / left inside an `s6` outline whose
+/// bottom / right rows are shaded `s5`; sunken = the recess (an `s5` outline, a dark inner top row, an `s0` lower lip).
 pub fn bevel(p: &Painter, r: Rect, raised: bool, m: &Metal) {
     let r = px(r);
-    let (tl1, tl2, br1, br2) = if raised { (m.light, m.face, m.dark, m.shadow) } else { (m.shadow, m.dark, m.light, m.face) };
-    let line = |a: Pos2, b: Pos2, c: Color32| p.rect_filled(Rect::from_two_pos(a, b), 0.0, c);
-    // Outer ring.
-    line(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0), tl1);
-    line(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0), tl1);
-    line(pos2(r.min.x, r.max.y - 1.0), r.max, br1);
-    line(pos2(r.max.x - 1.0, r.min.y), r.max, br1);
-    // Inner ring.
-    let i = r.shrink(1.0);
-    if i.width() > 2.0 && i.height() > 2.0 {
-        line(i.min, pos2(i.max.x - 1.0, i.min.y + 1.0), tl2);
-        line(i.min, pos2(i.min.x + 1.0, i.max.y - 1.0), tl2);
-        line(pos2(i.min.x, i.max.y - 1.0), i.max, br2);
-        line(pos2(i.max.x - 1.0, i.min.y), i.max, br2);
+    let o = hair();
+    if raised {
+        p.rect_stroke(r, 0.0, Stroke::new(o, m.dark), StrokeKind::Inside);
+        let i = r.shrink(o);
+        hl(p, i.min.x, i.max.x, i.min.y, m.light);
+        vl(p, i.min.x, i.min.y, i.max.y, m.light);
+        hl(p, i.min.x, i.max.x, i.max.y - o, m.shadow);
+        vl(p, i.max.x - o, i.min.y, i.max.y, m.shadow);
+    } else {
+        recess_edge(p, r, 0.0, m);
     }
 }
 
-/// Thin 1 px 3D edge (light top-left, shadow bottom-right; swapped when sunken): tabs, grooves, panes.
-pub fn edge(p: &Painter, r: Rect, raised: bool, m: &Metal) {
-    let r = px(r);
-    let (tl, br) = if raised { (m.light, m.shadow) } else { (m.shadow, m.light) };
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.max.x - 1.0, r.min.y + 1.0)), 0.0, tl);
-    p.rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 1.0, r.max.y - 1.0)), 0.0, tl);
-    p.rect_filled(Rect::from_min_max(pos2(r.min.x, r.max.y - 1.0), r.max), 0.0, br);
-    p.rect_filled(Rect::from_min_max(pos2(r.max.x - 1.0, r.min.y), r.max), 0.0, br);
+/// The recess edge (UI_SPEC.md §4.1) round `r` with corners of `radius`: an `s5` outline, a 2 px inner shadow under
+/// the top (black 30 % then 12 %), the light lower lip along the bottom inside.
+pub fn recess_edge(p: &Painter, r: Rect, radius: f32, m: &Metal) {
+    recess_edge_in(p, r, radius, m.shadow, m.light.gamma_multiply(0.8));
 }
 
-/// How a chrome button is drawn.
+fn recess_edge_in(p: &Painter, r: Rect, radius: f32, outline: Color32, lip: Color32) {
+    let r = px(r);
+    let o = hair();
+    let inset = radius.max(o);
+    hl(p, r.min.x + inset, r.max.x - inset, r.min.y + o, Color32::from_black_alpha(77));
+    hl(p, r.min.x + inset, r.max.x - inset, r.min.y + 2.0 * o, Color32::from_black_alpha(31));
+    hl(p, r.min.x + inset, r.max.x - inset, r.max.y - 2.0 * o, lip);
+    p.rect_stroke(r, radius, Stroke::new(o, outline), StrokeKind::Inside);
+}
+
+/// Thin 1 px edge (lip top-left, shade bottom-right; swapped when sunken): grooves and panes.
+pub fn edge(p: &Painter, r: Rect, raised: bool, m: &Metal) {
+    let r = px(r);
+    let o = hair();
+    let (tl, br) = if raised { (m.light, m.shadow) } else { (m.shadow, m.light) };
+    hl(p, r.min.x, r.max.x - o, r.min.y, tl);
+    vl(p, r.min.x, r.min.y, r.max.y - o, tl);
+    hl(p, r.min.x, r.max.x, r.max.y - o, br);
+    vl(p, r.max.x - o, r.min.y, r.max.y, br);
+}
+
+/// How a chrome control is drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Chrome {
-    /// Raised metal with a specular top line.
+    /// Raised chrome.
     Raised,
-    /// Raised and brighter.
+    /// Raised, the gradient lifted toward `s0`, a `lit.outline` outline.
     Hover,
-    /// Pressed in: sunken, darker face.
+    /// Pressed in: the gradient inverted and one step darker.
     Pressed,
-    /// A toggle that is on: sunken with the electric-blue tint.
+    /// Lit: a toggle that is on (sky-blue chrome, `lit.outline`).
     Active,
 }
 
-/// Bevelled chrome-style button over `r`: metal face, 2 px 3D edge, specular highlight under the top edge.
-pub fn chrome_button(p: &Painter, r: Rect, state: Chrome, m: &Metal) {
+/// Chrome over `r` with corners of `radius` (UI_SPEC.md §4.1 bevel recipe): the state's gradient, a 1 px lip under
+/// the top (a dark inner top row when pressed), a 1 px shade above the bottom, the outline round it.
+pub fn chrome(p: &Painter, r: Rect, radius: f32, state: Chrome) {
+    let t = theme::get();
+    let (s, sel) = (t.silver, t.sel);
     let r = px(r);
-    let tint = match state {
-        Chrome::Raised => Color32::WHITE,
-        Chrome::Hover => Color32::from_rgb(0xFF, 0xFF, 0xFF),
-        Chrome::Pressed | Chrome::Active => Color32::from_rgb(0xC8, 0xCC, 0xD2),
+    if !r.is_positive() {
+        return;
+    }
+    let o = hair();
+    let (stops, outline): ([(f32, Color32); 3], Color32) = match state {
+        Chrome::Raised => ([(0.0, s.s1), (0.45, s.s2), (1.0, s.s3)], s.s6),
+        Chrome::Hover => ([(0.0, s.s0), (0.45, s.s1), (1.0, s.s2)], sel.lit_outline),
+        Chrome::Pressed => ([(0.0, s.s4), (0.55, s.s3), (1.0, s.s2)], s.s6),
+        Chrome::Active => ([(0.0, sel.lit_top), (0.5, mix(sel.lit_top, sel.lit_bottom, 0.55)), (1.0, sel.lit_bottom)], sel.lit_outline),
     };
-    metal_tinted(p, r, m, tint);
-    if state == Chrome::Hover {
-        p.rect_filled(r, 0.0, Color32::from_white_alpha(40));
+    grad(p, r, radius, &stops);
+    let inset = (radius * 0.7).max(o);
+    if r.height() > 4.0 * o {
+        if state == Chrome::Pressed {
+            hl(p, r.min.x + inset, r.max.x - inset, r.min.y + o, s.s5);
+        } else {
+            hl(p, r.min.x + inset, r.max.x - inset, r.min.y + o, s.s0.gamma_multiply(if state == Chrome::Active { 0.8 } else { 1.0 }));
+            hl(p, r.min.x + inset, r.max.x - inset, r.max.y - 2.0 * o, if state == Chrome::Active { sel.lit_outline.gamma_multiply(0.35) } else { s.s5.gamma_multiply(0.55) });
+        }
     }
-    let raised = matches!(state, Chrome::Raised | Chrome::Hover);
-    bevel(p, r, raised, m);
-    if raised && r.height() > 6.0 {
-        p.rect_filled(Rect::from_min_max(pos2(r.min.x + 2.0, r.min.y + 2.0), pos2(r.max.x - 2.0, r.min.y + 3.0)), 0.0, m.specular);
-    }
-    if state == Chrome::Active {
-        p.rect_filled(r.shrink(2.0), 0.0, m.pressed);
-    }
+    p.rect_stroke(r, radius, Stroke::new(o, outline), StrokeKind::Inside);
 }
 
-/// Sunken pane (status panes, list boxes, the time display well): 3D edge in, `fill` inside.
+/// A chrome button over `r` (toolbars, header buttons, chooser chips): `chrome` at the size's radius.
+pub fn chrome_button(p: &Painter, r: Rect, state: Chrome, _m: &Metal) {
+    let t = theme::get();
+    chrome(p, r, ctl_radius(r, &t), state);
+}
+
+/// A recessed well over `r` (fields, panes, list boxes): `fill` with the recess edge, corners `r_ctl`. A dark `fill`
+/// (navy) takes the LCD outline.
 pub fn sunken(p: &Painter, r: Rect, fill: Color32, m: &Metal) {
-    let r = px(r);
-    p.rect_filled(r, 0.0, fill);
-    bevel(p, r, false, m);
+    let t = theme::get();
+    well(p, r, t.m.r_ctl as f32, fill, m);
 }
 
-/// Etched separator: a shadow line with a light line beside it (vertical over `y` at `x`).
+pub fn well(p: &Painter, r: Rect, radius: f32, fill: Color32, m: &Metal) {
+    let r = px(r);
+    p.rect_filled(r, radius, fill);
+    let dark = fill.r() as u32 + fill.g() as u32 + fill.b() as u32 <= 3 * 96;
+    if dark {
+        let t = theme::get();
+        recess_edge_in(p, r, radius, t.lcd.outline, Color32::from_white_alpha(14));
+    } else {
+        recess_edge(p, r, radius, m);
+    }
+}
+
+/// An LCD well (UI_SPEC.md §5): `lcd.deep` for read-outs (with the faint dot grid when `dots`), `lcd.well` for lists.
+pub fn lcd_well(p: &Painter, r: Rect, deep: bool, dots: bool) {
+    let t = theme::get();
+    let r = px(r);
+    let radius = t.m.r_ctl as f32;
+    p.rect_filled(r, radius, if deep { t.lcd.deep } else { t.lcd.well });
+    if dots && r.width() > 8.0 && r.height() > 8.0 {
+        let inner = r.shrink(2.0);
+        let uv = Rect::from_min_max(pos2(inner.min.x / 2.0, inner.min.y / 2.0), pos2(inner.max.x / 2.0, inner.max.y / 2.0));
+        p.image(dots_tex(p.ctx()), inner, uv, Color32::WHITE.gamma_multiply(0.35));
+    }
+    recess_edge_in(p, r, radius, t.lcd.outline, Color32::from_white_alpha(14));
+}
+
+/// Groove: an `s5` line with an `s0` line beside it (vertical over `y` at `x`): separators.
 pub fn etched_v(p: &Painter, x: f32, y: Rangef, m: &Metal) {
     let x = x.floor();
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x + 1.0, x + 2.0), y), 0.0, m.light);
+    vl(p, x, y.min, y.max, m.shadow);
+    vl(p, x + hair(), y.min, y.max, m.light);
 }
 
 pub fn etched_h(p: &Painter, x: Rangef, y: f32, m: &Metal) {
     let y = y.floor();
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y, y + 1.0)), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(y + 1.0, y + 2.0)), 0.0, m.light);
+    hl(p, x.min, x.max, y, m.shadow);
+    hl(p, x.min, x.max, y + hair(), m.light);
 }
 
-/// Toolbar grip: two raised 2 px bars (light + shadow) down the bar's left end, as Office 2000 / Vegas 6 toolbars.
+/// One grip dimple at `at` (its top-left): a 2×2 `s5` dot with an `s0` pixel at its lower right.
+fn dimple(p: &Painter, at: Pos2, m: &Metal) {
+    let o = hair();
+    p.rect_filled(Rect::from_min_size(at + vec2(o, o), vec2(2.0 * o, 2.0 * o)), 0.0, m.light);
+    p.rect_filled(Rect::from_min_size(at, vec2(2.0 * o, 2.0 * o)), 0.0, m.shadow);
+}
+
+/// Toolbar grip: a column of dimples down the bar's left end.
 pub fn grip(p: &Painter, r: Rect, m: &Metal) {
-    let y = Rangef::new(r.min.y + 3.0, r.max.y - 3.0);
-    for k in 0..2 {
-        let x = r.min.x.floor() + 2.0 + 3.0 * k as f32;
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x, x + 1.0), y), 0.0, m.light);
-        p.rect_filled(Rect::from_x_y_ranges(Rangef::new(x + 1.0, x + 2.0), y), 0.0, m.shadow);
+    let x = r.min.x.floor() + 3.0;
+    let mut y = r.min.y.floor() + 5.0;
+    while y + 3.0 <= r.max.y - 4.0 {
+        dimple(p, pos2(x, y), m);
+        y += 4.0;
     }
 }
 
-/// Splitter between bands or panes: metal with a dotted centre line (Vegas 6), `across` = a horizontal bar.
+/// Splitter between bands or panes: `slate.frame` with three dimples at its middle; `across` = a horizontal bar.
 pub fn dotted_splitter(p: &Painter, r: Rect, across: bool, m: &Metal) {
+    let t = theme::get();
     let r = px(r);
-    metal(p, r, m);
+    p.rect_filled(r, 0.0, t.slate.frame);
     let c = r.center().floor();
-    let mut mesh = Mesh::default();
-    if across {
-        let mut x = r.min.x + 2.0;
-        while x < r.max.x - 1.0 {
-            mesh.add_colored_rect(Rect::from_min_size(pos2(x, c.y), vec2(1.0, 1.0)), m.dark);
-            mesh.add_colored_rect(Rect::from_min_size(pos2(x + 1.0, c.y + 1.0), vec2(1.0, 1.0)), m.light);
-            x += 3.0;
-        }
-    } else {
-        let mut y = r.min.y + 2.0;
-        while y < r.max.y - 1.0 {
-            mesh.add_colored_rect(Rect::from_min_size(pos2(c.x, y), vec2(1.0, 1.0)), m.dark);
-            mesh.add_colored_rect(Rect::from_min_size(pos2(c.x + 1.0, y + 1.0), vec2(1.0, 1.0)), m.light);
-            y += 3.0;
-        }
+    let dm = Metal { light: t.silver.s3, shadow: t.lcd.outline, ..*m };
+    for k in -1..=1 {
+        let d = 5.0 * k as f32;
+        let at = if across { pos2(c.x + d - 1.0, c.y - 1.0) } else { pos2(c.x - 1.0, c.y + d - 1.0) };
+        dimple(p, at, &dm);
     }
-    p.add(mesh);
 }
 
-/// Sunken 3 px slider groove over `x` centred on `cy`.
+/// Slider track over `x` centred on `cy`: a 4 px recessed pill in `s4` with an `s5` top edge and an `s0` lower lip.
 pub fn groove(p: &Painter, x: Rangef, cy: f32, m: &Metal) {
+    groove_value(p, x, cy, None, m);
+}
+
+/// `groove` with the part left of `value_x` filled with the selection blue (the value fill).
+pub fn groove_value(p: &Painter, x: Rangef, cy: f32, value_x: Option<f32>, m: &Metal) {
+    let t = theme::get();
     let cy = cy.floor();
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy - 1.0, cy)), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy, cy + 1.0)), 0.0, m.dark);
-    p.rect_filled(Rect::from_x_y_ranges(x, Rangef::new(cy + 1.0, cy + 2.0)), 0.0, m.light);
-}
-
-/// Metallic slider thumb: raised chrome block with a dark centre line (Vegas 5–7 fader handle).
-pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
-    let r = px(r);
-    chrome_button(p, r, Chrome::Raised, m);
-    let c = r.center().floor();
-    p.rect_filled(Rect::from_min_max(pos2(c.x, r.min.y + 3.0), pos2(c.x + 1.0, r.max.y - 3.0)), 0.0, tint.unwrap_or(m.dark));
-    if let Some(t) = tint {
-        p.rect_filled(r.shrink(2.0), 0.0, t.gamma_multiply(0.25));
+    let r = px(Rect::from_x_y_ranges(x, Rangef::new(cy - 2.0, cy + 2.0)));
+    p.rect_filled(r, 2.0, t.silver.s4);
+    if let Some(vx) = value_x {
+        let f = Rect::from_min_max(r.min, pos2(vx.clamp(r.min.x, r.max.x), r.max.y));
+        if f.width() >= 2.0 {
+            p.rect_filled(f, 2.0, t.sel.mid);
+        }
     }
+    hl(p, r.min.x + 2.0, r.max.x - 2.0, r.max.y, m.light);
+    p.rect_stroke(r, 2.0, Stroke::new(hair(), m.shadow), StrokeKind::Inside);
 }
 
-/// Sunken 3 px vertical slider groove down `y` centred on `cx` (fader tracks).
+/// Vertical slider track down `y` centred on `cx` (fader tracks).
 pub fn groove_v(p: &Painter, cx: f32, y: Rangef, m: &Metal) {
+    let t = theme::get();
     let cx = cx.floor();
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx - 1.0, cx), y), 0.0, m.shadow);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx, cx + 1.0), y), 0.0, m.dark);
-    p.rect_filled(Rect::from_x_y_ranges(Rangef::new(cx + 1.0, cx + 2.0), y), 0.0, m.light);
+    let r = px(Rect::from_x_y_ranges(Rangef::new(cx - 2.0, cx + 2.0), y));
+    p.rect_filled(r, 2.0, t.silver.s4);
+    vl(p, r.max.x, r.min.y + 2.0, r.max.y - 2.0, m.light);
+    p.rect_stroke(r, 2.0, Stroke::new(hair(), m.shadow), StrokeKind::Inside);
 }
 
-/// Thumb of a vertical fader: `thumb` with the centre line across it (the Vegas 5–7 fader handle, dark bar
-/// across its middle).
+/// Slider knob centred in `r`: a lozenge of raised chrome at least 15 × 9 (pill-shaped, wider than tall) with a dark
+/// centre notch; `tint` (automation) colours the notch and the knob faintly.
+pub fn thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
+    let k = px(Rect::from_center_size(r.center(), vec2(r.width().max(15.0), r.height().min(11.0).max(9.0))));
+    chrome(p, k, k.height() * 0.5, Chrome::Raised);
+    if let Some(t) = tint {
+        p.rect_filled(k.shrink(2.0), k.height() * 0.5 - 2.0, t.gamma_multiply(0.22));
+    }
+    let c = k.center().floor();
+    let w = if tint.is_some() { 2.0 } else { 1.0 };
+    p.rect_filled(Rect::from_min_max(pos2(c.x, k.min.y + 2.0), pos2(c.x + w, k.max.y - 2.0)), 0.0, tint.unwrap_or(m.dark));
+}
+
+/// Knob of a vertical fader in `r`: a pill of raised chrome with the notch across it.
 pub fn fader_thumb(p: &Painter, r: Rect, m: &Metal, tint: Option<Color32>) {
     let r = px(r);
-    chrome_button(p, r, Chrome::Raised, m);
+    let rad = r.width().min(r.height()) * 0.5;
+    chrome(p, r, rad, Chrome::Raised);
+    if let Some(t) = tint {
+        p.rect_filled(r.shrink(2.0), rad - 2.0, t.gamma_multiply(0.22));
+    }
     let c = r.center().floor();
     p.rect_filled(Rect::from_min_max(pos2(r.min.x + 3.0, c.y), pos2(r.max.x - 3.0, c.y + 1.0)), 0.0, tint.unwrap_or(m.dark));
-    if let Some(t) = tint {
-        p.rect_filled(r.shrink(2.0), 0.0, t.gamma_multiply(0.25));
-    }
 }
 
 /// Dotted 1 px line (a pixel every 2 px) from `a` to `b`, horizontal or vertical: tree lines, focus rectangles.
@@ -265,8 +427,8 @@ pub fn dotted(p: &Painter, a: Pos2, b: Pos2, c: Color32) {
     p.add(mesh);
 }
 
-/// Classic LED meter: 2 px segments on a 3 px pitch from the well's bottom up to `y`, green below −12 dB, yellow to
-/// −3 dB, red above (`to_y` maps dB to y). The well's dark fill shows between the segments.
+/// LED meter: 2 px segments on a 3 px pitch from the well's bottom up to `y`, green below −12 dB, yellow to −3 dB, red
+/// above (`to_y` maps dB to y). The navy well shows between the segments.
 pub fn led_bar(p: &Painter, well: Rect, y: f32, to_y: &dyn Fn(f32) -> f32, t: &Theme) {
     let (y12, y3) = (to_y(-12.0), to_y(-3.0));
     let mut mesh = Mesh::default();
@@ -279,9 +441,272 @@ pub fn led_bar(p: &Painter, well: Rect, y: f32, to_y: &dyn Fn(f32) -> f32, t: &T
     p.add(mesh);
 }
 
-/// Sunken meter well (3D edge round the dark well).
+/// Meter well: an LCD well (`lcd.deep`) round the meter, 2 px outside it.
 pub fn meter_well(p: &Painter, well: Rect, t: &Theme) {
-    sunken(p, well.expand(2.0), t.meter_bg, &t.metal);
+    let r = px(well.expand(2.0));
+    p.rect_filled(r, t.m.r_small as f32, t.meter_bg);
+    recess_edge_in(p, r, t.m.r_small as f32, t.lcd.outline, Color32::from_white_alpha(14));
+}
+
+// ---- The design system's own pieces ----
+
+/// The selection bar over `r` (UI_SPEC.md §5 Selection): `sel.top` → `sel.bottom` with the `sel.lip` line on top.
+pub fn selection_bar(p: &Painter, r: Rect, radius: f32) {
+    let t = theme::get();
+    let r = px(r);
+    grad(p, r, radius, &[(0.0, t.sel.top), (1.0, t.sel.bottom)]);
+    if r.height() >= 6.0 {
+        hl(p, r.min.x + radius.max(1.0), r.max.x - radius.max(1.0), r.min.y, t.sel.lip);
+    }
+}
+
+/// The amber lamp along `r` (2 px: `amber` with an `amber.hi` line over it): the active dock tab, record armed.
+pub fn lamp(p: &Painter, r: Rect) {
+    let t = theme::get();
+    let r = px(r);
+    p.rect_filled(r, 1.0, t.amber.base);
+    hl(p, r.min.x + 1.0, r.max.x - 1.0, r.min.y, t.amber.hi);
+    p.rect_stroke(r, 1.0, Stroke::new(hair(), t.amber.lo.gamma_multiply(0.6)), StrokeKind::Inside);
+}
+
+/// A panel frame over `r` (UI_SPEC.md §5): `s2` body, an `s6` outline with `r_frame` corners, an `s0` lip inside the
+/// top and left.
+pub fn panel_frame(p: &Painter, r: Rect) {
+    let t = theme::get();
+    let r = px(r);
+    let rad = t.m.r_frame as f32;
+    p.rect_filled(r, rad, t.panel_bg);
+    let o = hair();
+    hl(p, r.min.x + rad, r.max.x - rad, r.min.y + o, t.silver.s0);
+    vl(p, r.min.x + o, r.min.y + rad, r.max.y - rad, t.silver.s0);
+    p.rect_stroke(r, rad, Stroke::new(o, t.silver.s6), StrokeKind::Inside);
+}
+
+/// The rounded edge of a framed region `r` already painted square (a dock group, a floating window): the corners
+/// outside a `rad` arc filled with `outer` (the slate behind the frame), then the `s6` outline round it.
+pub fn frame_edge(p: &Painter, r: Rect, rad: f32, outer: Color32) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let t = theme::get();
+    let r = px(r);
+    let n = 6;
+    let mut mesh = Mesh::default();
+    let corners = [
+        (r.left_top(), r.left_top() + vec2(rad, rad), PI),
+        (r.right_top(), r.right_top() + vec2(-rad, rad), 1.5 * PI),
+        (r.right_bottom(), r.right_bottom() + vec2(-rad, -rad), 0.0),
+        (r.left_bottom(), r.left_bottom() + vec2(rad, -rad), 0.5 * PI),
+    ];
+    for (corner, center, a0) in corners {
+        let base = mesh.vertices.len() as u32;
+        mesh.colored_vertex(corner, outer);
+        for i in 0..=n {
+            mesh.colored_vertex(center + Vec2::angled(a0 + FRAC_PI_2 * i as f32 / n as f32) * rad, outer);
+        }
+        for i in 0..n as u32 {
+            mesh.add_triangle(base, base + 1 + i, base + 2 + i);
+        }
+    }
+    p.add(mesh);
+    p.rect_stroke(r, rad, Stroke::new(hair(), t.silver.s6), StrokeKind::Inside);
+}
+
+/// A tab over `r` (UI_SPEC.md §5 Dock tabs): chrome with `r_ctl` corners away from the content and square ones at
+/// it; `on_content` = the content is below (tabs standing on it) rather than above (tabs hanging under it). Inactive
+/// tabs are a step darker (lifted when hovered); the active one joins the content and, with `lamp`, carries the amber
+/// lamp along its outer edge.
+pub fn tab_face(p: &Painter, r: Rect, active: bool, hovered: bool, on_content: bool, lamp_on: bool) {
+    let t = theme::get();
+    let s = &t.silver;
+    let r = px(r);
+    let rad = t.m.r_ctl as f32;
+    // Painted longer toward the content and clipped, so only the outer corners are rounded; an inactive tab keeps
+    // its edge at the content.
+    let grow = rad + 2.0;
+    let full = if on_content { r.with_max_y(r.max.y + grow) } else { r.with_min_y(r.min.y - grow) };
+    let clip = if active { r } else if on_content { r.with_max_y(r.max.y - 1.0) } else { r.with_min_y(r.min.y + 1.0) };
+    let pc = p.with_clip_rect(clip.intersect(p.clip_rect()));
+    if active {
+        chrome(&pc, full, rad, Chrome::Raised);
+        if lamp_on {
+            let y = if on_content { r.min.y + 2.0 } else { r.max.y - 4.0 };
+            lamp(&pc, Rect::from_min_max(pos2(r.min.x + rad + 2.0, y), pos2(r.max.x - rad - 2.0, y + 2.0)));
+        }
+    } else if hovered {
+        chrome(&pc, full, rad, Chrome::Hover);
+    } else {
+        grad(&pc, full, rad, &[(0.0, s.s2), (1.0, s.s4)]);
+        pc.rect_stroke(full, rad, Stroke::new(hair(), s.s6), StrokeKind::Inside);
+        hl(&pc, r.min.x + rad, r.max.x - rad, if on_content { r.min.y + 1.0 } else { r.max.y - 2.0 }, s.s1.gamma_multiply(0.7));
+    }
+}
+
+/// Toggle pill over `r` (UI_SPEC.md §5): pill-shaped chrome with an `ink.button` label; on = the selection gradient
+/// with a white label (the lit "ON" pill); hovered = lifted chrome.
+pub fn pill_paint(p: &Painter, r: Rect, label: &str, on: bool, hovered: bool, enabled: bool) {
+    let t = theme::get();
+    let r = px(r);
+    let rad = r.height() * 0.5;
+    let ink = if on {
+        selection_bar(p, r, rad);
+        p.rect_stroke(r, rad, Stroke::new(hair(), t.lcd.outline), StrokeKind::Inside);
+        t.sel.text
+    } else {
+        chrome(p, r, rad, if hovered && enabled { Chrome::Hover } else { Chrome::Raised });
+        if enabled { t.ink.button } else { t.ink.disabled }
+    };
+    p.with_clip_rect(r.intersect(p.clip_rect())).text(r.center(), Align2::CENTER_CENTER, label, t.font(t.font.ui), ink);
+}
+
+/// A toggle pill sized to `label` (18 px tall); clicked toggles `on`.
+pub fn pill(ui: &mut Ui, label: &str, on: bool) -> Response {
+    let t = theme::get();
+    let w = ui.painter().layout_no_wrap(label.to_owned(), t.font(t.font.ui), t.ink.button).size().x + 18.0;
+    let (r, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click());
+    pill_paint(ui.painter(), r, label, on, resp.hovered(), ui.is_enabled());
+    resp
+}
+
+/// A section title tab (UI_SPEC.md §5): a 16 px pill of raised chrome holding `text` in Tahoma Bold, set at the left
+/// of `row`, with a groove running from it to the row's right end. Returns the pill's rect.
+pub fn section_tab(p: &Painter, row: Rect, text: &str) -> Rect {
+    let t = theme::get();
+    let font = t.bold(t.font.ui);
+    let w = p.layout_no_wrap(text.to_owned(), font.clone(), t.ink.text).size().x + 16.0;
+    let cy = row.center().y.round();
+    let r = px(Rect::from_min_size(pos2(row.min.x, cy - 8.0), vec2(w, 16.0)));
+    etched_h(p, Rangef::new(r.max.x + 2.0, row.max.x), cy, &t.metal);
+    chrome(p, r, 8.0, Chrome::Raised);
+    p.text(r.center(), Align2::CENTER_CENTER, text, font, t.ink.text);
+    r
+}
+
+// ---- Segmented LCD digits (UI_SPEC.md §3) ----
+
+/// Segments of a digit: a top, b top right, c bottom right, d bottom, e bottom left, f top left, g middle.
+fn segments(ch: char) -> Option<u8> {
+    Some(match ch {
+        '0' => 0b0111111,
+        '1' => 0b0000110,
+        '2' => 0b1011011,
+        '3' => 0b1001111,
+        '4' => 0b1100110,
+        '5' => 0b1101101,
+        '6' => 0b1111101,
+        '7' => 0b0000111,
+        '8' => 0b1111111,
+        '9' => 0b1101111,
+        '-' => 0b1000000,
+        _ => return None,
+    })
+}
+
+/// Advance of `ch` at digit height `h`.
+fn lcd_advance(ch: char, h: f32) -> f32 {
+    match ch {
+        ':' | ';' | '.' | ',' => h * 0.28,
+        ' ' => h * 0.3,
+        _ if segments(ch).is_some() => h * 0.6,
+        _ => h * 0.62,
+    }
+}
+
+/// Width of `text` as `lcd_digits` paints it at height `h`.
+pub fn lcd_width(text: &str, h: f32) -> f32 {
+    text.chars().map(|c| lcd_advance(c, h)).sum()
+}
+
+/// `text` as seven-segment LCD digits `h` px tall, slanted 8 %, anchored by `align` at `at`: lit segments in `lit`,
+/// the unlit ones of each digit in `ghost` (as a real LCD shows them). `:` `;` `.` `,` are dots; other characters fall
+/// back to Tahoma Bold. Returns the painted rect.
+pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit: Color32, ghost: Color32) -> Rect {
+    let t = theme::get();
+    let w = lcd_width(text, h);
+    let r = align.anchor_size(at, vec2(w, h));
+    let th = (h * 0.15).max(2.0);
+    let slant = 0.08;
+    // x shifts right as y goes up.
+    let sk = |pt: Pos2| pos2(pt.x + (r.max.y - pt.y) * slant, pt.y);
+    let mut x = r.min.x;
+    let mut lit_mesh = Mesh::default();
+    let mut ghost_mesh = Mesh::default();
+    let quad = |m: &mut Mesh, pts: [Pos2; 6], c: Color32| {
+        let base = m.vertices.len() as u32;
+        for q in pts {
+            m.colored_vertex(sk(q), c);
+        }
+        for (a, b, cc) in [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 5)] {
+            m.add_triangle(base + a, base + b, base + cc);
+        }
+    };
+    for ch in text.chars() {
+        let adv = lcd_advance(ch, h);
+        if let Some(bits) = segments(ch) {
+            let dw = adv - h * 0.14;
+            let (x0, x1) = (x + h * 0.04, x + h * 0.04 + dw);
+            let (y0, ym, y1) = (r.min.y, r.min.y + h * 0.5, r.max.y);
+            let g = th * 0.5;
+            // Each segment runs between the centre lines of its neighbours, less a hairline gap, with pointed ends.
+            let gap = (h * 0.035).max(0.6);
+            let hseg = |y: f32| {
+                let (xa, xb) = (x0 + g + gap, x1 - g - gap);
+                [pos2(xa, y), pos2(xa + g, y - g), pos2(xb - g, y - g), pos2(xb, y), pos2(xb - g, y + g), pos2(xa + g, y + g)]
+            };
+            let vseg = |xx: f32, ya: f32, yb: f32| {
+                let (ya, yb) = (ya + gap, yb - gap);
+                [pos2(xx, ya), pos2(xx + g, ya + g), pos2(xx + g, yb - g), pos2(xx, yb), pos2(xx - g, yb - g), pos2(xx - g, ya + g)]
+            };
+            let segs = [
+                hseg(y0 + g),
+                vseg(x1 - g, y0 + g, ym),
+                vseg(x1 - g, ym, y1 - g),
+                hseg(y1 - g),
+                vseg(x0 + g, ym, y1 - g),
+                vseg(x0 + g, y0 + g, ym),
+                hseg(ym),
+            ];
+            for (k, s) in segs.into_iter().enumerate() {
+                if bits & (1 << k) != 0 {
+                    quad(&mut lit_mesh, s, lit);
+                } else {
+                    quad(&mut ghost_mesh, s, ghost);
+                }
+            }
+        } else if matches!(ch, ':' | ';' | '.' | ',') {
+            let d = th.max(2.0);
+            let cx = x + adv * 0.5 - d * 0.5;
+            let dot = |y: f32| sk(pos2(cx, y));
+            let mut put = |y: f32| lit_mesh.add_colored_rect(Rect::from_min_size(dot(y), vec2(d, d)), lit);
+            if matches!(ch, ':' | ';') {
+                put(r.min.y + h * 0.28 - d * 0.5);
+            }
+            put(r.max.y - h * 0.22 - d * 0.5);
+            if matches!(ch, ';' | ',') {
+                lit_mesh.add_colored_rect(Rect::from_min_size(dot(r.max.y - h * 0.22 + d * 0.5), vec2(d * 0.6, d)), lit);
+            }
+        } else if ch != ' ' {
+            p.text(pos2(x + adv * 0.5, r.center().y), Align2::CENTER_CENTER, ch, t.bold((h * 0.8).round()), lit);
+        }
+        x += adv;
+    }
+    p.add(ghost_mesh);
+    p.add(lit_mesh);
+    r
+}
+
+/// A read-out value on an LCD: segmented digits `h` px tall when `text` is all digits, else Tahoma Bold at the size
+/// that matches (`lcd.digits` lit, `lcd.ghost` unlit). Returns the painted rect.
+pub fn lcd_value(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32) -> Rect {
+    let t = theme::get();
+    if lcd_paintable(text) {
+        lcd_digits(p, at, align, text, h, t.lcd.digits, t.lcd.ghost)
+    } else {
+        p.text(at, align, text, t.bold((h * 0.8).round().max(11.0)), t.lcd.digits)
+    }
+}
+
+/// True when `text` paints entirely as segments (digits and their separators).
+pub fn lcd_paintable(text: &str) -> bool {
+    text.chars().all(|c| segments(c).is_some() || matches!(c, ':' | ';' | '.' | ',' | ' '))
 }
 
 /// The brand bitmaps (assets/brand), decoded once per context.
@@ -312,7 +737,7 @@ pub fn brand_tex(ctx: &Context, which: Brand) -> TextureHandle {
     handle
 }
 
-/// Black triangle of a classic scrollbar / spinner arrow in `r`; `dir` = (dx, dy) it points to.
+/// Filled triangle of a scrollbar / spinner arrow in `r`; `dir` = (dx, dy) it points to.
 pub fn arrow(p: &Painter, r: Rect, dir: (f32, f32), ink: Color32) {
     let c = r.center().floor() + vec2(0.5, 0.5);
     let (dx, dy) = dir;
@@ -323,23 +748,24 @@ pub fn arrow(p: &Painter, r: Rect, dir: (f32, f32), ink: Color32) {
     p.add(Shape::convex_polygon(pts, ink, Stroke::NONE));
 }
 
-/// Metal header with a blue-grey tint (track headers).
+/// A track header's card (UI_SPEC.md §5 Track headers): raised chrome, lit when the track is selected.
 pub fn header_metal(p: &Painter, r: Rect, t: &Theme, selected: bool) {
-    let tint = if selected { Color32::from_rgb(0xBE, 0xDC, 0xF2) } else { t.metal.header_tint };
-    metal_tinted(p, r, &t.metal, tint);
+    let r = px(r);
+    let (s, sel) = (t.silver, t.sel);
+    let stops = if selected { [(0.0, sel.lit_top), (0.5, mix(sel.lit_top, sel.lit_bottom, 0.5)), (1.0, sel.lit_bottom)] } else { [(0.0, s.s1), (0.45, s.s2), (1.0, s.s3)] };
+    grad(p, r, 0.0, &stops);
 }
 
-// ---- Windows 2000 skins over egui's controls (UI_SPEC.md §8.6) ----
+// ---- Controls painted over egui's (UI_SPEC.md §5) ----
 //
 // egui draws its check boxes, radio buttons, combo boxes, drag values, sliders, progress bars, text fields and push
 // buttons flat. The wrappers below let egui lay out and run the control (clicks, drags, keyboard, the combo list) and
-// paint the Windows 2000 control over it through one set of painters: `check_box`, `radio_mark`, `combo_frame`,
-// `spin_buttons`, `progress_blocks`, `classic_push` and the sunken `bevel` of a field.
+// paint the design system's control over it: `check_box`, `radio_mark`, `combo_frame`, `spin_buttons`,
+// `progress_blocks`, `classic_push` and the recessed field edge.
 
-/// The 3D palette the controls on this `ui` are drawn with: the `#D4D0C8` property-sheet one inside a dialog
-/// (`dialogs::style` fills the panel with the dialog page colour), the metal one in the dock windows.
-pub fn skin(ui: &Ui, t: &Theme) -> Metal {
-    if ui.visuals().panel_fill == t.dialog().page { t.dialog_metal() } else { t.metal }
+/// The chrome palette the controls on this `ui` are drawn with (one silver everywhere; no streaks on controls).
+pub fn skin(_ui: &Ui, t: &Theme) -> Metal {
+    t.dialog_metal()
 }
 
 /// Filled triangle pointing `dir` ((dx, dy)) in `r`: `half` px each side of the centre line, `h` px tall.
@@ -352,137 +778,115 @@ fn tri(p: &Painter, r: Rect, dir: (f32, f32), half: f32, h: f32, ink: Color32) {
     p.add(Shape::convex_polygon(vec![tip, base + vec2(nx, ny) * half, base - vec2(nx, ny) * half], ink, Stroke::NONE));
 }
 
-/// Windows-classic check box in `r` (14×14): a sunken 2 px edge round a white box (face-grey when disabled) and a
-/// 7×7 pixel check mark in `ink`.
-pub fn check_box(p: &Painter, r: Rect, checked: bool, enabled: bool, ink: Color32, m: &Metal) {
-    let r = px(r);
-    p.rect_filled(r, 0.0, if enabled { Color32::WHITE } else { m.face });
-    bevel(p, r, false, m);
+/// Check box in `r` (13 × 13 centred): `paper` with the recess edge and `r_small`, a 2 px anti-aliased tick in
+/// `ink.glyph` (`ink.disabled` on `paper.disabled` when disabled). `_ink` is kept for callers of the old painter.
+pub fn check_box(p: &Painter, r: Rect, checked: bool, enabled: bool, _ink: Color32, m: &Metal) {
+    let t = theme::get();
+    let b = px(Rect::from_center_size(r.center(), vec2(13.0, 13.0)));
+    let rad = t.m.r_small as f32;
+    p.rect_filled(b, rad, if enabled { t.ink.paper } else { t.ink.paper_disabled });
+    recess_edge(p, b, rad, m);
     if checked {
-        // Rows of the check from the top: (first x, one past the last x), two runs on the rows the strokes cross.
-        const ROWS: [&[(f32, f32)]; 7] = [&[(6.0, 7.0)], &[(5.0, 7.0)], &[(0.0, 1.0), (4.0, 7.0)], &[(0.0, 2.0), (3.0, 6.0)], &[(0.0, 5.0)], &[(1.0, 4.0)], &[(2.0, 3.0)]];
-        let o = (r.min + vec2((r.width() - 7.0) * 0.5, (r.height() - 7.0) * 0.5)).floor();
-        let mut mesh = Mesh::default();
-        for (y, runs) in ROWS.iter().enumerate() {
-            for (x0, x1) in runs.iter() {
-                mesh.add_colored_rect(Rect::from_min_max(pos2(o.x + x0, o.y + y as f32), pos2(o.x + x1, o.y + y as f32 + 1.0)), ink);
-            }
-        }
-        p.add(mesh);
+        let c = if enabled { t.ink.glyph } else { t.ink.disabled };
+        let o = b.min;
+        let pts = vec![o + vec2(3.0, 6.5), o + vec2(5.5, 9.0), o + vec2(10.0, 3.8)];
+        p.add(Shape::line(pts, Stroke::new(2.0_f32, c)));
     }
 }
 
-/// Windows-classic radio button in `r`: a white disc (face-grey when disabled) with a 3D ring (shadow / dark on the
-/// upper left, light / face on the lower right) and a 4 px dot in `ink` when on.
-pub fn radio_mark(p: &Painter, r: Rect, on: bool, enabled: bool, ink: Color32, m: &Metal) {
+/// Radio button in `r` (13 px disc centred): `paper`, an `s5` outline, a dark inner top arc; on = a 5 px dot of the
+/// selection blue with a white glint.
+pub fn radio_mark(p: &Painter, r: Rect, on: bool, enabled: bool, _ink: Color32, m: &Metal) {
     use std::f32::consts::PI;
+    let t = theme::get();
     let c = r.center().floor() + vec2(0.5, 0.5);
-    let rad = (r.width().min(r.height()) * 0.5 - 1.0).floor();
-    p.circle_filled(c, rad, if enabled { Color32::WHITE } else { m.face });
-    let arc = |radius: f32, a0: f32, a1: f32, col: Color32| {
-        let n = 14;
-        let pts: Vec<Pos2> = (0..=n).map(|i| c + Vec2::angled(a0 + (a1 - a0) * i as f32 / n as f32) * radius).collect();
-        p.add(Shape::line(pts, Stroke::new(1.0_f32, col)));
-    };
-    arc(rad, 0.75 * PI, 1.75 * PI, m.shadow);
-    arc(rad - 1.0, 0.75 * PI, 1.75 * PI, m.dark);
-    arc(rad, -0.25 * PI, 0.75 * PI, m.light);
-    arc(rad - 1.0, -0.25 * PI, 0.75 * PI, m.face);
+    let rad = 6.0;
+    p.circle_filled(c, rad, if enabled { t.ink.paper } else { t.ink.paper_disabled });
+    let pts: Vec<Pos2> = (0..=12).map(|i| c + Vec2::angled(PI * 1.1 + PI * 0.8 * i as f32 / 12.0) * (rad - 1.2)).collect();
+    p.add(Shape::line(pts, Stroke::new(1.0_f32, Color32::from_black_alpha(60))));
+    p.circle_stroke(c, rad - 0.5, Stroke::new(1.0_f32, m.shadow));
     if on {
-        p.circle_filled(c, 2.0, ink);
+        let dot = if enabled { t.sel.mid } else { t.ink.disabled };
+        p.circle_filled(c, 3.0, dot);
+        p.circle_filled(c + vec2(-0.8, -0.8), 1.0, Color32::from_white_alpha(170));
     }
 }
 
 /// Width of a combo box's arrow button.
-const COMBO_ARROW_W: f32 = 20.0;
+const COMBO_ARROW_W: f32 = 18.0;
 
-/// Windows-classic combo box over `r`: a sunken 2 px edge round the field and a raised arrow button at its right end
-/// holding a black ▾, pressed in while the list is open. The field itself is egui's (white; face-grey disabled).
-pub fn combo_frame(p: &Painter, r: Rect, open: bool, ink: Color32, m: &Metal) {
+/// Combo box over `r`: the recess edge round egui's paper field and a chrome arrow button inside its right end
+/// holding an `ink.glyph` ▾, pressed while the list is open.
+pub fn combo_frame(p: &Painter, r: Rect, open: bool, _ink: Color32, m: &Metal) {
+    let t = theme::get();
     let r = px(r);
-    bevel(p, r, false, m);
+    recess_edge(p, r, t.m.r_ctl as f32, m);
     let b = Rect::from_min_max(pos2(r.max.x - 2.0 - COMBO_ARROW_W, r.min.y + 2.0), r.max - vec2(2.0, 2.0));
-    p.rect_filled(b, 0.0, m.face);
-    if open {
-        p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
-    } else {
-        bevel(p, b, true, m);
-    }
+    chrome(p, b, t.m.r_small as f32, if open { Chrome::Pressed } else { Chrome::Raised });
     let shift = if open { vec2(1.0, 1.0) } else { Vec2::ZERO };
-    tri(p, b.translate(shift), (0.0, 1.0), 3.5, 4.0, ink);
+    tri(p, b.translate(shift), (0.0, 1.0), 3.5, 4.0, t.ink.glyph);
 }
 
 /// Width of a spinner's up / down buttons.
 const SPIN_W: f32 = 13.0;
 
-/// The up / down buttons of a Windows-classic spinner in `r` (at the right end of its field): two raised faces with
-/// small black triangles; `pressed` = 0 (up) / 1 (down) sinks that one.
-pub fn spin_buttons(p: &Painter, r: Rect, pressed: Option<usize>, ink: Color32, m: &Metal) {
+/// The up / down buttons of a spinner in `r` (at the right end of its field): two chrome half-buttons with `ink.glyph`
+/// triangles; `pressed` = 0 (up) / 1 (down) presses that one.
+pub fn spin_buttons(p: &Painter, r: Rect, pressed: Option<usize>, _ink: Color32, _m: &Metal) {
+    let t = theme::get();
     let r = px(r);
     let mid = (r.min.y + r.height() * 0.5).floor();
     let halves = [Rect::from_min_max(r.min, pos2(r.max.x, mid)), Rect::from_min_max(pos2(r.min.x, mid), r.max)];
     for (k, b) in halves.into_iter().enumerate() {
-        p.rect_filled(b, 0.0, m.face);
         let down = pressed == Some(k);
-        if down {
-            p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
-        } else {
-            bevel(p, b, true, m);
-        }
+        chrome(p, b, t.m.r_small as f32, if down { Chrome::Pressed } else { Chrome::Raised });
         let shift = if down { vec2(1.0, 1.0) } else { Vec2::ZERO };
-        tri(p, b.translate(shift), (0.0, if k == 0 { -1.0 } else { 1.0 }), 2.5, 3.0, ink);
+        tri(p, b.translate(shift), (0.0, if k == 0 { -1.0 } else { 1.0 }), 2.5, 3.0, t.ink.glyph);
     }
 }
 
-/// Windows 2000 progress bar in `r`: a sunken face-grey well with `accent` blocks (two thirds as wide as they are
-/// tall, 2 px apart) for `frac` of its length.
-pub fn progress_blocks(p: &Painter, r: Rect, frac: f32, accent: Color32, m: &Metal) {
-    let r = px(r);
-    p.rect_filled(r, 0.0, m.face);
-    edge(p, r, false, m);
-    let inner = r.shrink(3.0);
-    let bw = (inner.height() * 2.0 / 3.0).round().max(2.0);
-    let n = ((inner.width() + 2.0) / (bw + 2.0)).floor();
-    let lit = (n * frac.clamp(0.0, 1.0)).round() as usize;
-    let mut mesh = Mesh::default();
-    for k in 0..lit {
-        let x = inner.min.x + k as f32 * (bw + 2.0);
-        mesh.add_colored_rect(Rect::from_min_max(pos2(x, inner.min.y), pos2((x + bw).min(inner.max.x), inner.max.y)), accent);
-    }
-    p.add(mesh);
-}
-
-/// Windows 2000 push button of `size`: `m.face` with the 2 px 3D edge (sunken while pressed, the label shifted),
-/// the default button's black ring outside it, the label in Tahoma (`ink`; `disabled_ink` with a white emboss).
-#[allow(clippy::too_many_arguments)]
-pub fn classic_push(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default: bool, ink: Color32, disabled_ink: Color32, m: &Metal) -> Response {
+/// Progress bar in `r` (UI_SPEC.md §5): a recessed `lcd.deep` pill, the done part a selection-blue pill with its lip.
+/// `_accent` is kept for callers of the old painter.
+pub fn progress_blocks(p: &Painter, r: Rect, frac: f32, _accent: Color32, _m: &Metal) {
     let t = theme::get();
+    let r = px(r);
+    let rad = (r.height() * 0.5).min(t.m.r_ctl as f32 + 3.0);
+    p.rect_filled(r, rad, t.lcd.deep);
+    let inner = r.shrink(2.0);
+    let w = (inner.width() * frac.clamp(0.0, 1.0)).round();
+    if w >= 2.0 {
+        selection_bar(p, Rect::from_min_size(inner.min, vec2(w, inner.height())), rad - 2.0);
+    }
+    recess_edge_in(p, r, rad, t.lcd.outline, Color32::from_white_alpha(20));
+}
+
+/// Push button of `size` (UI_SPEC.md §5): raised chrome with `r_ctl` corners and an `ink.button` label (`ink`);
+/// hovered = lifted with the `lit.outline`; pressed = inverted, the label 1 px down-right; the default button has a
+/// 2 px `lit.outline` ring inside its outline and a bold label; disabled = flat `s2`, an `s4` outline and
+/// `disabled_ink`.
+#[allow(clippy::too_many_arguments)]
+pub fn classic_push(ui: &mut Ui, label: &str, size: Vec2, enabled: bool, default: bool, ink: Color32, disabled_ink: Color32, _m: &Metal) -> Response {
+    let t = theme::get();
+    let font = if default && enabled { t.bold(11.0) } else { t.font(11.0) };
     // Never narrower than its label (egui's `min_size` buttons grow the same way).
-    let size = vec2(size.x.max(ui.painter().layout_no_wrap(label.to_owned(), t.font(11.0), ink).size().x + 16.0), size.y);
+    let size = vec2(size.x.max(ui.painter().layout_no_wrap(label.to_owned(), font.clone(), ink).size().x + 16.0), size.y);
     let (r, resp) = ui.allocate_exact_size(size, if enabled { Sense::click() } else { Sense::hover() });
     let r = px(r);
     let p = ui.painter();
-    p.rect_filled(r, 0.0, m.face);
-    let face = if default && enabled {
-        p.rect_stroke(r, 0.0, Stroke::new(1.0_f32, Color32::BLACK), StrokeKind::Inside);
-        r.shrink(1.0)
-    } else {
-        r
-    };
+    let rad = t.m.r_ctl as f32;
     let pressed = enabled && resp.is_pointer_button_down_on();
-    if pressed {
-        p.rect_stroke(face, 0.0, Stroke::new(1.0_f32, m.shadow), StrokeKind::Inside);
-    } else {
-        bevel(p, face, true, m);
-    }
-    let c = face.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
-    let font = t.font(11.0);
     if enabled {
-        p.text(c, Align2::CENTER_CENTER, label, font, ink);
+        chrome(p, r, rad, if pressed { Chrome::Pressed } else if resp.hovered() { Chrome::Hover } else { Chrome::Raised });
+        if default {
+            p.rect_stroke(r.shrink(hair()), rad - 1.0, Stroke::new(2.0_f32, t.sel.lit_outline), StrokeKind::Inside);
+        }
     } else {
-        p.text(c + vec2(1.0, 1.0), Align2::CENTER_CENTER, label, font.clone(), m.light);
-        p.text(c, Align2::CENTER_CENTER, label, font, disabled_ink);
+        p.rect_filled(r, rad, t.silver.s2);
+        p.rect_stroke(r, rad, Stroke::new(hair(), t.silver.s4), StrokeKind::Inside);
     }
+    let c = r.center() + if pressed { vec2(1.0, 1.0) } else { Vec2::ZERO };
+    let ink = if !enabled { disabled_ink } else if ink == t.text || ink == t.dialog().text { t.ink.button } else { ink };
+    p.text(c, Align2::CENTER_CENTER, label, font, ink);
     resp
 }
 
@@ -523,11 +927,11 @@ pub fn radio_value<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, text: i
 }
 
 /// egui's combo box (`ComboBox::from_id_salt(id).width(width).selected_text(text).show_ui(ui, add)`) with
-/// `combo_frame` painted over its button (the field white, face-grey when disabled).
+/// `combo_frame` painted over its button (the field paper, `paper.disabled` when disabled).
 pub fn combo<R>(ui: &mut Ui, id: impl std::hash::Hash, width: f32, text: impl Into<WidgetText>, add: impl FnOnce(&mut Ui) -> R) -> InnerResponse<Option<R>> {
     let t = theme::get();
     let m = skin(ui, &t);
-    let fill = if ui.is_enabled() { t.input_bg } else { m.face };
+    let fill = if ui.is_enabled() { t.input_bg } else { t.ink.paper_disabled };
     let out = ui
         .scope(|ui| {
             flat_field_visuals(ui, fill);
@@ -538,24 +942,26 @@ pub fn combo<R>(ui: &mut Ui, id: impl std::hash::Hash, width: f32, text: impl In
     out
 }
 
-/// egui's widget visuals with a flat `fill` and no edge, under the classic painters.
+/// egui's widget visuals with a flat `fill` (rounded `r_ctl`) and no edge, under the painters.
 fn flat_field_visuals(ui: &mut Ui, fill: Color32) {
+    let t = theme::get();
     let w = &mut ui.visuals_mut().widgets;
     for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
         s.bg_fill = fill;
         s.weak_bg_fill = fill;
         s.bg_stroke = Stroke::NONE;
         s.expansion = 0.0;
+        s.corner_radius = CornerRadius::same(t.m.r_ctl);
     }
 }
 
-/// egui's drag value (`ui.add(build(DragValue::new(v)))`) drawn as a spinner: a sunken white field
-/// with `spin_buttons` at its right end that step the value by `step`.
+/// egui's drag value (`ui.add(build(DragValue::new(v)))`) drawn as a spinner: a recessed paper field with
+/// `spin_buttons` at its right end that step the value by `step`.
 pub fn spin<N: emath::Numeric>(ui: &mut Ui, v: &mut N, step: f64, build: impl for<'a> FnOnce(DragValue<'a>) -> DragValue<'a>) -> Response {
     let t = theme::get();
     let m = skin(ui, &t);
     let enabled = ui.is_enabled();
-    let fill = if enabled { t.input_bg } else { m.face };
+    let fill = if enabled { t.input_bg } else { t.ink.paper_disabled };
     let mut resp = ui
         .scope(|ui| {
             flat_field_visuals(ui, fill);
@@ -566,7 +972,7 @@ pub fn spin<N: emath::Numeric>(ui: &mut Ui, v: &mut N, step: f64, build: impl fo
         .inner;
     let r = px(resp.rect);
     let p = ui.painter().clone();
-    bevel(&p, r, false, &m);
+    recess_edge(&p, r, t.m.r_ctl as f32, &m);
     let br = Rect::from_min_max(pos2(r.max.x - 2.0 - SPIN_W, r.min.y + 2.0), r.max - vec2(2.0, 2.0));
     let mid = (br.min.y + br.height() * 0.5).floor();
     let up = ui.interact(Rect::from_min_max(br.min, pos2(br.max.x, mid)), resp.id.with("spin_up"), Sense::click());
@@ -598,8 +1004,8 @@ pub struct Slide<'a> {
     pub clamp: bool,
 }
 
-/// A horizontal slider drawn as the Vegas fader: a sunken `groove` with the chrome `thumb`, then
-/// the value as a spinner and the label.
+/// A horizontal slider (UI_SPEC.md §5): the recessed track with its value fill and the chrome lozenge knob, then the
+/// value as a spinner and the label.
 pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s: Slide) -> Response {
     let t = theme::get();
     let m = skin(ui, &t);
@@ -611,7 +1017,7 @@ pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s:
     let out = ui.horizontal(|ui| {
         let thickness = ui.text_style_height(&TextStyle::Body).max(ui.spacing().interact_size.y);
         let (rect, mut resp) = ui.allocate_exact_size(vec2(ui.spacing().slider_width, thickness), Sense::click_and_drag());
-        let track = Rangef::new(rect.min.x + 6.0, rect.max.x - 6.0);
+        let track = Rangef::new(rect.min.x + 8.0, rect.max.x - 8.0);
         let norm = |x: f32| if log { (x / lo).ln() / (hi / lo).ln() } else { (x - lo) / (hi - lo).max(1e-9) };
         let denorm = |n: f32| if log { lo * (hi / lo).powf(n) } else { lo + n * (hi - lo) };
         if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
@@ -622,9 +1028,9 @@ pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s:
             }
         }
         let p = ui.painter();
-        groove(p, track, rect.center().y, &m);
         let x = track.min + norm(v.clamp(lo, hi)).clamp(0.0, 1.0) * track.span();
-        thumb(p, Rect::from_center_size(pos2(x.round(), rect.center().y), vec2(11.0, 15.0)), &m, None);
+        groove_value(p, Rangef::new(track.min - 4.0, track.max + 4.0), rect.center().y, Some(x), &m);
+        thumb(p, Rect::from_center_size(pos2(x.round(), rect.center().y), vec2(15.0, 11.0)), &m, None);
         if !s.no_value {
             let span = (hi - lo) as f64;
             let step = if span >= 100.0 { 1.0 } else { span / 100.0 };
@@ -640,27 +1046,39 @@ pub fn slider(ui: &mut Ui, v: &mut f32, range: std::ops::RangeInclusive<f32>, s:
     out.inner | out.response
 }
 
-/// A progress bar (`text` shown, else the percentage; `width` or the available width): `progress_blocks` with the text in black over them.
+/// A progress bar (`text` shown, else the percentage; `width` or the available width): `progress_blocks` with the
+/// text in `sel.text` over it (AA on both the groove and the fill).
 pub fn progress(ui: &mut Ui, frac: f32, text: Option<String>, width: Option<f32>) -> Response {
     let t = theme::get();
     let w = width.unwrap_or_else(|| ui.available_size_before_wrap().x.max(96.0));
     let (r, resp) = ui.allocate_exact_size(vec2(w, ui.spacing().interact_size.y), Sense::hover());
     let p = ui.painter();
-    progress_blocks(p, r, frac, t.dialog().accent, &skin(ui, &t));
-    p.text(r.center(), Align2::CENTER_CENTER, text.unwrap_or_else(|| format!("{:.0} %", frac * 100.0)), t.font(t.font.ui), t.text);
+    progress_blocks(p, r, frac, t.sel.mid, &skin(ui, &t));
+    p.text(r.center(), Align2::CENTER_CENTER, text.unwrap_or_else(|| format!("{:.0} %", frac * 100.0)), t.font(t.font.ui), t.sel.text);
     resp
 }
 
-/// egui's text field (`ui.add(te)`) with the sunken 2 px edge painted round it.
+/// egui's text field (`ui.add(te)`) with the recess edge painted round it.
 pub fn edit(ui: &mut Ui, te: TextEdit<'_>) -> Response {
     edit_enabled(ui, true, te)
 }
 
 pub fn edit_enabled(ui: &mut Ui, enabled: bool, te: TextEdit<'_>) -> Response {
     let t = theme::get();
-    // Room for the 2 px edge round the text; egui's response rect is the inner one (inside the margin).
-    let resp = ui.add_enabled(enabled, te.margin(Margin::symmetric(5, 3)));
-    bevel(ui.painter(), resp.rect.expand2(vec2(5.0, 3.0)), false, &skin(ui, &t));
+    // Room for the edge round the text; egui's response rect is the inner one (inside the margin).
+    let resp = ui.scope(|ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+            s.bg_stroke = Stroke::NONE;
+        }
+        ui.add_enabled(enabled, te.margin(Margin::symmetric(5, 3)))
+    });
+    let resp = resp.inner;
+    let outer = resp.rect.expand2(vec2(5.0, 3.0));
+    recess_edge(ui.painter(), outer, t.m.r_ctl as f32, &skin(ui, &t));
+    if resp.has_focus() {
+        ui.painter().rect_stroke(px(outer), t.m.r_ctl as f32, Stroke::new(hair(), t.sel.lit_outline), StrokeKind::Inside);
+    }
     resp
 }
 
@@ -697,13 +1115,34 @@ pub fn px(r: Rect) -> Rect {
     Rect::from_min_max(r.min.round(), r.max.round())
 }
 
+/// True inside a navy list well (`scroll_pane` sets its text colour).
+pub fn in_well(ui: &Ui) -> bool {
+    ui.visuals().override_text_color == Some(theme::get().lcd.text)
+}
+
+/// The text colour of a row on this `ui`: `sel.text` on the selection, `lcd.text` in a navy well, `ink` elsewhere.
+pub fn list_ink(ui: &Ui, selected: bool) -> Color32 {
+    let t = theme::get();
+    if selected {
+        t.sel.text
+    } else if in_well(ui) {
+        t.lcd.text
+    } else {
+        t.text
+    }
+}
+
 /// One tree node. Returns (row response, expander clicked).
-/// `expanded`: None = leaf. ⊞/⊟ boxes, dotted tree lines, and the highlight bar on the label when selected.
+/// `expanded`: None = leaf. ⊞/⊟ boxes, dotted tree lines, and the selection bar on the label when selected.
 pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<Icon>, label: &str, selected: bool) -> (Response, bool) {
     let t = theme::get();
+    let well = in_well(ui);
     let w = ui.available_width().max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::click_and_drag());
     let p = ui.painter();
+    if well && resp.hovered() && !selected {
+        p.rect_filled(rect, 0.0, t.lcd.hover);
+    }
     let x0 = rect.min.x + 4.0 + depth as f32 * 16.0;
     let cy = rect.center().y;
     let exp_rect = Rect::from_center_size(pos2(x0 + 5.0, cy), vec2(9.0, 9.0));
@@ -712,7 +1151,7 @@ pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<
     // the last child. Rows come in order, each drawing the column above itself; the connectors are kept per list
     // (`ui.id()`) for this pass.
     let (ex, ey) = (exp_rect.center().x.floor(), cy.floor());
-    let ink = t.metal.shadow;
+    let ink = if well { t.lcd.rule } else { t.metal.shadow };
     dotted(p, pos2(if expanded.is_some() { exp_rect.max.x.floor() } else { ex }, ey), pos2(x0 + 13.0, ey), ink);
     let key = ui.id().with("tree_lines");
     let pass = ui.ctx().cumulative_pass_nr();
@@ -736,14 +1175,15 @@ pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<
         let er = ui.interact(exp_rect.expand(3.0), resp.id.with("exp"), Sense::click());
         toggled = er.clicked();
         let p = ui.painter();
-        // ⊞ / ⊟: a white 9×9 box with a grey edge and a black + or −, on whole pixels.
+        // ⊞ / ⊟: a 9×9 box with a + or −, on whole pixels: navy with `lcd.text` in a well, paper and ink elsewhere.
         let b = px(exp_rect);
-        p.rect_filled(b, 0.0, t.input_bg);
-        p.rect_stroke(b, 0.0, Stroke::new(1.0_f32, t.metal.shadow), StrokeKind::Inside);
+        let (fill, edge, mark) = if well { (t.lcd.deep, t.lcd.text, t.lcd.text_hi) } else { (t.input_bg, t.metal.shadow, t.ink.glyph) };
+        p.rect_filled(b, 1.0, fill);
+        p.rect_stroke(b, 1.0, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
         let c = b.center().floor();
-        p.rect_filled(Rect::from_min_max(pos2(c.x - 2.0, c.y), pos2(c.x + 3.0, c.y + 1.0)), 0.0, t.text);
+        p.rect_filled(Rect::from_min_max(pos2(c.x - 2.0, c.y), pos2(c.x + 3.0, c.y + 1.0)), 0.0, mark);
         if !open {
-            p.rect_filled(Rect::from_min_max(pos2(c.x, c.y - 2.0), pos2(c.x + 1.0, c.y + 3.0)), 0.0, t.text);
+            p.rect_filled(Rect::from_min_max(pos2(c.x, c.y - 2.0), pos2(c.x + 1.0, c.y + 3.0)), 0.0, mark);
         }
     }
     let mut x = x0 + 14.0;
@@ -752,30 +1192,27 @@ pub fn tree_row(ui: &mut Ui, depth: usize, expanded: Option<bool>, icon: Option<
         x += 20.0;
     }
     let p = ui.painter();
-    let color = if selected { Color32::WHITE } else { t.text };
+    let color = list_ink(ui, selected);
     let galley = p.layout_no_wrap(label.to_owned(), t.font(t.font.ui), color);
     let text_pos = pos2(x, (cy - galley.size().y * 0.5).round());
     if selected {
-        // The highlight bar covers the label only, with a dotted focus rectangle.
-        let box_r = px(Rect::from_min_size(text_pos - vec2(2.0, 1.0), galley.size() + vec2(4.0, 2.0)));
-        p.rect_filled(box_r, 0.0, t.menu_popup_hover);
-        let (a, b) = (box_r.min, box_r.max - vec2(1.0, 1.0));
-        dotted(p, a, pos2(b.x, a.y), t.text_bright);
-        dotted(p, pos2(a.x, b.y), b, t.text_bright);
-        dotted(p, a, pos2(a.x, b.y), t.text_bright);
-        dotted(p, pos2(b.x, a.y), b, t.text_bright);
+        // The selection bar covers the label only, as a TreeView's.
+        let box_r = px(Rect::from_min_size(text_pos - vec2(3.0, 2.0), galley.size() + vec2(6.0, 4.0)));
+        selection_bar(p, box_r, t.m.r_small as f32);
     }
     p.galley(text_pos, galley, color);
     (resp, toggled)
 }
 
-/// Full-width list row: the `#316AC5` highlight bar over a white list box when selected, no hover fill.
+/// Full-width list row: the selection bar when selected; `lcd.hover` under the pointer in a navy well.
 pub fn list_row(ui: &mut Ui, height: f32, selected: bool) -> Response {
     let t = theme::get();
     let w = ui.available_width().max(60.0);
     let (rect, resp) = ui.allocate_exact_size(vec2(w, height), Sense::click_and_drag());
     if selected {
-        ui.painter().rect_filled(rect, 0.0, t.menu_popup_hover);
+        selection_bar(ui.painter(), rect, 0.0);
+    } else if in_well(ui) && resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, t.lcd.hover);
     }
     resp
 }
@@ -785,14 +1222,13 @@ pub fn header_row(ui: &mut Ui, cols: &[(&str, f32)]) -> Option<usize> {
     header_row_sorted(ui, cols, None)
 }
 
-/// `header_row` with the sorted column marked: raised bevelled header buttons with a ▲ / ▼ sort arrow on `sort` =
-/// (column, ascending).
+/// `header_row` with the sorted column marked: a chrome bar of raised segments with `ink` labels, a ▲ / ▼ in
+/// `ink.glyph` on `sort` = (column, ascending).
 pub fn header_row_sorted(ui: &mut Ui, cols: &[(&str, f32)], sort: Option<(usize, bool)>) -> Option<usize> {
     let t = theme::get();
     let w = ui.available_width().max(cols.iter().map(|c| c.1).sum());
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 20.0), Sense::click());
     let p = ui.painter();
-    // Windows header control: one raised button per column, a blank one filling the rest of the row.
     let m = &t.metal;
     let mut x = rect.min.x;
     let ends: Vec<f32> = cols.iter().map(|c| c.1).chain([f32::INFINITY]).collect();
@@ -801,14 +1237,18 @@ pub fn header_row_sorted(ui: &mut Ui, cols: &[(&str, f32)], sort: Option<(usize,
         if x1 <= x {
             break;
         }
-        let r = Rect::from_min_max(pos2(x, rect.min.y), pos2(x1, rect.max.y));
-        p.rect_filled(r, 0.0, m.face);
-        bevel(p, r, true, m);
+        let r = px(Rect::from_min_max(pos2(x, rect.min.y), pos2(x1, rect.max.y)));
+        grad(p, r, 0.0, &[(0.0, t.silver.s1), (0.45, t.silver.s2), (1.0, t.silver.s3)]);
+        hl(p, r.min.x, r.max.x, r.min.y, m.light);
+        hl(p, r.min.x, r.max.x, r.max.y - hair(), m.dark);
+        if x1 < rect.max.x {
+            etched_v(p, r.max.x - 2.0, Rangef::new(r.min.y + 3.0, r.max.y - 3.0), m);
+        }
         if let Some((title, _)) = cols.get(k) {
             p.with_clip_rect(r.shrink(2.0).intersect(ui.clip_rect())).text(pos2(x + 6.0, rect.center().y), Align2::LEFT_CENTER, *title, t.font(t.font.ui), t.text);
             if let Some((_, asc)) = sort.filter(|s| s.0 == k) {
                 let ar = Rect::from_center_size(pos2(x1 - 10.0, rect.center().y), vec2(8.0, 8.0));
-                arrow(p, ar, (0.0, if asc { -1.0 } else { 1.0 }), m.shadow);
+                arrow(p, ar, (0.0, if asc { -1.0 } else { 1.0 }), t.ink.glyph);
             }
         }
         x = x1;
@@ -837,9 +1277,9 @@ pub fn row_cells(ui: &Ui, rect: Rect, cols: &[(&str, f32)], values: &[String], c
     }
 }
 
-/// Grid lines of a details list (Edit Details): a light rule under the row and one between the columns.
+/// Grid lines of a details list (Edit Details, on the panel): an `s4` rule under the row and one between the columns.
 pub fn grid_lines(p: &Painter, rect: Rect, cols: &[(&str, f32)]) {
-    let c = Color32::from_rgb(0xC0, 0xC0, 0xC0);
+    let c = theme::get().silver.s4;
     let y = rect.max.y.floor() - 1.0;
     p.rect_filled(Rect::from_x_y_ranges(rect.x_range(), Rangef::new(y, y + 1.0)), 0.0, c);
     let mut x = rect.min.x;
@@ -857,7 +1297,13 @@ pub fn pane_split(ui: &mut Ui, area: Rect, width: &mut f32, id: &str) -> (Rect, 
     let left = Rect::from_min_max(area.min, pos2(area.min.x + w, area.max.y));
     let split = Rect::from_min_max(pos2(left.max.x, area.min.y), pos2(left.max.x + 5.0, area.max.y));
     let right = Rect::from_min_max(pos2(split.max.x, area.min.y), area.max);
-    dotted_splitter(ui.painter(), split, false, &t.metal);
+    // Inside a panel the split is panel silver with the dimples (the slate is for the window's own splitters).
+    let p = ui.painter();
+    p.rect_filled(split, 0.0, t.panel_bg);
+    let c = split.center().floor();
+    for k in -1..=1 {
+        dimple(p, pos2(c.x - 1.0, c.y + 5.0 * k as f32 - 1.0), &t.metal);
+    }
     let resp = ui.interact(split, ui.id().with(("pane_split", id)), Sense::drag());
     if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
@@ -868,47 +1314,75 @@ pub fn pane_split(ui: &mut Ui, area: Rect, width: &mut f32, id: &str) -> (Rect, 
     (left, right)
 }
 
-/// Child ui confined to `rect` with its own scroll area id: a sunken white list box (the Windows
-/// list / tree view) with the contents inside its 2 px edge.
+/// Child ui confined to `rect` with its own scroll area id: a navy list well (UI_SPEC.md §5 List / tree in a well)
+/// with the contents inside its edge, their text in `lcd.text`.
 pub fn scroll_pane(ui: &mut Ui, rect: Rect, id: &str, add: impl FnOnce(&mut Ui)) {
     let t = theme::get();
-    sunken(ui.painter(), rect, t.input_bg, &t.metal);
+    lcd_well(ui.painter(), rect, false, false);
     let rect = rect.shrink(2.0);
     let mut child = ui.new_child(UiBuilder::new().id_salt(("pane", id)).max_rect(rect).layout(Layout::top_down(Align::Min)));
     child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let v = child.visuals_mut();
+    v.override_text_color = Some(t.lcd.text);
+    v.extreme_bg_color = t.lcd.deep;
+    v.widgets.noninteractive.fg_stroke.color = t.lcd.text;
+    v.widgets.inactive.fg_stroke.color = t.lcd.text;
+    v.widgets.hovered.fg_stroke.color = t.lcd.text_hi;
+    v.widgets.noninteractive.bg_stroke.color = t.lcd.rule;
+    // egui's scroll bars in the well: a silver handle on the deep navy rail.
+    v.widgets.inactive.bg_fill = t.silver.s4;
+    v.widgets.hovered.bg_fill = t.silver.s3;
+    v.widgets.active.bg_fill = t.silver.s2;
     ScrollArea::both().id_salt(id).auto_shrink([false, false]).show(&mut child, |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         add(ui)
     });
 }
 
-/// Search field in `input_bg` with a placeholder.
+/// Search field: a recessed paper field with a placeholder.
 pub fn search_field(ui: &mut Ui, text: &mut String, hint: &str, width: f32) -> Response {
     let t = theme::get();
     let h = (t.m.button - 2.0).max(18.0);
-    let resp = ui.add_sized(
-        vec2(width, h),
-        TextEdit::singleline(text)
-            .hint_text(RichText::new(hint).color(t.input_placeholder))
-            .background_color(t.input_bg)
-            .font(t.font(t.font.ui))
-            .margin(vec2(4.0, 2.0)),
-    );
+    let resp = ui.scope(|ui| {
+        let w = &mut ui.visuals_mut().widgets;
+        for s in [&mut w.inactive, &mut w.hovered, &mut w.active] {
+            s.bg_stroke = Stroke::NONE;
+            s.corner_radius = CornerRadius::same(t.m.r_ctl);
+        }
+        ui.add_sized(
+            vec2(width, h),
+            TextEdit::singleline(text)
+                .hint_text(RichText::new(hint).color(t.input_placeholder))
+                .background_color(t.input_bg)
+                .text_color(t.text)
+                .font(t.font(t.font.ui))
+                .margin(vec2(4.0, 2.0)),
+        )
+    });
+    let resp = resp.inner;
     // egui's response rect is the inner one (inside the 4 / 2 px margin).
-    bevel(ui.painter(), resp.rect.expand2(vec2(4.0, 2.0)), false, &t.metal);
+    let outer = resp.rect.expand2(vec2(4.0, 2.0));
+    recess_edge(ui.painter(), outer, t.m.r_ctl as f32, &t.metal);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(px(outer), t.m.r_ctl as f32, Stroke::new(hair(), t.sel.lit_outline), StrokeKind::Inside);
+    }
     resp
 }
 
-/// Thumbnail tile: `thumb_rect` image area (letterboxed texture or a painted stand-in), caption centred below,
-/// up to two lines, on a raised chrome tile (pressed in when selected).
+/// Thumbnail tile (UI_SPEC.md §5 preset tiles): raised chrome with `r_frame` corners (lifted when hovered, lit with a
+/// 2 px `lit.outline` ring when selected), the picture area `thumb_rect` above, the caption in `ink` centred below,
+/// up to two lines.
 pub fn tile(ui: &Ui, rect: Rect, thumb: Rect, label: &str, selected: bool, hovered: bool) {
     let t = theme::get();
     let p = ui.painter();
-    // A raised chrome preset tile, pressed in (blue tint) when selected.
+    let rad = t.m.r_frame as f32;
     let state = if selected { Chrome::Active } else if hovered { Chrome::Hover } else { Chrome::Raised };
-    chrome_button(p, rect, state, &t.metal);
+    chrome(p, rect, rad, state);
+    if selected {
+        p.rect_stroke(px(rect), rad, Stroke::new(2.0_f32, t.sel.lit_outline), StrokeKind::Inside);
+    }
     let color = t.text;
-    let cap = Rect::from_min_max(pos2(rect.min.x + 2.0, thumb.max.y + 3.0), pos2(rect.max.x - 2.0, rect.max.y));
+    let cap = Rect::from_min_max(pos2(rect.min.x + 3.0, thumb.max.y + 3.0), pos2(rect.max.x - 3.0, rect.max.y));
     let mut job = text::LayoutJob::simple(label.to_owned(), t.font(t.font.ui), color, cap.width());
     job.halign = Align::Center;
     job.wrap.max_rows = 2;
@@ -917,18 +1391,13 @@ pub fn tile(ui: &Ui, rect: Rect, thumb: Rect, label: &str, selected: bool, hover
     p.with_clip_rect(cap.intersect(ui.clip_rect())).galley(pos2(cap.center().x, cap.min.y), galley, color);
 }
 
-/// The black picture well a preset thumbnail sits in: sunken, so a title or a generator with transparent areas reads
-/// against black (as VEGAS shows them) instead of against the tile's brushed metal.
+/// The black picture well a thumbnail sits in (UI_SPEC.md §1, neutral for pictures): black with a 1 px `s5` rim
+/// outside the picture, so a title or a generator with transparent areas reads against black.
 pub fn thumb_well(p: &Painter, r: Rect) {
+    let t = theme::get();
     let r = px(r);
     p.rect_filled(r, 0.0, Color32::BLACK);
-    // Sunken 1 px frame: dark top-left, light bottom-right, outside the picture.
-    let o = r.expand(1.0);
-    let (dark, light) = (Color32::from_rgb(0x40, 0x40, 0x40), Color32::from_rgb(0xFF, 0xFF, 0xFF));
-    p.line_segment([o.left_top(), o.right_top()], Stroke::new(1.0_f32, dark));
-    p.line_segment([o.left_top(), o.left_bottom()], Stroke::new(1.0_f32, dark));
-    p.line_segment([o.left_bottom(), o.right_bottom()], Stroke::new(1.0_f32, light));
-    p.line_segment([o.right_top(), o.right_bottom()], Stroke::new(1.0_f32, light));
+    p.rect_stroke(r.expand(1.0), 1.0, Stroke::new(1.0_f32, t.silver.s5), StrokeKind::Inside);
 }
 
 /// Letterboxed image inside `r` with a 1 px dark frame and a grey mat.
@@ -938,7 +1407,7 @@ pub fn paint_thumb(p: &Painter, r: Rect, tex: &TextureHandle) {
     let (iw, ih) = if r.width() / r.height() > aspect { (r.height() * aspect, r.height()) } else { (r.width(), r.width() / aspect) };
     let ir = px(Rect::from_center_size(r.center(), vec2(iw, ih)));
     p.image(tex.id(), ir, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-    // 1 px dark frame and a thin grey mat round it.
+    // 1 px dark frame and a thin neutral mat round it.
     p.rect_stroke(ir, 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0x20, 0x20, 0x20)), StrokeKind::Outside);
     p.rect_stroke(ir.expand(1.0), 0.0, Stroke::new(1.0_f32, Color32::from_rgb(0xA0, 0xA0, 0xA0)), StrokeKind::Outside);
 }
@@ -955,4 +1424,28 @@ pub fn paint_audio_page(p: &Painter, r: Rect) {
     p.circle_filled(c + vec2(-1.5 * s, 2.0 * s), 1.6 * s, Color32::WHITE);
     p.line_segment([c + vec2(-0.1 * s, 2.0 * s), c + vec2(-0.1 * s, -3.5 * s)], Stroke::new(s.max(1.0), Color32::WHITE));
     p.line_segment([c + vec2(-0.1 * s, -3.5 * s), c + vec2(2.0 * s, -2.0 * s)], Stroke::new(s.max(1.0), Color32::WHITE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The gradient sampler hits its stops and blends between them.
+    #[test]
+    fn gradient_stops() {
+        let (a, b) = (Color32::from_rgb(0, 0, 0), Color32::from_rgb(200, 100, 50));
+        let stops = [(0.0, a), (1.0, b)];
+        assert_eq!(sample(&stops, 0.0), a);
+        assert_eq!(sample(&stops, 1.0), b);
+        assert_eq!(sample(&stops, 0.5), Color32::from_rgb(100, 50, 25));
+        assert_eq!(sample(&stops, -1.0), a);
+    }
+
+    /// Every timecode character paints as segments; widths add up.
+    #[test]
+    fn lcd_digits_cover_timecodes() {
+        assert!(lcd_paintable("00:00:05;12") && lcd_paintable("1.1.000") && lcd_paintable("-12.5"));
+        assert!(!lcd_paintable("1920x1080"));
+        assert!((lcd_width("00", 20.0) - 2.0 * lcd_advance('0', 20.0)).abs() < 1e-4);
+    }
 }
