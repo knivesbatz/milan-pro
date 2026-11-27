@@ -157,7 +157,7 @@ not been done here (the user's VEGAS 15 pass is the manual acceptance test).
 | In VEGAS | In Milan Pro |
 |---|---|
 | Project width, height, frame rate, field order, pixel aspect ratio, full-resolution rendering quality, motion blur type, deinterlace method, sample rate, bit depth | The same (29.97002997 becomes 29.97) |
-| Pixel format (32-bit float), master bus mode (5.1) | Reported; Milan Pro composites in 8-bit and mixes to stereo (R40b, R10a) |
+| Pixel format (8-bit, 32-bit float video levels or full range), master bus mode (Stereo, 5.1 Surround) | The same (R40b; the 5.1 master since R55, on Milan Pro's R10a 5.1 master bus) |
 | Tracks: name, mute, solo, volume, pan, composite level and mode, parent/child compositing with the Parent Composite Mode and Parent Motion, Track Motion keyframes (position, size, rotation, 3D position and X/Y rotation), 2D Shadow / Glow on | The same; Custom compositing modes fall back to Source Alpha (the compositor is not exported) |
 | Track envelopes: Volume, Pan, Mute, Composite Level, Fade to Color | The same (volume in dB, +6 dB ceiling); bus sends and FX automation envelopes are reported |
 | Events: start, length, in point, playback rate, reversed subclips, fades and curves, gain/opacity, mute, lock, loop, normalize, groups, takes, stream, Pan/Crop keyframes (as corners, any rotation or flip) | The same; Pan/Crop "Stretch to fill frame" is reported (imported letterboxed) |

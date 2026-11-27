@@ -1,0 +1,327 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Track Motion",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 16,
+  "bus_mode": "Stereo"
+ },
+ "tracks": [
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    },
+    {
+     "t": 2,
+     "x": 480,
+     "y": 270,
+     "z": 0,
+     "w": 960,
+     "h": 540,
+     "rx": 0,
+     "ry": 0,
+     "rz": 90,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Linear"
+    }
+   ],
+   "shadow": true,
+   "glow": true,
+   "name": "Logo",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\logo.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": true,
+   "parent_mode": "Multiply",
+   "parent_motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    },
+    {
+     "t": 1,
+     "x": -192,
+     "y": 108,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Slow"
+    }
+   ],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Parent",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\a.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "video",
+   "level": 0.5,
+   "mode": "Add",
+   "child": true,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Child",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\b.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [],
+ "master_fx": [],
+ "media_fx": [],
+ "unsupported": []
+}

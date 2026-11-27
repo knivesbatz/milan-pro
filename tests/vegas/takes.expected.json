@@ -1,0 +1,39 @@
+{
+ "about": "An event with two inactive takes (one unnamed: it takes the file name), a reversed event with a reversed take, and an audio event's take; the script's note about a skipped generated-media take is passed on.",
+ "equals": {
+  "/timeline/video_tracks/0/clips/0/name": "Take 2",
+  "/timeline/video_tracks/0/clips/0/in_point": 5,
+  "/timeline/video_tracks/0/clips/0/takes/0/name": "Take 1",
+  "/timeline/video_tracks/0/clips/0/takes/0/in_point": 1,
+  "/timeline/video_tracks/0/clips/0/takes/1/name": "c.mp4",
+  "/timeline/video_tracks/0/clips/0/takes/1/in_point": 0,
+  "/timeline/video_tracks/0/clips/1/reverse": true,
+  "/timeline/video_tracks/0/clips/1/in_point": 8,
+  "/timeline/video_tracks/0/clips/1/out_point": 10,
+  "/timeline/video_tracks/0/clips/1/takes/0/name": "Back",
+  "/timeline/video_tracks/0/clips/1/takes/0/in_point": 2,
+  "/timeline/audio_tracks/0/clips/0/takes/0/name": "Take 1"
+ },
+ "len": {
+  "/timeline/video_tracks/0/clips/0/takes": 2,
+  "/media_pool": 3
+ },
+ "same": [
+  [
+   "/timeline/video_tracks/0/clips/0/takes/0/media_id",
+   "/media_pool/1/id"
+  ],
+  [
+   "/timeline/video_tracks/0/clips/0/takes/1/media_id",
+   "/media_pool/2/id"
+  ],
+  [
+   "/timeline/audio_tracks/0/clips/0/takes/0/media_id",
+   "/media_pool/1/id"
+  ]
+ ],
+ "warnings": [
+  "a generated-media take was skipped"
+ ],
+ "warning_count": 1
+}

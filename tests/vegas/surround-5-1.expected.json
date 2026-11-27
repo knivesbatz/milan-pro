@@ -1,0 +1,20 @@
+{
+ "about": "A project with VEGAS's 5.1 master bus (AudioBusMode Surround), 24-bit audio and Wave Hammer Surround on the master.",
+ "equals": {
+  "/settings/layout": "Surround51",
+  "/settings/bit_depth": 24,
+  "/settings/sample_rate": 48000,
+  "/timeline/audio_tracks/1/pan": 0.5
+ },
+ "plugins": {
+  "/timeline/master/audio_fx": [
+   "milan.afx.limiter"
+  ]
+ },
+ "len": {
+  "/timeline/audio_tracks": 2,
+  "/timeline/video_tracks": 0
+ },
+ "warnings": [],
+ "warning_count": 0
+}

@@ -1,0 +1,197 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Pan Crop",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 16,
+  "bus_mode": "Stereo"
+ },
+ "tracks": [
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Video 1",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\wide.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      },
+      {
+       "t": 2,
+       "tl": [
+        480,
+        270
+       ],
+       "tr": [
+        1440,
+        270
+       ],
+       "bl": [
+        480,
+        810
+       ],
+       "curve": "Linear"
+      },
+      {
+       "t": 3,
+       "tl": [
+        1920,
+        0
+       ],
+       "tr": [
+        0,
+        0
+       ],
+       "bl": [
+        1920,
+        1080
+       ],
+       "curve": "Hold"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 4,
+     "length": 2,
+     "offset": 4,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\wide.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [],
+ "master_fx": [],
+ "media_fx": [],
+ "unsupported": [
+  "Track 1, event at 00:00:04.000: Pan/Crop Stretch to fill frame (imported letterboxed)"
+ ]
+}

@@ -1,0 +1,155 @@
+kind,file,index,identifier,label,identified_by
+ofx,Vfx1.ofx,0,com.sonycreativesoftware:checkerboard,VEGAS Checkerboard,binary string order
+ofx,Vfx1.ofx,1,com.sonycreativesoftware:noisetexture,VEGAS Noise Texture,binary string order
+ofx,Vfx1.ofx,2,com.sonycreativesoftware:solidcolor,VEGAS Solid Color,binary string order
+ofx,Vfx1.ofx,3,com.sonycreativesoftware:addnoise,VEGAS Add Noise,binary string order
+ofx,Vfx1.ofx,4,com.sonycreativesoftware:blackandwhite,VEGAS Black and White,binary string order
+ofx,Vfx1.ofx,5,com.sonycreativesoftware:brightnessandcontrast,VEGAS Brightness and Contrast,binary string order
+ofx,Vfx1.ofx,6,com.sonycreativesoftware:broadcastcolors,VEGAS Broadcast Colors,binary string order
+ofx,Vfx1.ofx,7,com.sonycreativesoftware:bumpmapfilter,VEGAS Bump Map,binary string order
+ofx,Vfx1.ofx,8,com.sonycreativesoftware:chromakeyer,VEGAS Chroma Keyer,binary string order
+ofx,Vfx1.ofx,9,com.sonycreativesoftware:colorbalance,VEGAS Color Balance,binary string order
+ofx,Vfx1.ofx,10,com.sonycreativesoftware:colorcorrector,VEGAS Color Corrector,binary string order
+ofx,Vfx1.ofx,11,com.sonycreativesoftware:colorcorrectorsecondary,VEGAS Color Corrector (Secondary),binary string order
+ofx,Vfx1.ofx,12,com.sonycreativesoftware:colorcurves,VEGAS Color Curves,binary string order
+ofx,Vfx1.ofx,13,com.sonycreativesoftware:colormatch,VEGAS Color Match,binary string order
+ofx,Vfx1.ofx,14,com.sonycreativesoftware:convolutionkernel,VEGAS Convolution Kernel,binary string order
+ofx,Vfx1.ofx,15,com.sonycreativesoftware:cookiecutter,VEGAS Cookie Cutter,binary string order
+ofx,Vfx1.ofx,16,com.sonycreativesoftware:defocusvelvetmatter,VEGAS Defocus,binary string order
+ofx,Vfx1.ofx,17,com.sonycreativesoftware:filllightvelvetmatter,VEGAS Fill Light,binary string order
+ofx,Vfx1.ofx,18,com.sonycreativesoftware:gaussianblur,VEGAS Gaussian Blur,binary string order
+ofx,Vfx1.ofx,19,com.sonycreativesoftware:glow,VEGAS Glow,binary string order
+ofx,Vfx1.ofx,20,com.sonycreativesoftware:hsladjust,VEGAS HSL Adjust,binary string order
+ofx,Vfx1.ofx,21,com.sonycreativesoftware:invert,VEGAS Invert,binary string order
+ofx,Vfx1.ofx,22,com.sonycreativesoftware:labadjust,VEGAS LAB Adjust,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,23,com.sonycreativesoftware:lensflare,VEGAS Lens Flare,binary string order
+ofx,Vfx1.ofx,24,com.sonycreativesoftware:levels,VEGAS Levels,binary string order
+ofx,Vfx1.ofx,25,com.sonycreativesoftware:linearblur,VEGAS Linear Blur,binary string order
+ofx,Vfx1.ofx,26,com.sonycreativesoftware:lutfilter,VEGAS LUT Filter,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,27,com.sonycreativesoftware:maskgenerator,VEGAS Mask Generator,binary string order
+ofx,Vfx1.ofx,28,com.sonycreativesoftware:median,VEGAS Median,binary string order
+ofx,Vfx1.ofx,29,com.sonycreativesoftware:minandmax,VEGAS Min and Max,binary string order
+ofx,Vfx1.ofx,30,com.sonycreativesoftware:mirror,VEGAS Mirror,binary string order
+ofx,Vfx1.ofx,31,com.sonycreativesoftware:newsprint,VEGAS Newsprint,binary string order
+ofx,Vfx1.ofx,32,com.sonycreativesoftware:pixelate,VEGAS Pixelate,binary string order
+ofx,Vfx1.ofx,33,com.sonycreativesoftware:quickblur,VEGAS Quick Blur,binary string order
+ofx,Vfx1.ofx,34,com.sonycreativesoftware:radialblur,VEGAS Radial Blur,binary string order
+ofx,Vfx1.ofx,35,com.sonycreativesoftware:saturationadjust,VEGAS Saturation Adjust,binary string order
+ofx,Vfx1.ofx,36,com.sonycreativesoftware:sepia,VEGAS Sepia,binary string order
+ofx,Vfx1.ofx,37,com.sonycreativesoftware:sharpen,VEGAS Sharpen,binary string order
+ofx,Vfx1.ofx,38,com.sonycreativesoftware:spherize,VEGAS Spherize,binary string order
+ofx,Vfx1.ofx,39,com.sonycreativesoftware:starburstvelvetmatter,VEGAS Starburst,binary string order
+ofx,Vfx1.ofx,40,com.sonycreativesoftware:timecode,VEGAS Timecode,binary string order
+ofx,Vfx1.ofx,41,com.sonycreativesoftware:unsharpmask,VEGAS Unsharp Mask,binary string order
+ofx,Vfx1.ofx,42,com.sonycreativesoftware:whitebalance,VEGAS White Balance,binary string order
+ofx,Vfx1.ofx,43,com.sonycreativesoftware:radialpixelate,VEGAS Radial Pixelate,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,44,com.sonycreativesoftware:barndoor,VEGAS Barn Door,binary string order
+ofx,Vfx1.ofx,45,com.sonycreativesoftware:clockwipe,VEGAS Clock Wipe,binary string order
+ofx,Vfx1.ofx,46,com.sonycreativesoftware:crosseffect,VEGAS Cross Effect,binary string order
+ofx,Vfx1.ofx,47,com.sonycreativesoftware:dissolve,VEGAS Dissolve,binary string order
+ofx,Vfx1.ofx,48,com.sonycreativesoftware:flash,VEGAS Flash,binary string order
+ofx,Vfx1.ofx,49,com.sonycreativesoftware:iris,VEGAS Iris,binary string order
+ofx,Vfx1.ofx,50,com.sonycreativesoftware:linearwipe,VEGAS Linear Wipe,binary string order
+ofx,Vfx1.ofx,51,com.sonycreativesoftware:pageloop,VEGAS Page Loop,binary string order
+ofx,Vfx1.ofx,52,com.sonycreativesoftware:pagepeel,VEGAS Page Peel,binary string order
+ofx,Vfx1.ofx,53,com.sonycreativesoftware:pageroll,VEGAS Page Roll,binary string order
+ofx,Vfx1.ofx,54,com.sonycreativesoftware:push,VEGAS Push,binary string order
+ofx,Vfx1.ofx,55,com.sonycreativesoftware:slide,VEGAS Slide,binary string order
+ofx,Vfx1.ofx,56,com.sonycreativesoftware:spiral,VEGAS Spiral,binary string order
+ofx,Vfx1.ofx,57,com.sonycreativesoftware:split,VEGAS Split,binary string order
+ofx,Vfx1.ofx,58,com.sonycreativesoftware:squeeze,VEGAS Squeeze,binary string order
+ofx,Vfx1.ofx,59,com.sonycreativesoftware:starwipe,VEGAS Star Wipe,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,60,com.sonycreativesoftware:swap,VEGAS Swap,binary string order
+ofx,Vfx1.ofx,61,com.sonycreativesoftware:zoom,VEGAS Zoom,binary string order
+ofx,Vfx1.ofx,62,com.sonycreativesoftware:bumpmap,VEGAS Bump Map,binary string order
+ofx,Vfx1.ofx,63,com.sonycreativesoftware:layerdimensionality,VEGAS Layer Dimensionality,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,64,com.sonycreativesoftware:vignette,VEGAS Vignette,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,65,com.sonycreativesoftware:pictureinpicture,VEGAS Picture In Picture,probe (ofx-vegas15.csv)
+ofx,Vfx1.ofx,66,com.sonycreativesoftware:crop,VEGAS Crop,probe (ofx-vegas15.csv)
+ofx,Filters.ofx,0,com.sonycreativesoftware:Filters.Stereoscopic3DAdjust,VEGAS Stereoscopic 3D Adjust,only plug-in of the binary
+ofx,Stabilize.ofx,0,com.sonycreativesoftware:Stabilize,VEGAS Stabilize,only plug-in of the binary
+ofx,TitlesAndText.ofx,0,com.sonycreativesoftware:titlesandtext,VEGAS Titles & Text,only plug-in of the binary
+ofx,spica_cutout.ofx,0,com.sonycreativesoftware:smart_zoom,VEGAS Smart Zoom,only plug-in of the binary; id from its resource file
+ofx,spica_resizer.ofx,0,com.sonycreativesoftware:smart_upscale,VEGAS Smart Upscale,only plug-in of the binary; id from its resource file
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Bleach Bypass,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Light Flares,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Scan Lines,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Three Strip Color,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm TV Damage,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Vibrance,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx,HitFilmVegasBasic.ofx,,,HitFilm Witness Protection,bundle resource names; index not recorded (the 7 probe rows are identical)
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:colorgradient,VEGAS Color Gradient,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:testpattern,VEGAS Test Pattern,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:blackrestore,VEGAS Black Restore,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:border,VEGAS Border,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:channelblend,VEGAS Channel Blend,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:chromablur,VEGAS Chroma Blur,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:deform,VEGAS Deform,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:filmeffects,VEGAS Film Effects,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:filmgrain,VEGAS Film Grain,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:glintvelvetmatter,VEGAS Glint,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:gradientmap,VEGAS Gradient Map,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:histogram,VEGAS Histogram,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:lightrays,VEGAS Light Rays,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:pinchpunch,VEGAS Pinch/Punch,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:raysvelvetmatter,VEGAS Rays,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:softcontrastvelvetmatter,VEGAS Soft Contrast,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:swirl,VEGAS Swirl,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:threshold,VEGAS Threshold,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:tvsimulator,VEGAS TV Simulator,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:wave,VEGAS Wave,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:3dblinds,VEGAS 3D Blinds,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:3dcascade,VEGAS 3D Cascade,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:3dflyinout,VEGAS 3D Fly In/Out,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:3dshuffle,VEGAS 3D Shuffle,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:gradientwipe,VEGAS Gradient Wipe,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:portals,VEGAS Portals,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:venetianblinds,VEGAS Venetian Blinds,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:displacementmap,VEGAS Displacement Map,"named in Vfx1.xml, not exported by the binary"
+ofx-resource-only,Vfx1.ofx,,com.sonycreativesoftware:heightmap,VEGAS Height Map,"named in Vfx1.xml, not exported by the binary"
+dx-audio,mchammer_x64.dll,,,Wave Hammer Surround,the DLL's version resource and strings
+dx-audio,sffrgpnv_x64.dll,,,VEGAS Pan,the DLL's English string table
+dx-audio,sffrgpnv_x64.dll,,,VEGAS Volume,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Time Stretch,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Pitch Shift,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Simple Delay,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Multi-Tap Delay,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Reverb,the DLL's English string table
+dx-audio,sfppack1_x64.dll,,,VEGAS Chorus,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Noise Gate,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Graphic Dynamics,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Paragraphic EQ,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Parametric EQ,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Multi-Band Dynamics,the DLL's English string table
+dx-audio,sfppack2_x64.dll,,,VEGAS Graphic EQ,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Flange/Wah-Wah,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Gapper/Snipper,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Vibrato,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Smooth/Enhance,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Distortion,the DLL's English string table
+dx-audio,sfppack3_x64.dll,,,VEGAS Amplitude Modulation,the DLL's English string table
+dx-audio,sfresfilter_x64.dll,,,VEGAS Resonant Filter,the DLL's English string table
+dx-audio,sftrkfx1_x64.dll,,,VEGAS Track Compressor,the DLL's English string table
+dx-audio,sftrkfx1_x64.dll,,,VEGAS Track EQ,the DLL's English string table
+dx-audio,sftrkfx1_x64.dll,,,VEGAS Track Noise Gate,the DLL's English string table
+dx-audio,sftrkfx1_x64.dll,,,VEGAS Dither,the DLL's English string table
+dx-audio,sfxpfx1_x64.dll,,,VEGAS ExpressFX Flange/Wah-Wah,the DLL's English string table
+dx-audio,sfxpfx1_x64.dll,,,VEGAS ExpressFX Reverb,the DLL's English string table
+dx-audio,sfxpfx1_x64.dll,,,VEGAS ExpressFX Distortion,the DLL's English string table
+dx-audio,sfxpfx1_x64.dll,,,VEGAS ExpressFX Stutter,the DLL's English string table
+dx-audio,sfxpfx2_x64.dll,,,VEGAS ExpressFX Delay,the DLL's English string table
+dx-audio,sfxpfx2_x64.dll,,,VEGAS ExpressFX Equalization,the DLL's English string table
+dx-audio,sfxpfx2_x64.dll,,,VEGAS ExpressFX Chorus,the DLL's English string table
+dx-audio,sfxpfx2_x64.dll,,,VEGAS ExpressFX Amplitude Modulation,the DLL's English string table
+dx-audio,sfxpfx3_x64.dll,,,VEGAS ExpressFX Dynamics,the DLL's English string table
+dx-audio,sfxpfx3_x64.dll,,,VEGAS ExpressFX Graphic EQ,the DLL's English string table
+dx-audio,sfxpfx3_x64.dll,,,VEGAS ExpressFX Noise Gate,the DLL's English string table
+dx-audio,sfxpfx3_x64.dll,,,VEGAS ExpressFX Time Stretch,the DLL's English string table
+dx-audio,xpvinyl_x64.dll,,,VEGAS ExpressFX Audio Restoration,the DLL's English string table
+legacy-video,colorcorrector.dll,,,VEGAS Color Corrector Plugins,the DLL's version resource (file description)
+legacy-video,PluginWrapper.dll,,,VEGAS PluginWrapper Module,the DLL's version resource (file description)
+legacy-video,sfpagepeel.dll,,,VEGAS PagePeel Video Transitions,the DLL's version resource (file description)
+legacy-video,sftrans1.dll,,,VEGAS Transition Video Plugins,the DLL's version resource (file description)
+legacy-video,vfplugs.dll,,,VEGAS Plug-Ins,the DLL's version resource (file description)
+legacy-video,vfx1.dll,,,VEGAS Video Plug-In Pack,the DLL's version resource (file description)
+legacy-video,vidpcore.dll,,,VEGAS Video Plugins,the DLL's version resource (file description)

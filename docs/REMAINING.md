@@ -48,7 +48,7 @@ What matters most:
 - **Interchange is VEGAS-script import only.** OTIO, EDL, FCP XML, interchange report and a reverse path into VEGAS are all missing.
 - **Plug-ins:** there is no external hosting. The installed VEGAS has 7 OFX bundles (102 effects; 7 of them third-party HitFilm) and 11 DirectX audio plug-in DLLs. The VST3 folder is empty.
 - **Reliability gaps (closed by R42-R44):** schema version and migration, `.mnle.bak` on save, crash recovery, configurable autosave, a file logger and crash reports, the diagnostic report.
-- **Documentation (R52-R54, R56):** [REFERENCE_ANALYSIS.md](REFERENCE_ANALYSIS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md), [LICENSES.md](LICENSES.md), `CONTRIBUTING.md`, the Code of Conduct, issue forms and the changelog are written. Still open: the compatibility matrix (R55) and the format report (R37).
+- **Documentation (R52-R54, R56):** [REFERENCE_ANALYSIS.md](REFERENCE_ANALYSIS.md), [ARCHITECTURE.md](ARCHITECTURE.md), [DEVELOPING.md](DEVELOPING.md), [LICENSES.md](LICENSES.md), `CONTRIBUTING.md`, the Code of Conduct, issue forms and the changelog are written. (R55) The public compatibility matrix is written from data ([COMPATIBILITY.md](COMPATIBILITY.md)). Still open: the format report (R37).
 - **The no-silent-placeholder rule holds (R0, DONE).** Every greyed menu row, toggle, combo, checkbox and inert toolbar button says on hover which batch builds it, or "not planned" for the R57-R60 long tail; Help > Unfinished Features lists them all, and two unit tests keep it that way.
 
 ---
@@ -66,7 +66,7 @@ What matters most:
 | 1.5 | Research integration points, SDKs, plug-in standards, interop | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) sections 6-8: OFX with VEGAS's extensions, VST through `sfvstwrap`/`sfvstserver.exe`, DirectX audio, the .NET script API, the FileIO SDK, external control drivers, AAF, EDL, XML. |
 | 1.6 | Detailed reference document | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md), with the UI spec for the interface. |
 | 1.7 | `REFERENCE_ANALYSIS.md` | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) |
-| 1.8 | Observe the installed app's real behaviour | PARTIAL | The UI spec measured the VP15 exe resources and pixels. `FEATURE_PLAN.md:1817-1827` lists 10 behaviours still to confirm in VEGAS. → R55 |
+| 1.8 | Observe the installed app's real behaviour | PARTIAL | The UI spec measured the VP15 exe resources and pixels. (R55) The 10 behaviours still to confirm in VEGAS are listed in [COMPATIBILITY.md](COMPATIBILITY.md) with Milan's current behaviour and the question for each; all open until the owner checks them in VEGAS (VEGAS is never started by the developers). |
 
 ### 2.2 Section 2: repository
 
@@ -340,7 +340,7 @@ What matters most:
 | 10.8 | Plug-in dependencies | DONE | (R52, R33c) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6.1 (proDAD Mercalli for Stabilize, the HitFilm licence folder, VEGAS's private suites), tested in `docs/compat/ofx-vegas15.md`. |
 | 10.9 | Research the actual plug-in standards VEGAS 15 uses | DONE | (R52) [`docs/REFERENCE_ANALYSIS.md`](REFERENCE_ANALYSIS.md) section 6; `FEATURE_PLAN.md:1813` corrected. |
 | 10.10 | OpenFX | MISSING | → R33a-c |
-| 10.11 | VST2 | NOT FEASIBLE | Steinberg stopped licensing the VST2 SDK (2018); new hosts cannot get a licence, and clean-room headers carry legal risk. Deliverable: stated in COMPATIBILITY.md with the VST3/CLAP alternative (R55). |
+| 10.11 | VST2 | NOT FEASIBLE | Steinberg stopped licensing the VST2 SDK (2018); new hosts cannot get a licence, and clean-room headers carry legal risk. Deliverable: stated in COMPATIBILITY.md with the VST3/CLAP alternative (R55, done). |
 | 10.12 | VST3 | DONE | (R34a-b) `engine/aplug`, `src/bin/milan-plugin-host/vst3.rs`: scan (IPluginFactory, moduleinfo.json cross-check), IComponent/IAudioProcessor at 48 kHz float with 1024-frame blocks, IEditController parameters as `ParamSpec`s with keyframes and automation, program lists, latency → PDC in the mixer, tail, IPlugView editor windows, `.vstpreset`. Tests `aplug::tests::*`. |
 | 10.13 | Other documented standards (CLAP, DirectX/DMO) | DONE | (R35) CLAP effects through the same host (`clap.rs`: params, state, latency, tail, process; no editor yet). DX/DMO: investigated in the isolated host and not pursued (`docs/compat/dx-audio.md`). |
 | 10.14 | Modular plug-in hosting architecture | PARTIAL | One registry for built-ins (`engine/plugins.rs`). `Fx.plugin` ids are open to an `ofx:` prefix. No external sources. → R31, R32 |
@@ -349,12 +349,12 @@ What matters most:
 | 10.17 | Plug-in categorization | PARTIAL | Built-ins have categories (`choosers.rs`). → R31 |
 | 10.18 | Plug-in search | PARTIAL | Built-ins only. → R31 |
 | 10.19 | Plug-in enable/disable | MISSING | → R31 |
-| 10.20 | Plug-in compatibility reporting | MISSING | → R31, R55 |
+| 10.20 | Plug-in compatibility reporting | DONE | (R31) the Plug-In Manager's per-plug-in status and reason; (R55) the matrix in [COMPATIBILITY.md](COMPATIBILITY.md) and the reports in `docs/compat/`. |
 | 10.21 | Plug-in error handling | MISSING | No external plug-ins to fail yet. → R32 |
 | 10.22 | Plug-in presets | PARTIAL | Video FX presets work; (R8c) audio FX presets too: built-in ones for each audio plug-in and user presets saved and loaded in the FX window (test `audio_preset_round_trips`); (R34b) `.vstpreset` load and save for VST3 effects (`aplug::preset`, test `preset_round_trip_restores_parameters`). OFX presets are missing. |
 | 10.23 | Effect chains | DONE | `Vec<Fx>` on event, track, output, master and media; FX window (`ui/fx_window.rs`) |
 | 10.24 | Plug-in UI integration | PARTIAL | The generic parameter grid for every plug-in; (R34b) a VST3 plug-in's own editor (IPlugView) in a host-owned window from the FX window's Show plug-in UI, resizable, its edits written to the project (automation while recording). CLAP editors are left. |
-| 10.25 | Compatibility matrix (native / standard / adapter / unsupported / investigate) | MISSING | → R55 |
+| 10.25 | Compatibility matrix (native / standard / adapter / unsupported / investigate) | DONE | (R55) [COMPATIBILITY.md](COMPATIBILITY.md), 183 rows, each with one of the five statuses, written by `interchange::compat_matrix` (check: `compatibility_matrix_is_current`). |
 | 10.26 | No fake compatibility claims | DONE | Nothing claims external plug-in support |
 | 10.27 | A plug-in crash must not bring down the editor | PARTIAL | FFmpeg runs out of process (`proc.rs` Job Object). A plug-in host process is still to be built. → R32 |
 
@@ -542,7 +542,7 @@ What matters most:
 | 18.7 | Integration tests | PARTIAL | 17 `#[ignore]` end-to-end tests need FFmpeg (`grep '#\[ignore'`); there is no `tests/` folder and CI never runs them. → R51 |
 | 18.8 | Performance tests | PARTIAL | R19: the benches run locally through `tools/bench.ps1` into `docs/PERFORMANCE.md`; CI never runs them → R51 |
 | 18.9 | Memory-safety-conscious design | DONE | `unsafe` only in `windows-sys` calls (`main.rs`, `proc.rs`) |
-| 18.10 | Documentation | PARTIAL | (R52, R53, R54, R56 DONE) Reference analysis, architecture, developer guide, community files and licences are written. → R55 (compatibility matrix) |
+| 18.10 | Documentation | DONE | (R52, R53, R54, R55, R56) Reference analysis, architecture, developer guide, community files, licences and the compatibility matrix are written. |
 | 18.11 | Dependency licensing review | DONE | (R56) [`docs/LICENSES.md`](LICENSES.md); `tools/licenses.ps1 -Check` fails when it is stale. |
 | 18.12 | CI builds | DONE | |
 | 18.13 | Code formatting and linting | MISSING | No `rustfmt.toml`; rustfmt is not even installed locally; no clippy or fmt in CI. → R51 |
@@ -567,7 +567,7 @@ What matters most:
 | 19.17 | Test recovery after crashes | DONE | R43: `autosave::tests::crash_recovery_e2e` (ignored): the app runs off-screen, autosaves, is killed by pid, and the next start lists the project and screenshots the dialog; unit tests for the stale-marker check, rotation and the unsaved copy |
 | 19.18 | Legally usable test media collection (resolutions, rates, codecs, containers, bit depths, audio configs) | MISSING | → R37 |
 | 19.19 | Automated tests for serialization and timeline accuracy | DONE | `project.rs`, `plan.rs`, `edit.rs` |
-| 19.20 | VEGAS example projects; exact VEGAS versions and capabilities tested | MISSING | → R55 |
+| 19.20 | VEGAS example projects; exact VEGAS versions and capabilities tested | PARTIAL | (R55) Tested-versions table (VEGAS Pro 15.0 Build 177, script format version 2, Milan 0.10.0) and 11 example exports in `tests/vegas/` with expected results (`vegas_examples::every_example_imports_as_expected`). The examples are written by hand to the script's schema, not exported from VEGAS: exports from the owner's VEGAS are still to come. |
 
 ### 2.19 Final deliverables (roll-up, not counted)
 
@@ -587,8 +587,8 @@ What matters most:
 | Automatic GitHub updater | DONE | R46 (minisign key and certificate pending) |
 | Windows installer | DONE | |
 | Automated tests | DONE | R51 for CI coverage |
-| Complete technical documentation | PARTIAL | R52, R53, R54, R56 done; R55 open |
-| Public compatibility matrix | MISSING | R55 |
+| Complete technical documentation | DONE | R52, R53, R54, R55, R56 |
+| Public compatibility matrix | DONE | R55: [COMPATIBILITY.md](COMPATIBILITY.md) |
 | Development roadmap | DONE | this file (section 5), linked from the README roadmap (R53) |
 | Repository stays buildable | DONE | |
 
@@ -2284,6 +2284,8 @@ It also corrects `FEATURE_PLAN.md:1813` (HitFilm is third-party OFX).
 **Acceptance:** GitHub renders the templates (checked by the user on the repo page).
 
 ### R55: Compatibility matrix, tested VEGAS versions, example projects (M)
+
+**Status: DONE (the VEGAS checks are the owner's).** [`docs/COMPATIBILITY.md`](COMPATIBILITY.md) has the plug-in matrix, 183 rows, each with exactly one of the five statuses in its own column, written by `interchange::compat_matrix` (`src/interchange/compat_matrix.rs`) from `docs/compat/vegas15-inventory.csv` (new: every plug-in of the VEGAS Pro 15 install, read in place: 79 OFX exports, 29 ids named only in `Vfx1.xml`, 39 DirectX audio plug-in names from the 11 `Audio_x64` DLLs' string tables, 7 legacy video DLLs), `docs/compat/ofx-vegas15.csv` (R33c), `docs/compat/tested-plugins.csv` (new: Milan's own OFX/VST3/CLAP/AE test plug-ins, the third-party candidates, VST2 and DirectX), `vegas_map` and `tests/vegas`. `compatibility_matrix_is_current` fails when the section is stale (`MILAN_WRITE_COMPAT=1` rewrites it), when a Native, Adapter or Standard interface row names no test or a test that does not exist, when a Native row's plug-in or an Adapter row's name is not in an example whose expected file checks the result, or when a `vegas_map` row has no matrix row. Counts: Native equivalent 56, Standard interface 24, Adapter 16, Unsupported 83, Needs investigation 4. Only Milan's own test plug-ins have been run (the referenced `#[ignore]` host tests were run for this batch); no third-party plug-in has. The Vfx1 binary's 59 unidentified probe indexes are matched to ids by the order of the id strings in the binary (all 8 known indexes agree). Tested versions: VEGAS Pro 15.0 Build 177 (`vegas150.exe` version resource, read-only), the scripts' format version 2, Milan 0.10.0; VST2, DirectX and ASIO statements. `tests/vegas/`: 11 example exports **written by hand to the export script's schema, not exported from VEGAS** (each says so in `_note`), each with an `.expected.json`; `vegas_examples::every_example_imports_as_expected` imports them. The 10 open VEGAS behaviours are listed with Milan's current behaviour and the question to answer, all **Open**. Fix found by the 5.1 example: the importer turned VEGAS's 5.1 master into a stale "master bus is stereo" warning; VEGAS 15's `AudioBusMode.Surround` now sets Milan's 5.1 master (R10a). Correction: `docs/compat/dx-audio.md` said `Audio_x64` was absent; it is in `C:\Program Files (x86)\VEGAS\Shared Plug-Ins` (unregistered). Left for the owner: export real projects from VEGAS 15 and compare, run both scripts in VEGAS, and answer the 10 behaviours.
 
 **Scope**
 - `docs/COMPATIBILITY.md`, the public matrix. Rows: every installed VEGAS plug-in (102 OFX, 11 DX audio, legacy video plug-ins) plus tested third-party OFX/VST3/CLAP. Columns: Native equivalent (milan id) / Standard interface (OFX, VST3, CLAP) / Adapter (VEGAS import mapping) / Unsupported (reason) / Needs investigation. Data comes from R33c, R34a, R35 and `vegas_map`. Include the VST2 and ASIO statements.

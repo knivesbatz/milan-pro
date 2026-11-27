@@ -7,6 +7,19 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
+### Added
+- **Compatibility matrix:** `docs/COMPATIBILITY.md` lists every plug-in of the VEGAS Pro 15 install (OFX, DirectX audio,
+  legacy video) and every plug-in Milan Pro has been tested with, each as Native equivalent, Standard interface,
+  Adapter, Unsupported or Needs investigation, with the tests behind each claim; it is written from data and a test
+  fails when it is stale. Also the tested VEGAS version (15.0 build 177), the VST2, DirectX and ASIO statements, and
+  the ten VEGAS behaviours still to confirm in VEGAS (R55).
+- **Example VEGAS projects:** eleven example exports in `tests/vegas/` with expected results, imported by a test. They
+  are written by hand to the export script's format, not exported from VEGAS (R55).
+
+### Fixed
+- **VEGAS import:** a VEGAS project with a 5.1 master bus now opens with Milan Pro's 5.1 master instead of a stereo one
+  and a warning (R55).
+
 ## 0.11.0
 
 ### Added

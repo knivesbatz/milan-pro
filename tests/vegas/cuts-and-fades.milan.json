@@ -1,0 +1,307 @@
+{
+ "_note": "Written by hand to the schema of tools/vegas/Export to Milan Pro.cs (format milan-vegas, version 2), not exported from VEGAS. Media paths are fictitious; the test probes them without opening anything.",
+ "format": "milan-vegas",
+ "version": 2,
+ "name": "Cuts and Fades",
+ "project": {
+  "w": 1920,
+  "h": 1080,
+  "fps": 25,
+  "sample_rate": 48000,
+  "field_order": "ProgressiveScan",
+  "pixel_aspect": 1,
+  "quality": "Best",
+  "motion_blur": "Gaussian",
+  "deinterlace": "BlendFields",
+  "pixel_format": "Int8Bit",
+  "bit_depth": 16,
+  "bus_mode": "Stereo"
+ },
+ "tracks": [
+  {
+   "kind": "video",
+   "level": 1,
+   "mode": "SrcAlpha",
+   "child": false,
+   "parent": false,
+   "parent_mode": "SrcAlpha",
+   "parent_motion": [],
+   "motion": [
+    {
+     "t": 0,
+     "x": 0,
+     "y": 0,
+     "z": 0,
+     "w": 1920,
+     "h": 1080,
+     "rx": 0,
+     "ry": 0,
+     "rz": 0,
+     "ox": 0,
+     "oy": 0,
+     "oz": 0,
+     "curve": "Smooth"
+    }
+   ],
+   "shadow": false,
+   "glow": false,
+   "name": "Video 1",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 10,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\interview.mp4",
+     "stream": 0,
+     "name": "interview",
+     "fade_in": 1,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": 0,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 4,
+     "length": 3,
+     "offset": 2,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\broll.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 1.6,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Fast",
+     "gain": 0.75,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": 1,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 7.01,
+     "length": 2,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\broll.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": true,
+     "locked": true,
+     "loop": false,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [
+      {
+       "t": 0,
+       "tl": [
+        0,
+        0
+       ],
+       "tr": [
+        1920,
+        0
+       ],
+       "bl": [
+        0,
+        1080
+       ],
+       "curve": "Smooth"
+      }
+     ],
+     "src_size": [
+      1920,
+      1080
+     ],
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  },
+  {
+   "kind": "audio",
+   "volume": 0.5,
+   "pan": -0.25,
+   "name": "Audio 1",
+   "mute": false,
+   "solo": false,
+   "envelopes": [],
+   "fx": [],
+   "events": [
+    {
+     "start": 0,
+     "length": 4,
+     "offset": 10,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\interview.mp4",
+     "stream": 0,
+     "name": "interview",
+     "fade_in": 1,
+     "fade_out": 0,
+     "fade_in_curve": "Slow",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": 0,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 4,
+     "length": 3,
+     "offset": 2,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\broll.mp4",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 1.6,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Sharp",
+     "gain": 0.5,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": 1,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    },
+    {
+     "start": 9,
+     "length": 1,
+     "offset": 0,
+     "reverse": false,
+     "rate": 1,
+     "path": "C:\\Media\\offline-music.wav",
+     "stream": 0,
+     "name": "",
+     "fade_in": 0,
+     "fade_out": 0,
+     "fade_in_curve": "Smooth",
+     "fade_out_curve": "Smooth",
+     "gain": 1,
+     "mute": false,
+     "locked": false,
+     "loop": true,
+     "normalize": false,
+     "group": null,
+     "takes": [],
+     "pan_crop": [],
+     "src_size": null,
+     "fx": [],
+     "envelopes": [],
+     "transition_in": null,
+     "transition_out": null,
+     "generator": null
+    }
+   ]
+  }
+ ],
+ "markers": [],
+ "regions": [],
+ "loop": {
+  "t": 0,
+  "length": 0
+ },
+ "output_fx": [],
+ "master_fx": [],
+ "media_fx": [],
+ "unsupported": []
+}

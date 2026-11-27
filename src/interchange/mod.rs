@@ -17,6 +17,10 @@ pub mod subtitles;
 pub mod vegas;
 pub mod vegas_export;
 pub mod vegas_map;
+#[cfg(test)]
+pub mod vegas_examples;
+#[cfg(test)]
+mod compat_matrix;
 pub mod xmeml;
 pub mod xml;
 
