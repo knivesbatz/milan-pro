@@ -305,6 +305,12 @@ pub fn lcd_well(p: &Painter, r: Rect, deep: bool, dots: bool) {
     recess_edge_in(p, r, radius, t.lcd.outline, Color32::from_white_alpha(14));
 }
 
+/// The edge of a navy well whose fill egui painted (a `Frame`): the LCD outline, inner shadow and lip.
+pub fn lcd_well_edge(p: &Painter, r: Rect) {
+    let t = theme::get();
+    recess_edge_in(p, r, t.m.r_ctl as f32, t.lcd.outline, Color32::from_white_alpha(14));
+}
+
 /// Groove: an `s5` line with an `s0` line beside it (vertical over `y` at `x`): separators.
 pub fn etched_v(p: &Painter, x: f32, y: Rangef, m: &Metal) {
     let x = theme::snap(x.floor());
@@ -469,19 +475,6 @@ pub fn lamp(p: &Painter, r: Rect) {
     p.rect_stroke(r, 1.0, Stroke::new(hair(), t.amber.lo.gamma_multiply(0.6)), StrokeKind::Inside);
 }
 
-/// A panel frame over `r` (UI_SPEC.md §5): `s2` body, an `s6` outline with `r_frame` corners, an `s0` lip inside the
-/// top and left.
-pub fn panel_frame(p: &Painter, r: Rect) {
-    let t = theme::get();
-    let r = px(r);
-    let rad = t.m.r_frame as f32;
-    p.rect_filled(r, rad, t.panel_bg);
-    let o = hair();
-    hl(p, r.min.x + rad, r.max.x - rad, r.min.y + o, t.silver.s0);
-    vl(p, r.min.x + o, r.min.y + rad, r.max.y - rad, t.silver.s0);
-    p.rect_stroke(r, rad, Stroke::new(o, t.silver.s6), StrokeKind::Inside);
-}
-
 /// The rounded edge of a framed region `r` already painted square (a dock group, a floating window): the corners
 /// outside a `rad` arc filled with `outer` (the slate behind the frame), then the `s6` outline round it.
 pub fn frame_edge(p: &Painter, r: Rect, rad: f32, outer: Color32) {
@@ -557,15 +550,6 @@ pub fn pill_paint(p: &Painter, r: Rect, label: &str, on: bool, hovered: bool, en
     p.with_clip_rect(r.intersect(p.clip_rect())).text(r.center(), Align2::CENTER_CENTER, label, t.font(t.font.ui), ink);
 }
 
-/// A toggle pill sized to `label` (18 px tall); clicked toggles `on`.
-pub fn pill(ui: &mut Ui, label: &str, on: bool) -> Response {
-    let t = theme::get();
-    let w = ui.painter().layout_no_wrap(label.to_owned(), t.font(t.font.ui), t.ink.button).size().x + 18.0;
-    let (r, resp) = ui.allocate_exact_size(vec2(w, 18.0), Sense::click());
-    pill_paint(ui.painter(), r, label, on, resp.hovered(), ui.is_enabled());
-    resp
-}
-
 /// A section title tab (UI_SPEC.md §5): a 16 px pill of raised chrome holding `text` in Tahoma Bold, set at the left
 /// of `row`, with a groove running from it to the row's right end. Returns the pill's rect.
 pub fn section_tab(p: &Painter, row: Rect, text: &str) -> Rect {
@@ -622,7 +606,7 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
     let t = theme::get();
     let w = lcd_width(text, h);
     let r = align.anchor_size(at, vec2(w, h));
-    let th = (h * 0.15).max(2.0);
+    let th = (h * 0.18).max(2.0);
     let slant = 0.08;
     // x shifts right as y goes up.
     let sk = |pt: Pos2| pos2(pt.x + (r.max.y - pt.y) * slant, pt.y);
@@ -646,7 +630,7 @@ pub fn lcd_digits(p: &Painter, at: Pos2, align: Align2, text: &str, h: f32, lit:
             let (y0, ym, y1) = (r.min.y, r.min.y + h * 0.5, r.max.y);
             let g = th * 0.5;
             // Each segment runs between the centre lines of its neighbours, less a hairline gap, with pointed ends.
-            let gap = (h * 0.035).max(0.6);
+            let gap = (h * 0.025).max(0.5);
             let hseg = |y: f32| {
                 let (xa, xb) = (x0 + g + gap, x1 - g - gap);
                 [pos2(xa, y), pos2(xa + g, y - g), pos2(xb - g, y - g), pos2(xb, y), pos2(xb - g, y + g), pos2(xa + g, y + g)]

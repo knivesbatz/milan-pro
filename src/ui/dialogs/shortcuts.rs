@@ -26,7 +26,7 @@ pub fn shortcuts_window(ctx: &Context, open: &mut bool) {
                 });
             });
         };
-        // The list in a sunken white box (no stripes).
+        // The list in a recessed paper box (no stripes).
         super::field_box(ui, 0, list);
         ui.add_space(4.0);
         ui.label("Num keys are on the numeric keypad, which Milan Pro cannot tell from the top row: use the other key listed, or the menu.");

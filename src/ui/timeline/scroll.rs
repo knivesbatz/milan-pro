@@ -177,8 +177,8 @@ pub(super) fn paint(p: &Painter, g: &Geo, content: f32, project: &Project, scrol
     paint_bars(p, &t, g, &h, &v_parts(g, content, scroll_y));
 }
 
-/// The scrollbars (Windows 2000 / Vegas 6): flat grey tracks, raised chrome arrow buttons with black
-/// triangles, a chrome thumb with two grip lines, chrome + / − / magnifier buttons.
+/// The scrollbars (UI_SPEC.md §5 Scrollbar): `s4` tracks, chrome arrow buttons with `ink.glyph` triangles, a chrome
+/// pill thumb with three grip ridges, chrome + / − / magnifier buttons.
 fn paint_bars(p: &Painter, t: &crate::ui::theme::Theme, g: &Geo, h: &HParts, v: &VParts) {
     use crate::ui::widgets::{Chrome, arrow, chrome_button};
     let (m, ink) = (&t.metal, t.scroll_arrow);

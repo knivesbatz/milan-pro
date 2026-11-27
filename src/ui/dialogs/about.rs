@@ -1,5 +1,5 @@
 //! Help › About Milan Pro: the brand banner (assets/brand/about-banner-480x120.png) over the version and credits in
-//! Tahoma, on the `#D4D0C8` sheet.
+//! Tahoma, on the dialog frame (UI_SPEC.md §8.3).
 use eframe::egui::*;
 use super::super::theme;
 use super::super::widgets::{self, Brand};

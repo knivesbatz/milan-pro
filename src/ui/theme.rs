@@ -493,7 +493,7 @@ impl Theme {
             label: hex(0x2E3A55),
             button: hex(0x0C2A78),
             glyph: hex(0x1A49B8),
-            disabled: hex(0x4C566B),
+            disabled: hex(0x485266),
             paper: hex(0xFBFCFE),
             paper_disabled: hex(0xE8EBF0),
         };
@@ -1075,6 +1075,7 @@ mod tests {
             ("lcd text on hovered row", l.text, l.hover),
             ("lcd text on read-out well", l.text, l.deep),
             ("lcd dim text on read-out well", l.text_dim, l.deep),
+            ("lcd dim text on list well (palette groups, disabled rows)", l.text_dim, l.well),
             ("lcd digits on read-out well", l.digits, l.deep),
             ("lcd bright text on list well", l.text_hi, l.well),
             ("amber text on list well", t.amber.text, l.well),
@@ -1096,6 +1097,7 @@ mod tests {
             ("white text on lanes", t.text_bright, t.lane_bg),
             ("marker number on its tag", t.marker_text, t.marker_flag),
             ("warning text on chrome bottom", t.warning_text, s.s3),
+            ("blue text (tags) on chrome bottom", ink.glyph, s.s3),
             ("region number on its tag", t.region_text, t.region_flag),
         ];
         let fails: Vec<String> = pairs

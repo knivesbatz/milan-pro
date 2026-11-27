@@ -3,8 +3,8 @@
 //! offer, the saved window layouts and the recent projects. Typing filters by fuzzy subsequence (`score`); Enter runs
 //! the top row, ↑ ↓ pick another, Esc closes. Rows show their shortcut; rows the app cannot run now are greyed and say
 //! why on hover (R0), the same `Why` the menus give. The default key is `KEY`, a chord no VEGAS row uses (a test keeps
-//! it so); Options › Customize Keyboard rebinds it like any command. Drawn with the dialogs' frame (the Windows 2000
-//! caption and a sunken list box).
+//! it so); Options › Customize Keyboard rebinds it like any command. Drawn with the dialogs' frame (the slate
+//! caption) and the results in a navy list well.
 use eframe::egui::*;
 use super::dialogs;
 use super::keymap::{self, Command};
@@ -300,32 +300,33 @@ impl Palette {
             }
             ui.add_space(4.0);
             let list_h = SIZE.y - dialogs::title_h() - 16.0 - 30.0 - 4.0 - 26.0;
-            dialogs::field_box(ui, 1, |ui| {
+            // The results in a navy list well (UI_SPEC.md §8.2), LCD ink, the selection bar.
+            let well = Frame::NONE.fill(t.lcd.well).corner_radius(t.m.r_ctl).inner_margin(3).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ScrollArea::vertical().id_salt("palette_rows").max_height(list_h).min_scrolled_height(list_h).auto_shrink(false).show(ui, |ui| {
                     ui.set_min_height(list_h - 4.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if order.is_empty() {
                         ui.add_space(8.0);
-                        ui.label(RichText::new(format!("Nothing matches \"{}\".", self.query)).color(d.text_disabled));
+                        ui.label(RichText::new(format!("Nothing matches \"{}\".", self.query)).color(t.lcd.text));
                     }
                     for (k, &i) in order.iter().enumerate() {
                         let it = &items[i];
                         let selected = k == self.sel;
                         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
                         if selected {
-                            ui.painter().rect_filled(rect, 0.0, d.accent);
+                            widgets::selection_bar(ui.painter(), rect, t.m.r_small as f32);
                             if self.reveal {
                                 resp.scroll_to_me(None);
                             }
                         }
                         let ink = match (selected, it.enabled) {
-                            (true, true) => d.accent_text,
-                            (true, false) => d.accent_text.gamma_multiply(0.6),
-                            (false, true) => d.text,
-                            (false, false) => d.text_disabled,
+                            (true, true) => t.sel.text,
+                            (true, false) => t.lcd.text_hi,
+                            (false, true) => t.lcd.text,
+                            (false, false) => t.lcd.text_dim,
                         };
-                        let dim = if selected { d.accent_text.gamma_multiply(0.7) } else { d.text_disabled };
+                        let dim = if selected { t.lcd.text_hi } else { t.lcd.text_dim };
                         let font = t.font(t.font.ui);
                         let p = ui.painter();
                         let right = if it.shortcut.is_empty() {
@@ -357,6 +358,7 @@ impl Palette {
                     self.reveal = false;
                 });
             });
+            widgets::lcd_well_edge(ui.painter(), well.response.rect);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let shown = if order.len() == items.len() { format!("{} commands", items.len()) } else { format!("{} of {}", order.len(), items.len()) };

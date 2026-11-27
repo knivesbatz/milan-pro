@@ -307,8 +307,8 @@ fn tree(ui: &mut Ui, v: &mut OverlaysView, cmds: &mut Vec<Cmd>) {
         let node = Node::Pack(path.clone());
         let (r, _) = widgets::tree_row(ui, 0, None, Some(Icon::Folder), &name, v.node == node);
         if missing {
-            // Greyed: the panel colour over the row, half through.
-            ui.painter().rect_filled(r.rect, 0.0, t.panel_bg.gamma_multiply(0.55));
+            // Greyed: the well's own colour over the row, lightly (the label stays at AA on the navy).
+            ui.painter().rect_filled(r.rect, 0.0, t.lcd.well.gamma_multiply(0.15));
         }
         let r = r.on_hover_text(if missing { format!("Missing: {}", path.display()) } else { path.display().to_string() });
         if r.clicked() || r.secondary_clicked() {

@@ -323,7 +323,12 @@ pub fn tabs(ui: &mut Ui, rows: &[&[&str]], sel: &mut usize) {
     for (slot, &ri) in order.iter().enumerate() {
         let row = rows[ri];
         let y = rect.min.y + slot as f32 * row_h;
-        let widths: Vec<f32> = row.iter().map(|l| p.layout_no_wrap(l.to_string(), font.clone(), d.text).size().x + 12.0).collect();
+        // The selected tab's label is bold: measured so.
+        let widths: Vec<f32> = row
+            .iter()
+            .enumerate()
+            .map(|(k, l)| p.layout_no_wrap(l.to_string(), if firsts[ri] + k == *sel { t.bold(11.0) } else { font.clone() }, d.text).size().x + 12.0)
+            .collect();
         // Rows stretch to the full width like Win32 multi-row tabs.
         let extra = ((w - widths.iter().sum::<f32>()) / row.len() as f32).max(0.0);
         let mut x = rect.min.x;

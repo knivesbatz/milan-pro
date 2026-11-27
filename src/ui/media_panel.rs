@@ -1146,7 +1146,7 @@ fn thumbnails(ui: &mut Ui, project: &Project, items: &[usize], sel: &[usize], th
             badges(p, m, project, thumb.right_top() + vec2(-2.0, 2.0), -1.0);
             if show_tags && !m.tags.is_empty() {
                 let at = Rect::from_min_size(pos2(tile.min.x + 3.0, tile.max.y - 16.0), vec2(tile.width() - 6.0, 13.0));
-                p.with_clip_rect(at.intersect(ui.clip_rect())).text(at.center(), Align2::CENTER_CENTER, m.tags.join(", "), t.font(t.font.ui), t.accent);
+                p.with_clip_rect(at.intersect(ui.clip_rect())).text(at.center(), Align2::CENTER_CENTER, m.tags.join(", "), t.font(t.font.ui), t.ink.glyph);
             }
             out.push((i, resp));
         }

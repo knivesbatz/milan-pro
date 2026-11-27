@@ -893,7 +893,7 @@ impl Dock {
         let ctx = ui.ctx().clone();
         let full = ui.max_rect();
         let mut action = None;
-        // Tool window: the raised 3D frame and the Windows 2000 caption with its bevelled × (the OS caption above it
+        // Tool window: the dialog frame and slate caption with its chrome × (the OS caption above it
         // stays; this one closes the window and moves it too).
         let title = p.title();
         if super::dialogs::classic_caption(ui, full, title, &format!("float_cap_{title}"), false) {
@@ -1024,9 +1024,11 @@ impl Dock {
         let others: Vec<(usize, Panel)> =
             self.groups.iter().enumerate().filter(|&(k, _)| k != g).map(|(k, gr)| (k, gr.tabs[gr.active.min(gr.tabs.len() - 1)])).collect();
         let maximized = self.maximized == Some(g);
+        // The active tab's label is bold (and its width measured so).
         let galleys: Vec<_> = tabs
             .iter()
-            .map(|&panel| p.layout_no_wrap(panel.title().to_owned(), t.font(t.font.dock_tab), t.tab_text))
+            .enumerate()
+            .map(|(i, &panel)| p.layout_no_wrap(panel.title().to_owned(), if i == active { t.bold(t.font.dock_tab) } else { t.font(t.font.dock_tab) }, t.tab_text))
             .collect();
         // 8 + label + 8, the active tab 2 px wider each side (Windows tab control) with its □ × (+ 34).
         let widths: Vec<f32> = galleys
@@ -1073,13 +1075,7 @@ impl Dock {
             // Inactive tabs sit 1 px further out (they stand back from the active one).
             let shift = if is_active { 0.0 } else if self.tabs_top { 1.0 } else { -1.0 };
             let ty = (r.center().y - galley.size().y * 0.5).round() - shift;
-            if is_active {
-                // The active tab's label in bold.
-                let g = p.layout_no_wrap(panel.title().to_owned(), t.bold(t.font.dock_tab), color);
-                p.galley(pos2(tx, ty), g, color);
-            } else {
-                p.galley(pos2(tx, ty), galley, color);
-            }
+            p.galley(pos2(tx, ty), galley, color);
             if is_active {
                 // â–¡ maximise in dock and Ã— close, each in a 13 px cell (Â§4.4).
                 for (k, icon) in [Icon::DockMaximize, Icon::DockClose].into_iter().enumerate() {

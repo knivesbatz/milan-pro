@@ -3,6 +3,7 @@
 //! "Show splash screen at startup" (on by default); never in an off-screen run (the screenshot harness,
 //! `MILAN_UPDATE_AUTO`), which must open no window the user can see.
 use eframe::egui::*;
+use super::theme;
 use super::widgets::{self, Brand};
 
 /// How long the splash stays, in seconds.
@@ -57,16 +58,13 @@ impl Splash {
                 widgets::brand_image(p, r, Brand::Splash, SIZE);
                 // Bitmap pixels to points.
                 let u = size.x / SIZE.x;
-                // The version at the right of the art's legal line, and a thin Luna-blue progress bar in a white
-                // XP groove along the bottom of the brushed-aluminium footer.
-                let ink = Color32::from_rgb(0x2A, 0x32, 0x42);
+                // The version at the right of the art's legal line, and the design system's progress bar (a navy
+                // groove, the selection-blue fill) along the bottom of the brushed-aluminium footer.
+                let ink = theme::get().ink.text;
                 let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
                 p.text(pos2(r.max.x - 24.0 * u, r.min.y + 276.0 * u), Align2::RIGHT_TOP, version, FontId::proportional(11.0 * u), ink);
                 let bar = widgets::px(Rect::from_min_max(pos2(r.min.x + 24.0 * u, r.max.y - 20.0 * u), pos2(r.max.x - 24.0 * u, r.max.y - 14.0 * u)));
-                p.rect_filled(bar, 0.0, Color32::WHITE);
-                p.rect_stroke(bar, 0.0, Stroke::new(u, Color32::from_rgb(0x7F, 0x9D, 0xB9)), StrokeKind::Inside);
-                let fill = bar.shrink(u);
-                p.rect_filled(fill.with_max_x(fill.min.x + fill.width() * f), 0.0, Color32::from_rgb(0x31, 0x6A, 0xC5));
+                widgets::progress_blocks(p, bar.expand2(vec2(0.0, u)), f, Color32::TRANSPARENT, &theme::get().metal);
             });
         });
         true

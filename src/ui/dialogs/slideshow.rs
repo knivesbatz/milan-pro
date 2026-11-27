@@ -132,7 +132,7 @@ impl Slideshow {
                 }
             });
         };
-        // The list in a sunken white box.
+        // The list in a recessed paper box.
         super::field_box(ui, 2, list);
     }
 

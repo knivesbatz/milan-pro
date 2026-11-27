@@ -512,7 +512,7 @@ pub(super) fn slider(ui: &Ui, resp: &Response, pos: f32, reset: f32, at: impl Fn
     None
 }
 
-/// A strip's read-out box (I/O): a sunken white field.
+/// A strip's read-out box (I/O): a recessed paper field.
 fn field(p: &Painter, r: Rect, t: &theme::Theme) {
     super::widgets::sunken(p, r, t.input_bg, &t.metal);
 }
