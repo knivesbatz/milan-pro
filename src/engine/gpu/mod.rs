@@ -1505,18 +1505,30 @@ fn h(x0: u32) -> u32 { var x = x0; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15
         (c.duration, c.out_point) = (10.0, 10.0);
         p.timeline.video_tracks[0].clips.push(c);
         p.media_pool.push(m);
-        let mut wk = Worker::new();
-        wk.set_plan(Arc::new(plan::compile(&p)));
-        let before = g.readbacks();
-        let (pic, err) = wk.frame(30, 320, 180, crate::decode::Quality::Preview, None);
-        assert!(err.is_none(), "{err:?}");
-        assert!(pic.gpu().is_some(), "the frame is on the GPU");
-        assert_eq!(pic.gpu().unwrap().size(), [320, 180]);
-        assert_eq!(g.readbacks(), before, "a preview frame is not read back");
-        let img = pic.image();
-        assert_eq!(g.readbacks(), before + 1, "a render reads the frame back");
-        let _ = pic.image();
-        assert_eq!(g.readbacks(), before + 1, "once");
+        // The forced compositor is process-wide: a test running beside this one may compose (and read back) on it in
+        // between, so the counts are taken again (a fresh worker each time) until a run is undisturbed.
+        let (mut pic, mut img, mut counts) = (None, None, Vec::new());
+        for _ in 0..5 {
+            let mut wk = Worker::new();
+            wk.set_plan(Arc::new(plan::compile(&p)));
+            let before = g.readbacks();
+            let (frame, err) = wk.frame(30, 320, 180, crate::decode::Quality::Preview, None);
+            assert!(err.is_none(), "{err:?}");
+            assert!(frame.gpu().is_some(), "the frame is on the GPU");
+            assert_eq!(frame.gpu().unwrap().size(), [320, 180]);
+            let shown = g.readbacks() - before;
+            let i = frame.image();
+            let read = g.readbacks() - before;
+            let _ = frame.image();
+            let again = g.readbacks() - before;
+            counts.push((shown, read, again));
+            (pic, img) = (Some(frame), Some(i));
+            if (shown, read, again) == (0, 1, 1) {
+                break;
+            }
+        }
+        assert!(counts.contains(&(0, 1, 1)), "a preview frame is not read back, a render reads it back once: {counts:?}");
+        let (pic, img) = (pic.expect("a frame"), img.expect("pixels"));
         force_for_tests(None);
         let mut cpu = Worker::new();
         cpu.set_plan(Arc::new(plan::compile(&p)));
