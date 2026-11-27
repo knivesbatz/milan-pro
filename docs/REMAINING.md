@@ -125,7 +125,7 @@ What matters most:
 | 4.11 | Project settings | PARTIAL | `settings.rs`: width, height, frame rate, sample rate, (R1) the whole Ruler page (`ruler_tab`: start time, format, tempo, beats per measure, beat note) and (R3b) Resample mode (`ProjectSettings.resample`, named as VEGAS 23 names it) are editable, and (R8a) Number of stereo busses (`audio_tab`, `edit::set_bus_count`). R11: Field order, Pixel aspect ratio (media keep their shape: `plan::media_ref`), Output rotation (the preview turns, `preview::rotated_image`), Full-resolution rendering quality, Deinterlace method (None / Blend fields / Interpolate fields, `Deinterlace::filter`), Adjust source media and audio Bit depth (PCM/FLAC/ALAC renders that follow the project) are editable; an old project keeps Best and yadif (`old_projects_load_without_fades_or_loop`). (R16a) The Summary page (Title, Artist, Engineer, Copyright, Comments: `settings.rs` `summary_tab`, `ProjectSettings.summary`, `notes_and_summary_survive_save_and_load`) is editable. (R40a) Color management (`ProjectSettings.color_management`) replaces the view transform row. (R10a) Master bus mode (Stereo / 5.1 Surround / 7.1 Surround) and Resample and stretch quality are editable. Still greyed, each naming its batch: pixel format, gamma, ACES, HDR (R40b). → R40b |
 | 4.12 | Render / export controls | DONE | R11, `ui/dialogs/render.rs`: 38 built-in templates plus the user's (`Prefs.render_templates`), the Usecase tree, Filter, View (Thumbnails / Details), favourites and Recent kept in the preferences; Customize Template (`ui/dialogs/template.rs`); Render Options stretch / rotation / markers; Show log. (R10a) Enable multichannel mapping and the 5.1 / 7.1 templates. R12: Add to Render Queue, Render in the background (a window instead of a modal dialog), Render to New Track |
 | 4.13 | Toolbar and contextual menus | DONE | `ui/toolbar.rs`, `ui/timeline/ctx.rs`. Many rows inside them are greyed (see section 3). |
-| 4.14 | Workspace resizable and customizable | PARTIAL | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`). The track header's Edit Visible Button Set is still greyed (re-assigned from R15 by R18b). → R49 |
+| 4.14 | Workspace resizable and customizable | DONE | Splitters, tab moves and saved layouts work; (R14) windows float on any monitor and dock again; (R15) Options › Customize Toolbar and Customize Timeline Toolbar add, remove and reorder buttons and separators, saved in prefs (`toolbar.rs` `Bar`, `dialogs/customize_toolbar.rs`); (R49) the track header's Edit Visible Button Set (`dialogs/button_set.rs`, `Prefs.header_buttons`): hidden buttons move to the header's More menu. |
 | 4.15 | Cleaner typography | DONE | `ui/fonts.rs`, `ui/theme.rs` |
 | 4.16 | Consistent icons | DONE | `ui/icons.rs` (967 lines of vector icons) |
 | 4.17 | Better spacing and alignment | DONE | `ui/theme.rs` metrics (`docs/UI_SPEC.md` §4) |
@@ -519,7 +519,7 @@ What matters most:
 | 17.5 | GPU compositing | DONE | (R21a-c) See 3.4 and 6.5. |
 | 17.6 | Memory management | DONE | Byte-capped LRU caches (`engine/cache.rs`), decoder cap of 8 |
 | 17.7 | Cache management | DONE | (R23) Preferences › Video: Dynamic RAM Preview max (MB), the disk frame cache's size with Clear, the prerendered files folder; Clear Dynamic RAM Preview and Clean Up Prerendered Video (all or inactive files). The source and composite caches keep their fixed sizes (192 and 256 MB). |
-| 17.8 | SSD storage (cache/prerender location) | DONE | (R23) The prerendered files folder is a preference (each project gets a folder of its own inside it; Project Properties shows the project's), the disk frame cache lives under `%LOCALAPPDATA%\MilanPro\framecache`. The temp folder field stays greyed (R49). |
+| 17.8 | SSD storage (cache/prerender location) | DONE | (R23) The prerendered files folder is a preference (each project gets a folder of its own inside it; Project Properties shows the project's), the disk frame cache lives under `%LOCALAPPDATA%\MilanPro\framecache`. (R49) The temporary files folder is a preference too (TMP and TEMP for Milan Pro and FFmpeg, from the next start), with the free space shown. |
 | 17.9 | High-resolution displays | PARTIAL | Preview Auto size fits the window. Not verified at 4K/200%. → R48 |
 | 17.10 | Multiple monitors | DONE | R14: floating windows and the external preview on any display (see 4.28) |
 | 17.11 | High-refresh-rate displays | DONE | (R48) Paused, nothing repaints unasked: the window title was sent every frame, and every viewport command asks for another frame, so the idle window painted at the display's refresh rate (144 frames a second at 144 Hz); now it is sent when it changes. The harness's `MILAN_IDLE_CHECK` counts the frames of 2 idle seconds (test `paused_preview_paints_no_extra_frames`). Playback still paints each display refresh, as it must to move the cursor. |
@@ -768,9 +768,9 @@ Items no batch listed, assigned by R0 (each later batch takes these on with its 
 - R18a (DONE): View > Event Length (VP23).
 - R18b (DONE): video track Set Default Track Properties.
 - R10a (re-assigned from R4b by R18b): Project Properties › Audio › Resample and stretch quality.
-- R49 (re-assigned from R15 by R18b): the track header's Edit Visible Button Set.
+- R49 (re-assigned from R15 by R18b, done): the track header's Edit Visible Button Set.
 - R30 (done): Tools > Advanced Save (VP23) opens Archive Project.
-- R49: Display page envelope/snap colours, icon colour strength, Medium/Light interface types; File I/O, Deprecated Features and Project Properties Advanced pages.
+- R49 (done): Display page envelope/snap colours, icon colour strength (Milan Pro has one look, so no Interface Type radios); File I/O, Deprecated Features and Project Properties Advanced pages (labelled).
 - R53 (done): Show Me How, Interactive Tutorials, Download User Manual (open the docs).
 - R57/R58/R59 (not planned): Explorer Favorites, Trimmer Loop Playback and Fit to Fill, fade start levels and Reset ASR, Red Eye Reduction, Expand Track Layers, track display and time display custom colours.
 
@@ -2154,6 +2154,18 @@ No product code unless the research finds a stable, documented structure. If it 
 **Acceptance tests:** harness runs at the 4 scales with no overflow; animations off gives zero-duration transitions.
 
 ### R49: Remaining Preferences pages and preference export (M)
+
+**Status: DONE.** Every Preferences page is live or says why a control is not:
+- General: "Automatically open last project on startup" (off, as VEGAS; the Start dialog is skipped when it opens one; `Prefs::startup_project`), "Show logo splash screen on startup", the temporary files folder (TMP and TEMP for Milan Pro and its FFmpeg children, set at the next start before any thread; the free space of its drive shown). The option list is as long as its options, so the page fits at 150 %.
+- Audio (VEGAS's Audio tab): Normalize peak level (dB) (`edit::set_normalize_peak`, VEGAS's -0.1), the preferred audio editor and the loudness log option; Quick fade length (10 ms), Dither, Import audio at project sample rate and the metronome sounds are greyed with the reason.
+- Preview Device: Identify Displays shows each display's number for 3 s (`monitors::identify`, borderless windows that never take the focus); deinterlace and studio-to-computer RGB are greyed with the reason (frames are progressive and computer RGB as they are decoded).
+- Display: Envelope Colors (Volume, Pan, Mute, Composite Level) and Snap Colors (VEGAS's 12 types) with colour buttons, Icon color strength (75 % = the icons as drawn), applied through `theme::set_user_colors`.
+- File I/O and Deprecated Features (VEGAS 23): VEGAS's legacy readers, QuickTime and DirectX switches, greyed with the reason. MIDI, CD Settings, Sync and External Control & Automation: not planned (R59). Project Properties › Advanced: Master display (R40b), 360 output (not planned, R59).
+- Project Properties › "Start all new projects with these settings" (`Prefs.new_project`): File › New and the first Untitled project take them; unchecking goes back to the built-in defaults.
+- Options › Export Preferences... / Import Preferences... (VEGAS 23's .vegprefs; Milan Pro's `.milanprefs`, JSON with a marker): a file the user picks, asking before replacing one ("... already exists. Replace it?") and before replacing the preferences on import; the import takes effect at once (keys, toolbars, layouts, colours, track defaults; `app/prefs_io.rs`).
+- Edit Visible Button Set... (track header menu, VEGAS 19): per kind, which of Compositing Mode, Track FX, Mute, Solo (video) or Arm for Record, Track FX, Mute, Solo (audio) the headers show; hidden ones are rows of the header's More menu.
+- `MILAN_APPDATA` now also moves prefs.json, so tests and the harness never touch the user's preferences.
+- Tests: `prefs_export_import_round_trip_restores_every_field` (every field set away from its default, checked), `open_last_project_flag`, `button_set_hides_per_kind`, `display_colours_and_icon_strength`.
 
 **Scope**
 - Make the Preview Device page live (from R14) and the Audio page (from R9/R8a).

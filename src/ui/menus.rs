@@ -194,7 +194,7 @@ impl CmdState {
             | ExportVegas | ArchiveProject | ImportMediaFromProject | ImportOtio | ImportEdl | ImportXmeml | ImportFcpxml | ExportOtio | ExportEdl | ExportXmeml | ExportFcpxml
             | About | KeyboardShortcuts | UnfinishedFeatures | CheckForUpdates | DiagnosticReport | NormalTool | LayoutDefault | SaveLayout | SaveLayoutAs
             | SaveLayoutUser(_) | OrganizeLayouts | ReloadLayout | LayoutAudio | LayoutColor | CustomizeToolbar | CustomizeTimelineToolbar
-            | CustomizeKeyboard | CommandPalette | Help | UserManual | InterfaceScale(_) => true,
+            | CustomizeKeyboard | CommandPalette | Help | UserManual | InterfaceScale(_) | ExportPrefs | ImportPrefs | EditButtonSet(_) => true,
             // Four docking areas and the Source / Timeline Top layouts.
             TopDock | BottomDock | RightDock | LayoutSource | LayoutTimelineTop => true,
             ToggleDocks | CollapseTrackList | MaximizeTimeline | NextWindow | PrevWindow | FocusTimeline => true,
@@ -1237,8 +1237,8 @@ pub const OPTIONS: &[M] = &[
     C("Customize Timeline Toolbar...", CustomizeTimelineToolbar),
     C("Customize &Keyboard...", CustomizeKeyboard),
     C("&Preferences...", Preferences),
-    X("Export Preferences...", Later("R49")),
-    X("Import Preferences...", Later("R49")),
+    C("Export Preferences...", ExportPrefs),
+    C("Import Preferences...", ImportPrefs),
 ];
 
 pub const HELP: &[M] = &[
@@ -2099,7 +2099,7 @@ mod tests {
                 }
             }
         }
-        assert!(found > 130, "{found}");
+        assert!(found > 120, "{found}"); // R49 settled about ten Later("R49") rows
     }
 
     /// R15: menus show the user's keys, and Customize Keyboard names commands by menu path.

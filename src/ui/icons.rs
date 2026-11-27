@@ -198,7 +198,8 @@ impl Pen<'_> {
     }
     /// The forced tint, else the colour snapped to the palette.
     fn c(&self, c: Color32) -> Color32 {
-        self.force.unwrap_or_else(|| quantize_2006(c))
+        // R49: Preferences › Display › Icon color strength, then the period palette.
+        self.force.unwrap_or_else(|| quantize_2006(theme::icon_strength(c, self.t.icon_strength)))
     }
     fn ink(&self) -> Color32 {
         self.c(self.t.icon)

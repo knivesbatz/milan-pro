@@ -69,13 +69,13 @@ target\release\milan-pro.exe
 |---|---|
 | `MILAN_SCREENSHOT=<file.png>` | Take the screenshot and exit. Without it the window opens normally. |
 | `MILAN_DEMO=1` | Load the demo project on generated media (cached in `%TEMP%\milan-demo`). Nothing is written to the user's preferences, autosave or plug-in cache. |
-| `MILAN_DIALOG=<name>` | Open a dialog, window or menu first: `menu-edit`, `prefs`, `prefs-update`, `recover`, `crash-offer`, `scopes`, `loudness`, `edit-details`, `plugin-manager`, `overlays` and the others in `open_from_env` (`src/app/commands.rs`). |
+| `MILAN_DIALOG=<name>` | Open a dialog, window or menu first: `menu-edit`, `prefs`, `prefs-page-<n>` (R49, n in tab order), `prefs-update`, `button-set`, `master-env`, `recover`, `crash-offer`, `scopes`, `loudness`, `edit-details`, `plugin-manager`, `overlays` and the others in `open_from_env` (`src/app/commands.rs`). |
 | `MILAN_PANELS=explorer,trimmer,...` | Dock windows to bring to the front. |
 | `MILAN_DROP=x,y` | With `MILAN_DEMO`: the demo media hover at that point as if dragged from Windows. |
 | `MILAN_OFX_DIR`, `MILAN_AUDIO_PLUGIN_DIR` | The only plug-in folders scanned for this run. |
 | `MILAN_OVERLAY_LIBRARY=<folder>` | With `MILAN_DIALOG=overlays`: where the harness makes its overlay library. |
 | `MILAN_HW_TABLE=<file.json>` | Show this hardware acceleration table in Preferences > Video instead of probing. |
-| `MILAN_APPDATA=<folder>` | Move autosave, sessions, logs and crash files to a test folder. |
+| `MILAN_APPDATA=<folder>` | Move the preferences (prefs.json), autosave, sessions, logs and crash files to a test folder. |
 | `MILAN_AUTOSAVE_NOW=1` | Autosave at the first tick (recovery tests). |
 | `MILAN_HOLD=1` | Never take the screenshot or exit: stay open off-screen until killed (the crash-recovery test). |
 | `MILAN_UPDATE_API=http://127.0.0.1:<port>/...` | Point the updater at a local test server (any other value is ignored). |

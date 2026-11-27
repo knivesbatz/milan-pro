@@ -48,6 +48,16 @@ fn main() -> eframe::Result<()> {
     // R37: the format capability table is cached per FFmpeg version; the harness never writes into AppData.
     engine::caps::set_write(!harness);
     let prefs = (!launch.demo).then(settings::Prefs::load);
+    // R49: Preferences › General › Temporary files folder: TMP and TEMP point there for Milan Pro and its FFmpeg
+    // children. Windows' own folder is kept for the Preferences page.
+    settings::remember_system_temp();
+    if let Some(dir) = prefs.as_ref().and_then(|p| p.temp_folder.clone()).filter(|d| d.is_dir()) {
+        // SAFETY: no other thread exists yet (the logger, the audio and the GPU threads all start below).
+        unsafe {
+            std::env::set_var("TMP", &dir);
+            std::env::set_var("TEMP", &dir);
+        }
+    }
     let files = !harness || std::env::var_os("MILAN_APPDATA").is_some_and(|d| !d.is_empty());
     logger::init(if files { logger::logs_dir() } else { None }, logger::level_from_name(prefs.as_ref().map_or("info", |p| p.log_level.as_str())));
     logger::install_crash_hooks(if files { logger::crashes_dir() } else { None });

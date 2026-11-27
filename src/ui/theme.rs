@@ -216,6 +216,8 @@ pub struct Theme {
     pub envelope_pan: Color32,
     pub envelope_mute: Color32,
     pub envelope_point: Color32,
+    /// R49: Preferences › Display › Icon color strength as a fraction (VEGAS's default 75 % = the icons as drawn).
+    pub icon_strength: f32,
 
     // Pan/Crop and Track Motion (§5.15.2–3): light workspace, keyframe controller
     pub workspace_bg: Color32,
@@ -467,6 +469,7 @@ impl Theme {
             envelope_pan: hex(0xC00000),
             envelope_mute: hex(0x00C8FF),
             envelope_point: white,
+            icon_strength: 0.75,
 
             workspace_bg: hex(0xECECEC),
             workspace_grid: hex(0xC8C8C8),
@@ -738,6 +741,80 @@ pub fn anim(ms: f32) -> f32 {
     if animations() { ms.max(0.0) / 1000.0 } else { 0.0 }
 }
 
+/// R49: the envelope types of Preferences › Display › Envelope Colors (the ones the look has a colour token for).
+pub const ENVELOPE_TYPES: [&str; 4] = ["Volume", "Pan", "Mute", "Composite Level"];
+/// R49: the snap types of Preferences › Display › Snap Colors (VEGAS's 12).
+pub const SNAP_TYPES: [&str; 12] =
+    ["Cursor", "Envelope Point", "Loop", "Drag Origin", "Marker", "Region", "CD Index", "CD Track", "Command Marker", "Event", "Event Fade", "Grid"];
+
+impl Theme {
+    /// The colour token of envelope type `name` (`ENVELOPE_TYPES`).
+    pub fn envelope_slot(&mut self, name: &str) -> Option<&mut Color32> {
+        Some(match name {
+            "Volume" => &mut self.envelope_volume,
+            "Pan" => &mut self.envelope_pan,
+            "Mute" => &mut self.envelope_mute,
+            "Composite Level" => &mut self.envelope_composite,
+            _ => return None,
+        })
+    }
+
+    /// The colour token of snap type `name` (`SNAP_TYPES`).
+    pub fn snap_slot(&mut self, name: &str) -> Option<&mut Color32> {
+        let s = &mut self.snap;
+        Some(match name {
+            "Cursor" => &mut s.cursor,
+            "Envelope Point" => &mut s.envelope_point,
+            "Loop" => &mut s.loop_,
+            "Drag Origin" => &mut s.drag_origin,
+            "Marker" => &mut s.marker,
+            "Region" => &mut s.region,
+            "CD Index" => &mut s.cd_index,
+            "CD Track" => &mut s.cd_track,
+            "Command Marker" => &mut s.command_marker,
+            "Event" => &mut s.event,
+            "Event Fade" => &mut s.event_fade,
+            "Grid" => &mut s.grid,
+            _ => return None,
+        })
+    }
+}
+
+/// R49: the colours the user changed in Preferences › Display (envelope and snap colours by type name, sRGB) and the
+/// icon colour strength in percent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserColors {
+    pub envelopes: std::collections::BTreeMap<String, [u8; 3]>,
+    pub snaps: std::collections::BTreeMap<String, [u8; 3]>,
+    pub icon_strength: u8,
+}
+
+impl Default for UserColors {
+    fn default() -> Self {
+        Self { envelopes: Default::default(), snaps: Default::default(), icon_strength: 75 }
+    }
+}
+
+static USER: RwLock<Option<UserColors>> = RwLock::new(None);
+
+/// R49: the Display page's colours take effect.
+pub fn set_user_colors(ctx: &egui::Context, c: UserColors) {
+    *USER.write().unwrap() = Some(c);
+    apply(ctx);
+}
+
+/// `c` at icon colour strength `k` (a fraction; 0.75 leaves it as drawn): its distance from its own grey scaled by
+/// k / 0.75, so 0 % is grey and 100 % a third more saturated.
+pub fn icon_strength(c: Color32, k: f32) -> Color32 {
+    if (k - 0.75).abs() < 1e-3 {
+        return c;
+    }
+    let f = (k / 0.75).max(0.0);
+    let y = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+    let ch = |v: u8| (y + (v as f32 - y) * f).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_premultiplied(ch(c.r()), ch(c.g()), ch(c.b()), c.a())
+}
+
 static CURRENT: LazyLock<RwLock<Theme>> = LazyLock::new(|| RwLock::new(Theme::new()));
 /// Track colours edited in Preferences › Display; replaces the default palette when set.
 static PALETTE: RwLock<Option<[Color32; 8]>> = RwLock::new(None);
@@ -757,6 +834,19 @@ pub fn apply(ctx: &egui::Context) {
     let mut t = Theme::new();
     if let Some(p) = *PALETTE.read().unwrap() {
         t.track_colors = p;
+    }
+    if let Some(u) = USER.read().unwrap().as_ref() {
+        for (name, [r, g, b]) in &u.envelopes {
+            if let Some(slot) = t.envelope_slot(name) {
+                *slot = Color32::from_rgb(*r, *g, *b);
+            }
+        }
+        for (name, [r, g, b]) in &u.snaps {
+            if let Some(slot) = t.snap_slot(name) {
+                *slot = Color32::from_rgb(*r, *g, *b);
+            }
+        }
+        t.icon_strength = f32::from(u.icon_strength.min(100)) / 100.0;
     }
     *CURRENT.write().unwrap() = t;
     t.apply(ctx);
@@ -794,6 +884,19 @@ mod tests {
         Theme::new().apply(&ctx);
         assert!(ctx.style().animation_time > 0.0);
         set_animations(None);
+    }
+
+    /// R49: every Display page type has its token; the icon strength leaves the icons alone at VEGAS's 75 %, greys
+    /// them at 0 and saturates them above.
+    #[test]
+    fn display_colours_and_icon_strength() {
+        let mut t = Theme::new();
+        assert!(ENVELOPE_TYPES.iter().all(|n| t.envelope_slot(n).is_some()) && SNAP_TYPES.iter().all(|n| t.snap_slot(n).is_some()));
+        let red = Color32::from_rgb(200, 40, 40);
+        assert_eq!(icon_strength(red, 0.75), red);
+        let grey = icon_strength(red, 0.0);
+        assert!(grey.r() == grey.g() && grey.g() == grey.b());
+        assert!(icon_strength(red, 1.0).r() > red.r());
     }
 
     /// R48: chrome pixels are whole physical pixels at every interface scale, on pixel edges.

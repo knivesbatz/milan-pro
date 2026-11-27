@@ -5,6 +5,7 @@ mod reliability;
 mod multicam;
 mod nested;
 mod sync;
+mod prefs_io;
 
 use eframe::egui;
 use crate::audio::{Player, Waveforms};
@@ -202,6 +203,8 @@ pub struct MeridianApp {
     recorded: Option<crate::ui::dialogs::RecordedFiles>,
     /// Recent project picked from a menu, opened once the save prompt is answered.
     pending_open: Option<std::path::PathBuf>,
+    /// R49: the track header's Edit Visible Button Set dialog while it is open.
+    button_set: Option<crate::ui::dialogs::ButtonSet>,
     /// File › New opens Project Properties for the new project.
     props_after_new: bool,
     /// Settings for the next new project (Welcome › Create Project).
@@ -378,6 +381,9 @@ impl MeridianApp {
         crate::project::set_default_video_track(prefs.default_video_track.clone());
         ui::keymap::set_overrides(&prefs.keys);
         crate::logger::set_privacy(prefs.crash_privacy);
+        // R49: Normalize peak level, and the Display page's envelope, snap and icon colours.
+        crate::edit::set_normalize_peak(prefs.normalize_peak_db);
+        theme::set_user_colors(&cc.egui_ctx, prefs.user_colors());
         // R21a: the compositor runs on the UI's own wgpu device when it is a Vulkan one (R21c: zero-copy preview), or
         // opens the chosen adapter on a background thread; without one the CPU composes.
         #[cfg(feature = "wgpu")]
@@ -391,7 +397,10 @@ impl MeridianApp {
         crate::engine::hw::start(!launch.demo, false);
         crate::engine::caches::configure(&prefs);
         theme::set_palette(&cc.egui_ctx, prefs.palette());
-        let welcome = (prefs.show_welcome && launch.screenshot.is_none()).then(Welcome::default);
+        // R49: "Automatically open last project on startup" (the demo harness reads no preferences); the Start dialog
+        // is not shown then.
+        let startup = (!launch.demo).then(|| prefs.startup_project(std::path::Path::is_file)).flatten();
+        let welcome = (prefs.show_welcome && launch.screenshot.is_none() && startup.is_none()).then(Welcome::default);
         std::thread::spawn(|| {
             crate::updater::clean_downloads(&crate::updater::update_dir(), crate::updater::CURRENT);
             crate::engine::render::clean_temp(&std::env::temp_dir());
@@ -402,6 +411,10 @@ impl MeridianApp {
             updater.check(&cc.egui_ctx, false, std::time::Duration::from_secs(if updater.auto { 0 } else { 5 }), prefs.update_channel);
         }
         let (mut project, mut sel, mut message) = (Project::new("Untitled"), Selection::default(), None);
+        // R49: Project Properties › "Start all new projects with these settings".
+        if let Some(s) = prefs.new_project.clone().filter(|_| !launch.demo) {
+            project.settings = s;
+        }
         if launch.demo {
             match crate::demo::project(&theme::get()) {
                 Ok((p, cr)) => {
@@ -556,6 +569,7 @@ impl MeridianApp {
             input_level: 0.0,
             recorded: None,
             pending_open: None,
+            button_set: None,
             props_after_new: false,
             new_settings: None,
             clipboard: Vec::new(),
@@ -607,6 +621,11 @@ impl MeridianApp {
             }
         }
         app.sync_sel();
+        if let Some(p) = startup {
+            log::info!("opening the last project {}", p.display());
+            app.pending_open = Some(p);
+            app.request(&cc.egui_ctx, crate::ui::MenuAction::Open);
+        }
         if !app.env_dialog {
             app.open_from_env(&cc.egui_ctx);
         }
@@ -773,6 +792,9 @@ impl eframe::App for MeridianApp {
             ctx.set_zoom_factor(theme::zoom_for(self.prefs.ui_scale, ctx.native_pixels_per_point().unwrap_or(1.0)));
         }
         theme::begin_frame(ctx);
+        // R49: the track headers' button set; Identify Displays' numbers while they show.
+        ui::set_header_buttons(ctx, &self.prefs.header_buttons);
+        ui::monitors::show_identify(ctx, self.offscreen);
         if self.env_dialog && crate::demo::harness_sized(ctx) {
             self.env_dialog = false;
             self.open_from_env(ctx);
@@ -1242,7 +1264,11 @@ impl eframe::App for MeridianApp {
             self.new_tracks.push((id, at, self.project_serial));
         }
         self.queue_win.show(ctx, &mut self.queue);
-        self.settings.show(ctx, &mut self.project, &mut self.history);
+        // R49: "Start all new projects with these settings" changes the preferences.
+        if let Some(default) = self.settings.show(ctx, &mut self.project, &mut self.history, &self.prefs.new_project) {
+            self.prefs.new_project = default;
+            self.save_prefs();
+        }
         if self.rel.autosave {
             let parents: Vec<&Project> = self.parents.iter().map(|p| &p.project).collect();
             self.autosave.tick(ctx, &self.project, &parents, self.prefs.autosave_minutes(), self.prefs.autosave_keep.clamp(1, 20));

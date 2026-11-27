@@ -1,10 +1,11 @@
-//! Options › Preferences (VEGAS_UI_SPEC.md §5.15.1): three rows of tabs; General, Video, Audio Device, Editing and Display
-//! are live, Audio has the preferred audio editor (R18a) and the loudness log option (R16c), and VST Effects (R34a) the
-//! VST3 and CLAP folders searched.
+//! Options › Preferences (VEGAS_UI_SPEC.md §5.15.1): three rows of tabs. Every page is live or says why a control is
+//! not (R49): General, Video, Preview Device, Audio, Audio Device, VST Effects, Editing, Display and Milan Pro's Update;
+//! File I/O and Deprecated Features hold VEGAS switches for readers and plug-ins Milan Pro does not have; MIDI, CD
+//! Settings, Sync and External Control & Automation are not planned (R59).
 use eframe::egui::{self, *};
 use crate::ui::widgets;
 use crate::settings::Prefs;
-use super::super::menus::{ALWAYS_ON, Fixed, Later, NotPlanned, Why};
+use super::super::menus::{ALWAYS_ON, Fixed, NotPlanned, Why};
 use super::super::theme;
 
 // "Update" is Milan Pro's own page (R44/R46): the updater, the log and crash-report options.
@@ -26,6 +27,8 @@ pub const AUDIO_DEVICE: usize = 4;
 pub const VST_EFFECTS: usize = 6;
 const EDITING: usize = 7;
 pub const DISPLAY: usize = 8;
+const FILE_IO: usize = 12;
+const DEPRECATED: usize = 13;
 
 #[derive(Default)]
 pub struct PrefsDialog {
@@ -37,6 +40,9 @@ pub struct PrefsDialog {
     outputs: Option<Vec<String>>,
     /// R14: the displays, listed once per opening of the Preview Device page.
     monitors: Option<Vec<crate::ui::monitors::Monitor>>,
+    /// R49: the Display page's Envelope Type and Snap Type choices.
+    env_kind: usize,
+    snap_kind: usize,
 }
 
 impl PrefsDialog {
@@ -67,6 +73,7 @@ impl PrefsDialog {
         let changed = *d != *current;
         let (tab, track, inputs, outputs) = (&mut self.tab, &mut self.track, &mut self.inputs, &mut self.outputs);
         let monitors = &mut self.monitors;
+        let kinds = (&mut self.env_kind, &mut self.snap_kind);
         let (hit, close) = super::modal(ctx, "preferences", "Preferences", vec2(433.0, 670.0), |ui| {
             super::tabs(ui, rows, tab);
             super::page(ui, 540.0, |ui| match *tab {
@@ -77,7 +84,9 @@ impl PrefsDialog {
                 AUDIO_DEVICE => audio_device(ui, d, inputs.get_or_insert_with(crate::record::input_devices), outputs.get_or_insert_with(crate::audio::output_devices), latency),
                 VST_EFFECTS => vst_effects(ui, d),
                 EDITING => editing(ui, d),
-                DISPLAY => display(ui, d, track),
+                DISPLAY => display(ui, d, track, kinds),
+                FILE_IO => file_io(ui),
+                DEPRECATED => deprecated(ui),
                 k if k == update_tab() => update(ui, d),
                 k => super::empty_page(ui, page_why(rows.iter().flat_map(|r| r.iter()).nth(k).copied().unwrap_or(""))),
             });
@@ -93,23 +102,21 @@ impl PrefsDialog {
 }
 
 /// Why a Preferences page has no settings yet.
-fn page_why(page: &str) -> Why {
-    match page {
-        "MIDI" | "CD Settings" | "Sync" | "External Control & Automation" => NotPlanned("R59"),
-        _ => Later("R49"), // File I/O, Deprecated Features
-    }
+fn page_why(_page: &str) -> Why {
+    // MIDI, CD Settings, Sync, External Control & Automation.
+    NotPlanned("R59")
 }
 
 fn general(ui: &mut Ui, d: &mut Prefs) {
     ui.label("General preferences:");
     super::field_box(ui, 4, |ui| {
         ui.set_width(ui.available_width());
-        ui.set_height(16.0 * 24.0);
+        // R49: as many rows as there are options (VEGAS's list is longer), so the page fits at 150 %.
+        ui.set_height(16.0 * 12.0);
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.spacing_mut().interact_size.y = 16.0;
-        let r49 = Later("R49").text();
-        widgets::checkbox_enabled(ui, false, &mut false, "Automatically open last project on startup").on_disabled_hover_text(&r49);
-        widgets::checkbox(ui, &mut d.show_splash, "Show splash screen at startup");
+        widgets::checkbox(ui, &mut d.open_last, "Automatically open last project on startup");
+        widgets::checkbox(ui, &mut d.show_splash, "Show logo splash screen on startup");
         // Space always plays and pauses (the VEGAS 23 keys).
         ui.add_enabled(false, Checkbox::new(&mut true, "Make spacebar and F12 Play/Pause instead of Play/Stop")).on_disabled_hover_text(ALWAYS_ON.text());
         widgets::checkbox(ui, &mut d.show_welcome, "Show Welcome Screen on startup");
@@ -131,13 +138,23 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
         ui.label("Backup copies kept per project:");
         widgets::spin_enabled(ui, d.autosave_on, &mut d.autosave_keep, 1.0, |s| s.range(1..=20));
     });
-    ui.add_enabled_ui(false, |ui| {
-        let r49 = Later("R49").text();
-        ui.label("Temporary files folder:").on_disabled_hover_text(&r49);
-        ui.horizontal(|ui| {
-            widgets::edit(ui, TextEdit::singleline(&mut std::env::temp_dir().display().to_string()).desired_width(300.0)).on_disabled_hover_text(&r49);
-            widgets::push_button(ui, "Browse...").on_disabled_hover_text(&r49);
-        });
+    // R49: where Milan Pro and FFmpeg write temporary files (renders' audio, intermediate files); from the next start.
+    ui.label("Temporary files folder:");
+    let shown = d.temp_folder.clone().unwrap_or_else(crate::settings::system_temp);
+    ui.horizontal(|ui| {
+        let mut path = shown.display().to_string();
+        if widgets::edit(ui, TextEdit::singleline(&mut path).desired_width(300.0)).on_hover_text("Takes effect the next time Milan Pro starts").changed() {
+            d.temp_folder = (!path.trim().is_empty()).then(|| path.trim().into()).filter(|p| *p != crate::settings::system_temp());
+        }
+        if widgets::push_button(ui, "Browse...").clicked() {
+            if let Some(p) = rfd::FileDialog::new().set_title("Temporary files folder").pick_folder() {
+                d.temp_folder = Some(p);
+            }
+        }
+    });
+    ui.label(match crate::ui::status::free_space(&shown) {
+        Some(b) => format!("Free storage space in selected folder: {:.1} Gigabytes", b as f64 / 1e9),
+        None => "Free storage space in selected folder: unknown (the folder is not there)".into(),
     });
     // Milan Pro's own: where the Overlays window keeps the packs it imports.
     ui.label("Overlay pack library folder:");
@@ -155,7 +172,7 @@ fn general(ui: &mut Ui, d: &mut Prefs) {
     if default_all(ui) {
         (d.show_welcome, d.show_splash, d.recent_max, d.auto_update, d.nested_breadcrumb) = (true, true, 4, true, false);
         (d.autosave_on, d.autosave_minutes, d.autosave_keep) = (true, 2, 5);
-        d.overlay_library = None;
+        (d.overlay_library, d.open_last, d.temp_folder) = (None, false, None);
     }
 }
 
@@ -216,9 +233,23 @@ fn update(ui: &mut Ui, d: &mut Prefs) {
     }
 }
 
-/// Audio: R18a's preferred audio editor (Tools › Open in Audio Editor) and R16c's loudness log option; the page's other
-/// settings wait for R49.
+/// Audio (R49, VEGAS's Audio tab): Normalize peak level, R18a's preferred audio editor (Tools › Open in Audio Editor) and
+/// R16c's loudness log option; the switches Milan Pro has no counterpart for say why.
 fn audio(ui: &mut Ui, d: &mut Prefs) {
+    super::row(ui, "Normalize peak level (dB):", 230.0, true, |ui| {
+        widgets::spin(ui, &mut d.normalize_peak_db, 0.1, |s| s.range(-20.0..=0.0).speed(0.05).fixed_decimals(2))
+            .on_hover_text("The peak Switches › Normalize brings an event to (measured again when changed)")
+    });
+    super::row(ui, "Quick fade length for audio events (ms):", 230.0, false, |ui| {
+        super::fixed_combo(ui, "pa_qf", "10", 80.0, Fixed("the fade of Options > Quickfade Audio Edits is 10 ms, in playback and render alike"));
+    });
+    super::row(ui, "Dither:", 230.0, false, |ui| {
+        super::fixed_combo(ui, "pa_dither", "None", 120.0, Fixed("renders at 8, 16 and 24 bits round to the nearest step; no dither is added"));
+    });
+    widgets::checkbox_enabled(ui, false, &mut true, "Import audio at project sample rate")
+        .on_disabled_hover_text(Fixed("every file plays at the project rate through Milan Pro's resampler; no converted copy is made").text());
+    widgets::checkbox_enabled(ui, false, &mut true, "Use default metronome sounds").on_disabled_hover_text(Fixed("the clicks of Options > Metronome are Milan Pro's own sounds").text());
+    ui.add_space(8.0);
     ui.label("Preferred audio editor:");
     ui.horizontal(|ui| {
         let mut path = d.audio_editor.as_ref().map_or(String::new(), |p| p.display().to_string());
@@ -233,8 +264,29 @@ fn audio(ui: &mut Ui, d: &mut Prefs) {
     });
     ui.add_space(8.0);
     widgets::checkbox(ui, &mut d.loudness.open_editor, "Open editor when new loudness log is generated");
+    if default_all(ui) {
+        (d.normalize_peak_db, d.audio_editor, d.loudness.open_editor) = (crate::edit::NORMALIZE_PEAK_DB, None, true);
+    }
+}
+
+/// R49: File I/O (VEGAS 23): VEGAS's legacy and compound file readers, which FFmpeg's single reader replaces.
+fn file_io(ui: &mut Ui) {
+    let why = Fixed("every format is read by FFmpeg itself; VEGAS's legacy AVC/HEVC readers and the so4 compound reader have no counterpart");
+    for label in ["Enable legacy AVC decoding", "Enable legacy HEVC decoding", "Enable so4 compound reader for AVC/M2TS"] {
+        widgets::checkbox_enabled(ui, false, &mut false, label).on_disabled_hover_text(why.text());
+    }
     ui.add_space(8.0);
-    ui.label(format!("Milan Pro has no other settings on this page ({}).", Later("R49").phrase()));
+    ui.label("Hardware decoding and the encode device are on the Video page; proxies on the Video page and in Project Media.");
+}
+
+/// R49: Deprecated Features (VEGAS 23): switches for plug-in kinds VEGAS keeps for old projects.
+fn deprecated(ui: &mut Ui) {
+    let qt = Fixed("files in QuickTime formats are read by FFmpeg; no QuickTime plug-in is needed");
+    widgets::checkbox_enabled(ui, false, &mut false, "Enable QuickTime plug-in").on_disabled_hover_text(qt.text());
+    let dx = Fixed("only VST3 and CLAP audio effects and OFX video effects are hosted, not DirectX plug-ins");
+    widgets::checkbox_enabled(ui, false, &mut false, "Enable DirectX plug-in hosting").on_disabled_hover_text(dx.text());
+    ui.add_space(8.0);
+    ui.label("Milan Pro has no deprecated features: its readers and plug-in hosts are current.");
 }
 
 fn video(ui: &mut Ui, d: &mut Prefs) {
@@ -379,12 +431,16 @@ fn preview_device(ui: &mut Ui, d: &mut Prefs, monitors: &[crate::ui::monitors::M
     if monitors.is_empty() {
         ui.label("No displays were found.");
     }
-    widgets::push_button_enabled(ui, false, "Identify Displays").on_disabled_hover_text(Later("R49").text());
+    // R49: each display shows its number for a few seconds (as VEGAS's Identify Displays).
+    if widgets::push_button(ui, "Identify Displays").on_hover_text("Show each display's number on it").clicked() {
+        crate::ui::monitors::identify(ui.ctx(), monitors);
+    }
     ui.add_space(6.0);
     widgets::checkbox(ui, &mut d.ext_fit, "Scale output to fit display").on_hover_text("Off: one project pixel per display pixel, centred");
-    let r49 = Later("R49").text();
-    widgets::checkbox_enabled(ui, false, &mut false, "Apply deinterlace filter").on_disabled_hover_text(&r49);
-    widgets::checkbox_enabled(ui, false, &mut false, "Adjust levels from studio RGB to computer RGB").on_disabled_hover_text(&r49);
+    widgets::checkbox_enabled(ui, false, &mut false, "Apply deinterlace filter")
+        .on_disabled_hover_text(Fixed("frames are progressive already: interlaced sources are deinterlaced as they are decoded (Project Properties > Deinterlace method)").text());
+    widgets::checkbox_enabled(ui, false, &mut false, "Adjust levels from studio RGB to computer RGB")
+        .on_disabled_hover_text(Fixed("the timeline is computer RGB (0-255) end to end; sources are expanded from studio levels as they are decoded").text());
     widgets::checkbox_enabled(ui, false, &mut true, "Wait for vertical sync").on_disabled_hover_text(ALWAYS_ON.text());
     widgets::checkbox_enabled(ui, false, &mut true, "Optimize GPU display performance").on_disabled_hover_text(ALWAYS_ON.text());
     widgets::checkbox_enabled(ui, false, &mut false, "Recompress edited frames").on_disabled_hover_text(NotPlanned("R59").text());
@@ -558,7 +614,7 @@ fn default_all(ui: &mut Ui) -> bool {
 
 const COLOR_NAMES: [&str; 8] = ["Color A", "Color B", "Color C", "Color D", "Color E", "Color F", "Color G", "Color H"];
 
-fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
+fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize, (env_k, snap_k): (&mut usize, &mut usize)) {
     let t = theme::get();
     // The default palette for this preview, whatever the current override.
     let base = theme::Theme::new().track_colors;
@@ -577,22 +633,36 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     if changed {
         d.track_colors = Some(palette.map(|c| [c.r(), c.g(), c.b()]));
     }
+    // R49: the colour of each envelope and snap type (the defaults are the look's; a change shows on OK / Apply).
+    let mut base = theme::Theme::new();
+    let _ = t;
     super::group(ui, "Envelope Colors");
-    let r49 = Later("R49").text();
-    super::row(ui, "      Envelope Type:", 120.0, false, |ui| {
-        super::fixed_combo(ui, "pref_env", "Volume", 200.0, Later("R49"));
-        super::swatch(ui, t.envelope_volume, false).on_disabled_hover_text(&r49);
+    super::row(ui, "      Envelope Type:", 120.0, true, |ui| {
+        widgets::combo(ui, "pref_env", 200.0, theme::ENVELOPE_TYPES[*env_k], |ui| {
+            for (k, n) in theme::ENVELOPE_TYPES.iter().enumerate() {
+                ui.selectable_value(env_k, k, *n);
+            }
+        });
+        let name = theme::ENVELOPE_TYPES[*env_k];
+        user_color(ui, &mut d.envelope_colors, name, base.envelope_slot(name).copied().unwrap_or_default());
     });
     super::group(ui, "Snap Colors");
-    super::row(ui, "      Snap Type:", 120.0, false, |ui| {
-        super::fixed_combo(ui, "pref_snap", "Cursor", 200.0, Later("R49"));
-        super::swatch(ui, t.snap.cursor, false).on_disabled_hover_text(&r49);
+    super::row(ui, "      Snap Type:", 120.0, true, |ui| {
+        widgets::combo(ui, "pref_snap", 200.0, theme::SNAP_TYPES[*snap_k], |ui| {
+            for (k, n) in theme::SNAP_TYPES.iter().enumerate() {
+                ui.selectable_value(snap_k, k, *n);
+            }
+        });
+        let name = theme::SNAP_TYPES[*snap_k];
+        user_color(ui, &mut d.snap_colors, name, base.snap_slot(name).copied().unwrap_or_default());
     });
     ui.add_space(4.0);
-    super::row(ui, "Icon color strength:", 120.0, false, |ui| {
-        let mut v = 75.0_f32;
-        widgets::slider(ui, &mut v, 0.0..=100.0, widgets::Slide { no_value: true, ..Default::default() }).on_disabled_hover_text(&r49);
-        ui.label("75 %");
+    super::row(ui, "Icon color strength:", 120.0, true, |ui| {
+        let mut v = f32::from(d.icon_strength);
+        if widgets::slider(ui, &mut v, 0.0..=100.0, widgets::Slide { no_value: true, ..Default::default() }).changed() {
+            d.icon_strength = v.round().clamp(0.0, 100.0) as u8;
+        }
+        ui.label(format!("{} %", d.icon_strength));
     });
     ui.add_space(4.0);
     // The docking options (§4.3).
@@ -618,6 +688,20 @@ fn display(ui: &mut Ui, d: &mut Prefs, track: &mut usize) {
     if default_all(ui) {
         d.track_colors = None;
         (d.auto_hide_docks, d.tabs_on_top, d.float_dock, d.ui_scale) = (false, false, None, None);
+        (d.envelope_colors, d.snap_colors, d.icon_strength) = (Default::default(), Default::default(), 75);
+    }
+}
+
+/// A Display page colour button: `name`'s colour in `map` (the user's), else `default`; back to the default drops it.
+fn user_color(ui: &mut Ui, map: &mut std::collections::BTreeMap<String, [u8; 3]>, name: &str, default: Color32) {
+    ui.spacing_mut().interact_size = vec2(60.0, 23.0);
+    let mut c = map.get(name).map_or(default, |[r, g, b]| Color32::from_rgb(*r, *g, *b));
+    if egui::color_picker::color_edit_button_srgba(ui, &mut c, egui::color_picker::Alpha::Opaque).changed() {
+        if c == default {
+            map.remove(name);
+        } else {
+            map.insert(name.to_string(), [c.r(), c.g(), c.b()]);
+        }
     }
 }
 

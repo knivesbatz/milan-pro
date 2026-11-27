@@ -383,9 +383,22 @@ pub fn add_stream_tracks(project: &mut Project, id: &str) -> Vec<String> {
 /// Preferences › Audio "Normalize peak level" (VEGAS's default).
 pub const NORMALIZE_PEAK_DB: f32 = -0.1;
 
+/// R49: Preferences › Audio › Normalize peak level (dB), as f32 bits; VEGAS's -0.1 until the preferences set it.
+static NORMALIZE_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0xBDCC_CCCD);
+
+/// R49: the peak Normalize brings events to (Preferences › Audio).
+pub fn set_normalize_peak(db: f32) {
+    let db = if db.is_finite() { db.clamp(-20.0, 0.0) } else { NORMALIZE_PEAK_DB };
+    NORMALIZE_PEAK.store(db.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn normalize_peak() -> f32 {
+    f32::from_bits(NORMALIZE_PEAK.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 /// The Normalize gain (dB) that takes a measured `peak` (linear) to `NORMALIZE_PEAK_DB`; silence gets none.
 pub fn normalize_db(peak: f32) -> f32 {
-    if peak > 1e-6 { NORMALIZE_PEAK_DB - 20.0 * peak.log10() } else { 0.0 }
+    if peak > 1e-6 { normalize_peak() - 20.0 * peak.log10() } else { 0.0 }
 }
 
 /// The audio event `c` plays, as its Normalize gain is measured on.

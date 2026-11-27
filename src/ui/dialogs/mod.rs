@@ -1,6 +1,7 @@
 //! Modal dialogs (UI_SPEC.md §8.2): Windows 2000 property sheets. This module holds the shared frame (title row with
 //! ? and ×, tabs, group headings, 75×23 buttons) and the dialogs themselves.
 mod about;
+pub mod button_set;
 mod archive;
 mod audio_transition;
 pub mod command_props;
@@ -32,6 +33,7 @@ mod update;
 mod welcome;
 
 pub use about::about;
+pub use button_set::ButtonSet;
 pub use archive::ArchiveDlg;
 pub use audio_transition::AudioTransition;
 pub use command_props::CommandProps;
@@ -347,7 +349,7 @@ pub fn page<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let frame = Frame::NONE.fill(d.page);
     // R48: what is left for the page above the dialog's button row; a dialog squeezed by a small window scrolls its
     // page (at 100 % on a 1080-line display nothing changes).
-    let room = (ui.available_height() - 16.0 - 40.0).floor().max(120.0);
+    let room = (ui.ctx().screen_rect().max.y - ui.cursor().min.y - 16.0 - 56.0).floor().max(120.0);
     let out = frame.inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         if room >= height {
@@ -429,18 +431,6 @@ pub fn button_row(ui: &mut Ui, buttons: &[(&str, bool)]) -> Option<usize> {
         }
     });
     hit
-}
-
-/// 60×23 colour swatch button (the colour shows even when the button is greyed).
-pub fn swatch(ui: &mut Ui, color: Color32, enabled: bool) -> Response {
-    let t = theme::get();
-    let d = t.dialog();
-    let (r, resp) = ui.allocate_exact_size(vec2(60.0, 23.0), if enabled { Sense::click() } else { Sense::hover() });
-    let rp = widgets::px(r);
-    ui.painter().rect_filled(rp, 0.0, d.button);
-    widgets::bevel(ui.painter(), rp, true, &t.dialog_metal());
-    ui.painter().rect_filled(r.shrink2(vec2(7.0, 6.0)), 0.0, color);
-    resp
 }
 
 /// Label | control grid row helper: fixed-width label then the control.

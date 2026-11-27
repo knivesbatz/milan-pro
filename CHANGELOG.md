@@ -11,6 +11,10 @@ the minor number for feature releases, the patch number for fixes.
 - **High-DPI:** View > Interface Scale (Auto or 100-200 %, also in Preferences > Display); bevels, rules and icons
   stay sharp at 125, 150, 175 and 200 % (whole physical pixels, no blurred half pixels), dialogs fit small windows
   and scroll their pages; Windows' "Show animations" setting turns every transition off (R48).
+- **Preferences:** Options > Export / Import Preferences (`.milanprefs`); "Automatically open last project on
+  startup", the temporary files folder, Normalize peak level, envelope and snap colours, icon colour strength, Identify
+  Displays and "Start all new projects with these settings" work; the track header's Edit Visible Button Set chooses
+  which buttons headers show; every other Preferences control says why it is greyed (R49).
 - **Master bus envelopes:** a Master bus track (View > Audio Bus Tracks) with Volume and Mute envelopes, played and
   rendered alike, and the Master Bus window's Automation Settings badge (Off, Read, Write (Touch), Write (Latch)); with
   automation controls shown, the master faders write the Volume envelope (R10c).

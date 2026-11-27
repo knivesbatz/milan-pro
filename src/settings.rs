@@ -181,6 +181,54 @@ pub struct Prefs {
     pub prerender_template: Option<String>,
     /// R48: View › Interface Scale in percent (100-200); None = Auto, the display's own scale.
     pub ui_scale: Option<u16>,
+    /// R49: Preferences › General: "Automatically open last project on startup" (off, as in VEGAS) and the temporary
+    /// files folder (None = Windows' %TEMP%; a change takes effect at the next start).
+    pub open_last: bool,
+    pub temp_folder: Option<PathBuf>,
+    /// R49: Project Properties › "Start all new projects with these settings" (None = the built-in defaults).
+    pub new_project: Option<ProjectSettings>,
+    /// R49: Preferences › Audio › "Normalize peak level (dB)" (VEGAS's -0.1).
+    pub normalize_peak_db: f32,
+    /// R49: the track headers' Edit Visible Button Set (VEGAS 19 on).
+    pub header_buttons: HeaderButtons,
+    /// R49: Preferences › Display › Envelope Colors and Snap Colors the user changed (by `theme::ENVELOPE_TYPES` /
+    /// `SNAP_TYPES` name, sRGB) and Icon color strength (percent; VEGAS's 75 is the icons as drawn).
+    pub envelope_colors: BTreeMap<String, [u8; 3]>,
+    pub snap_colors: BTreeMap<String, [u8; 3]>,
+    pub icon_strength: u8,
+}
+
+/// R49: the buttons a track header hides (keys of `dialogs::button_set::VIDEO` / `AUDIO`); they stay in its More menu.
+/// Nothing hidden is VEGAS's default set.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeaderButtons {
+    pub video_hidden: Vec<String>,
+    pub audio_hidden: Vec<String>,
+}
+
+impl HeaderButtons {
+    pub fn hidden(&self, video: bool) -> &[String] {
+        if video { &self.video_hidden } else { &self.audio_hidden }
+    }
+
+    pub fn hides(&self, video: bool, key: &str) -> bool {
+        self.hidden(video).iter().any(|k| k == key)
+    }
+}
+
+/// R49: the marker an exported preferences file carries (Import Preferences refuses files without it).
+const EXPORT_MARK: &str = "milan_pro_preferences";
+
+/// R49: Windows' temporary folder as Milan Pro found it at startup (before Preferences › General moved TMP and TEMP).
+static SYSTEM_TEMP: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn remember_system_temp() {
+    let _ = SYSTEM_TEMP.set(std::env::temp_dir());
+}
+
+pub fn system_temp() -> PathBuf {
+    SYSTEM_TEMP.get().cloned().unwrap_or_else(std::env::temp_dir)
 }
 
 /// R15: where Customize Keyboard keeps keyboard maps (%APPDATA%\MilanPro\Keyboard), as VEGAS keeps its .ini maps in
@@ -394,6 +442,14 @@ impl Default for Prefs {
             prerender_folder: None,
             prerender_template: None,
             ui_scale: None,
+            open_last: false,
+            temp_folder: None,
+            new_project: None,
+            normalize_peak_db: crate::edit::NORMALIZE_PEAK_DB,
+            header_buttons: HeaderButtons::default(),
+            envelope_colors: BTreeMap::new(),
+            snap_colors: BTreeMap::new(),
+            icon_strength: 75,
         }
     }
 }
@@ -414,8 +470,46 @@ impl Prefs {
         crate::audio::DeviceConfig { kind: self.device_type, device: self.playback_device.clone(), buffer: self.buffer_frames }
     }
 
+    /// %APPDATA%\MilanPro\prefs.json, or (R49) prefs.json in `MILAN_APPDATA`, the test folder the harness and the
+    /// tests use, so they never touch the user's file.
     fn path() -> Option<PathBuf> {
+        if let Some(d) = std::env::var_os("MILAN_APPDATA").filter(|d| !d.is_empty()) {
+            return Some(PathBuf::from(d).join("prefs.json"));
+        }
         Some(PathBuf::from(std::env::var_os("APPDATA")?).join("MilanPro").join("prefs.json"))
+    }
+
+    /// R49: Options › Export Preferences: every preference, as JSON with a marker, written whole (a temporary file
+    /// renamed over `path`).
+    pub fn export(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let mut v = serde_json::to_value(self)?;
+        if let serde_json::Value::Object(m) = &mut v {
+            m.insert(EXPORT_MARK.into(), serde_json::Value::from(env!("CARGO_PKG_VERSION")));
+        }
+        let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+        let res = std::fs::write(&tmp, serde_json::to_string_pretty(&v)?).and_then(|_| std::fs::rename(&tmp, path));
+        if res.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        res
+    }
+
+    /// R49: Options › Import Preferences: the preferences of an exported file (a field this build cannot read takes
+    /// its default alone, as when loading prefs.json); an error for a file that is not one.
+    pub fn import(path: &std::path::Path) -> Result<Prefs, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "it is not a preferences file".to_string())?;
+        if v.get(EXPORT_MARK).is_none() {
+            return Err("it is not a Milan Pro preferences file (Options > Export Preferences writes them)".into());
+        }
+        Self::parse(Ok(text)).ok_or_else(|| "it could not be read".into())
+    }
+
+    /// R49: the project to open at startup: with "Automatically open last project on startup", the most recent one if
+    /// it is still there (`exists`); never in the harness or when the command line names one.
+    pub fn startup_project(&self, exists: impl Fn(&std::path::Path) -> bool) -> Option<PathBuf> {
+        let last = PathBuf::from(self.recent.first()?);
+        (self.open_last && exists(&last)).then_some(last)
     }
 
     /// R44: the preferences file (for the diagnostic report).
@@ -504,6 +598,11 @@ impl Prefs {
         self.recent.truncate(self.recent_max.clamp(1, 9));
     }
 
+    /// R49: the Display page's colours for the look.
+    pub fn user_colors(&self) -> crate::ui::theme::UserColors {
+        crate::ui::theme::UserColors { envelopes: self.envelope_colors.clone(), snaps: self.snap_colors.clone(), icon_strength: self.icon_strength }
+    }
+
     pub fn palette(&self) -> Option<[egui::Color32; 8]> {
         self.track_colors.map(|cs| cs.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)))
     }
@@ -538,6 +637,9 @@ pub struct SettingsDialog {
     /// Some while the window is open: the edited copy, and the number of busses (R8a: kept on the timeline).
     draft: Option<(ProjectSettings, usize)>,
     tab: usize,
+    /// R49: "Start all new projects with these settings" as the dialog opened and as it is now (None until the
+    /// dialog's first frame reads it).
+    start_new: Option<(bool, bool)>,
 }
 
 impl SettingsDialog {
@@ -549,34 +651,48 @@ impl SettingsDialog {
     pub fn open_tab(&mut self, project: &Project, tab: usize) {
         self.draft = Some((project.settings.clone(), project.timeline.audio.buses.len()));
         self.tab = tab;
+        self.start_new = None;
     }
 
     pub fn is_open(&self) -> bool {
         self.draft.is_some()
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History) {
-        let Some((d, buses)) = &mut self.draft else { return };
+    /// Draws the dialog; `default`: Preferences' settings for new projects. Some(new default) when OK or Apply changed
+    /// it (R49: "Start all new projects with these settings").
+    pub fn show(&mut self, ctx: &egui::Context, project: &mut Project, history: &mut History, default: &Option<ProjectSettings>) -> Option<Option<ProjectSettings>> {
+        let Some((d, buses)) = &mut self.draft else { return None };
         let tab = &mut self.tab;
-        let changed = *d != project.settings || *buses != project.timeline.audio.buses.len();
+        let (was_new, start_new) = self.start_new.get_or_insert_with(|| {
+            let on = default.as_ref() == Some(&project.settings);
+            (on, on)
+        });
+        let changed = *d != project.settings || *buses != project.timeline.audio.buses.len() || *start_new != *was_new;
         let (hit, close) = dialogs::modal(ctx, "project_properties", "Project Properties", egui::vec2(427.0, 696.0), |ui| {
             let row: &[&str] = &["Video", "Audio", "Ruler", "Summary", "Audio CD", "Advanced"];
             dialogs::tabs(ui, &[row], tab);
             dialogs::page(ui, 590.0, |ui| match *tab {
-                0 => video_tab(ui, d, project),
+                0 => video_tab(ui, d, project, start_new),
                 1 => audio_tab(ui, d, buses),
                 2 => ruler_tab(ui, d),
                 3 => summary_tab(ui, d),
                 4 => dialogs::empty_page(ui, NotPlanned("R59")),
-                _ => dialogs::empty_page(ui, Later("R49")),
+                _ => advanced_tab(ui),
             });
             ui.add_space(8.0);
             dialogs::button_row(ui, &[("OK", true), ("Cancel", true), ("Apply", changed)])
         });
+        let mut new_default = None;
         if matches!(hit, Some(0 | 2)) {
             // H.264/HEVC 4:2:0 output needs even dimensions.
             d.width &= !1;
             d.height &= !1;
+            // Checked: these settings become the default; unchecked after it was: back to the built-in ones.
+            let want = start_new.then(|| d.clone());
+            if (*start_new || *was_new) && want != *default {
+                new_default = Some(want);
+            }
+            *was_new = *start_new;
             let before = project.clone();
             let bus_change = crate::edit::set_bus_count(project, *buses);
             if *d != project.settings || bus_change {
@@ -588,10 +704,17 @@ impl SettingsDialog {
         if matches!(hit, Some(0 | 1)) || close {
             self.draft = None;
         }
+        new_default
     }
 }
 
-fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
+/// R49: VEGAS 23's Advanced page (Master Display, 360 output); Milan Pro has neither yet.
+fn advanced_tab(ui: &mut Ui) {
+    dialogs::row(ui, "Master display:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pp_master_display", "None", 200.0, Later("R40b")));
+    dialogs::row(ui, "360 output:", 150.0, false, |ui| dialogs::fixed_combo(ui, "pp_360", "Off", 200.0, NotPlanned("R59")));
+}
+
+fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project, start_new: &mut bool) {
     let current = TEMPLATES.iter().find(|t| (t.1, t.2) == (d.width, d.height) && (t.3 - d.frame_rate).abs() < 0.001);
     ui.horizontal(|ui| {
         ui.label("Template:");
@@ -733,8 +856,9 @@ fn video_tab(ui: &mut Ui, d: &mut ProjectSettings, project: &Project) {
             widgets::edit(ui, egui::TextEdit::singleline(&mut folder).desired_width(310.0)).on_disabled_hover_text(why.text());
             widgets::push_button(ui, "Browse...").on_disabled_hover_text(why.text());
         });
-        widgets::checkbox(ui, &mut false, "Start all new projects with these settings").on_disabled_hover_text(Later("R49").text());
     });
+    // R49: these settings become what File › New starts with (Preferences keep them).
+    widgets::checkbox(ui, start_new, "Start all new projects with these settings");
 }
 
 /// Project Properties › Resample mode, as VEGAS 23 names it.
@@ -920,6 +1044,146 @@ mod tests {
             r.add_recent(std::path::Path::new(p));
         }
         assert_eq!(r.recent, ["c", "a"]);
+    }
+
+    /// R49 acceptance: Export Preferences then Import Preferences gives back every field. The test's preferences
+    /// differ from the defaults in every field (checked), so a field the export or import lost would show.
+    #[test]
+    fn prefs_export_import_round_trip_restores_every_field() {
+        use crate::project::{Composite, GridSpacing, ProjectSettings, VideoDefaults};
+        let t = crate::ui::theme::Theme::new();
+        let mut layouts = BTreeMap::new();
+        layouts.insert(layout_key("last"), crate::ui::dock::Dock::new(&t).layout("Mine"));
+        let mut keys = crate::ui::keymap::Overrides::new();
+        keys.insert("Split".into(), vec!["Ctrl+Shift+F5".into()]);
+        let p = Prefs {
+            track_colors: Some([[1, 2, 3]; 8]),
+            show_welcome: false,
+            show_splash: false,
+            recent: vec![r"D:\Show.mnle".into()],
+            recent_max: 7,
+            auto_update: false,
+            autosave_on: false,
+            autosave_minutes: 9,
+            autosave_keep: 3,
+            log_level: "debug".into(),
+            crash_privacy: true,
+            crash_seen: Some("crash-1.txt".into()),
+            update_channel: crate::updater::Channel::Preview,
+            keep_previous: true,
+            skipped_update: Some("9.9.9".into()),
+            quantize: false,
+            still_len: 2.5,
+            still_sequence: true,
+            auto_crossfade: false,
+            quickfade: false,
+            snap_grid: true,
+            snap_all: true,
+            grid: GridSpacing::Note(16, true),
+            auto_ripple: true,
+            ripple_mode: crate::edit::RippleMode::All,
+            ignore_grouping: true,
+            show_envelopes: false,
+            hidden_envelopes: vec![EnvView::AudioPan],
+            lock_envelopes: false,
+            auto_proxy: true,
+            extra_blend_modes: true,
+            gpu: crate::engine::gpu::OFF.into(),
+            nested_breadcrumb: true,
+            video_bus: true,
+            bus_tracks: true,
+            ofx_envelopes: true,
+            console: crate::ui::ConsolePrefs { width: 2, ..Default::default() },
+            output_meters: false,
+            vertical_meters: false,
+            meter_width: 2,
+            fx_favorites: vec!["milan.fx.invert".into()],
+            cut_overlap: 0.5,
+            cursor_preview: 1.5,
+            default_track_fx: Some(Vec::new()),
+            default_video_track: VideoDefaults { height: Some(80.0), composite: Some(Composite::Add), fx: Some(Vec::new()) },
+            record_input: Some("Microphone (USB)".into()),
+            record_offset_ms: 12.5,
+            device_type: crate::audio::DeviceType::Exclusive,
+            playback_device: Some("Speakers (USB)".into()),
+            buffer_frames: 128,
+            layouts,
+            render_templates: vec![crate::render::Template { name: "Mine".into(), ..crate::render::BUILTIN[5].clone() }],
+            render_favorites: vec!["Mine".into()],
+            render_recent: vec!["Web 720p".into()],
+            render_background: true,
+            auto_hide_docks: true,
+            tabs_on_top: true,
+            float_dock: Some(false),
+            ext_display: Some(r"\\.\DISPLAY2".into()),
+            ext_fit: true,
+            ext_in_window: false,
+            ext_rotate: false,
+            keys,
+            key_map: Some("Mine".into()),
+            toolbars: BTreeMap::from([("toolbar".to_string(), vec!["Save".to_string()])]),
+            scopes: crate::ui::ScopePrefs { while_playing: true, ..Default::default() },
+            loudness: crate::ui::LoudPrefs { open_editor: false, ..Default::default() },
+            multicam_audio: true,
+            multicam_full: true,
+            audio_editor: Some(r"C:\Editors\Sound.exe".into()),
+            metronome: true,
+            media_markers: true,
+            marker_labels: true,
+            event_length: true,
+            ofx: crate::engine::ofx::OfxPrefs { folders: vec![r"D:\OFX".into()], ..Default::default() },
+            overlay_library: Some(r"D:\Overlays".into()),
+            overlays_placed: true,
+            hw_decode: "d3d11va".into(),
+            hw_encode: "nvenc".into(),
+            ram_preview_mb: 512,
+            disk_cache_mb: 1024,
+            prerender_folder: Some(r"D:\Prerender".into()),
+            prerender_template: Some("Mine".into()),
+            ui_scale: Some(150),
+            open_last: true,
+            temp_folder: Some(r"D:\Temp".into()),
+            new_project: Some(ProjectSettings { width: 1280, height: 720, ..Default::default() }),
+            normalize_peak_db: -1.0,
+            header_buttons: HeaderButtons { video_hidden: vec!["mute".into()], audio_hidden: vec!["solo".into()] },
+            envelope_colors: BTreeMap::from([("Volume".to_string(), [1, 2, 3])]),
+            snap_colors: BTreeMap::from([("Cursor".to_string(), [4, 5, 6])]),
+            icon_strength: 40,
+        };
+        // Every field differs from its default, so the round trip below checks each one.
+        let (mine, def) = (serde_json::to_value(&p).unwrap(), serde_json::to_value(Prefs::default()).unwrap());
+        let same: Vec<&String> = mine.as_object().unwrap().iter().filter(|(k, v)| def.get(k.as_str()) == Some(*v)).map(|(k, _)| k).collect();
+        assert!(same.is_empty(), "fields left at their default: {same:?}");
+        let dir = std::env::temp_dir().join("milan-agent").join("r49-prefs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("export.milanprefs");
+        p.export(&file).unwrap();
+        assert_eq!(Prefs::import(&file).unwrap(), p);
+        // A file that is not an export is refused, whatever JSON it holds.
+        let other = dir.join("other.milanprefs");
+        std::fs::write(&other, r#"{"quantize":false}"#).unwrap();
+        assert!(Prefs::import(&other).is_err());
+        std::fs::write(&other, "not json").unwrap();
+        assert!(Prefs::import(&other).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R49 acceptance: "Automatically open last project on startup" opens the most recent project when it is still
+    /// there; off (VEGAS's default) or with nothing recent, the start is as before.
+    #[test]
+    fn open_last_project_flag() {
+        let mut p = Prefs { recent: vec![r"D:\Show.mnle".into(), r"D:\Old.mnle".into()], ..Default::default() };
+        let there = |_: &std::path::Path| true;
+        assert_eq!(p.startup_project(there), None, "off by default");
+        p.open_last = true;
+        assert_eq!(p.startup_project(there), Some(PathBuf::from(r"D:\Show.mnle")));
+        assert_eq!(p.startup_project(|_| false), None, "a moved or deleted project is not opened");
+        p.recent.clear();
+        assert_eq!(p.startup_project(there), None);
+        // Old preferences: the new R49 fields take VEGAS's defaults.
+        let d = serde_json::from_str::<Prefs>("{}").unwrap();
+        assert!(!d.open_last && d.temp_folder.is_none() && d.new_project.is_none() && d.header_buttons == HeaderButtons::default());
+        assert_eq!((d.normalize_peak_db, d.icon_strength, d.ui_scale), (-0.1, 75, None));
     }
 
     /// A broken `layouts` (not a map, or a bad entry) loses only what is broken, never the other preferences.
