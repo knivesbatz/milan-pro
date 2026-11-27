@@ -212,6 +212,21 @@ foreach ($kind in @(@('full', '1920x1080, four full frames'), @('pip', '1920x108
     L "| $($kind[1]) | $($c.ms) ms | $gpuMs | $gpuRb |"
 }
 L ''
+L '## Float compositor (4 layers, 32-bit floating point, R40b)'
+L ''
+L 'The same four layers (`bench_compose`) in a 32-bit floating point (full range, linear) project: each decoded picture brought into the working space, composed in f32 on the CPU or in `Rgba16Float` on the GPU (pictures uploaded as `Rgba32Float`: 33 MB a layer at 1080p, 133 MB at 4K); *read back*: the float frame copied to the CPU, as a render takes it.'
+L ''
+L '| Frame | CPU | GPU, as the preview gets it | GPU, read back |'
+L '|---|---|---|---|'
+foreach ($kind in @(@('full', '1920x1080, four full frames'), @('pip', '1920x1080, four picture-in-pictures'), @('4k', '3840x2160 Best (Full), four full frames'))) {
+    $c = Rows 'compose_float' | Where-Object { $_.kind -eq $kind[0] -and $_.compositor -eq 'cpu' } | Select-Object -First 1
+    $g = Rows 'compose_float' | Where-Object { $_.kind -eq $kind[0] -and $_.compositor -eq 'gpu' } | Select-Object -First 1
+    if (-not $c) { continue }
+    $gpuMs = if ($g) { "$($g.ms) ms" } else { 'no adapter' }
+    $gpuRb = if ($g) { "$($g.ms_readback) ms" } else { 'no adapter' }
+    L "| $($kind[1]) | $($c.ms) ms | $gpuMs | $gpuRb |"
+}
+L ''
 L '## Music-video FX (one 1920x1080 event, MVFX)'
 L ''
 L 'The three heaviest of the 2001-2009 music-video FX (`bench_mvfx_1080p` in `src/engine/mvfx/temporal_tests.rs`): one 1920x1080 event with the FX, composed at 1920x1080 on the CPU (all stripes) and on the GPU (read back, as a render takes it), median of 9 after a warm-up. Datamosh is twelve frames into its smear (twelve motion searches on the CPU, twelve warps), Film Burn evaluates six octaves of value noise per pixel, Radial Blur takes 24 bilinear samples. The times include fetching the (cached) source pictures and, on the GPU, uploading them.'

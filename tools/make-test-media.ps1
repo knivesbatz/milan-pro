@@ -1,7 +1,8 @@
 # R37: generate the legal format test corpus (every file made from FFmpeg's lavfi sources: smptehdbars, sine,
 # testsrc2; nothing recorded, nothing downloaded) and check it through Milan Pro's engine. The corpus, the still image
 # sequences, the HDR clips and the camera-card stand-ins go to -Out (default target\testmedia); nothing is committed.
-# docs\FORMAT_SUPPORT.md's decode, capability and camera tables are rewritten from the results.
+# docs\FORMAT_SUPPORT.md's decode, capability and camera tables are rewritten from the results. R40b: the 10-bit,
+# PQ, HLG and linear OpenEXR media of the float pipeline's tests are made by FFmpeg in those tests (under %TEMP%).
 #
 #   powershell -ExecutionPolicy Bypass -File tools\make-test-media.ps1 [-Out <folder>]
 #
@@ -13,7 +14,7 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $env:MILAN_TESTMEDIA = (Resolve-Path $Out).Path
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
-    cargo test --release -- --ignored --test-threads=1 format_corpus_e2e image_sequence_e2e animated_gif_e2e hdr_view_transform_e2e camera_formats_e2e
+    cargo test --release -- --ignored --test-threads=1 format_corpus_e2e image_sequence_e2e animated_gif_e2e hdr_view_transform_e2e camera_formats_e2e ten_bit_source_round_trips ten_bit_gradient_renders hdr_projects_render_hdr10 linear_exr_keeps
     if ($LASTEXITCODE -ne 0) { throw "format tests failed ($LASTEXITCODE)" }
 } finally {
     Pop-Location

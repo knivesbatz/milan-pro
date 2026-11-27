@@ -28,6 +28,15 @@ the minor number for feature releases, the patch number for fixes.
 - **HDR detection:** PQ and HLG sources are detected (transfer, primaries, bit depth, HDR10 metadata) and shown on the
   SDR timeline through a view transform that the preview, proxies and renders share, chosen in Project Properties >
   Color management; BT.2020 SDR is converted to Rec.709; an "HDR" badge in Project Media (R40a).
+- **High bit depth and HDR:** Project Properties > Video's Pixel format (8-bit, 32-bit floating point video levels
+  or full range), HDR Mode (HDR10, HLG), Compositing gamma (2.222, 1.000), ACES version, ACES color space
+  (ACES2065-1, ACEScg, ACEScc, ACEScct) and View transform (sRGB, Rec.709, Rec.2020 PQ and HLG 1000 nits, or a .cube
+  LUT) as VEGAS has them. A float project decodes 10-bit and wider sources at 16 bits (OpenEXR and float TIFF in
+  float, highlights above 1.0 kept), composes in float on the CPU or the GPU (`Rgba16Float`), runs its colour FX,
+  Color Grading, Gaussian Blur, masks, dissolves and OFX plug-ins in float, and renders 16 bits to the encoder: a
+  10-bit source comes back within one code value from a 10-bit render. New templates: MP4 HEVC Main10, HEVC HDR10
+  (PQ, with mastering display and content light level metadata), HEVC HLG, ProRes 4444 XQ and ProRes 4444 XQ HDR10;
+  an HDR project's preview is tone-mapped to SDR. 8-bit projects compose and render bit for bit as before (R40b).
 - **Camera cards:** File > Import > Camera Card Folder (or a dropped folder) imports AVCHD, XDCAM, XAVC, P2, Canon XF
   and GoPro clips, joins spanned recordings into one clip and seeks transport streams exactly; camera, reel and
   timecode in Media Properties; an MXF DNxHD render template; camera RAW formats import offline with the reason (R41).
