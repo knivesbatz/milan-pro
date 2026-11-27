@@ -161,9 +161,10 @@ streak texture's darkest pixel) by `theme::tests::contrast_aa`:
 * **LCD digits** (`widgets::lcd_digits`): time and frame read-outs are painted as seven-segment digits, slanted 8 %:
   solid anti-aliased hexagon segments 19 % of the height thick, bevelled (an `lcd.text` edge round an `lcd.digits`
   core), a soft `lcd.text` glow round each lit segment, round separator dots, and the unlit segments in `lcd.ghost`
-  (as a real LCD shows them). Heights: 22 px in the timeline's time display,
-  15 px in the Trimmer and the Video Preview, 11 px in small read-outs (where Tahoma Bold in `lcd.digits` is used
-  instead when a value holds letters). Characters other than `0-9 : ; . , - +` fall back to Tahoma Bold.
+  (as a real LCD shows them). Heights: up to 22 px in the timeline's time display (13 px under the breadcrumb),
+  14 px in the Trimmer, 13 px in the keyframe controller; below 13 px the segments crowd, so smaller read-outs, and
+  values that hold letters (the Video Preview's sizes and rates, the transport boxes), are Tahoma on the LCD.
+  Characters other than `0-9 : ; . , -` fall back to Tahoma Bold.
 * Text sits on whole pixels (egui rounds galley origins); 1 px strokes are drawn on pixel centres.
 
 ---

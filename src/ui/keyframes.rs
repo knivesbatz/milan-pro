@@ -246,7 +246,7 @@ pub fn controller(ui: &mut Ui, rect: Rect, st: &mut KfState, name: &str, keys: &
     }
     let tc = Rect::from_min_max(pos2(row.max.x - 96.0, row.min.y + 3.0), pos2(row.max.x - 4.0, row.max.y - 3.0));
     super::widgets::lcd_well(&p, tc, true, true);
-    super::widgets::lcd_value(&p, tc.center(), Align2::CENTER_CENTER, &format_timecode(at.max(0.0), fps), 11.0);
+    super::widgets::lcd_value(&p, tc.center(), Align2::CENTER_CENTER, &format_timecode(at.max(0.0), fps), 13.0);
 
     // ---- Painting ----
     let p = p.with_clip_rect(body.shrink(2.0).intersect(p.clip_rect()));

@@ -294,7 +294,7 @@ pub fn draw_trimmer(ui: &mut Ui, tr: &mut Trimmer, project: &mut Project, histor
     for (k, (icon, v)) in items.into_iter().enumerate() {
         let x = x0 + k as f32 * 130.0;
         paint_icon(&p, Rect::from_min_size(pos2(x, y - 7.0), vec2(14.0, 14.0)), icon, Some(ink));
-        super::widgets::lcd_value(&p, pos2(x + 20.0, y), Align2::LEFT_CENTER, &format_timecode(v, fps), 12.0);
+        super::widgets::lcd_value(&p, pos2(x + 20.0, y), Align2::LEFT_CENTER, &format_timecode(v, fps), 14.0);
     }
 }
 
