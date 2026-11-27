@@ -117,6 +117,9 @@ pub struct MeridianApp {
     /// `MILAN_DIALOG` still to open: the screenshot harness opens it once its window has its 1920×1080 size, so the
     /// dialog centres as in a live session (an Area keeps the place it was first laid out at).
     env_dialog: bool,
+    /// `MILAN_SCRUB=<frames>` (screenshot harness only): frames still to step the cursor forward, one per UI frame,
+    /// before the screenshot. It drives the preview's frame-to-frame texture swaps as playback does, without audio.
+    scrub: u32,
     // Dock window state.
     media_view: ui::MediaView,
     explorer: ui::Explorer,
@@ -509,6 +512,7 @@ impl MeridianApp {
             demo: launch.demo,
             devices: launch.screenshot.is_none(),
             env_dialog: launch.screenshot.is_some(),
+            scrub: launch.screenshot.as_ref().and_then(|_| std::env::var("MILAN_SCRUB").ok()).and_then(|v| v.parse().ok()).unwrap_or(0),
             shot: launch.screenshot.map(Shot::new),
             media_view: ui::MediaView::default(),
             explorer,
@@ -771,9 +775,17 @@ fn aplug_owner(p: &crate::project::Project, fx: &str) -> Option<String> {
 
 impl eframe::App for MeridianApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // The preview textures replaced during the last frame, painted by now (the GPU preview flicker fix).
+        crate::engine::gpu::free_retired();
         if self.env_dialog && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) {
             self.env_dialog = false;
             self.open_from_env(ctx);
+        }
+        if self.scrub > 0 && ctx.screen_rect().size() == egui::vec2(1920.0, 1080.0) && !self.preview.busy() {
+            self.scrub -= 1;
+            let fps = self.project.settings.frame_rate.max(1.0);
+            self.project.timeline.cursor_position += 1.0 / fps;
+            ctx.request_repaint();
         }
         // Playback clock: audio is master while it plays (it wraps loops itself), frame dt otherwise
         if self.playing {
@@ -1311,7 +1323,7 @@ impl eframe::App for MeridianApp {
             let busy = self.preview.busy() || self.trimmer.busy() || self.waves.pending() || self.thumbs.pending() || self.overlays.lib.busy();
             // R23: a RAM preview build or a prerender in progress.
             let busy = busy || crate::engine::ram_status().building.is_some() || self.prerender.as_ref().is_some_and(|d| d.running());
-            shot.tick(ctx, busy || self.env_dialog);
+            shot.tick(ctx, busy || self.env_dialog || self.scrub > 0);
         }
     }
 

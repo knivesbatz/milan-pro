@@ -134,6 +134,28 @@ pub fn unregister(id: TextureId) {
     let _ = id;
 }
 
+/// Preview textures replaced during this UI frame, with the frames they show: kept until the next frame starts.
+/// The Video Preview has already drawn the old texture into this frame's shapes by the time the new frame arrives
+/// (`decode::upload` runs at the end of `update`), so freeing it at once made the painter skip it ("Missing
+/// texture") and the preview flash blank on every new GPU frame during playback. Keeping the picture also keeps its
+/// texture out of the pool, so the compositor cannot draw the next frame into it before it is shown.
+static RETIRED: Mutex<Vec<(TextureId, Box<dyn std::any::Any + Send>)>> = Mutex::new(Vec::new());
+
+/// A replaced preview texture and what keeps its frame alive, freed by the next `free_retired`.
+pub fn retire(id: TextureId, keep: Box<dyn std::any::Any + Send>) {
+    lock(&RETIRED).push((id, keep));
+}
+
+/// Frees the textures retired during the previous UI frame, which has been painted by now. Called first thing in
+/// every `update`.
+pub fn free_retired() {
+    let done = std::mem::take(&mut *lock(&RETIRED));
+    for (id, keep) in done {
+        unregister(id);
+        drop(keep);
+    }
+}
+
 /// The UI's painter (feature `wgpu`): where `Output::register` lands.
 #[cfg(feature = "wgpu")]
 #[derive(Clone)]
@@ -1185,6 +1207,16 @@ pub(crate) mod tests {
     use crate::project::{Halo, Motion, PanCrop};
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
+
+    /// The preview flicker fix: a replaced texture stays registered (and its frame alive) until the next UI frame.
+    #[test]
+    fn retired_preview_textures_live_until_the_next_frame() {
+        let alive = std::sync::Arc::new(());
+        super::retire(eframe::egui::TextureId::User(9_000_001), Box::new(alive.clone()));
+        assert_eq!(std::sync::Arc::strong_count(&alive), 2, "kept through the frame it was replaced in");
+        super::free_retired();
+        assert_eq!(std::sync::Arc::strong_count(&alive), 1, "freed when the next frame starts");
+    }
 
     /// The GPU, or None with a clear message (run with --nocapture to see it): the test then checks nothing.
     pub(crate) fn gpu_or_skip(test: &str) -> Option<Arc<GpuCompositor>> {

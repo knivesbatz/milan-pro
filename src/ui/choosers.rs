@@ -275,6 +275,7 @@ fn preset_grid(ui: &mut Ui, c: &mut Chooser, users: &[UserPreset], favorites: &[
         let th = Rect::from_min_size(min + vec2(8.0, 6.0), thumb);
         let label = if c.plugin.is_some() { name.clone() } else { info.name.to_string() };
         widgets::tile(ui, r, th, &label, sel, resp.hovered());
+        widgets::thumb_well(ui.painter(), th);
         // Only tiles on screen are rendered.
         if ui.clip_rect().intersects(r) {
             let key = (info.id, tk.clone());
@@ -333,6 +334,7 @@ fn package_grid(ui: &mut Ui, c: &mut Chooser, out: &mut ChooserOut) {
         let sel = c.pkg_sel.as_deref() == Some(pk.name.as_str());
         let th = Rect::from_min_size(min + vec2(8.0, 6.0), thumb);
         widgets::tile(ui, r, th, &pk.name, sel, resp.hovered());
+        widgets::thumb_well(ui.painter(), th);
         if ui.clip_rect().intersects(r) {
             let tex = match c.pkg_thumbs.get(&pk.name) {
                 Some(h) => Some(h.id()),

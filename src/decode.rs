@@ -109,8 +109,9 @@ impl PreviewTex {
 
 impl Drop for PreviewTex {
     fn drop(&mut self) {
-        if let PreviewTex::Native { id, .. } = self {
-            crate::engine::gpu::unregister(*id);
+        // Not freed here: this frame may already have drawn it (see `gpu::retire`).
+        if let PreviewTex::Native { id, _keep } = self {
+            crate::engine::gpu::retire(*id, Box::new(_keep.clone()));
         }
     }
 }

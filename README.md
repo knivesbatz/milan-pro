@@ -4,14 +4,14 @@
 
 An open-source nonlinear video editor written in Rust, with a workflow modeled on Sony VEGAS Pro.
 
-> Early development (v0.9). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
+> Early development (v0.10). Editing, preview, effects, transitions, titles, audio FX, OFX video plug-ins, VST3 and CLAP audio plug-ins, recording, rendering and interchange with other editors work. What is still being built is listed under [Roadmap](#roadmap).
 
 <p align="center"><img src="docs/images/screenshot.png" width="860" alt="Milan Pro: Project Media, Video Preview, Master Bus and a five-track timeline"></p>
 <p align="center"><sub>Taken by the screenshot harness on its demo project.</sub></p>
 
 ## Features
 
-| Area | Status in 0.9 |
+| Area | Status in 0.10 |
 |---|---|
 | Interface | One look modelled on the Windows video editors of 2005-2007, on VEGAS Pro's window layout, with VEGAS menus, shortcuts, toolbars, docking and saved window layouts; floating windows; customizable keyboard and toolbars; a command palette |
 | Editing | Multitrack video and audio; move, trim, split, snapping and grid; ripple; slip, slide, roll and stretch; takes; groups; subclips; nested timelines; multicamera editing; Expanded Edit and edge trimming; markers, regions and command markers; adjustment tracks and events; undo/redo |

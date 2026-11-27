@@ -7,6 +7,8 @@ the minor number for feature releases, the patch number for fixes.
 
 ## Unreleased
 
+## 0.10.0
+
 ### Added
 - Documentation for contributors and users: [docs/REFERENCE_ANALYSIS.md](docs/REFERENCE_ANALYSIS.md) (R52),
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/DEVELOPING.md](docs/DEVELOPING.md) (R53), a refreshed README
@@ -45,6 +47,17 @@ the minor number for feature releases, the patch number for fixes.
   and the GPU with the same picture; VEGAS's built-ins of the same purpose import onto them with their parameters.
 - **FX Packages:** the Video FX window's Filter Packages chip lists 15 built-in looks, applied in one step by drag or
   double-click; Save As... in the FX window's chain bar saves your own chain as a package.
+- **AE-format effects (experimental, off by default):** Plug-In Manager > Folders can turn on hosting of effect
+  plug-ins written for the Adobe After Effects effect API (`.aex`) that you have installed and licensed, in 8-bit
+  with standard controls, in the separate plug-in host. Only Milan Pro's own test plug-in has been run so far; every
+  other plug-in shows "Untested". Adobe's own effects are blocked. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+### Fixed
+- The video preview flickered during playback and scrubbing on the GPU path (0.8.0 and later): each replaced frame's
+  texture was freed while the preview was still drawing it, so the frame was skipped. Replaced frames now stay until
+  the next frame is shown.
+- Preset thumbnails in Media Generators, Video FX and Transitions sit in a black well, so titles and other presets
+  with transparent areas are readable instead of blending into the tile's brushed metal.
 
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro

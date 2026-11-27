@@ -13,6 +13,8 @@
 //!   Windows, so a screenshot shows the timeline's drop ghost.
 //! - `MILAN_OVERLAY_LIBRARY=<folder>` (with `MILAN_DIALOG=overlays`): where the harness makes its overlay library.
 //! - `MILAN_SHOT_TRACE=1`: the screenshot's wait printed to stderr (busy, sized, requested) when a run does not end.
+//! - `MILAN_SCRUB=<frames>` (with `MILAN_SCREENSHOT`): step the cursor forward that many frames, one per UI frame
+//!   once each preview frame has arrived, before the screenshot (the preview's frame swaps, as in playback, silently).
 //! - `MILAN_HOLD=1` (with `MILAN_SCREENSHOT`): the run never takes its screenshot or exits; it stays open off-screen
 //!   until killed (R43's crash-recovery test). `MILAN_APPDATA=<folder>` moves autosave and session files there, and
 //!   `MILAN_AUTOSAVE_NOW=1` autosaves at the first tick (both in `autosave.rs`).

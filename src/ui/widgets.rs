@@ -917,6 +917,20 @@ pub fn tile(ui: &Ui, rect: Rect, thumb: Rect, label: &str, selected: bool, hover
     p.with_clip_rect(cap.intersect(ui.clip_rect())).galley(pos2(cap.center().x, cap.min.y), galley, color);
 }
 
+/// The black picture well a preset thumbnail sits in: sunken, so a title or a generator with transparent areas reads
+/// against black (as VEGAS shows them) instead of against the tile's brushed metal.
+pub fn thumb_well(p: &Painter, r: Rect) {
+    let r = px(r);
+    p.rect_filled(r, 0.0, Color32::BLACK);
+    // Sunken 1 px frame: dark top-left, light bottom-right, outside the picture.
+    let o = r.expand(1.0);
+    let (dark, light) = (Color32::from_rgb(0x40, 0x40, 0x40), Color32::from_rgb(0xFF, 0xFF, 0xFF));
+    p.line_segment([o.left_top(), o.right_top()], Stroke::new(1.0_f32, dark));
+    p.line_segment([o.left_top(), o.left_bottom()], Stroke::new(1.0_f32, dark));
+    p.line_segment([o.left_bottom(), o.right_bottom()], Stroke::new(1.0_f32, light));
+    p.line_segment([o.right_top(), o.right_bottom()], Stroke::new(1.0_f32, light));
+}
+
 /// Letterboxed image inside `r` with a 1 px dark frame and a grey mat.
 pub fn paint_thumb(p: &Painter, r: Rect, tex: &TextureHandle) {
     let [w, h] = tex.size();
