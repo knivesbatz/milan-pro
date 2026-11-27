@@ -672,8 +672,13 @@ pub fn to_project(e: &VegasExport, probed: &HashMap<String, Result<MediaItem, St
     if !pr.bus_mode.is_empty() && pr.bus_mode != "Stereo" {
         warnings.push(format!("Master bus mode {}: Milan Pro's master bus is stereo (R10a)", pr.bus_mode));
     }
-    if !pr.pixel_format.is_empty() && !pr.pixel_format.contains("8") {
-        warnings.push(format!("Pixel format {}: Milan Pro composites in 8-bit (R40b)", pr.pixel_format));
+    // R40b: VEGAS's 32-bit floating point formats (video levels or full range) as Milan Pro's.
+    {
+        use crate::project::pixel::PixelFormat;
+        let f = &pr.pixel_format;
+        if f.contains("Float") || f.contains("32") {
+            p.settings.pixel.set_format(if f.contains("Full") { PixelFormat::FloatFull } else { PixelFormat::FloatVideo });
+        }
     }
     let size = (p.settings.width as f64, p.settings.height as f64);
     let snap = |t: f64| edit::quantize(t.max(0.0), fps);

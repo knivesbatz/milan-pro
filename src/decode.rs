@@ -399,6 +399,27 @@ pub(crate) fn still(path: &Path, w: u32, h: u32, scaler: &'static str, pre: &str
     decode_frame(&FrameRequest { id: 0, path: path.to_path_buf(), time: 0.0, width: w, height: h, scaler, matrix: None, proxy: None, generator: None, fps: None, nested: false, pre: pre.to_string(), input: Vec::new() })
 }
 
+/// R40b: `still` for a float project's 16-bit or float source (`MediaRef::wide`): straight alpha, held as a picture
+/// `depth.factor()` times as wide, as the decoders hold such frames.
+pub(crate) fn still_wide(path: &Path, w: u32, h: u32, scaler: &'static str, pre: &str, matrix: Option<&str>, depth: crate::engine::wide::Depth) -> Result<ColorImage, String> {
+    let mut cmd = crate::proc::ffmpeg();
+    cmd.args(["-v", "error", "-i"]).arg(path).args(["-frames:v", "1", "-vf"]);
+    cmd.arg(format!("{pre}{}", depth.scale(w, h, scaler, matrix)));
+    cmd.args(["-f", "rawvideo", "-"]);
+    let out = crate::proc::output(&mut cmd).map_err(|e| crate::proc::tool_error(&e, "ffmpeg"))?;
+    let n = (w * h) as usize;
+    let need = n * 4 * depth.factor();
+    if out.stdout.len() < need {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(err.lines().next().unwrap_or("no frame at this time").to_string());
+    }
+    let mut pixels: Vec<egui::Color32> = bytemuck::cast_slice(&out.stdout[..need]).to_vec();
+    if depth == crate::engine::wide::Depth::F32 {
+        pixels = crate::engine::vdecode::interleave(&pixels, n);
+    }
+    Ok(ColorImage { size: [w as usize * depth.factor(), h as usize], pixels })
+}
+
 /// Preview state owned by the app: worker channels plus the displayed texture.
 pub struct Preview {
     tx: Sender<FrameRequest>,

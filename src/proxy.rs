@@ -581,6 +581,7 @@ mod tests {
                 flow: false,
                 pre: String::new(),
                 input: Vec::new(),
+                wide: None,
             };
             // Same quality (scaler) for both: Preview reads the proxy when there is one, else the source.
             let (with, without) = (media(Some(proxy.clone())), media(None));

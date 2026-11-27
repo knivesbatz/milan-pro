@@ -90,13 +90,17 @@ pub fn draw_properties(
                         }
                     }
                     let cm = project.settings.color_management;
+                    // R40b: an ACES view transform takes HDR and linear media in as scene light.
+                    let aces = project.settings.pixel.aces() && (item.hdr().is_some() || crate::engine::color::badge(item, cm).is_some());
                     let handling = match crate::engine::color::badge(item, cm) {
+                        _ if aces => "Scene light in the ACES color space; the view transform maps it (Project Properties)",
+                        Some(_) if project.settings.pixel.float() && item.hdr().is_none() && item.codec.as_deref() != Some("hdr") =>"Linear light, kept in float (values above 1.0 too)",
                         Some("HDR → SDR") => match cm {
                             crate::project::ColorManagement::SdrClip => "HDR → SDR: Rec.709, highlights clipped (Project Properties › Color management)",
                             _ => "HDR → SDR: tone-mapped to Rec.709, reference white 203 cd/m² (Project Properties › Color management)",
                         },
                         Some("BT.2020 → Rec.709") => "BT.2020 → Rec.709 (Project Properties › Color management)",
-                        Some(_) => "Linear light shown with a simple sRGB transfer (R40b brings a float pipeline)",
+                        Some(_) => "Linear light shown with a simple sRGB transfer (a 32-bit floating point project keeps it in float)",
                         None if item.hdr().is_some() => "None: decoded as Rec.709 (Color management is Off)",
                         None => "SDR, used as it is",
                     };

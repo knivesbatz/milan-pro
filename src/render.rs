@@ -46,7 +46,49 @@ pub struct VideoEnc {
     pub profile: String,
     /// "" = the codec's first pixel format.
     pub pix_fmt: String,
+    /// R40b: the colour the file is written in: SDR Rec.709, or HDR10 (PQ) or HLG in Rec.2020 (10-bit formats).
+    #[serde(skip_serializing_if = "ColorOut::is_sdr")]
+    pub color: ColorOut,
 }
+
+/// R40b: a template's output colour (VEGAS's HDR10 and HLG render templates).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorOut {
+    #[default]
+    Sdr,
+    /// Rec.2020, SMPTE ST 2084, with HDR10 static metadata (a 1000 cd/m² mastering display).
+    Hdr10,
+    /// Rec.2020 HLG.
+    Hlg,
+}
+
+impl ColorOut {
+    fn is_sdr(&self) -> bool {
+        *self == ColorOut::Sdr
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorOut::Sdr => "SDR (Rec.709)",
+            ColorOut::Hdr10 => "HDR10 (Rec.2020 PQ)",
+            ColorOut::Hlg => "HLG (Rec.2020)",
+        }
+    }
+
+    /// FFmpeg's transfer tag.
+    pub fn trc(self) -> &'static str {
+        match self {
+            ColorOut::Sdr => "bt709",
+            ColorOut::Hdr10 => "smpte2084",
+            ColorOut::Hlg => "arib-std-b67",
+        }
+    }
+}
+
+/// R40b: HDR10 static metadata the HDR10 templates write: a 1000 cd/m² Rec.2020 mastering display (D65, 0.0001
+/// cd/m² black) in x265's notation, and MaxCLL, MaxFALL.
+pub const MASTER_DISPLAY: &str = "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)";
+pub const MAX_CLL: (u32, u32) = (1000, 400);
 
 /// The audio settings of a template. Mixed in stereo; `channels` 1 downmixes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -83,7 +125,7 @@ impl Default for Template {
 
 impl Default for VideoEnc {
     fn default() -> Self {
-        Self { codec: "libx264".into(), size: None, fps: None, field: None, par: None, rate: Rate::Quality(18), preset: String::new(), profile: String::new(), pix_fmt: String::new() }
+        Self { codec: "libx264".into(), size: None, fps: None, field: None, par: None, rate: Rate::Quality(18), preset: String::new(), profile: String::new(), pix_fmt: String::new(), color: ColorOut::Sdr }
     }
 }
 
@@ -424,6 +466,10 @@ impl Template {
             if let Some(p) = v.profile().filter(|p| !p.2.is_empty() && !p.2.contains(&pix)) {
                 return Err(format!("{} {} needs the pixel format {}.", k.label, p.1, p.2.join(" or ")));
             }
+            // R40b: HDR is 10-bit (or more) YUV.
+            if v.color != ColorOut::Sdr && (is_rgb(pix) || !(pix.contains("10") || pix.contains("12"))) {
+                return Err(format!("{} needs a 10-bit YUV pixel format.", v.color.name()));
+            }
             // R22: Media Foundation counts quality upwards (100 best), so the scale may run either way.
             let (lo, hi) = (k.q.0.min(k.q.1), k.q.0.max(k.q.1));
             let kind = match v.rate {
@@ -562,6 +608,11 @@ impl Template {
         }
         push(&mut a, &["-pix_fmt", v.pix_fmt()]);
         push(&mut a, k.extra);
+        // R40b: HDR10's static metadata in the HEVC stream (SEI), as VEGAS's HEVC HDR10 templates write it.
+        if v.color == ColorOut::Hdr10 && k.enc == "libx265" {
+            let (cll, fall) = MAX_CLL;
+            push(&mut a, &["-x265-params", &format!("hdr10=1:repeat-headers=1:master-display={MASTER_DISPLAY}:max-cll={cll},{fall}")]);
+        }
         if (k.enc == "libx265" || k.enc.starts_with("hevc_")) && matches!(self.container.as_str(), "mp4" | "mov") {
             push(&mut a, &["-tag:v", "hvc1"]);
         }
@@ -641,7 +692,8 @@ impl Template {
             Some(p) => format!("{codec} {}", p.1),
             None => codec.to_string(),
         };
-        Some(format!("{w}x{h}; {:.3} fps; {field}; PAR {:.4}; {codec}; {}{rate}", v.fps(s), v.par(s), v.pix_fmt()))
+        let color = if v.color == ColorOut::Sdr { String::new() } else { format!("; {}", v.color.name()) };
+        Some(format!("{w}x{h}; {:.3} fps; {field}; PAR {:.4}; {codec}; {}{rate}{color}", v.fps(s), v.par(s), v.pix_fmt()))
     }
 
     /// One line of audio settings for the description box.
@@ -753,8 +805,20 @@ pub static BUILTIN: LazyLock<Vec<Template>> = LazyLock::new(|| {
         tpl("MP4 H.264 (hardware)", "H.264 at the project size on the graphics card's encoder (NVENC, Quick Sync, AMF or Media Foundation, as Preferences > Video allows); in software when none passed the test.", "mp4", vid("h264_hw", None, Quality(23), "", ""), aud("aac", 320)),
         tpl("MP4 HEVC (hardware)", "HEVC at the project size on the graphics card's encoder; in software when none passed the test.", "mp4", vid("hevc_hw", None, Quality(26), "", ""), aud("aac", 320)),
         tpl("MP4 AV1 (hardware)", "AV1 at the project size on the graphics card's encoder; in software when none passed the test.", "mp4", vid("av1_hw", None, Quality(30), "", ""), aud("aac", 256)),
+        // R40b: 10-bit and HDR delivery (a 32-bit floating point project keeps its precision to the file; HDR from an
+        // SDR project places SDR white at 203 cd/m², as BT.2408 has it).
+        tpl("MP4 HEVC Main10 (10-bit)", "10-bit HEVC at the project size: no banding in gradients from a 32-bit floating point project.", "mp4", vid("libx265", None, Quality(20), "", "yuv420p10le"), aud("aac", 320)),
+        tpl("MP4 HEVC HDR10 (PQ)", "HDR10: 10-bit HEVC in Rec.2020 PQ with mastering display and content light level metadata (1000 cd/m²).", "mp4", hdr(ColorOut::Hdr10), aud("aac", 320)),
+        tpl("MP4 HEVC HLG", "Hybrid Log-Gamma: 10-bit HEVC in Rec.2020 HLG for a 1000 cd/m² display.", "mp4", hdr(ColorOut::Hlg), aud("aac", 320)),
+        tpl("ProRes 4444 XQ", "The highest-quality ProRes: 10-bit 4:4:4 master.", "mov", vid("prores_ks", None, Default, "5", "yuv444p10le"), aud("pcm", 0)),
+        tpl("ProRes 4444 XQ HDR10 (PQ)", "10-bit 4:4:4 ProRes master in Rec.2020 PQ (tagged; the mastering metadata is written by the HEVC HDR10 template).", "mov", Some(VideoEnc { color: ColorOut::Hdr10, ..vid("prores_ks", None, Default, "5", "yuv444p10le").expect("a video encoder") }), aud("pcm", 0)),
     ]
 });
+
+/// R40b: an HDR HEVC template's video.
+fn hdr(color: ColorOut) -> Option<VideoEnc> {
+    Some(VideoEnc { color, ..vid("libx265", None, Rate::Quality(20), "", "yuv420p10le").expect("a video encoder") })
+}
 
 /// Render As › Render Options, and Options › Quickfade Audio Edits as playback has it.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
