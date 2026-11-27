@@ -461,7 +461,7 @@ pub(crate) mod tests {
         let mut blur = new_fx(find("milan.fx.gaussian_blur").unwrap(), None);
         blur.params.insert("h_range".into(), Keyframes { keys: vec![Keyframe { t: 0.0, v: 0.012, curve: Curve::Linear }, Keyframe { t: 2.0, v: 0.0, curve: Curve::Hold }] });
         blur.params.insert("v_range".into(), one(0.002));
-        let mut grain = Fx { plugin: "ofx:com.sonycreativesoftware:filmgrain@1".into(), enabled: false, ..new_fx(find("milan.fx.invert").unwrap(), None) };
+        let mut grain = Fx { plugin: "ofx:com.sonycreativesoftware:radialpixelate@1".into(), enabled: false, ..new_fx(find("milan.fx.invert").unwrap(), None) };
         grain.params = BTreeMap::from([("Amount".to_string(), one(0.3)), ("Tint.r".into(), one(1.0)), ("Tint.g".into(), one(0.5)), ("Tint.b".into(), one(0.25)), ("Tint.a".into(), one(1.0))]);
         grain.text.insert("Label".into(), "grainy".into());
         v.fx = vec![blur, grain, new_fx(find("milan.fx.exposure").unwrap(), None)];
@@ -533,7 +533,7 @@ pub(crate) mod tests {
         let h = &blur.params["h_range"].keys;
         assert!(h.len() == 2 && (h[0].v - 0.012).abs() < 1e-6 && h[1].t == 2.0 && h[1].curve == Curve::Hold, "{h:?}");
         assert!((blur.params["v_range"].keys[0].v - 0.002).abs() < 1e-6);
-        assert_eq!((v.fx[1].plugin.as_str(), v.fx[1].enabled), ("ofx:com.sonycreativesoftware:filmgrain@1", false));
+        assert_eq!((v.fx[1].plugin.as_str(), v.fx[1].enabled), ("ofx:com.sonycreativesoftware:radialpixelate@1", false));
         assert_eq!(v.fx[1].params, v0.fx[1].params);
         assert_eq!(v.fx[1].text, v0.fx[1].text);
         assert!(notes.iter().any(|n| n.contains("Exposure has no VEGAS counterpart")), "{notes:?}");
@@ -557,7 +557,13 @@ pub(crate) mod tests {
         }
         assert_eq!(c.envelopes.iter().find(|e| e.kind == EnvKind::Velocity).unwrap().points, c0.envelopes.iter().find(|e| e.kind == EnvKind::Velocity).unwrap().points);
         assert_eq!(c.transition, c0.transition);
-        assert_eq!(c.transition_out, c0.transition_out);
+        // The yellow Flash-like Fade to Color goes out as VEGAS's Flash and comes back as Milan's own Flash (MVFX), its
+        // colour as the tint.
+        let (t, t0) = (c.transition_out.as_ref().unwrap(), c0.transition_out.as_ref().unwrap());
+        assert_eq!((t0.plugin.as_str(), t.plugin.as_str()), ("milan.tr.fade_to_color", "milan.tr.flash"));
+        for ch in ["r", "g", "b"] {
+            assert_eq!(t.params.get(&format!("tint.{ch}")), t0.params.get(&format!("color.{ch}")), "{ch}");
+        }
         let crop = c.fx.iter().find(|f| f.plugin == "milan.fx.crop").unwrap();
         let at0 = |k: &str| crop.params[k].keys[0].v;
         assert!((at0("left") - 0.5).abs() < 1e-6 && (at0("top") - 0.5).abs() < 1e-6 && at0("right").abs() < 1e-6 && at0("bottom").abs() < 1e-6);
@@ -585,7 +591,7 @@ pub(crate) mod tests {
         assert_eq!(q.timeline.master.audio_fx[0].plugin, "milan.afx.limiter");
         // The only import warnings are the export's own notes plus the placeholder, still unmapped on the way back.
         assert_eq!(w.len(), notes.len() + 1, "{w:?}");
-        assert!(w.iter().all(|x| notes.contains(x) || x.contains("filmgrain is not available")), "{w:?}");
+        assert!(w.iter().all(|x| notes.contains(x) || x.contains("radialpixelate is not available")), "{w:?}");
     }
 
     #[test]
@@ -599,7 +605,7 @@ pub(crate) mod tests {
         assert_eq!(v.fx[0].id, "{Svfx:com.sonycreativesoftware:gaussianblur}");
         let hr = v.fx[0].params.iter().find(|p| p.name == "HorizontalRange").unwrap();
         assert!((hr.v.as_f64().unwrap() - 0.06).abs() < 1e-6 && hr.keys.len() == 2 && hr.kind == "Double");
-        assert_eq!(v.fx[1].id, "{Svfx:com.sonycreativesoftware:filmgrain}");
+        assert_eq!(v.fx[1].id, "{Svfx:com.sonycreativesoftware:radialpixelate}");
         let tint = v.fx[1].params.iter().find(|p| p.name == "Tint").unwrap();
         assert_eq!((tint.kind.as_str(), tint.v.as_array().unwrap().len()), ("RGBA", 4));
         assert!(v.fx[1].params.iter().any(|p| p.name == "Label" && p.kind == "String"));

@@ -81,6 +81,8 @@ pub enum GpuPort {
     Gradient,
     Checkerboard,
     Noise,
+    /// MVFX: a recipe of kernels (`engine/mvfx`, `engine/gpu/mvfx.rs`).
+    Mvfx,
 }
 
 #[derive(Debug)]
@@ -797,13 +799,18 @@ pub static PLUGINS: &[PluginInfo] = &[
 
 /// A built-in, (R33a) an enabled OFX plug-in or (R34a) an enabled VST3 or CLAP effect that Milan Pro can run.
 pub fn find(id: &str) -> Option<&'static PluginInfo> {
-    PLUGINS.iter().find(|p| p.id == id).or_else(|| super::ofx::info(id)).or_else(|| super::aplug::info(id))
+    PLUGINS.iter().find(|p| p.id == id).or_else(|| super::mvfx::find(id)).or_else(|| super::ofx::info(id)).or_else(|| super::aplug::info(id))
+}
+
+/// Every built-in: the core set, then MVFX's music-video FX and transitions.
+pub fn builtins() -> impl Iterator<Item = &'static PluginInfo> {
+    PLUGINS.iter().chain(super::mvfx::all())
 }
 
 /// The built-ins of `kind`, then the OFX plug-ins found (video FX, transitions and generators) and the VST3 and CLAP
 /// effects (audio FX).
 pub fn catalog(kind: PluginKind) -> impl Iterator<Item = &'static PluginInfo> {
-    PLUGINS.iter().filter(move |p| p.kind == kind).chain(super::ofx::catalog(kind)).chain(super::aplug::catalog(kind))
+    builtins().filter(move |p| p.kind == kind).chain(super::ofx::catalog(kind)).chain(super::aplug::catalog(kind))
 }
 
 /// A new instance with `preset`'s values as single keys at t = 0.

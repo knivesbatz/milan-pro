@@ -118,7 +118,7 @@ impl PluginManager {
             PluginKind::AudioFx => "Audio FX",
             PluginKind::Compositor => "Compositor",
         };
-        let builtins = plugins::PLUGINS.iter().map(|p| Row {
+        let builtins = plugins::builtins().map(|p| Row {
             key: p.id.into(),
             id: p.id.into(),
             name: p.name.into(),
@@ -214,7 +214,7 @@ pub fn plugin_manager_toolbar(ui: &mut Ui, pm: &mut PluginManager, prefs: &mut O
     } else {
         let ok = found.iter().filter(|e| e.status == Status::Ok).count();
         let (a, a_ok) = PluginManager::audio_counts();
-        format!("{} built in; {} OFX found, {ok} OK; {a} VST3/CLAP found, {a_ok} OK", plugins::PLUGINS.len(), found.len())
+        format!("{} built in; {} OFX found, {ok} OK; {a} VST3/CLAP found, {a_ok} OK", plugins::builtins().count(), found.len())
     };
     ui.label(RichText::new(text).font(t.font(t.font.ui)).color(t.text_dim));
     out

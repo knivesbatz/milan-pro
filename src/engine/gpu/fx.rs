@@ -213,6 +213,7 @@ impl Frame<'_> {
                 self.give(mask);
                 out
             }
+            GpuPort::Mvfx => self.mvfx(t, e),
             port => unreachable!("{port:?} is not a video FX"),
         }
     }
@@ -401,6 +402,7 @@ impl Frame<'_> {
                 self.give(zb);
                 out
             }
+            GpuPort::Mvfx => self.mv_transition(&a, &b, e, p),
             port => unreachable!("{port:?} is not a transition"),
         };
         self.give(a);
@@ -551,7 +553,7 @@ mod tests {
         let pip = Motion { w: 0.7, h: 0.7, x: 0.05, rot: 5.0, ..Default::default() };
         let mut n = 0;
         for info in catalog(PluginKind::VideoFx).filter(|i| i.gpu.is_some()) {
-            let within = if matches!(info.gpu, Some(GpuPort::Blur)) { 3 } else { 2 };
+            let within = if matches!(info.gpu, Some(GpuPort::Blur)) { 3 } else { crate::engine::mvfx::tolerance(info.id) };
             for k in 0..3 {
                 let e = param_set(info, k, &lut);
                 let mut top = ev(&mut r, "a1".into());
@@ -594,7 +596,7 @@ mod tests {
                 let mix = Item::Mix { a: Some(ev(&mut r, "m2".into())), b: Some(ev(&mut r, "a3".into())), p, kind: Some(e) };
                 let bg = layer(vec![Item::Event(ev(&mut r, "m0".into()))], Composite::SourceAlpha, 1.0, Motion::default());
                 let fp = frame(vec![bg, layer(vec![mix], Composite::SourceAlpha, 1.0, pip)]);
-                let (d, _) = check_within(&g, &fp, [320, 180], true, 2, &format!("{} set {k} at {p}", info.id));
+                let (d, _) = check_within(&g, &fp, [320, 180], true, crate::engine::mvfx::tolerance(info.id), &format!("{} set {k} at {p}", info.id));
                 println!("{} set {k} at {p}: largest difference {d}", info.id);
             }
         }

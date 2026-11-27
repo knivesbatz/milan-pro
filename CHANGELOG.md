@@ -40,6 +40,11 @@ the minor number for feature releases, the patch number for fixes.
 - **Subtitles:** Insert > Subtitles from File (SRT, WebVTT, ASS with its styles) and from Regions as Titles & Text
   events, File > Export > Subtitles (SRT, WebVTT), and Render As burning them in, writing them beside the render or
   as a soft stream (MP4, MOV, MKV, WebM). CEA-608/708 closed captions are not feasible with the bundled FFmpeg (R39).
+- **Music-video FX (2001-2009):** 32 video FX and 19 transitions after the looks, lens tricks, temporal effects and
+  cuts of emo and hip-hop videos of the time (researched in `docs/research/MUSIC_VIDEO_2000S.md`), each on the CPU
+  and the GPU with the same picture; VEGAS's built-ins of the same purpose import onto them with their parameters.
+- **FX Packages:** the Video FX window's Filter Packages chip lists 15 built-in looks, applied in one step by drag or
+  double-click; Save As... in the FX window's chain bar saves your own chain as a package.
 
 ### Changed
 - Help > What's This?, Show Me How and Interactive Tutorials are no longer marked as waiting for a batch: Milan Pro

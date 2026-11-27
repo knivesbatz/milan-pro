@@ -101,6 +101,26 @@ pub struct PluginDrag {
     pub kind: crate::engine::plugins::PluginKind,
     pub name: String,
     pub fx: crate::project::Fx,
+    /// An FX Package: the FX after `fx` in its chain (empty for a single plug-in).
+    pub package: Vec<crate::project::Fx>,
+}
+
+impl PluginDrag {
+    /// `fx` and the rest of its package, in order.
+    pub fn chain(&self) -> Vec<crate::project::Fx> {
+        std::iter::once(self.fx.clone()).chain(self.package.iter().cloned()).collect()
+    }
+
+    /// Add the plug-in (a package: each of its FX) to `t`'s chain; false when the target takes none.
+    pub fn add_to(&self, p: &mut crate::project::Project, t: &crate::edit::FxTarget) -> bool {
+        let ok = crate::edit::add_fx(p, t, self.fx.clone());
+        if ok {
+            for f in &self.package {
+                crate::edit::add_fx(p, t, f.clone());
+            }
+        }
+        ok
+    }
 }
 
 /// A plug-in tile released over `resp` this frame. Other drags' payloads are left alone.

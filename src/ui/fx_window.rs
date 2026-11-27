@@ -27,6 +27,8 @@ enum ChainOp {
     Remove(usize),
     Move(usize, usize),
     Add(Fx),
+    /// An FX Package dropped on the window: its FX in order.
+    AddAll(Vec<Fx>),
 }
 
 pub struct FxWindow {
@@ -42,6 +44,8 @@ pub struct FxWindow {
     preset: Option<(bool, String)>,
     /// The name being typed for Save Preset.
     save_as: Option<String>,
+    /// The name being typed for Save As FX Package (the chain).
+    pkg_as: Option<String>,
     /// The chain pill being dragged.
     drag: Option<usize>,
     /// Installed fonts, read the first time a Font parameter shows.
@@ -211,7 +215,7 @@ impl FxWindow {
     pub fn open(project: &Project, target: FxTarget) -> Option<Self> {
         let (list, _) = edit::fx_list(project, &target)?;
         let animate = list.iter().filter(|f| animated(f)).map(|f| f.id.clone()).collect();
-        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, drag: None, fonts: None, toggled: HashSet::new(), offscreen: false, polled: 0.0 })
+        Some(Self { target, sel: 0, gesture: false, animate, kf: KfState::default(), preset: None, save_as: None, pkg_as: None, drag: None, fonts: None, toggled: HashSet::new(), offscreen: false, polled: 0.0 })
     }
 
     /// Select the plug-in last in the chain (just dropped on it).
@@ -279,7 +283,7 @@ impl FxWindow {
             // A Video FX tile dropped anywhere on the window joins the chain.
             if let Some(d) = super::plugin_dropped(&ui.interact(full, ui.id().with("fx_drop"), Sense::hover())) {
                 if chain && editable && d.kind == kind {
-                    (op, self.sel) = (Some(ChainOp::Add(d.fx.clone())), list.len());
+                    (op, self.sel) = (Some(if d.package.is_empty() { ChainOp::Add(d.fx.clone()) } else { ChainOp::AddAll(d.chain()) }), list.len());
                 } else {
                     msg = Some(match (chain, audio, editable) {
                         (false, ..) => "Only a plug-in chain takes video FX.",
@@ -375,9 +379,32 @@ impl FxWindow {
                             .response
                             .on_hover_text("Plug-in Chain...");
                         });
+                        if !audio && widgets::push_button_enabled(ui, !list.is_empty(), "Save As...").on_hover_text("Save the chain as an FX Package (Video FX window, Filter Packages)").clicked() {
+                            self.pkg_as = Some(String::new());
+                        }
                     });
                 }
             });
+            if let Some(name) = &mut self.pkg_as {
+                let mut done = false;
+                ui.horizontal(|ui| {
+                    ui.label("FX Package name:");
+                    widgets::edit(ui, TextEdit::singleline(name).desired_width(180.0).hint_text("Package name"));
+                    if widgets::push_button_enabled(ui, !name.trim().is_empty(), "Save").clicked() {
+                        let name = name.trim();
+                        msg = Some(match crate::engine::mvfx::packages::save_user(crate::engine::mvfx::packages::of_chain(&list, name, at)) {
+                            Ok(()) => format!("Saved the FX Package \"{name}\" (Video FX window, Filter Packages)."),
+                            Err(e) => format!("Could not save the FX Package: {e}"),
+                        });
+                        done = true;
+                    } else if widgets::push_button(ui, "Cancel").clicked() {
+                        done = true;
+                    }
+                });
+                if done {
+                    self.pkg_as = None;
+                }
+            }
             ui.separator();
 
             // The controller's lanes for the rest of the chain: (chain index, name, key times).
@@ -684,6 +711,7 @@ impl FxWindow {
                 }
                 ChainOp::Move(from, to) => edit::move_fx(project, t, from, to),
                 ChainOp::Add(fx) => edit::add_fx(project, t, fx),
+                ChainOp::AddAll(fxs) => fxs.into_iter().fold(false, |ok, f| edit::add_fx(project, t, f) || ok),
             };
             if done {
                 history.push(before);

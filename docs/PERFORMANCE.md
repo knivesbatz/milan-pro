@@ -130,6 +130,16 @@ A 1024-frame block at 48 kHz lasts 21.3 ms.
 | 1920x1080, four picture-in-pictures | 13.12 ms | 1.29 ms | 6.72 ms |
 | 3840x2160 Best (Full), four full frames | 104.17 ms | 30.20 ms | 48.48 ms |
 
+## Music-video FX (one 1920x1080 event, MVFX)
+
+The three heaviest of the 2001-2009 music-video FX (`bench_mvfx_1080p` in `src/engine/mvfx/temporal_tests.rs`): one 1920x1080 event with the FX, composed at 1920x1080 on the CPU (all stripes) and on the GPU (read back, as a render takes it), median of 9 after a warm-up. Datamosh is twelve frames into its smear (twelve motion searches on the CPU, twelve warps), Film Burn evaluates six octaves of value noise per pixel, Radial Blur takes 24 bilinear samples. The times include fetching the (cached) source pictures and, on the GPU, uploading them. These rows come from a later run of `tools/bench.ps1` (2026-11-26 14:51, commit a6ed534, on a busier machine) than the rest of this file.
+
+| FX | CPU | GPU |
+|---|---|---|
+| Datamosh | 701.9 ms | 434.6 ms |
+| Film Burn | 84.9 ms | 10.5 ms |
+| Radial Blur | 295.7 ms | 19.7 ms |
+
 ## Dynamic RAM Preview (4 layers, Preview 960x540, R23)
 
 | Frames built | Memory | Build time | Build rate | Playback fps | Dropped | Late layer frames |

@@ -174,7 +174,9 @@ pub fn apply(img: &mut ColorImage, e: &FxEval, k: usize) {
         GRADING => Grade::new(e).apply(img, k),
         // R33b: an OFX plug-in, through its plug-in host.
         id if id.starts_with(crate::engine::ofx::PREFIX) => crate::engine::ofx::apply(img, e),
-        _ => {}
+        _ => {
+            crate::engine::mvfx::apply(img, e, k);
+        }
     }
 }
 
@@ -207,7 +209,8 @@ pub fn color_op_for(e: &FxEval) -> Option<ColorOp> {
             let (gain, off, g) = (2f32.powf(e.f("exposure")), e.f("offset"), 1.0 / e.f("gamma").max(0.01));
             ColorOp::tone(|_, x| to_srgb((to_linear(x) * gain + off).max(0.0).powf(g)))
         }
-        _ => return None,
+        // MVFX colour looks (Bleach Bypass, Cross Process, Posterize, Threshold).
+        _ => return crate::engine::mvfx::color_op_for(e),
     })
 }
 

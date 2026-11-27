@@ -832,7 +832,7 @@ pub fn draw_timeline(
             let (target, refused) = match d.kind {
                 PluginKind::VideoFx => {
                     let ev = hit_clip(project, p).filter(|(cr, _)| cr.is_video).map(|(cr, _)| edit::FxTarget::Event(project.timeline.video_tracks[cr.track_idx].clips[cr.clip_idx].id.clone()));
-                    (ev.filter(|t| edit::add_fx(project, t, d.fx.clone())), "Drop video FX on an unlocked video event, a video track header or the Video Preview.")
+                    (ev.filter(|t| d.add_to(project, t)), "Drop video FX on an unlocked video event, a video track header or the Video Preview.")
                 }
                 PluginKind::Transition => {
                     let tr = edit::transition_of(&d.fx);
